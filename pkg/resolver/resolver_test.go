@@ -8,6 +8,7 @@ import (
 	"github.com/schjan/picolet/pkg/config"
 )
 
+//nolint:funlen // in-memory filesystem construction
 func newTestFS() fstest.MapFS {
 	return fstest.MapFS{
 		"fleet.yml": &fstest.MapFile{Data: []byte(`
@@ -81,6 +82,7 @@ spec:
 	}
 }
 
+//nolint:cyclop // integration test with many assertions
 func TestResolveHost(t *testing.T) {
 	fsys := newTestFS()
 	cfg, err := config.LoadAll(fsys)

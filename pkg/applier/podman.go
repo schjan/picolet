@@ -12,7 +12,11 @@ import (
 	"github.com/containers/podman/v5/pkg/bindings/secrets"
 )
 
-// SocketPodmanClient implements PodmanClient using the Podman bindings over a Unix socket.
+// connCtx stores the connection context returned by bindings.NewConnection.
+// The Podman bindings library embeds the socket connection into the context;
+// every binding call requires this specific context, not the caller's request context.
+//
+//nolint:containedctx // Podman bindings embed the connection in the context; storing it is required
 type SocketPodmanClient struct {
 	connCtx context.Context
 }
@@ -27,10 +31,12 @@ func NewSocketPodmanClient(ctx context.Context, socketPath string) (*SocketPodma
 	return &SocketPodmanClient{connCtx: connCtx}, nil
 }
 
+//nolint:contextcheck // must use c.connCtx: Podman bindings require the connection context
 func (c *SocketPodmanClient) SecretExists(_ context.Context, name string) (bool, error) {
 	return secrets.Exists(c.connCtx, name)
 }
 
+//nolint:contextcheck // must use c.connCtx: Podman bindings require the connection context
 func (c *SocketPodmanClient) SecretCreate(_ context.Context, name string, data []byte, replace bool) error {
 	opts := new(secrets.CreateOptions).WithName(name).WithReplace(replace)
 	_, err := secrets.Create(c.connCtx, bytes.NewReader(data), opts)
@@ -40,6 +46,7 @@ func (c *SocketPodmanClient) SecretCreate(_ context.Context, name string, data [
 	return nil
 }
 
+//nolint:contextcheck // must use c.connCtx: Podman bindings require the connection context
 func (c *SocketPodmanClient) RunHealthcheck(_ context.Context, container string) (bool, error) {
 	result, err := containers.RunHealthCheck(c.connCtx, container, nil)
 	if err != nil {
@@ -48,6 +55,7 @@ func (c *SocketPodmanClient) RunHealthcheck(_ context.Context, container string)
 	return result.Status == define.HealthCheckHealthy, nil
 }
 
+//nolint:contextcheck // must use c.connCtx: Podman bindings require the connection context
 func (c *SocketPodmanClient) GetPodState(_ context.Context, pod string) (string, error) {
 	report, err := pods.Inspect(c.connCtx, pod, nil)
 	if err != nil {

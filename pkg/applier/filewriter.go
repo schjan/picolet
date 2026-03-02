@@ -17,7 +17,7 @@ func NewAtomicFileWriter() *AtomicFileWriter {
 
 func (w *AtomicFileWriter) WriteFile(path string, content []byte) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, content, 0o644); err != nil {
+	if err := os.WriteFile(tmp, content, 0o600); err != nil {
 		return fmt.Errorf("writing %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {

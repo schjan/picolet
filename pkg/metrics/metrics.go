@@ -1,3 +1,4 @@
+//nolint:revive // 'metrics' is the conventional Prometheus package name
 package metrics
 
 import (

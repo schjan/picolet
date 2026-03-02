@@ -5,6 +5,7 @@ import (
 	"testing/fstest"
 )
 
+//nolint:funlen,cyclop // table-driven test
 func TestLoadAll(t *testing.T) {
 	fsys := fstest.MapFS{
 		"fleet.yml": &fstest.MapFile{Data: []byte(`
@@ -85,6 +86,7 @@ features: []
 	}
 }
 
+//nolint:funlen // table-driven test
 func TestAssignmentsResolve(t *testing.T) {
 	assignments := &Assignments{
 		Base: AssignmentGroup{

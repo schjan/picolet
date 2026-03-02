@@ -23,6 +23,7 @@ import (
 
 var version = "dev"
 
+//nolint:funlen // declarative CLI registration; splitting reduces readability
 func main() {
 	app := &cli.Command{
 		Name:    "picolet",
@@ -57,7 +58,7 @@ func main() {
 				Name:  "validate",
 				Usage: "validate all quadlet files and manifests for every host",
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return runValidate(cmd.Root().String("repo-dir"))
+					return runValidate(ctx, cmd.Root().String("repo-dir"))
 				},
 			},
 			{
@@ -70,7 +71,7 @@ func main() {
 						Required: true,
 					},
 				},
-				Action: func(ctx context.Context, cmd *cli.Command) error {
+				Action: func(_ context.Context, cmd *cli.Command) error {
 					return runResolve(cmd.Root().String("repo-dir"), cmd.String("host"))
 				},
 			},
@@ -115,12 +116,13 @@ func main() {
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	if err := app.Run(ctx, os.Args); err != nil {
 		slog.Error("command failed", "error", err)
+		cancel()
 		os.Exit(1)
 	}
+	cancel()
 }
 
 // jsonLogging switches the default logger to JSON for daemon subcommands.
@@ -195,7 +197,7 @@ func runDryRun(ctx context.Context, repoDir, hostname string) error {
 	}
 
 	rec := reconciler.New()
-	changeset := rec.Diff(resolved.Files, st, os.ReadFile, nil)
+	changeset := rec.Diff(resolved.Files, st, nil)
 
 	if !changeset.HasChanges() {
 		slog.Info("no changes detected")
@@ -222,14 +224,14 @@ func runDryRun(ctx context.Context, repoDir, hostname string) error {
 	return nil
 }
 
-func runValidate(repoDir string) error {
+func runValidate(ctx context.Context, repoDir string) error {
 	cfg, err := config.LoadAll(os.DirFS(repoDir))
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
 	r := resolver.New(os.DirFS(repoDir), cfg)
 	v := validator.New()
-	return v.ValidateAll(context.Background(), r, cfg)
+	return v.ValidateAll(ctx, r, cfg)
 }
 
 func runResolve(repoDir, host string) error {

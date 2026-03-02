@@ -23,7 +23,7 @@ func initBareRepo(t *testing.T) string {
 	}
 
 	// Create a file and commit
-	if err := os.WriteFile(filepath.Join(workDir, "fleet.yml"), []byte("images: {}"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(workDir, "fleet.yml"), []byte("images: {}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	wt, err := repo.Worktree()
@@ -59,7 +59,7 @@ func addCommitToBareRepo(t *testing.T, bareDir string) string {
 	}
 
 	f := filepath.Join(workDir, "new-file.txt")
-	if err := os.WriteFile(f, []byte("update"), 0o644); err != nil {
+	if err := os.WriteFile(f, []byte("update"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	wt, err := repo.Worktree()

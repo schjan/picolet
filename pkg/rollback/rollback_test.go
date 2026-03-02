@@ -47,6 +47,7 @@ func (m *mockSystemd) GetUnitState(context.Context, string) (string, error) {
 }
 func (m *mockSystemd) IsActive(context.Context, string) (bool, error) { return true, nil }
 
+//nolint:cyclop // integration test: snapshot + restore
 func TestCreateAndRestore(t *testing.T) {
 	w := newMockWriter()
 	sys := &mockSystemd{}
@@ -112,7 +113,7 @@ func TestCreateAndRestore(t *testing.T) {
 func TestSnapshotWithRealFilesystem(t *testing.T) {
 	dir := t.TempDir()
 	existingPath := filepath.Join(dir, "existing.conf")
-	if err := os.WriteFile(existingPath, []byte("existing"), 0o644); err != nil {
+	if err := os.WriteFile(existingPath, []byte("existing"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

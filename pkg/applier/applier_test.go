@@ -50,6 +50,7 @@ func (m *mockSystemd) GetUnitState(_ context.Context, name string) (string, erro
 	return s, nil
 }
 
+//nolint:contextcheck // test mock uses context.Background()
 func (m *mockSystemd) IsActive(_ context.Context, name string) (bool, error) {
 	s, _ := m.GetUnitState(context.Background(), name)
 	return s == "active", nil

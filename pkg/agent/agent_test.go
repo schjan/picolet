@@ -31,7 +31,7 @@ func (m *mockSystemd) DaemonReload(context.Context) error {
 	return nil
 }
 
-func (m *mockSystemd) StartUnit(_ context.Context, name string) error {
+func (m *mockSystemd) StartUnit(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -48,6 +48,7 @@ func (m *mockSystemd) GetUnitState(_ context.Context, name string) (string, erro
 	return s, nil
 }
 
+//nolint:contextcheck // test mock uses context.Background()
 func (m *mockSystemd) IsActive(_ context.Context, name string) (bool, error) {
 	s, _ := m.GetUnitState(context.Background(), name)
 	return s == "active", nil
@@ -173,7 +174,7 @@ func writeTestFile(t *testing.T, root, path, content string) {
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -289,6 +290,7 @@ func TestAgentDryRun(t *testing.T) {
 	}
 }
 
+//nolint:funlen // integration test with extensive setup
 func TestAgentSkipsFailedSHA(t *testing.T) {
 	bareDir := initTestRepo(t)
 	repoDir := filepath.Join(t.TempDir(), "clone")

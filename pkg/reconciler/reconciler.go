@@ -49,98 +49,76 @@ func New() *Reconciler {
 	return &Reconciler{}
 }
 
-// DiskReader reads a file from disk. Use os.ReadFile in production.
-type DiskReader func(path string) ([]byte, error)
-
 // SecretChecker checks if a Podman secret already exists.
 type SecretChecker func(name string) (bool, error)
 
 // Diff computes the changeset between desired files and current state.
-// diskReader is used to read current files from disk for comparison.
 // secretChecker is used for skip_if_exists secrets; pass nil if not needed.
 func (r *Reconciler) Diff(
 	desired []resolver.ResolvedFile,
 	currentState *state.State,
-	diskReader DiskReader,
 	secretChecker SecretChecker,
 ) *Changeset {
 	cs := &Changeset{
 		Summary: make(map[Action]int),
 	}
 
-	// Track which managed paths we've seen in desired state
 	seen := make(map[string]bool)
-
 	for _, f := range desired {
 		seen[f.DestPath] = true
-		newHash := hash(f.Content)
-
-		oldHash, managed := currentState.ManagedFiles[f.DestPath]
-
-		// For secrets with skip_if_exists: if already managed AND exists in Podman → noop
-		if f.Category == "secret" && managed && secretChecker != nil {
-			secretName := SecretNameFromPath(f.DestPath)
-			exists, err := secretChecker(secretName)
-			if err == nil && exists {
-				cs.addChange(Change{
-					DestPath: f.DestPath,
-					Category: f.Category,
-					Action:   ActionNoop,
-					OldHash:  oldHash,
-					NewHash:  newHash,
-				})
-				continue
-			}
-		}
-
-		if !managed {
-			cs.addChange(Change{
-				DestPath:   f.DestPath,
-				Category:   f.Category,
-				Action:     ActionCreate,
-				NewContent: f.Content,
-				NewHash:    newHash,
-			})
-			continue
-		}
-
-		if oldHash == newHash {
-			cs.addChange(Change{
-				DestPath: f.DestPath,
-				Category: f.Category,
-				Action:   ActionNoop,
-				OldHash:  oldHash,
-				NewHash:  newHash,
-			})
-			continue
-		}
-
-		cs.addChange(Change{
-			DestPath:   f.DestPath,
-			Category:   f.Category,
-			Action:     ActionUpdate,
-			NewContent: f.Content,
-			OldHash:    oldHash,
-			NewHash:    newHash,
-		})
+		cs.addChange(classifyFile(f, currentState, secretChecker))
 	}
 
 	// Files in state but not in desired → delete
 	for destPath := range currentState.ManagedFiles {
-		if seen[destPath] {
-			continue
+		if !seen[destPath] {
+			cs.addChange(Change{
+				DestPath: destPath,
+				Category: categoryFromPath(destPath),
+				Action:   ActionDelete,
+				OldHash:  currentState.ManagedFiles[destPath],
+			})
 		}
-		// Derive category from path
-		cat := categoryFromPath(destPath)
-		cs.addChange(Change{
-			DestPath: destPath,
-			Category: cat,
-			Action:   ActionDelete,
-			OldHash:  currentState.ManagedFiles[destPath],
-		})
 	}
 
 	return cs
+}
+
+// classifyFile determines the action for a single desired file.
+func classifyFile(f resolver.ResolvedFile, currentState *state.State, secretChecker SecretChecker) Change {
+	newHash := hash(f.Content)
+	oldHash, managed := currentState.ManagedFiles[f.DestPath]
+
+	// For secrets with skip_if_exists: if already managed AND exists in Podman → noop
+	if f.Category == "secret" && managed && secretChecker != nil {
+		secretName := SecretNameFromPath(f.DestPath)
+		exists, err := secretChecker(secretName)
+		if err == nil && exists {
+			return Change{
+				DestPath: f.DestPath, Category: f.Category,
+				Action: ActionNoop, OldHash: oldHash, NewHash: newHash,
+			}
+		}
+	}
+
+	if !managed {
+		return Change{
+			DestPath: f.DestPath, Category: f.Category,
+			Action: ActionCreate, NewContent: f.Content, NewHash: newHash,
+		}
+	}
+
+	if oldHash == newHash {
+		return Change{
+			DestPath: f.DestPath, Category: f.Category,
+			Action: ActionNoop, OldHash: oldHash, NewHash: newHash,
+		}
+	}
+
+	return Change{
+		DestPath: f.DestPath, Category: f.Category,
+		Action: ActionUpdate, NewContent: f.Content, OldHash: oldHash, NewHash: newHash,
+	}
 }
 
 func (cs *Changeset) addChange(c Change) {

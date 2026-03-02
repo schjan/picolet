@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+//nolint:funlen // table-driven test
 func TestLoad(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -25,6 +26,7 @@ git_token_path: /etc/picolet/git-token
 poll_interval: 30s
 metrics_port: 9418
 `,
+			//nolint:gosec // G101: test fixture, not real credentials
 			want: Config{
 				Hostname:     "rpi5-1",
 				RepoURL:      "https://github.com/example/fleet.git",
@@ -64,7 +66,7 @@ repo_url: https://github.com/example/fleet.git
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "config.yml")
-			if err := os.WriteFile(path, []byte(tt.content), 0o644); err != nil {
+			if err := os.WriteFile(path, []byte(tt.content), 0o600); err != nil {
 				t.Fatal(err)
 			}
 

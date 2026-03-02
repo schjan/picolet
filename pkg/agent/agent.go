@@ -94,7 +94,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	// Check for stale lock (unclean shutdown)
 	if _, err := os.Stat(lockPath); err == nil {
 		slog.Warn("stale reconciliation lock found, will force full reconciliation")
-		os.Remove(lockPath)
+		if err := os.Remove(lockPath); err != nil {
+			slog.Warn("removing stale lock failed", "path", lockPath, "error", err)
+		}
 	}
 
 	// Initialize git poller
@@ -197,36 +199,30 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	return nil
 }
 
-func (a *Agent) reconcile(ctx context.Context, headSHA string, st *state.State, store *state.Store) error {
-	// 3. Load config + resolve host from cloned repo
+func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *config.Config, *resolver.Resolver, error) {
 	repoFS := os.DirFS(a.repoPath)
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return nil, nil, nil, fmt.Errorf("loading config: %w", err)
 	}
-
 	r := resolver.New(repoFS, cfg)
 	resolved, err := r.ResolveHost(a.cfg.Hostname)
 	if err != nil {
-		return fmt.Errorf("resolving host %s: %w", a.cfg.Hostname, err)
+		return nil, nil, nil, fmt.Errorf("resolving host %s: %w", a.cfg.Hostname, err)
+	}
+	return resolved.Files, cfg, r, nil
+}
+
+func (a *Agent) reconcile(ctx context.Context, headSHA string, st *state.State, store *state.Store) error {
+	files, cfg, r, err := a.loadAndResolve()
+	if err != nil {
+		return err
 	}
 
-	// 4. Diff desired vs actual
-	rec := reconciler.New()
-	var secretChecker reconciler.SecretChecker
-	if a.podman != nil {
-		secretChecker = func(name string) (bool, error) {
-			return a.podman.SecretExists(ctx, name)
-		}
-	}
-	changeset := rec.Diff(resolved.Files, st, os.ReadFile, secretChecker)
+	changeset := a.computeDiff(ctx, files, st)
 
 	if !changeset.HasChanges() {
-		slog.Info("no changes to apply", "sha", headSHA)
-		st.AppliedSHA = headSHA
-		st.AppliedAt = time.Now()
-		st.FailedSHA = ""
-		return store.Save(st)
+		return a.markApplied(headSHA, st, store)
 	}
 
 	slog.Info("changes detected",
@@ -235,23 +231,67 @@ func (a *Agent) reconcile(ctx context.Context, headSHA string, st *state.State, 
 		"delete", changeset.Summary[reconciler.ActionDelete],
 	)
 
-	// 5. Validate (defense-in-depth)
+	if err := a.validate(ctx, r, cfg); err != nil {
+		return err
+	}
+
+	result, err := a.applyWithRollback(ctx, headSHA, changeset)
+	if err != nil {
+		return err
+	}
+
+	a.updateState(headSHA, st, changeset)
+
+	if err := store.Save(st); err != nil {
+		return fmt.Errorf("saving state: %w", err)
+	}
+
+	if result.NeedsSelfRestart && !a.dryRun {
+		slog.Info("picolet.container changed, self-update pending")
+		metrics.SelfUpdatePending.Set(1)
+	}
+
+	return nil
+}
+
+func (a *Agent) computeDiff(ctx context.Context, files []resolver.ResolvedFile, st *state.State) *reconciler.Changeset {
+	rec := reconciler.New()
+	var secretChecker reconciler.SecretChecker
+	if a.podman != nil {
+		secretChecker = func(name string) (bool, error) {
+			return a.podman.SecretExists(ctx, name)
+		}
+	}
+	return rec.Diff(files, st, secretChecker)
+}
+
+func (a *Agent) markApplied(headSHA string, st *state.State, store *state.Store) error {
+	slog.Info("no changes to apply", "sha", headSHA)
+	st.AppliedSHA = headSHA
+	st.AppliedAt = time.Now()
+	st.FailedSHA = ""
+	return store.Save(st)
+}
+
+func (a *Agent) validate(ctx context.Context, r *resolver.Resolver, cfg *config.Config) error {
 	v := validator.New()
 	if err := v.ValidateAll(ctx, r, cfg); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
+	return nil
+}
 
-	// 6. Snapshot current files
+func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset) (*applier.ApplyResult, error) {
 	rollbackMgr := rollback.New(a.writer, a.systemd)
 	snap, err := rollbackMgr.Create(changeset, os.ReadFile)
 	if err != nil {
-		return fmt.Errorf("creating snapshot: %w", err)
+		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
-	// Write reconciliation lock
-	os.WriteFile(lockPath, []byte(headSHA), 0o644)
+	if err := os.WriteFile(lockPath, []byte(headSHA), 0o600); err != nil {
+		slog.Warn("writing reconciliation lock failed", "path", lockPath, "error", err)
+	}
 
-	// 7. Apply in phased order
 	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun)
 	result, err := app.Apply(ctx, changeset)
 	if err != nil {
@@ -260,7 +300,7 @@ func (a *Agent) reconcile(ctx context.Context, headSHA string, st *state.State, 
 		if rbErr := rollbackMgr.Restore(ctx, snap); rbErr != nil {
 			slog.Error("rollback failed", "error", rbErr)
 		}
-		return fmt.Errorf("apply: %w", err)
+		return nil, fmt.Errorf("apply: %w", err)
 	}
 
 	slog.Info("apply complete",
@@ -269,7 +309,14 @@ func (a *Agent) reconcile(ctx context.Context, headSHA string, st *state.State, 
 		"dry_run", a.dryRun,
 	)
 
-	// 8. Update state
+	if err := os.Remove(lockPath); err != nil {
+		slog.Warn("removing reconciliation lock failed", "path", lockPath, "error", err)
+	}
+
+	return result, nil
+}
+
+func (a *Agent) updateState(headSHA string, st *state.State, changeset *reconciler.Changeset) {
 	st.AppliedSHA = headSHA
 	st.AppliedAt = time.Now()
 	st.FailedSHA = ""
@@ -284,22 +331,6 @@ func (a *Agent) reconcile(ctx context.Context, headSHA string, st *state.State, 
 	metrics.ManagedUnitsTotal.Set(float64(len(st.ManagedFiles)))
 	metrics.AppliedGitSHA.Reset()
 	metrics.AppliedGitSHA.WithLabelValues(headSHA).Set(1)
-
-	// Remove lock
-	os.Remove(lockPath)
-
-	if err := store.Save(st); err != nil {
-		return fmt.Errorf("saving state: %w", err)
-	}
-
-	// 9. Self-restart if picolet.container changed
-	if result.NeedsSelfRestart && !a.dryRun {
-		slog.Info("picolet.container changed, self-update pending")
-		metrics.SelfUpdatePending.Set(1)
-		// systemd will restart us via the unit restart
-	}
-
-	return nil
 }
 
 func (a *Agent) serveMetrics(ctx context.Context) {
@@ -307,8 +338,9 @@ func (a *Agent) serveMetrics(ctx context.Context) {
 	mux.Handle("/metrics", metrics.Handler())
 
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", a.cfg.MetricsPort),
-		Handler: mux,
+		Addr:              fmt.Sprintf(":%d", a.cfg.MetricsPort),
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	go func() {

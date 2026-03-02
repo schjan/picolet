@@ -7,6 +7,7 @@ import (
 	"github.com/schjan/picolet/pkg/resolver"
 )
 
+//nolint:funlen // table-driven validation test
 func TestValidateQuadletContainer(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -122,6 +123,7 @@ func TestValidateQuadletVolume(t *testing.T) {
 	}
 }
 
+//nolint:funlen // table-driven validation test
 func TestValidateManifest(t *testing.T) {
 	v := New()
 

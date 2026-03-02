@@ -42,6 +42,8 @@ func New(fsys fs.FS, cfg *config.Config) *Resolver {
 }
 
 // ResolveHost computes the complete desired state for a given hostname.
+//
+//nolint:cyclop // sequential resolution of file categories; splitting would obscure the flow
 func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 	host, ok := r.cfg.Hosts[hostname]
 	if !ok {

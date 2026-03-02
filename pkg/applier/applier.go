@@ -76,75 +76,73 @@ func New(systemd SystemdManager, podman PodmanClient, writer FileWriter, dryRun 
 // Apply applies the changeset in phased order.
 func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyResult, error) {
 	result := &ApplyResult{}
-
-	// Sort changes by category order
 	sorted := slices.Clone(cs.Changes)
-	slices.SortFunc(sorted, func(a, b reconciler.Change) int {
-		return cmp.Compare(categoryOrder[a.Category], categoryOrder[b.Category])
+	slices.SortFunc(sorted, func(x, y reconciler.Change) int {
+		return cmp.Compare(categoryOrder[x.Category], categoryOrder[y.Category])
 	})
 
-	changedUnits := make(map[string]bool)
+	changedUnits, err := a.applyPhase(ctx, sorted, result)
+	if err != nil {
+		return result, err
+	}
+	if a.dryRun {
+		return result, nil
+	}
+	return result, a.restartUnits(ctx, changedUnits, result)
+}
 
+func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (map[string]bool, error) {
+	changedUnits := make(map[string]bool)
 	for _, change := range sorted {
 		if change.Action == reconciler.ActionNoop {
 			continue
 		}
-
 		slog.Info("applying change",
 			"path", change.DestPath,
 			"action", change.Action,
 			"category", change.Category,
 			"dry_run", a.dryRun,
 		)
-
 		if a.dryRun {
 			result.Applied++
 			continue
 		}
-
-		var err error
-		switch change.Action {
-		case reconciler.ActionCreate, reconciler.ActionUpdate:
-			err = a.applyCreateOrUpdate(ctx, change)
-		case reconciler.ActionDelete:
-			err = a.applyDelete(ctx, change)
+		if err := a.applyChange(ctx, change); err != nil {
+			return nil, fmt.Errorf("applying %s (%s): %w", change.DestPath, change.Action, err)
 		}
-
-		if err != nil {
-			return result, fmt.Errorf("applying %s (%s): %w", change.DestPath, change.Action, err)
-		}
-
 		result.Applied++
-
-		// Track which units need restart
 		if change.Category == "secret" {
 			continue
 		}
-
-		unitName := validator.UnitNameFromPath(change.DestPath)
-		if unitName != "" {
+		if unitName := validator.UnitNameFromPath(change.DestPath); unitName != "" {
 			changedUnits[unitName] = true
 		}
-
-		// Check for self-update
 		if filepath.Base(change.DestPath) == "picolet.container" {
 			result.NeedsSelfRestart = true
 		}
 	}
+	return changedUnits, nil
+}
 
-	if a.dryRun {
-		return result, nil
+func (a *Applier) applyChange(ctx context.Context, change reconciler.Change) error {
+	switch change.Action {
+	case reconciler.ActionCreate, reconciler.ActionUpdate:
+		return a.applyCreateOrUpdate(ctx, change)
+	case reconciler.ActionDelete:
+		return a.applyDelete(ctx, change)
+	default:
+		return nil
 	}
+}
 
-	// Daemon reload if any quadlet/systemd files changed
-	if len(changedUnits) > 0 {
-		slog.Info("running systemd daemon-reload")
-		if err := a.systemd.DaemonReload(ctx); err != nil {
-			return result, fmt.Errorf("daemon-reload: %w", err)
-		}
+func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]bool, result *ApplyResult) error {
+	if len(changedUnits) == 0 {
+		return nil
 	}
-
-	// Restart changed units (picolet.service last)
+	slog.Info("running systemd daemon-reload")
+	if err := a.systemd.DaemonReload(ctx); err != nil {
+		return fmt.Errorf("daemon-reload: %w", err)
+	}
 	for unit := range changedUnits {
 		if unit == "picolet.service" {
 			continue
@@ -156,8 +154,6 @@ func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyRe
 			result.RestartedUnits = append(result.RestartedUnits, unit)
 		}
 	}
-
-	// Restart picolet last if needed
 	if changedUnits["picolet.service"] {
 		slog.Info("restarting picolet (self-update)")
 		if err := a.systemd.RestartUnit(ctx, "picolet.service"); err != nil {
@@ -166,8 +162,7 @@ func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyRe
 			result.RestartedUnits = append(result.RestartedUnits, "picolet.service")
 		}
 	}
-
-	return result, nil
+	return nil
 }
 
 func (a *Applier) applyCreateOrUpdate(ctx context.Context, change reconciler.Change) error {
@@ -185,7 +180,7 @@ func (a *Applier) applyCreateOrUpdate(ctx context.Context, change reconciler.Cha
 	return a.writer.WriteFile(change.DestPath, []byte(change.NewContent))
 }
 
-func (a *Applier) applyDelete(ctx context.Context, change reconciler.Change) error {
+func (a *Applier) applyDelete(_ context.Context, change reconciler.Change) error {
 	if change.Category == "secret" {
 		// Podman secrets have no versioned delete — skip
 		slog.Warn("skipping secret deletion (not supported)", "path", change.DestPath)

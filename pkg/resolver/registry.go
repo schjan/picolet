@@ -40,7 +40,7 @@ func BuildRegistry(fsys fs.FS) (*template.Template, error) {
 			return string(data), nil
 		},
 		"indent": indentFunc,
-		"readSecretFile": func(path string) (string, error) {
+		"readSecretFile": func(_ string) (string, error) {
 			// In validate/CI mode, return placeholder
 			return "<secret>", nil
 		},

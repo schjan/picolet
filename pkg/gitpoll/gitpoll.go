@@ -128,6 +128,7 @@ func (p *Poller) headSHA() (string, error) {
 	return ref.Hash().String(), nil
 }
 
+//nolint:nilnil // nil *http.BasicAuth signals anonymous access to go-git; this is intentional
 func (p *Poller) auth() (*http.BasicAuth, error) {
 	if p.tokenPath == "" {
 		return nil, nil

@@ -16,7 +16,7 @@ func TestDiffCreateNewFiles(t *testing.T) {
 	}
 	st := &state.State{ManagedFiles: make(map[string]string)}
 
-	cs := r.Diff(desired, st, nil, nil)
+	cs := r.Diff(desired, st, nil)
 
 	if !cs.HasChanges() {
 		t.Fatal("expected changes")
@@ -48,7 +48,7 @@ func TestDiffNoopWhenUnchanged(t *testing.T) {
 		},
 	}
 
-	cs := r.Diff(desired, st, nil, nil)
+	cs := r.Diff(desired, st, nil)
 
 	if cs.HasChanges() {
 		t.Fatal("expected no changes")
@@ -70,7 +70,7 @@ func TestDiffUpdateChangedContent(t *testing.T) {
 		},
 	}
 
-	cs := r.Diff(desired, st, nil, nil)
+	cs := r.Diff(desired, st, nil)
 
 	if !cs.HasChanges() {
 		t.Fatal("expected changes")
@@ -90,7 +90,7 @@ func TestDiffDeleteRemovedFiles(t *testing.T) {
 		},
 	}
 
-	cs := r.Diff(desired, st, nil, nil)
+	cs := r.Diff(desired, st, nil)
 
 	if !cs.HasChanges() {
 		t.Fatal("expected changes")
@@ -122,7 +122,7 @@ func TestDiffMixedOperations(t *testing.T) {
 		},
 	}
 
-	cs := r.Diff(desired, st, nil, nil)
+	cs := r.Diff(desired, st, nil)
 
 	if cs.Summary[ActionNoop] != 1 {
 		t.Errorf("noop = %d, want 1", cs.Summary[ActionNoop])
@@ -158,16 +158,16 @@ func TestDiffSecretSkipIfExists(t *testing.T) {
 		return false, nil
 	}
 
-	cs := r.Diff(desired, st, nil, checker)
+	cs := r.Diff(desired, st, checker)
 	if cs.Summary[ActionNoop] != 1 {
 		t.Errorf("noop = %d, want 1 (skip_if_exists)", cs.Summary[ActionNoop])
 	}
 
 	// Secret does NOT exist in Podman → update (hash differs)
-	noChecker := func(name string) (bool, error) {
+	noChecker := func(_ string) (bool, error) {
 		return false, nil
 	}
-	cs2 := r.Diff(desired, st, nil, noChecker)
+	cs2 := r.Diff(desired, st, noChecker)
 	if cs2.Summary[ActionUpdate] != 1 {
 		t.Errorf("update = %d, want 1 (secret missing)", cs2.Summary[ActionUpdate])
 	}
@@ -185,12 +185,12 @@ func TestDiffSecretCheckerError(t *testing.T) {
 		},
 	}
 
-	errChecker := func(name string) (bool, error) {
+	errChecker := func(_ string) (bool, error) {
 		return false, errors.New("connection refused")
 	}
 
 	// On error, fall through to normal diff (update because hash differs)
-	cs := r.Diff(desired, st, nil, errChecker)
+	cs := r.Diff(desired, st, errChecker)
 	if cs.Summary[ActionUpdate] != 1 {
 		t.Errorf("update = %d, want 1 (fallback on error)", cs.Summary[ActionUpdate])
 	}

@@ -15,7 +15,7 @@ type mockSystemd struct {
 }
 
 func (m *mockSystemd) DaemonReload(context.Context) error          { return nil }
-func (m *mockSystemd) StartUnit(_ context.Context, n string) error { return nil }
+func (m *mockSystemd) StartUnit(_ context.Context, _ string) error { return nil }
 
 func (m *mockSystemd) RestartUnit(_ context.Context, name string) error {
 	m.restarted = append(m.restarted, name)
