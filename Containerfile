@@ -1,4 +1,4 @@
-FROM docker.io/library/golang:1.26-trixie AS builder
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.26-trixie AS builder
 
 WORKDIR /app
 
@@ -8,10 +8,12 @@ RUN --mount=type=cache,target=/go/pkg/mod/ \
     go mod download -x
 
 ARG VERSION=dev
+ARG TARGETOS
+ARG TARGETARCH
 RUN --mount=type=cache,target=/go/pkg/mod/ \
     --mount=type=cache,target="/root/.cache/go-build" \
     --mount=type=bind,source=,target=.,rw \
-    CGO_ENABLED=0 go build -v \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -v \
     -mod=readonly -trimpath \
     -tags "remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper" \
     -ldflags="-X main.version=${VERSION} -s -w" -o /picolet ./cmd/picolet
