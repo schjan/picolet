@@ -1,0 +1,63 @@
+version: "2"
+linters:
+  enable:
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - cyclop
+    - dupl
+    - exptostd
+    - durationcheck
+    - embeddedstructfieldcheck
+    - exptostd
+    - fatcontext
+    - forcetypeassert
+    - funlen
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - ireturn
+    - modernize
+    - nestif
+    - nilnesserr
+    - nilnil
+    - nolintlint
+    - revive
+    - testifylint
+    - thelper
+    - tparallel
+    - unconvert
+    - usestdlibvars
+    - usetesting
+    - wastedassign
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third-party
+
+formatters:
+  enable:
+    - gofumpt
+    - gci
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - localmodule
+    gofumpt:
+      extra-rules: false
+  exclusions:
+    generated: lax
+    paths:
+      - third_party
