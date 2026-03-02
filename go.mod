@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/containers/podman/v5 v5.8.0
-	github.com/coreos/go-systemd/v22 v22.6.0
+	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/go-git/go-git/v5 v5.17.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/urfave/cli/v3 v3.7.0
