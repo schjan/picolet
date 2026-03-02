@@ -225,11 +225,12 @@ func runDryRun(ctx context.Context, repoDir, hostname string) error {
 }
 
 func runValidate(ctx context.Context, repoDir string) error {
-	cfg, err := config.LoadAll(os.DirFS(repoDir))
+	repoFS := os.DirFS(repoDir)
+	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-	r := resolver.New(os.DirFS(repoDir), cfg)
+	r := resolver.New(repoFS, cfg)
 	v := validator.New()
 	return v.ValidateAll(ctx, r, cfg)
 }

@@ -89,35 +89,48 @@ func classifyFile(f resolver.ResolvedFile, currentState *state.State, secretChec
 	newHash := hash(f.Content)
 	oldHash, managed := currentState.ManagedFiles[f.DestPath]
 
-	// For secrets with skip_if_exists: if already managed AND exists in Podman → noop
+	// For secrets with skip_if_exists: if already managed AND exists in Podman, noop.
 	if f.Category == "secret" && managed && secretChecker != nil {
 		secretName := SecretNameFromPath(f.DestPath)
 		exists, err := secretChecker(secretName)
 		if err == nil && exists {
 			return Change{
-				DestPath: f.DestPath, Category: f.Category,
-				Action: ActionNoop, OldHash: oldHash, NewHash: newHash,
+				DestPath: f.DestPath,
+				Category: f.Category,
+				Action:   ActionNoop,
+				OldHash:  oldHash,
+				NewHash:  newHash,
 			}
 		}
 	}
 
 	if !managed {
 		return Change{
-			DestPath: f.DestPath, Category: f.Category,
-			Action: ActionCreate, NewContent: f.Content, NewHash: newHash,
+			DestPath:   f.DestPath,
+			Category:   f.Category,
+			Action:     ActionCreate,
+			NewContent: f.Content,
+			NewHash:    newHash,
 		}
 	}
 
 	if oldHash == newHash {
 		return Change{
-			DestPath: f.DestPath, Category: f.Category,
-			Action: ActionNoop, OldHash: oldHash, NewHash: newHash,
+			DestPath: f.DestPath,
+			Category: f.Category,
+			Action:   ActionNoop,
+			OldHash:  oldHash,
+			NewHash:  newHash,
 		}
 	}
 
 	return Change{
-		DestPath: f.DestPath, Category: f.Category,
-		Action: ActionUpdate, NewContent: f.Content, OldHash: oldHash, NewHash: newHash,
+		DestPath:   f.DestPath,
+		Category:   f.Category,
+		Action:     ActionUpdate,
+		NewContent: f.Content,
+		OldHash:    oldHash,
+		NewHash:    newHash,
 	}
 }
 

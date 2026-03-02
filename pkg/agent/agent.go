@@ -231,8 +231,9 @@ func (a *Agent) reconcile(ctx context.Context, headSHA string, st *state.State, 
 		"delete", changeset.Summary[reconciler.ActionDelete],
 	)
 
-	if err := a.validate(ctx, r, cfg); err != nil {
-		return err
+	v := validator.New()
+	if err := v.ValidateAll(ctx, r, cfg); err != nil {
+		return fmt.Errorf("validation failed: %w", err)
 	}
 
 	result, err := a.applyWithRollback(ctx, headSHA, changeset)
@@ -271,14 +272,6 @@ func (a *Agent) markApplied(headSHA string, st *state.State, store *state.Store)
 	st.AppliedAt = time.Now()
 	st.FailedSHA = ""
 	return store.Save(st)
-}
-
-func (a *Agent) validate(ctx context.Context, r *resolver.Resolver, cfg *config.Config) error {
-	v := validator.New()
-	if err := v.ValidateAll(ctx, r, cfg); err != nil {
-		return fmt.Errorf("validation failed: %w", err)
-	}
-	return nil
 }
 
 func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset) (*applier.ApplyResult, error) {
