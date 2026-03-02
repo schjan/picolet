@@ -24,10 +24,9 @@ tasks:
       - go test -tags "{{.BUILD_TAGS}}" ./... -race -count=1
 
   lint:
-    desc: Run go vet and gofmt check
+    desc: Run golangci-lint
     cmds:
-      - go vet -tags "{{.BUILD_TAGS}}" ./...
-      - test -z "$(gofmt -l .)"
+      - golangci-lint run --build-tags "{{.BUILD_TAGS}}"
 
   clean:
     desc: Remove build artifacts

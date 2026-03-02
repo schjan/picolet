@@ -5,11 +5,10 @@ import (
 	"errors"
 	"fmt"
 
+	"go.yaml.in/yaml/v4"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	sigsyaml "sigs.k8s.io/yaml"
-
-	"go.yaml.in/yaml/v4"
 )
 
 // supportedKinds lists Kubernetes resource kinds supported by podman kube play.
