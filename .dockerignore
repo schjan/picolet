@@ -1,0 +1,6 @@
+.git/
+dist/
+picolet
+picolet-*
+.DS_Store
+.claude/

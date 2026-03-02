@@ -1,0 +1,192 @@
+package resolver
+
+import (
+	"bytes"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"path/filepath"
+	"strings"
+	"text/template"
+
+	"github.com/schjan/picolet/pkg/config"
+)
+
+// ResolvedFile represents a single rendered file with its destination path.
+type ResolvedFile struct {
+	// SrcPath is the source template/file path within the repo.
+	SrcPath string
+	// DestPath is where the file should be deployed on the target host.
+	DestPath string
+	// Content is the rendered file content.
+	Content string
+	// Category describes the file type (network, container, kube, manifest, etc.).
+	Category string
+}
+
+// ResolvedHost is the complete desired state for a single host.
+type ResolvedHost struct {
+	Hostname string
+	Files    []ResolvedFile
+}
+
+// Resolver renders templates and resolves the desired state for hosts.
+type Resolver struct {
+	fsys fs.FS
+	cfg  *config.Config
+}
+
+// New creates a new Resolver.
+func New(fsys fs.FS, cfg *config.Config) *Resolver {
+	return &Resolver{fsys: fsys, cfg: cfg}
+}
+
+// ResolveHost computes the complete desired state for a given hostname.
+func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
+	host, ok := r.cfg.Hosts[hostname]
+	if !ok {
+		return nil, &HostNotFoundError{Hostname: hostname}
+	}
+
+	tmplData, err := NewTemplateData(r.cfg, hostname)
+	if err != nil {
+		return nil, err
+	}
+
+	registry, err := BuildRegistry(r.fsys)
+	if err != nil {
+		return nil, fmt.Errorf("building template registry: %w", err)
+	}
+
+	fileSet := r.cfg.Assignments.Resolve(host)
+	var files []ResolvedFile
+
+	// Standard file categories with their destination directories
+	fileGroups := []struct {
+		paths   []string
+		cat     string
+		destDir string
+	}{
+		{fileSet.Networks, "network", "/etc/containers/systemd/"},
+		{fileSet.Systemd, "systemd", "/etc/systemd/system/"},
+		{fileSet.Volumes, "volume", "/etc/containers/systemd/"},
+		{fileSet.Containers, "container", "/etc/containers/systemd/"},
+		{fileSet.Kube, "kube", "/etc/containers/systemd/"},
+	}
+	for _, g := range fileGroups {
+		for _, path := range g.paths {
+			f, err := r.resolveFile(registry, tmplData, path, g.cat, g.destDir)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, *f)
+		}
+	}
+
+	for _, path := range fileSet.Manifests {
+		f, err := r.resolveManifest(registry, tmplData, path)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, *f)
+	}
+
+	for _, path := range fileSet.Secrets {
+		f, err := r.resolveSecret(registry, tmplData, path)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, *f)
+	}
+
+	return &ResolvedHost{
+		Hostname: hostname,
+		Files:    files,
+	}, nil
+}
+
+// ResolveAll resolves all hosts and returns the results.
+func (r *Resolver) ResolveAll() (map[string]*ResolvedHost, error) {
+	results := make(map[string]*ResolvedHost, len(r.cfg.Hosts))
+	for _, hostname := range r.cfg.SortedHostnames() {
+		resolved, err := r.ResolveHost(hostname)
+		if err != nil {
+			return nil, fmt.Errorf("resolving host %s: %w", hostname, err)
+		}
+		results[hostname] = resolved
+	}
+	return results, nil
+}
+
+func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateData, srcPath, category, destDir string) (*ResolvedFile, error) {
+	content, err := r.renderOrRead(registry, tmplData, srcPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving %s: %w", srcPath, err)
+	}
+
+	// Strip .tmpl extension for destination filename
+	filename := filepath.Base(srcPath)
+	filename = strings.TrimSuffix(filename, ".tmpl")
+
+	return &ResolvedFile{
+		SrcPath:  srcPath,
+		DestPath: destDir + filename,
+		Content:  content,
+		Category: category,
+	}, nil
+}
+
+func (r *Resolver) resolveManifest(registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {
+	content, err := r.renderOrRead(registry, tmplData, srcPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving manifest %s: %w", srcPath, err)
+	}
+
+	// manifests/<app>/deployment.yml.tmpl → /var/lib/picolet/manifests/<app>/deployment.yml
+	relPath := strings.TrimSuffix(srcPath, ".tmpl")
+	destPath := "/var/lib/picolet/" + relPath
+
+	return &ResolvedFile{
+		SrcPath:  srcPath,
+		DestPath: destPath,
+		Content:  content,
+		Category: "manifest",
+	}, nil
+}
+
+func (r *Resolver) resolveSecret(registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {
+	content, err := r.renderOrRead(registry, tmplData, srcPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving secret %s: %w", srcPath, err)
+	}
+
+	// secrets/prometheus_config.yml.tmpl → secret name "prometheus_config"
+	filename := filepath.Base(srcPath)
+	filename = strings.TrimSuffix(filename, ".tmpl")
+	secretName := strings.TrimSuffix(filename, filepath.Ext(filename))
+
+	return &ResolvedFile{
+		SrcPath:  srcPath,
+		DestPath: "secret:" + secretName,
+		Content:  content,
+		Category: "secret",
+	}, nil
+}
+
+func (r *Resolver) renderOrRead(registry *template.Template, tmplData *TemplateData, path string) (string, error) {
+	if strings.HasSuffix(path, ".tmpl") {
+		slog.Debug("rendering template", "path", path)
+		var buf bytes.Buffer
+		if err := registry.ExecuteTemplate(&buf, path, tmplData); err != nil {
+			return "", fmt.Errorf("executing template %s: %w", path, err)
+		}
+		return buf.String(), nil
+	}
+
+	slog.Debug("reading static file", "path", path)
+	data, err := fs.ReadFile(r.fsys, path)
+	if err != nil {
+		return "", fmt.Errorf("reading %s: %w", path, err)
+	}
+	return string(data), nil
+}

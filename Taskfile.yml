@@ -1,0 +1,40 @@
+version: "3"
+
+vars:
+  BINARY: picolet
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo "dev"
+  LDFLAGS: -ldflags "-X main.version={{.VERSION}} -s -w"
+  BUILD_TAGS: remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper
+
+tasks:
+  build:
+    desc: Build picolet binary
+    cmds:
+      - CGO_ENABLED=0 go build -tags "{{.BUILD_TAGS}}" {{.LDFLAGS}} -o {{.BINARY}} ./cmd/picolet
+
+  build-arm64:
+    desc: Cross-compile for Raspberry Pi (linux/arm64)
+    cmds:
+      - CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags "{{.BUILD_TAGS}}" {{.LDFLAGS}} -o {{.BINARY}}-arm64 ./cmd/picolet
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test -tags "{{.BUILD_TAGS}}" ./... -race -count=1
+
+  lint:
+    desc: Run go vet and gofmt check
+    cmds:
+      - go vet -tags "{{.BUILD_TAGS}}" ./...
+      - test -z "$(gofmt -l .)"
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -f {{.BINARY}} {{.BINARY}}-arm64
+
+  image:
+    desc: Build container image for linux/arm64
+    cmds:
+      - docker buildx build --platform linux/arm64 -t ghcr.io/schjan/picolet:{{.VERSION}} .

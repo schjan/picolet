@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  BUILD_TAGS: remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test -tags "$BUILD_TAGS" ./... -race -count=1
+      - name: Build
+        run: CGO_ENABLED=0 go build -tags "$BUILD_TAGS" -o picolet ./cmd/picolet
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          args: --build-tags "${{ env.BUILD_TAGS }}"
+      - name: Vet
+        run: go vet -tags "$BUILD_TAGS" ./...
+      - name: Format check
+        run: test -z "$(gofmt -l .)"

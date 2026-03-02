@@ -1,0 +1,29 @@
+version: 2
+
+builds:
+  - main: ./cmd/picolet
+    binary: picolet
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - arm64
+      - amd64
+    tags:
+      - remote
+      - containers_image_openpgp
+      - exclude_graphdriver_btrfs
+      - btrfs_noversion
+      - exclude_graphdriver_devicemapper
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - format: tar.gz
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc

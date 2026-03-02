@@ -1,0 +1,5 @@
+/picolet
+/picolet-*
+/dist/
+.DS_Store
+.claude/
