@@ -20,7 +20,8 @@ builds:
       - -s -w -X main.version={{.Version}}
 
 archives:
-  - format: tar.gz
+  - formats:
+      - tar.gz
 
 checksum:
   name_template: checksums.txt
