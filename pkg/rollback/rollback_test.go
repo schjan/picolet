@@ -7,15 +7,14 @@ import (
 	"path/filepath"
 	"testing"
 
-	mock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/assert"
+	mock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	mocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/reconciler"
 )
 
-//nolint:cyclop // integration test: snapshot + restore
 func TestCreateAndRestore(t *testing.T) {
 	t.Parallel()
 	sys := mocks.NewMockSystemdManager(t)

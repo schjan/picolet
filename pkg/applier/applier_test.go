@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	mock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/assert"
+	mock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	mocks "github.com/schjan/picolet/mocks/applier"

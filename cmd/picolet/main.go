@@ -236,11 +236,12 @@ func runValidate(ctx context.Context, repoDir string) error {
 }
 
 func runResolve(repoDir, host string) error {
-	cfg, err := config.LoadAll(os.DirFS(repoDir))
+	repoFS := os.DirFS(repoDir)
+	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-	r := resolver.New(os.DirFS(repoDir), cfg, nil)
+	r := resolver.New(repoFS, cfg, nil)
 	resolved, err := r.ResolveHost(host)
 	if err != nil {
 		return err

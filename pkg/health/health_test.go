@@ -3,10 +3,9 @@ package health
 import (
 	"context"
 	"testing"
-	"time"
 
-	mock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/assert"
+	mock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	mocks "github.com/schjan/picolet/mocks/applier"
@@ -98,8 +97,6 @@ func TestEnforceRestartCooldown(t *testing.T) {
 	sys.EXPECT().RestartUnit(mock.Anything, "foo.service").Return(nil).Once()
 
 	c := New(sys)
-	// Override cooldown to a large value so second call is within cooldown
-	c.lastRestart["foo.service"] = time.Time{} // ensure clean state
 
 	st := &state.State{
 		ManagedFiles: map[string]string{

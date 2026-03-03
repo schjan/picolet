@@ -151,7 +151,7 @@ func TestIntegrationErrorPaths(t *testing.T) {
 		_, err = r.ResolveHost("nonexistent")
 		require.Error(t, err)
 		var notFound *resolver.HostNotFoundError
-		assert.True(t, errors.As(err, &notFound))
+		assert.ErrorAs(t, err, &notFound)
 		assert.Equal(t, "nonexistent", notFound.Hostname)
 	})
 }

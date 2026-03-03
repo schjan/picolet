@@ -38,4 +38,3 @@ func (w *AtomicFileWriter) Remove(path string) error {
 	}
 	return err
 }
-

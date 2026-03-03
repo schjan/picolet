@@ -60,6 +60,7 @@ func addCommitToBareRepo(t *testing.T, bareDir string) string {
 }
 
 func TestPollerInitAndPoll(t *testing.T) {
+	t.Parallel()
 	bareDir := initBareRepo(t)
 	localDir := filepath.Join(t.TempDir(), "clone")
 	ctx := context.Background()
@@ -87,6 +88,7 @@ func TestPollerInitAndPoll(t *testing.T) {
 }
 
 func TestPollerReopenExisting(t *testing.T) {
+	t.Parallel()
 	bareDir := initBareRepo(t)
 	localDir := filepath.Join(t.TempDir(), "clone")
 	ctx := context.Background()

@@ -9,8 +9,8 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	mock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/assert"
+	mock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	mocks "github.com/schjan/picolet/mocks/applier"
@@ -106,6 +106,7 @@ func newTestMocks(t *testing.T) (*mocks.MockSystemdManager, *mocks.MockPodmanCli
 }
 
 func TestAgentFullCycle(t *testing.T) {
+	t.Parallel()
 	bareDir := initTestRepo(t)
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	stateDir := filepath.Join(t.TempDir(), "state")
@@ -152,6 +153,7 @@ func TestAgentFullCycle(t *testing.T) {
 }
 
 func TestAgentDryRun(t *testing.T) {
+	t.Parallel()
 	bareDir := initTestRepo(t)
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
@@ -191,8 +193,8 @@ func TestAgentDryRun(t *testing.T) {
 	assert.Empty(t, written, "dry-run should not write files")
 }
 
-//nolint:funlen // integration test with extensive setup
 func TestAgentSkipsFailedSHA(t *testing.T) {
+	t.Parallel()
 	bareDir := initTestRepo(t)
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	stateDir := t.TempDir()
@@ -247,8 +249,8 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 	assert.Empty(t, written, "should not write files for permanently failed SHA")
 }
 
-//nolint:funlen // integration test with extensive setup
 func TestAgentRetriesFailedSHA(t *testing.T) {
+	t.Parallel()
 	bareDir := initTestRepo(t)
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	stateDir := t.TempDir()

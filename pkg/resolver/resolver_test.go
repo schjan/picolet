@@ -84,7 +84,6 @@ spec:
 	}
 }
 
-//nolint:cyclop // integration test with many assertions
 func TestResolveHost(t *testing.T) {
 	t.Parallel()
 	fsys := newTestFS()
