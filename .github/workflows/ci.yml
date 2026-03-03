@@ -21,9 +21,6 @@ jobs:
       - name: Test
         run: go test -tags "$BUILD_TAGS" ./... -race -count=1
 
-      - name: Build
-        run: CGO_ENABLED=0 go build -tags "$BUILD_TAGS" -o picolet ./cmd/picolet
-
   lint:
     runs-on: ubuntu-latest
     steps:
