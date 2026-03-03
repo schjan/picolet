@@ -4,11 +4,15 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
 )
 
 func TestDiffCreateNewFiles(t *testing.T) {
+	t.Parallel()
 	r := New()
 	desired := []resolver.ResolvedFile{
 		{DestPath: "/etc/containers/systemd/foo.container", Content: "image=foo", Category: "container"},
@@ -18,23 +22,16 @@ func TestDiffCreateNewFiles(t *testing.T) {
 
 	cs := r.Diff(desired, st, nil)
 
-	if !cs.HasChanges() {
-		t.Fatal("expected changes")
-	}
-	if cs.Summary[ActionCreate] != 2 {
-		t.Errorf("create count = %d, want 2", cs.Summary[ActionCreate])
-	}
+	require.True(t, cs.HasChanges())
+	assert.Equal(t, 2, cs.Summary[ActionCreate])
 	for _, c := range cs.Changes {
-		if c.Action != ActionCreate {
-			t.Errorf("change %s: action = %s, want create", c.DestPath, c.Action)
-		}
-		if c.NewHash == "" {
-			t.Errorf("change %s: NewHash should not be empty", c.DestPath)
-		}
+		assert.Equal(t, ActionCreate, c.Action)
+		assert.NotEmpty(t, c.NewHash)
 	}
 }
 
 func TestDiffNoopWhenUnchanged(t *testing.T) {
+	t.Parallel()
 	r := New()
 	content := "image=foo"
 	h := hash(content)
@@ -50,15 +47,12 @@ func TestDiffNoopWhenUnchanged(t *testing.T) {
 
 	cs := r.Diff(desired, st, nil)
 
-	if cs.HasChanges() {
-		t.Fatal("expected no changes")
-	}
-	if cs.Summary[ActionNoop] != 1 {
-		t.Errorf("noop count = %d, want 1", cs.Summary[ActionNoop])
-	}
+	assert.False(t, cs.HasChanges())
+	assert.Equal(t, 1, cs.Summary[ActionNoop])
 }
 
 func TestDiffUpdateChangedContent(t *testing.T) {
+	t.Parallel()
 	r := New()
 
 	desired := []resolver.ResolvedFile{
@@ -72,18 +66,15 @@ func TestDiffUpdateChangedContent(t *testing.T) {
 
 	cs := r.Diff(desired, st, nil)
 
-	if !cs.HasChanges() {
-		t.Fatal("expected changes")
-	}
-	if cs.Summary[ActionUpdate] != 1 {
-		t.Errorf("update count = %d, want 1", cs.Summary[ActionUpdate])
-	}
+	require.True(t, cs.HasChanges())
+	assert.Equal(t, 1, cs.Summary[ActionUpdate])
 }
 
 func TestDiffDeleteRemovedFiles(t *testing.T) {
+	t.Parallel()
 	r := New()
 
-	desired := []resolver.ResolvedFile{} // empty desired state
+	desired := []resolver.ResolvedFile{}
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/old.container": "sha256:abc",
@@ -92,18 +83,13 @@ func TestDiffDeleteRemovedFiles(t *testing.T) {
 
 	cs := r.Diff(desired, st, nil)
 
-	if !cs.HasChanges() {
-		t.Fatal("expected changes")
-	}
-	if cs.Summary[ActionDelete] != 1 {
-		t.Errorf("delete count = %d, want 1", cs.Summary[ActionDelete])
-	}
-	if cs.Changes[0].Category != "container" {
-		t.Errorf("category = %q, want container", cs.Changes[0].Category)
-	}
+	require.True(t, cs.HasChanges())
+	assert.Equal(t, 1, cs.Summary[ActionDelete])
+	assert.Equal(t, "container", cs.Changes[0].Category)
 }
 
 func TestDiffMixedOperations(t *testing.T) {
+	t.Parallel()
 	r := New()
 
 	keepContent := "keep"
@@ -124,21 +110,14 @@ func TestDiffMixedOperations(t *testing.T) {
 
 	cs := r.Diff(desired, st, nil)
 
-	if cs.Summary[ActionNoop] != 1 {
-		t.Errorf("noop = %d, want 1", cs.Summary[ActionNoop])
-	}
-	if cs.Summary[ActionCreate] != 1 {
-		t.Errorf("create = %d, want 1", cs.Summary[ActionCreate])
-	}
-	if cs.Summary[ActionUpdate] != 1 {
-		t.Errorf("update = %d, want 1", cs.Summary[ActionUpdate])
-	}
-	if cs.Summary[ActionDelete] != 1 {
-		t.Errorf("delete = %d, want 1", cs.Summary[ActionDelete])
-	}
+	assert.Equal(t, 1, cs.Summary[ActionNoop])
+	assert.Equal(t, 1, cs.Summary[ActionCreate])
+	assert.Equal(t, 1, cs.Summary[ActionUpdate])
+	assert.Equal(t, 1, cs.Summary[ActionDelete])
 }
 
 func TestDiffSecretSkipIfExists(t *testing.T) {
+	t.Parallel()
 	r := New()
 
 	desired := []resolver.ResolvedFile{
@@ -159,21 +138,18 @@ func TestDiffSecretSkipIfExists(t *testing.T) {
 	}
 
 	cs := r.Diff(desired, st, checker)
-	if cs.Summary[ActionNoop] != 1 {
-		t.Errorf("noop = %d, want 1 (skip_if_exists)", cs.Summary[ActionNoop])
-	}
+	assert.Equal(t, 1, cs.Summary[ActionNoop], "skip_if_exists should be noop")
 
 	// Secret does NOT exist in Podman → update (hash differs)
 	noChecker := func(_ string) (bool, error) {
 		return false, nil
 	}
 	cs2 := r.Diff(desired, st, noChecker)
-	if cs2.Summary[ActionUpdate] != 1 {
-		t.Errorf("update = %d, want 1 (secret missing)", cs2.Summary[ActionUpdate])
-	}
+	assert.Equal(t, 1, cs2.Summary[ActionUpdate], "missing secret should be updated")
 }
 
 func TestDiffSecretCheckerError(t *testing.T) {
+	t.Parallel()
 	r := New()
 
 	desired := []resolver.ResolvedFile{
@@ -191,12 +167,11 @@ func TestDiffSecretCheckerError(t *testing.T) {
 
 	// On error, fall through to normal diff (update because hash differs)
 	cs := r.Diff(desired, st, errChecker)
-	if cs.Summary[ActionUpdate] != 1 {
-		t.Errorf("update = %d, want 1 (fallback on error)", cs.Summary[ActionUpdate])
-	}
+	assert.Equal(t, 1, cs.Summary[ActionUpdate], "fallback on checker error")
 }
 
 func TestCategoryFromPath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		path string
 		want string
@@ -213,10 +188,8 @@ func TestCategoryFromPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			got := categoryFromPath(tt.path)
-			if got != tt.want {
-				t.Errorf("categoryFromPath(%q) = %q, want %q", tt.path, got, tt.want)
-			}
+			t.Parallel()
+			assert.Equal(t, tt.want, categoryFromPath(tt.path))
 		})
 	}
 }

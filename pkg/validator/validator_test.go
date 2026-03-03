@@ -1,14 +1,17 @@
 package validator
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/pkg/resolver"
 )
 
 //nolint:funlen // table-driven validation test
 func TestValidateQuadletContainer(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		path    string
@@ -64,24 +67,24 @@ Network=nonexistent.network
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			v := New()
 			v.currentFiles = tt.files
 			err := v.validateQuadlet(tt.path, []byte(tt.content))
 			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error")
+				require.Error(t, err)
+				if tt.errMsg != "" {
+					assert.ErrorContains(t, err, tt.errMsg)
 				}
-				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
-					t.Errorf("error = %q, want to contain %q", err.Error(), tt.errMsg)
-				}
-			} else if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}
 }
 
 func TestValidateQuadletKube(t *testing.T) {
+	t.Parallel()
 	v := New()
 
 	valid := `[Kube]
@@ -94,37 +97,30 @@ WantedBy=default.target
 	v.currentFiles = []resolver.ResolvedFile{
 		{DestPath: "/etc/containers/systemd/internal.network", Category: "network"},
 	}
-	if err := v.validateQuadlet("/etc/containers/systemd/test.kube", []byte(valid)); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, v.validateQuadlet("/etc/containers/systemd/test.kube", []byte(valid)))
 
 	v2 := New()
 	noYaml := "[Kube]\nNetwork=internal.network\n"
-	if err := v2.validateQuadlet("/etc/containers/systemd/test.kube", []byte(noYaml)); err == nil {
-		t.Fatal("expected error for missing Yaml key")
-	}
+	require.Error(t, v2.validateQuadlet("/etc/containers/systemd/test.kube", []byte(noYaml)))
 }
 
 func TestValidateQuadletNetwork(t *testing.T) {
+	t.Parallel()
 	v := New()
-
 	valid := "[Network]\nInternal=true\n"
-	if err := v.validateQuadlet("/etc/containers/systemd/test.network", []byte(valid)); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, v.validateQuadlet("/etc/containers/systemd/test.network", []byte(valid)))
 }
 
 func TestValidateQuadletVolume(t *testing.T) {
+	t.Parallel()
 	v := New()
-
 	valid := "[Volume]\n"
-	if err := v.validateQuadlet("/etc/containers/systemd/test.volume", []byte(valid)); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, v.validateQuadlet("/etc/containers/systemd/test.volume", []byte(valid)))
 }
 
 //nolint:funlen // table-driven validation test
 func TestValidateManifest(t *testing.T) {
+	t.Parallel()
 	v := New()
 
 	tests := []struct {
@@ -209,36 +205,30 @@ spec:
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := v.validateManifest("test.yml", []byte(tt.content))
 			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error")
+				require.Error(t, err)
+				if tt.errMsg != "" {
+					assert.ErrorContains(t, err, tt.errMsg)
 				}
-				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
-					t.Errorf("error = %q, want to contain %q", err.Error(), tt.errMsg)
-				}
-			} else if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}
 }
 
 func TestValidateSystemdUnit(t *testing.T) {
+	t.Parallel()
 	v := New()
 
 	valid := "[Socket]\nListenStream=80\n"
-	if err := v.validateSystemdUnit("test.socket", valid); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, v.validateSystemdUnit("test.socket", valid))
 
 	empty := ""
-	if err := v.validateSystemdUnit("test.socket", empty); err == nil {
-		t.Fatal("expected error for empty unit")
-	}
+	require.Error(t, v.validateSystemdUnit("test.socket", empty))
 
 	noSection := "ListenStream=80"
-	if err := v.validateSystemdUnit("test.socket", noSection); err == nil {
-		t.Fatal("expected error for missing section header")
-	}
+	require.Error(t, v.validateSystemdUnit("test.socket", noSection))
 }

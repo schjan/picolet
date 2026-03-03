@@ -2,57 +2,25 @@ package health
 
 import (
 	"context"
-	"fmt"
 	"testing"
+	"time"
 
+	mock "github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	mocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/state"
 )
 
-type mockSystemd struct {
-	states    map[string]string
-	restarted []string
-	failCheck map[string]bool
-}
-
-func (m *mockSystemd) DaemonReload(context.Context) error          { return nil }
-func (m *mockSystemd) StartUnit(_ context.Context, _ string) error { return nil }
-
-func (m *mockSystemd) RestartUnit(_ context.Context, name string) error {
-	m.restarted = append(m.restarted, name)
-	return nil
-}
-
-func (m *mockSystemd) GetUnitState(_ context.Context, name string) (string, error) {
-	if m.failCheck[name] {
-		return "", fmt.Errorf("dbus error for %s", name)
-	}
-	s, ok := m.states[name]
-	if !ok {
-		return "inactive", nil
-	}
-	return s, nil
-}
-
-func (m *mockSystemd) IsActive(_ context.Context, name string) (bool, error) {
-	if m.failCheck[name] {
-		return false, fmt.Errorf("dbus error for %s", name)
-	}
-	s, ok := m.states[name]
-	if !ok {
-		return false, nil
-	}
-	return s == "active", nil
-}
-
 func TestEnforceAllHealthy(t *testing.T) {
-	sys := &mockSystemd{
-		states: map[string]string{
-			"foo.service":         "active",
-			"bar-network.service": "active",
-		},
-	}
-	c := New(sys)
+	t.Parallel()
+	sys := mocks.NewMockSystemdManager(t)
+	sys.EXPECT().IsActive(mock.Anything, mock.MatchedBy(func(s string) bool {
+		return s == "foo.service" || s == "bar-network.service"
+	})).Return(true, nil).Times(2)
 
+	c := New(sys)
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": "sha256:abc",
@@ -62,28 +30,18 @@ func TestEnforceAllHealthy(t *testing.T) {
 	}
 
 	result, err := c.Enforce(context.Background(), st)
-	if err != nil {
-		t.Fatalf("Enforce: %v", err)
-	}
-	if len(result.Healthy) != 2 {
-		t.Errorf("Healthy = %d, want 2", len(result.Healthy))
-	}
-	if len(result.Unhealthy) != 0 {
-		t.Errorf("Unhealthy = %d, want 0", len(result.Unhealthy))
-	}
-	if len(sys.restarted) != 0 {
-		t.Errorf("restarted = %v, want none", sys.restarted)
-	}
+	require.NoError(t, err)
+	assert.Len(t, result.Healthy, 2)
+	assert.Empty(t, result.Unhealthy)
 }
 
 func TestEnforceRestartsUnhealthy(t *testing.T) {
-	sys := &mockSystemd{
-		states: map[string]string{
-			"foo.service": "failed",
-		},
-	}
-	c := New(sys)
+	t.Parallel()
+	sys := mocks.NewMockSystemdManager(t)
+	sys.EXPECT().IsActive(mock.Anything, "foo.service").Return(false, nil)
+	sys.EXPECT().RestartUnit(mock.Anything, "foo.service").Return(nil)
 
+	c := New(sys)
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": "sha256:abc",
@@ -91,19 +49,14 @@ func TestEnforceRestartsUnhealthy(t *testing.T) {
 	}
 
 	result, err := c.Enforce(context.Background(), st)
-	if err != nil {
-		t.Fatalf("Enforce: %v", err)
-	}
-	if len(result.Unhealthy) != 1 {
-		t.Errorf("Unhealthy = %d, want 1", len(result.Unhealthy))
-	}
-	if len(sys.restarted) != 1 || sys.restarted[0] != "foo.service" {
-		t.Errorf("restarted = %v, want [foo.service]", sys.restarted)
-	}
+	require.NoError(t, err)
+	assert.Len(t, result.Unhealthy, 1)
 }
 
 func TestEnforceSkipsSecretsAndManifests(t *testing.T) {
-	sys := &mockSystemd{states: make(map[string]string)}
+	t.Parallel()
+	sys := mocks.NewMockSystemdManager(t)
+	// No expectations — no units should be checked
 	c := New(sys)
 
 	st := &state.State{
@@ -114,21 +67,17 @@ func TestEnforceSkipsSecretsAndManifests(t *testing.T) {
 	}
 
 	result, err := c.Enforce(context.Background(), st)
-	if err != nil {
-		t.Fatalf("Enforce: %v", err)
-	}
-	if len(result.Healthy)+len(result.Unhealthy) != 0 {
-		t.Error("expected no unit checks for secrets/manifests")
-	}
+	require.NoError(t, err)
+	assert.Empty(t, result.Healthy)
+	assert.Empty(t, result.Unhealthy)
 }
 
 func TestEnforceHandlesCheckError(t *testing.T) {
-	sys := &mockSystemd{
-		states:    make(map[string]string),
-		failCheck: map[string]bool{"foo.service": true},
-	}
-	c := New(sys)
+	t.Parallel()
+	sys := mocks.NewMockSystemdManager(t)
+	sys.EXPECT().IsActive(mock.Anything, "foo.service").Return(false, assert.AnError)
 
+	c := New(sys)
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": "sha256:abc",
@@ -136,10 +85,36 @@ func TestEnforceHandlesCheckError(t *testing.T) {
 	}
 
 	result, err := c.Enforce(context.Background(), st)
-	if err != nil {
-		t.Fatalf("Enforce: %v", err)
+	require.NoError(t, err)
+	assert.Len(t, result.Errors, 1)
+}
+
+func TestEnforceRestartCooldown(t *testing.T) {
+	t.Parallel()
+	sys := mocks.NewMockSystemdManager(t)
+	// IsActive called twice (two Enforce calls), unit is unhealthy both times
+	sys.EXPECT().IsActive(mock.Anything, "foo.service").Return(false, nil).Times(2)
+	// RestartUnit should only be called once (cooldown prevents second restart)
+	sys.EXPECT().RestartUnit(mock.Anything, "foo.service").Return(nil).Once()
+
+	c := New(sys)
+	// Override cooldown to a large value so second call is within cooldown
+	c.lastRestart["foo.service"] = time.Time{} // ensure clean state
+
+	st := &state.State{
+		ManagedFiles: map[string]string{
+			"/etc/containers/systemd/foo.container": "sha256:abc",
+		},
 	}
-	if len(result.Errors) != 1 {
-		t.Errorf("Errors = %d, want 1", len(result.Errors))
-	}
+
+	// First enforce: restarts
+	result1, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.Len(t, result1.Unhealthy, 1)
+
+	// Second enforce immediately: cooldown prevents restart
+	result2, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.Len(t, result2.Unhealthy, 1)
+	assert.Empty(t, result2.Errors)
 }

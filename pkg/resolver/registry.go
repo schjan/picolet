@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"fmt"
 	"io/fs"
+	"slices"
 	"strings"
 	"text/template"
 )
 
+// SecretReader reads secret file content.
+// Pass nil for placeholder mode (validate/CI).
+type SecretReader func(path string) (string, error)
+
 // BuildRegistry collects all .tmpl files from the filesystem and builds
 // a shared template registry with custom functions.
-func BuildRegistry(fsys fs.FS) (*template.Template, error) {
+func BuildRegistry(fsys fs.FS, secretReader SecretReader) (*template.Template, error) {
 	sources := make(map[string]string)
 	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -40,9 +45,11 @@ func BuildRegistry(fsys fs.FS) (*template.Template, error) {
 			return string(data), nil
 		},
 		"indent": indentFunc,
-		"readSecretFile": func(_ string) (string, error) {
-			// In validate/CI mode, return placeholder
-			return "<secret>", nil
+		"readSecretFile": func(path string) (string, error) {
+			if secretReader == nil {
+				return "<secret>", nil
+			}
+			return secretReader(path)
 		},
 		"renderTemplate": func(name string, data any) (string, error) {
 			var buf bytes.Buffer
@@ -50,6 +57,9 @@ func BuildRegistry(fsys fs.FS) (*template.Template, error) {
 				return "", fmt.Errorf("renderTemplate %q: %w", name, err)
 			}
 			return buf.String(), nil
+		},
+		"has": func(item string, list []string) bool {
+			return slices.Contains(list, item)
 		},
 	}
 

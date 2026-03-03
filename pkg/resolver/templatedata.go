@@ -1,8 +1,6 @@
 package resolver
 
 import (
-	"slices"
-
 	"github.com/schjan/picolet/pkg/config"
 )
 
@@ -16,13 +14,10 @@ type TemplateData struct {
 
 // HostTemplateData holds per-host template variables.
 type HostTemplateData struct {
-	Hostname     string
-	AnsibleHost  string
-	PiType       string
-	Features     []string
-	AlloyMode    string
-	IsGateway    bool
-	HasMosquitto bool
+	Hostname         string
+	ExternalHostname string
+	PiType           string
+	Features         []string
 }
 
 // FleetTemplateData holds fleet-wide template variables.
@@ -56,19 +51,11 @@ func NewTemplateData(cfg *config.Config, hostname string) (*TemplateData, error)
 }
 
 func buildHostData(host *config.HostConfig) HostTemplateData {
-	isGateway := host.PiType == "monitoring_server"
-	alloyMode := "agent"
-	if isGateway {
-		alloyMode = "gateway"
-	}
 	return HostTemplateData{
-		Hostname:     host.Hostname,
-		AnsibleHost:  host.AnsibleHost,
-		PiType:       host.PiType,
-		Features:     host.Features,
-		AlloyMode:    alloyMode,
-		IsGateway:    isGateway,
-		HasMosquitto: slices.Contains(host.Features, "mosquitto"),
+		Hostname:         host.Hostname,
+		ExternalHostname: host.ExternalHostname,
+		PiType:           host.PiType,
+		Features:         host.Features,
 	}
 }
 

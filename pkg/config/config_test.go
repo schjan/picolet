@@ -3,10 +3,14 @@ package config
 import (
 	"testing"
 	"testing/fstest"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 //nolint:funlen,cyclop // table-driven test
 func TestLoadAll(t *testing.T) {
+	t.Parallel()
 	fsys := fstest.MapFS{
 		"fleet.yml": &fstest.MapFile{Data: []byte(`
 images:
@@ -39,55 +43,43 @@ features:
 `)},
 		"hosts/host-a/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: host-a
-ansible_host: host-a.ts.net
+external_hostname: host-a.ts.net
 pi_type: server
 features:
   - mosquitto
 `)},
 		"hosts/host-b/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: host-b
-ansible_host: host-b.ts.net
+external_hostname: host-b.ts.net
 pi_type: monitoring_server
 features: []
 `)},
 	}
 
 	cfg, err := LoadAll(fsys)
-	if err != nil {
-		t.Fatalf("LoadAll: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Check fleet config
-	if got := cfg.Fleet.Images["traefik"]; got != "traefik:v3" {
-		t.Errorf("Fleet.Images[traefik] = %q, want traefik:v3", got)
-	}
-	if got := cfg.Fleet.Ports["alloy_http"]; got != 12345 {
-		t.Errorf("Fleet.Ports[alloy_http] = %d, want 12345", got)
-	}
-	if got := cfg.Fleet.Prometheus.RetentionTime; got != "35d" {
-		t.Errorf("Fleet.Prometheus.RetentionTime = %q, want 35d", got)
-	}
+	assert.Equal(t, "traefik:v3", cfg.Fleet.Images["traefik"])
+	assert.Equal(t, 12345, cfg.Fleet.Ports["alloy_http"])
+	assert.Equal(t, "35d", cfg.Fleet.Prometheus["retention_time"])
 
 	// Check hosts
-	if len(cfg.Hosts) != 2 {
-		t.Fatalf("len(Hosts) = %d, want 2", len(cfg.Hosts))
-	}
-	if got := cfg.Hosts["host-a"].PiType; got != "server" {
-		t.Errorf("Hosts[host-a].PiType = %q, want server", got)
-	}
-	if got := cfg.Hosts["host-b"].PiType; got != "monitoring_server" {
-		t.Errorf("Hosts[host-b].PiType = %q, want monitoring_server", got)
-	}
+	require.Len(t, cfg.Hosts, 2)
+	assert.Equal(t, "server", cfg.Hosts["host-a"].PiType)
+	assert.Equal(t, "monitoring_server", cfg.Hosts["host-b"].PiType)
+	assert.Equal(t, "host-a.ts.net", cfg.Hosts["host-a"].ExternalHostname)
 
 	// Check sorted hostnames
 	hostnames := cfg.SortedHostnames()
-	if len(hostnames) != 2 || hostnames[0] != "host-a" || hostnames[1] != "host-b" {
-		t.Errorf("SortedHostnames() = %v, want [host-a, host-b]", hostnames)
-	}
+	require.Len(t, hostnames, 2)
+	assert.Equal(t, "host-a", hostnames[0])
+	assert.Equal(t, "host-b", hostnames[1])
 }
 
 //nolint:funlen // table-driven test
 func TestAssignmentsResolve(t *testing.T) {
+	t.Parallel()
 	assignments := &Assignments{
 		Base: AssignmentGroup{
 			Networks:   []string{"net1"},
@@ -138,27 +130,19 @@ func TestAssignmentsResolve(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := assignments.Resolve(tt.host)
-			if got := len(result.Networks); got != tt.wantNets {
-				t.Errorf("Networks count = %d, want %d", got, tt.wantNets)
-			}
-			if got := len(result.Containers); got != tt.wantConts {
-				t.Errorf("Containers count = %d, want %d", got, tt.wantConts)
-			}
-			if got := len(result.Kube); got != tt.wantKubes {
-				t.Errorf("Kube count = %d, want %d", got, tt.wantKubes)
-			}
-			if got := len(result.Volumes); got != tt.wantVols {
-				t.Errorf("Volumes count = %d, want %d", got, tt.wantVols)
-			}
+			assert.Len(t, result.Networks, tt.wantNets)
+			assert.Len(t, result.Containers, tt.wantConts)
+			assert.Len(t, result.Kube, tt.wantKubes)
+			assert.Len(t, result.Volumes, tt.wantVols)
 		})
 	}
 }
 
 func TestLoadAllMissingFleet(t *testing.T) {
+	t.Parallel()
 	fsys := fstest.MapFS{}
 	_, err := LoadAll(fsys)
-	if err == nil {
-		t.Fatal("expected error for missing fleet.yml")
-	}
+	require.Error(t, err)
 }

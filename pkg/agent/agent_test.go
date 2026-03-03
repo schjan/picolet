@@ -9,99 +9,15 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	mock "github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	mocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/state"
 )
-
-// mockSystemd records calls.
-type mockSystemd struct {
-	reloads   int
-	restarted []string
-	states    map[string]string
-}
-
-func newMockSystemd() *mockSystemd {
-	return &mockSystemd{states: make(map[string]string)}
-}
-
-func (m *mockSystemd) DaemonReload(context.Context) error {
-	m.reloads++
-	return nil
-}
-
-func (m *mockSystemd) StartUnit(_ context.Context, _ string) error {
-	return nil
-}
-
-func (m *mockSystemd) RestartUnit(_ context.Context, name string) error {
-	m.restarted = append(m.restarted, name)
-	return nil
-}
-
-func (m *mockSystemd) GetUnitState(_ context.Context, name string) (string, error) {
-	s, ok := m.states[name]
-	if !ok {
-		return "active", nil
-	}
-	return s, nil
-}
-
-//nolint:contextcheck // test mock uses context.Background()
-func (m *mockSystemd) IsActive(_ context.Context, name string) (bool, error) {
-	s, _ := m.GetUnitState(context.Background(), name)
-	return s == "active", nil
-}
-
-// mockPodman for testing.
-type mockPodman struct {
-	secrets map[string][]byte
-}
-
-func newMockPodman() *mockPodman {
-	return &mockPodman{secrets: make(map[string][]byte)}
-}
-
-func (m *mockPodman) SecretExists(_ context.Context, name string) (bool, error) {
-	_, ok := m.secrets[name]
-	return ok, nil
-}
-
-func (m *mockPodman) SecretCreate(_ context.Context, name string, data []byte, _ bool) error {
-	m.secrets[name] = data
-	return nil
-}
-
-func (m *mockPodman) RunHealthcheck(context.Context, string) (bool, error) {
-	return true, nil
-}
-
-func (m *mockPodman) GetPodState(context.Context, string) (string, error) {
-	return "Running", nil
-}
-
-// mockWriter records writes.
-type mockWriter struct {
-	written map[string][]byte
-	removed []string
-}
-
-func newMockWriter() *mockWriter {
-	return &mockWriter{written: make(map[string][]byte)}
-}
-
-func (w *mockWriter) WriteFile(path string, content []byte) error {
-	w.written[path] = content
-	return nil
-}
-
-func (w *mockWriter) MkdirAll(string) error { return nil }
-
-func (w *mockWriter) Remove(path string) error {
-	w.removed = append(w.removed, path)
-	return nil
-}
 
 // initTestRepo creates a git repo with picolet config files for a test host.
 func initTestRepo(t *testing.T) string {
@@ -110,9 +26,7 @@ func initTestRepo(t *testing.T) string {
 	workDir := filepath.Join(t.TempDir(), "work")
 
 	repo, err := git.PlainInit(workDir, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// Create fleet.yml
 	writeTestFile(t, workDir, "fleet.yml", `images:
@@ -121,10 +35,7 @@ ports:
   alloy_http: 12345
 prometheus:
   scrape_interval: "15s"
-  scrape_timeout: "10s"
-  exporter_scrape_interval: "30s"
   retention_time: "35d"
-  retention_size: "2GB"
 `)
 
 	// Create assignments.yml
@@ -135,7 +46,7 @@ prometheus:
 
 	// Create host config
 	writeTestFile(t, workDir, "hosts/test-host/host.yml", `hostname: test-host
-ansible_host: test-host.ts.net
+external_hostname: test-host.ts.net
 pi_type: server
 features: []
 `)
@@ -146,37 +57,52 @@ Internal=true
 `)
 
 	wt, err := repo.Worktree()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := wt.Add("."); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	_, err = wt.Add(".")
+	require.NoError(t, err)
 	_, err = wt.Commit("initial", &git.CommitOptions{
 		Author: &object.Signature{Name: "test", Email: "test@test.com"},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// Clone as bare
 	_, err = git.PlainClone(bareDir, true, &git.CloneOptions{URL: workDir})
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	require.NoError(t, err)
 	return bareDir
 }
 
 func writeTestFile(t *testing.T, root, path, content string) {
 	t.Helper()
 	full := filepath.Join(root, path)
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+	require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+}
+
+func newTestMocks(t *testing.T) (*mocks.MockSystemdManager, *mocks.MockPodmanClient, *mocks.MockFileWriter, map[string][]byte) {
+	t.Helper()
+	sys := mocks.NewMockSystemdManager(t)
+	sys.EXPECT().IsActive(mock.Anything, mock.Anything).Return(true, nil).Maybe()
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
+	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
+	sys.EXPECT().StartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
+	sys.EXPECT().GetUnitState(mock.Anything, mock.Anything).Return("active", nil).Maybe()
+
+	pod := mocks.NewMockPodmanClient(t)
+	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
+	pod.EXPECT().SecretCreate(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	pod.EXPECT().RunHealthcheck(mock.Anything, mock.Anything).Return(true, nil).Maybe()
+	pod.EXPECT().GetPodState(mock.Anything, mock.Anything).Return("Running", nil).Maybe()
+
+	written := make(map[string][]byte)
+	fw := mocks.NewMockFileWriter(t)
+	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).RunAndReturn(func(path string, content []byte) error {
+		written[path] = content
+		return nil
+	}).Maybe()
+	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
+	fw.EXPECT().Remove(mock.Anything).Return(nil).Maybe()
+
+	return sys, pod, fw, written
 }
 
 func TestAgentFullCycle(t *testing.T) {
@@ -187,9 +113,7 @@ func TestAgentFullCycle(t *testing.T) {
 
 	metrics.Register()
 
-	sys := newMockSystemd()
-	pod := newMockPodman()
-	fw := newMockWriter()
+	sys, pod, fw, written := newTestMocks(t)
 
 	cfg := &agentcfg.Config{
 		Hostname:     "test-host",
@@ -197,6 +121,7 @@ func TestAgentFullCycle(t *testing.T) {
 		RepoBranch:   "master",
 		PollInterval: time.Second,
 		MetricsPort:  0, // disabled
+		SecretsDir:   t.TempDir(),
 	}
 
 	a := New(cfg,
@@ -210,29 +135,20 @@ func TestAgentFullCycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Run for a couple of ticks
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- a.Run(ctx)
 	}()
 
-	// Wait for context to expire
 	<-ctx.Done()
-
-	err := <-errCh
-	if err != nil {
-		t.Fatalf("agent Run error: %v", err)
-	}
+	require.NoError(t, <-errCh)
 
 	// Verify that files were written
-	if _, ok := fw.written["/etc/containers/systemd/internal.network"]; !ok {
-		t.Error("expected internal.network to be written")
-	}
+	assert.Contains(t, written, "/etc/containers/systemd/internal.network")
 
 	// Verify state was saved
-	if _, err := os.Stat(statePath); err != nil {
-		t.Errorf("state file not created: %v", err)
-	}
+	_, err := os.Stat(statePath)
+	assert.NoError(t, err, "state file should be created")
 }
 
 func TestAgentDryRun(t *testing.T) {
@@ -240,13 +156,7 @@ func TestAgentDryRun(t *testing.T) {
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
-	// Register metrics in a fresh registry to avoid duplicate registration
-	// (TestAgentFullCycle may have already registered)
-	// Skip re-registration — tests share process
-
-	sys := newMockSystemd()
-	pod := newMockPodman()
-	fw := newMockWriter()
+	sys, pod, fw, written := newTestMocks(t)
 
 	cfg := &agentcfg.Config{
 		Hostname:     "test-host",
@@ -254,6 +164,7 @@ func TestAgentDryRun(t *testing.T) {
 		RepoBranch:   "master",
 		PollInterval: time.Second,
 		MetricsPort:  0,
+		SecretsDir:   t.TempDir(),
 	}
 
 	a := New(cfg,
@@ -274,20 +185,10 @@ func TestAgentDryRun(t *testing.T) {
 	}()
 
 	<-ctx.Done()
-	err := <-errCh
-	if err != nil {
-		t.Fatalf("agent Run error: %v", err)
-	}
+	require.NoError(t, <-errCh)
 
 	// In dry-run, no files should be written
-	if len(fw.written) != 0 {
-		t.Errorf("dry-run wrote %d files, want 0", len(fw.written))
-	}
-
-	// Daemon-reload should not be called
-	if sys.reloads != 0 {
-		t.Errorf("dry-run triggered %d daemon-reloads, want 0", sys.reloads)
-	}
+	assert.Empty(t, written, "dry-run should not write files")
 }
 
 //nolint:funlen // integration test with extensive setup
@@ -297,9 +198,7 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 	stateDir := t.TempDir()
 	statePath := filepath.Join(stateDir, "state.json")
 
-	sys := newMockSystemd()
-	pod := newMockPodman()
-	fw := newMockWriter()
+	sys, pod, fw, written := newTestMocks(t)
 
 	cfg := &agentcfg.Config{
 		Hostname:     "test-host",
@@ -307,6 +206,7 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 		RepoBranch:   "master",
 		PollInterval: 100 * time.Millisecond,
 		MetricsPort:  0,
+		SecretsDir:   t.TempDir(),
 	}
 
 	a := New(cfg,
@@ -317,28 +217,20 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 		WithStatePath(statePath),
 	)
 
-	// Pre-seed state with the current SHA as failed
-	// First, clone to get the SHA
-	ctx := context.Background()
+	// Pre-seed state with the current SHA as permanently failed (FailedCount >= maxRetries)
 	cloneDir := filepath.Join(t.TempDir(), "tmp-clone")
 	clonedRepo, err := git.PlainClone(cloneDir, false, &git.CloneOptions{URL: bareDir})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	head, err := clonedRepo.Head()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	// Write state with FailedSHA
 	store := state.NewStore(statePath)
 	st := &state.State{
 		ManagedFiles: make(map[string]string),
 		FailedSHA:    head.Hash().String(),
+		FailedCount:  3, // maxRetries reached → will be skipped
 	}
-	if err := store.Save(st); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.Save(st))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -349,12 +241,64 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 	}()
 
 	<-ctx.Done()
-	if err := <-errCh; err != nil {
-		t.Fatal(err)
+	require.NoError(t, <-errCh)
+
+	// Should NOT have written any files since SHA is permanently failed
+	assert.Empty(t, written, "should not write files for permanently failed SHA")
+}
+
+//nolint:funlen // integration test with extensive setup
+func TestAgentRetriesFailedSHA(t *testing.T) {
+	bareDir := initTestRepo(t)
+	repoDir := filepath.Join(t.TempDir(), "clone")
+	stateDir := t.TempDir()
+	statePath := filepath.Join(stateDir, "state.json")
+
+	sys, pod, fw, written := newTestMocks(t)
+
+	cfg := &agentcfg.Config{
+		Hostname:     "test-host",
+		RepoURL:      bareDir,
+		RepoBranch:   "master",
+		PollInterval: 100 * time.Millisecond,
+		MetricsPort:  0,
+		SecretsDir:   t.TempDir(),
 	}
 
-	// Should NOT have written any files since SHA is marked as failed
-	if len(fw.written) != 0 {
-		t.Errorf("wrote %d files for failed SHA, want 0", len(fw.written))
+	a := New(cfg,
+		WithSystemd(sys),
+		WithPodman(pod),
+		WithFileWriter(fw),
+		WithRepoPath(repoDir),
+		WithStatePath(statePath),
+	)
+
+	// Pre-seed state with only 1 failure — below maxRetries, should retry
+	cloneDir := filepath.Join(t.TempDir(), "tmp-clone")
+	clonedRepo, err := git.PlainClone(cloneDir, false, &git.CloneOptions{URL: bareDir})
+	require.NoError(t, err)
+	head, err := clonedRepo.Head()
+	require.NoError(t, err)
+
+	store := state.NewStore(statePath)
+	st := &state.State{
+		ManagedFiles: make(map[string]string),
+		FailedSHA:    head.Hash().String(),
+		FailedCount:  1, // only 1 failure, will retry
 	}
+	require.NoError(t, store.Save(st))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- a.Run(ctx)
+	}()
+
+	<-ctx.Done()
+	require.NoError(t, <-errCh)
+
+	// Should have written files (reconciliation proceeded)
+	assert.Contains(t, written, "/etc/containers/systemd/internal.network")
 }

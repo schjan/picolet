@@ -1,0 +1,21 @@
+base:
+  networks:
+    - quadlets/networks/internal.network
+  systemd:
+    - systemd/custom.socket
+  containers:
+    - quadlets/containers/exporter.container
+pi_types:
+  controller:
+    volumes:
+      - quadlets/volumes/data.volume
+    kube:
+      - quadlets/kube/app-stack.kube.tmpl
+    manifests:
+      - manifests/app/deployment.yml.tmpl
+    secrets:
+      - secrets/app_secret.yml.tmpl
+features:
+  app-a:
+    containers:
+      - quadlets/containers/nginx.container.tmpl

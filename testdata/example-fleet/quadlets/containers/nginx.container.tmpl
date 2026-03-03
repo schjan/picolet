@@ -1,0 +1,8 @@
+[Container]
+Image={{ index .Images "nginx" }}
+PublishPort={{ index .Ports "http" }}:80
+Network=internal.network
+Label=host={{ .Host.ExternalHostname }}
+
+[Install]
+WantedBy=default.target

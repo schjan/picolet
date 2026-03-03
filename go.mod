@@ -7,6 +7,8 @@ require (
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/go-git/go-git/v5 v5.17.0
 	github.com/prometheus/client_golang v1.23.2
+	github.com/sebdah/goldie/v2 v2.8.0
+	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v3 v3.7.0
 	go.yaml.in/yaml/v4 v4.0.0-rc.4
 	k8s.io/api v0.35.2
@@ -39,6 +41,7 @@ require (
 	github.com/containers/psgo v1.9.1-0.20250826150930-4ae76f200c86 // indirect
 	github.com/cyberphone/json-canonicalization v0.0.0-20241213102144-19d51d7fe467 // indirect
 	github.com/cyphar/filepath-securejoin v0.5.2 // indirect
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/disiqueira/gotree/v3 v3.0.2 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/distribution v2.8.3+incompatible // indirect
@@ -115,6 +118,7 @@ require (
 	github.com/pjbgf/sha1cd v0.3.2 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pkg/sftp v1.13.9 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/proglottis/gpgme v0.1.5 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
@@ -131,6 +135,7 @@ require (
 	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stefanberger/go-pkcs11uri v0.0.0-20230803200340-78284954bff6 // indirect
+	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/sylabs/sif/v2 v2.22.0 // indirect
 	github.com/tchap/go-patricia/v2 v2.3.3 // indirect
 	github.com/titanous/rocacheck v0.0.0-20171023193734-afe73141d399 // indirect

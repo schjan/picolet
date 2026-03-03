@@ -1,0 +1,8 @@
+[Container]
+Image=nginx:1.27
+PublishPort=8080:80
+Network=internal.network
+Label=host=node-1.example.net
+
+[Install]
+WantedBy=default.target

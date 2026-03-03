@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/schjan/picolet/pkg/agentcfg"
@@ -168,9 +170,13 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return nil
 	}
 
-	// Skip if this SHA previously failed
-	if pollResult.HeadSHA == st.FailedSHA {
-		slog.Warn("skipping previously failed SHA", "sha", pollResult.HeadSHA)
+	// Skip only after >= 3 consecutive failures on the same SHA
+	const maxRetries = 3
+	if pollResult.HeadSHA == st.FailedSHA && st.FailedCount >= maxRetries {
+		slog.Warn("skipping permanently failed SHA",
+			"sha", pollResult.HeadSHA,
+			"failures", st.FailedCount,
+		)
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
 		return nil
 	}
@@ -186,8 +192,14 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		slog.Error("reconciliation failed", "sha", pollResult.HeadSHA, "error", err)
 		metrics.ReconciliationTotal.WithLabelValues("failure").Inc()
 
-		// Mark as failed
-		st.FailedSHA = pollResult.HeadSHA
+		// Track failure count for the same SHA
+		if st.FailedSHA == pollResult.HeadSHA {
+			st.FailedCount++
+		} else {
+			st.FailedSHA = pollResult.HeadSHA
+			st.FailedCount = 1
+		}
+		st.FailedAt = time.Now()
 		if saveErr := store.Save(st); saveErr != nil {
 			slog.Error("saving failed state", "error", saveErr)
 		}
@@ -205,7 +217,14 @@ func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *config.Config, *reso
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("loading config: %w", err)
 	}
-	r := resolver.New(repoFS, cfg)
+	secretReader := func(path string) (string, error) {
+		data, err := os.ReadFile(filepath.Join(a.cfg.SecretsDir, path))
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+	r := resolver.New(repoFS, cfg, secretReader)
 	resolved, err := r.ResolveHost(a.cfg.Hostname)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("resolving host %s: %w", a.cfg.Hostname, err)
@@ -271,6 +290,8 @@ func (a *Agent) markApplied(headSHA string, st *state.State, store *state.Store)
 	st.AppliedSHA = headSHA
 	st.AppliedAt = time.Now()
 	st.FailedSHA = ""
+	st.FailedCount = 0
+	st.FailedAt = time.Time{}
 	return store.Save(st)
 }
 
@@ -290,7 +311,16 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	if err != nil {
 		slog.Error("apply failed, rolling back", "error", err)
 		metrics.RollbackTotal.Inc()
-		if rbErr := rollbackMgr.Restore(ctx, snap); rbErr != nil {
+
+		// Use a detached context for rollback so it can complete during shutdown
+		rollbackCtx := ctx
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			var cancel context.CancelFunc
+			rollbackCtx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+		}
+
+		if rbErr := rollbackMgr.Restore(rollbackCtx, snap); rbErr != nil {
 			slog.Error("rollback failed", "error", rbErr)
 		}
 		return nil, fmt.Errorf("apply: %w", err)
@@ -313,6 +343,8 @@ func (a *Agent) updateState(headSHA string, st *state.State, changeset *reconcil
 	st.AppliedSHA = headSHA
 	st.AppliedAt = time.Now()
 	st.FailedSHA = ""
+	st.FailedCount = 0
+	st.FailedAt = time.Time{}
 	st.ManagedFiles = make(map[string]string)
 	for _, change := range changeset.Changes {
 		if change.Action == reconciler.ActionDelete {

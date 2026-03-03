@@ -1,9 +1,11 @@
 package resolver
 
 import (
-	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/pkg/config"
 )
@@ -42,7 +44,7 @@ features: {}
 `)},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: test-host
-ansible_host: test-host.ts.net
+external_hostname: test-host.ts.net
 pi_type: server
 features: []
 `)},
@@ -84,75 +86,49 @@ spec:
 
 //nolint:cyclop // integration test with many assertions
 func TestResolveHost(t *testing.T) {
+	t.Parallel()
 	fsys := newTestFS()
 	cfg, err := config.LoadAll(fsys)
-	if err != nil {
-		t.Fatalf("LoadAll: %v", err)
-	}
+	require.NoError(t, err)
 
-	r := New(fsys, cfg)
+	r := New(fsys, cfg, nil)
 	resolved, err := r.ResolveHost("test-host")
-	if err != nil {
-		t.Fatalf("ResolveHost: %v", err)
-	}
+	require.NoError(t, err)
 
-	if resolved.Hostname != "test-host" {
-		t.Errorf("Hostname = %q, want test-host", resolved.Hostname)
-	}
-
-	if len(resolved.Files) != 3 {
-		t.Fatalf("len(Files) = %d, want 3", len(resolved.Files))
-	}
+	assert.Equal(t, "test-host", resolved.Hostname)
+	require.Len(t, resolved.Files, 3)
 
 	// Check network file (static)
 	net := resolved.Files[0]
-	if net.Category != "network" {
-		t.Errorf("Files[0].Category = %q, want network", net.Category)
-	}
-	if !strings.Contains(net.Content, "Internal=true") {
-		t.Errorf("network content missing Internal=true")
-	}
+	assert.Equal(t, "network", net.Category)
+	assert.Contains(t, net.Content, "Internal=true")
 
 	// Check container file (templated)
 	cont := resolved.Files[1]
-	if cont.Category != "container" {
-		t.Errorf("Files[1].Category = %q, want container", cont.Category)
-	}
-	if !strings.Contains(cont.Content, "Image=traefik:v3.6.9") {
-		t.Errorf("container content missing rendered image, got:\n%s", cont.Content)
-	}
-	if cont.DestPath != "/etc/containers/systemd/test.container" {
-		t.Errorf("container DestPath = %q, want /etc/containers/systemd/test.container", cont.DestPath)
-	}
+	assert.Equal(t, "container", cont.Category)
+	assert.Contains(t, cont.Content, "Image=traefik:v3.6.9")
+	assert.Equal(t, "/etc/containers/systemd/test.container", cont.DestPath)
 
 	// Check manifest (templated)
 	manifest := resolved.Files[2]
-	if manifest.Category != "manifest" {
-		t.Errorf("Files[2].Category = %q, want manifest", manifest.Category)
-	}
-	if !strings.Contains(manifest.Content, "image: \"traefik:v3.6.9\"") {
-		t.Errorf("manifest content missing rendered image, got:\n%s", manifest.Content)
-	}
-	if !strings.Contains(manifest.Content, "containerPort: 12345") {
-		t.Errorf("manifest content missing rendered port, got:\n%s", manifest.Content)
-	}
+	assert.Equal(t, "manifest", manifest.Category)
+	assert.Contains(t, manifest.Content, "image: \"traefik:v3.6.9\"")
+	assert.Contains(t, manifest.Content, "containerPort: 12345")
 }
 
 func TestResolveHostNotFound(t *testing.T) {
+	t.Parallel()
 	fsys := newTestFS()
 	cfg, err := config.LoadAll(fsys)
-	if err != nil {
-		t.Fatalf("LoadAll: %v", err)
-	}
+	require.NoError(t, err)
 
-	r := New(fsys, cfg)
+	r := New(fsys, cfg, nil)
 	_, err = r.ResolveHost("nonexistent")
-	if err == nil {
-		t.Fatal("expected error for nonexistent host")
-	}
+	require.Error(t, err)
 }
 
 func TestTemplateDataFields(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{
 		Fleet: &config.FleetConfig{
 			Images: map[string]string{"test": "img:v1"},
@@ -160,51 +136,34 @@ func TestTemplateDataFields(t *testing.T) {
 		},
 		Hosts: map[string]*config.HostConfig{
 			"server-host": {
-				Hostname:    "server-host",
-				AnsibleHost: "server.ts.net",
-				PiType:      "server",
-				Features:    []string{"mosquitto"},
+				Hostname:         "server-host",
+				ExternalHostname: "server.ts.net",
+				PiType:           "server",
+				Features:         []string{"mosquitto"},
 			},
 			"gateway-host": {
-				Hostname:    "gateway-host",
-				AnsibleHost: "gateway.ts.net",
-				PiType:      "monitoring_server",
+				Hostname:         "gateway-host",
+				ExternalHostname: "gateway.ts.net",
+				PiType:           "monitoring_server",
 			},
 		},
 	}
 
 	t.Run("server host", func(t *testing.T) {
+		t.Parallel()
 		data, err := NewTemplateData(cfg, "server-host")
-		if err != nil {
-			t.Fatalf("NewTemplateData: %v", err)
-		}
-		if data.Host.AlloyMode != "agent" {
-			t.Errorf("AlloyMode = %q, want agent", data.Host.AlloyMode)
-		}
-		if data.Host.IsGateway {
-			t.Error("IsGateway = true, want false")
-		}
-		if !data.Host.HasMosquitto {
-			t.Error("HasMosquitto = false, want true")
-		}
-		if len(data.Fleet.Hosts) != 2 {
-			t.Errorf("len(Fleet.Hosts) = %d, want 2", len(data.Fleet.Hosts))
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "server", data.Host.PiType)
+		assert.Equal(t, "server.ts.net", data.Host.ExternalHostname)
+		assert.Contains(t, data.Host.Features, "mosquitto")
+		assert.Len(t, data.Fleet.Hosts, 2)
 	})
 
 	t.Run("gateway host", func(t *testing.T) {
+		t.Parallel()
 		data, err := NewTemplateData(cfg, "gateway-host")
-		if err != nil {
-			t.Fatalf("NewTemplateData: %v", err)
-		}
-		if data.Host.AlloyMode != "gateway" {
-			t.Errorf("AlloyMode = %q, want gateway", data.Host.AlloyMode)
-		}
-		if !data.Host.IsGateway {
-			t.Error("IsGateway = false, want true")
-		}
-		if data.Host.HasMosquitto {
-			t.Error("HasMosquitto = true, want false")
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "monitoring_server", data.Host.PiType)
+		assert.Equal(t, "gateway.ts.net", data.Host.ExternalHostname)
 	})
 }

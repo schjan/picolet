@@ -1,0 +1,5 @@
+hostname: node-1
+external_hostname: node-1.example.net
+pi_type: worker
+features:
+  - app-a

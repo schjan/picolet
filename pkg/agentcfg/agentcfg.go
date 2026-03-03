@@ -17,6 +17,7 @@ type Config struct {
 	GitTokenPath string        `yaml:"git_token_path"`
 	PollInterval time.Duration `yaml:"poll_interval"`
 	MetricsPort  int           `yaml:"metrics_port"`
+	SecretsDir   string        `yaml:"secrets_dir"`
 }
 
 // Load reads and parses the agent config from disk.
@@ -45,6 +46,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.MetricsPort == 0 {
 		c.MetricsPort = 9417
+	}
+	if c.SecretsDir == "" {
+		c.SecretsDir = "/etc/picolet/secrets"
 	}
 }
 

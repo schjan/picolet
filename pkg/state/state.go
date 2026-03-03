@@ -16,6 +16,8 @@ type State struct {
 	AppliedAt    time.Time         `json:"applied_at"`
 	ManagedFiles map[string]string `json:"managed_files"` // destPath → "sha256:..."
 	FailedSHA    string            `json:"failed_sha"`
+	FailedCount  int               `json:"failed_count"`
+	FailedAt     time.Time         `json:"failed_at"`
 }
 
 // Store manages atomic reads and writes of the state file.

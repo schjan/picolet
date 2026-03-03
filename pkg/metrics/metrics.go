@@ -3,6 +3,7 @@ package metrics
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -85,20 +86,25 @@ var (
 	)
 )
 
+var registerOnce sync.Once
+
 // Register registers all metrics with the default Prometheus registry.
+// Safe to call multiple times (e.g. in tests).
 func Register() {
-	prometheus.MustRegister(
-		ReconciliationTotal,
-		ReconciliationDuration,
-		LastSuccessfulReconciliation,
-		DriftDetectedTotal,
-		RollbackTotal,
-		HealthCheckTotal,
-		HealthEnforcementTotal,
-		AppliedGitSHA,
-		SelfUpdatePending,
-		ManagedUnitsTotal,
-	)
+	registerOnce.Do(func() {
+		prometheus.MustRegister(
+			ReconciliationTotal,
+			ReconciliationDuration,
+			LastSuccessfulReconciliation,
+			DriftDetectedTotal,
+			RollbackTotal,
+			HealthCheckTotal,
+			HealthEnforcementTotal,
+			AppliedGitSHA,
+			SelfUpdatePending,
+			ManagedUnitsTotal,
+		)
+	})
 }
 
 // Handler returns an http.Handler for the /metrics endpoint.

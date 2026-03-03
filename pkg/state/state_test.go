@@ -4,23 +4,22 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLoadMissing(t *testing.T) {
+	t.Parallel()
 	store := NewStore(filepath.Join(t.TempDir(), "state.json"))
 	st, err := store.Load()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if st.AppliedSHA != "" {
-		t.Errorf("AppliedSHA = %q, want empty", st.AppliedSHA)
-	}
-	if st.ManagedFiles == nil {
-		t.Fatal("ManagedFiles should not be nil")
-	}
+	require.NoError(t, err)
+	assert.Empty(t, st.AppliedSHA)
+	assert.NotNil(t, st.ManagedFiles)
 }
 
 func TestSaveAndLoad(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.json")
 	store := NewStore(path)
 
@@ -33,65 +32,48 @@ func TestSaveAndLoad(t *testing.T) {
 		},
 	}
 
-	if err := store.Save(want); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
+	require.NoError(t, store.Save(want))
 
 	got, err := store.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+	require.NoError(t, err)
 
-	if got.AppliedSHA != want.AppliedSHA {
-		t.Errorf("AppliedSHA = %q, want %q", got.AppliedSHA, want.AppliedSHA)
-	}
-	if !got.AppliedAt.Equal(want.AppliedAt) {
-		t.Errorf("AppliedAt = %v, want %v", got.AppliedAt, want.AppliedAt)
-	}
-	if len(got.ManagedFiles) != 1 {
-		t.Fatalf("ManagedFiles count = %d, want 1", len(got.ManagedFiles))
-	}
-	if got.ManagedFiles["/etc/containers/systemd/foo.container"] != "sha256:deadbeef" {
-		t.Errorf("unexpected ManagedFiles content: %v", got.ManagedFiles)
-	}
+	assert.Equal(t, want.AppliedSHA, got.AppliedSHA)
+	assert.True(t, got.AppliedAt.Equal(want.AppliedAt))
+	require.Len(t, got.ManagedFiles, 1)
+	assert.Equal(t, "sha256:deadbeef", got.ManagedFiles["/etc/containers/systemd/foo.container"])
 }
 
 func TestSaveCreatesDirectory(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "subdir", "state.json")
 	store := NewStore(path)
 
 	st := &State{AppliedSHA: "test", ManagedFiles: make(map[string]string)}
-	if err := store.Save(st); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
+	require.NoError(t, store.Save(st))
 
 	got, err := store.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got.AppliedSHA != "test" {
-		t.Errorf("AppliedSHA = %q, want test", got.AppliedSHA)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "test", got.AppliedSHA)
 }
 
 func TestSaveRoundtripWithFailedSHA(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.json")
 	store := NewStore(path)
 
+	failedAt := time.Now().Truncate(time.Second)
 	st := &State{
 		AppliedSHA:   "abc",
 		FailedSHA:    "def",
+		FailedCount:  2,
+		FailedAt:     failedAt,
 		ManagedFiles: make(map[string]string),
 	}
-	if err := store.Save(st); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, store.Save(st))
 
 	got, err := store.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.FailedSHA != "def" {
-		t.Errorf("FailedSHA = %q, want def", got.FailedSHA)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "def", got.FailedSHA)
+	assert.Equal(t, 2, got.FailedCount)
+	assert.True(t, got.FailedAt.Equal(failedAt))
 }

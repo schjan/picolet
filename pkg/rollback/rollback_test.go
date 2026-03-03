@@ -7,51 +7,34 @@ import (
 	"path/filepath"
 	"testing"
 
+	mock "github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	mocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/reconciler"
 )
 
-type mockWriter struct {
-	written map[string][]byte
-	removed []string
-}
-
-func newMockWriter() *mockWriter {
-	return &mockWriter{written: make(map[string][]byte)}
-}
-
-func (w *mockWriter) WriteFile(path string, content []byte) error {
-	w.written[path] = content
-	return nil
-}
-
-func (w *mockWriter) MkdirAll(string) error { return nil }
-
-func (w *mockWriter) Remove(path string) error {
-	w.removed = append(w.removed, path)
-	return nil
-}
-
-type mockSystemd struct {
-	reloads int
-}
-
-func (m *mockSystemd) DaemonReload(context.Context) error {
-	m.reloads++
-	return nil
-}
-
-func (m *mockSystemd) StartUnit(context.Context, string) error   { return nil }
-func (m *mockSystemd) RestartUnit(context.Context, string) error { return nil }
-func (m *mockSystemd) GetUnitState(context.Context, string) (string, error) {
-	return "active", nil
-}
-func (m *mockSystemd) IsActive(context.Context, string) (bool, error) { return true, nil }
-
 //nolint:cyclop // integration test: snapshot + restore
 func TestCreateAndRestore(t *testing.T) {
-	w := newMockWriter()
-	sys := &mockSystemd{}
-	mgr := New(w, sys)
+	t.Parallel()
+	sys := mocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+
+	written := make(map[string][]byte)
+	removed := []string{}
+	fw := mocks.NewMockFileWriter(t)
+	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).RunAndReturn(func(path string, content []byte) error {
+		written[path] = content
+		return nil
+	})
+	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
+	fw.EXPECT().Remove(mock.Anything).RunAndReturn(func(path string) error {
+		removed = append(removed, path)
+		return nil
+	})
+
+	mgr := New(fw, sys)
 
 	cs := &reconciler.Changeset{
 		Changes: []reconciler.Change{
@@ -70,56 +53,43 @@ func TestCreateAndRestore(t *testing.T) {
 	}
 
 	snap, err := mgr.Create(cs, diskReader)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Secret should be skipped
-	if _, ok := snap.Files["secret:my_secret"]; ok {
-		t.Error("secret should be skipped in snapshot")
-	}
+	assert.NotContains(t, snap.Files, "secret:my_secret", "secret should be skipped in snapshot")
 
 	// new.container → nil (didn't exist)
-	if content, ok := snap.Files["/etc/containers/systemd/new.container"]; !ok || content != nil {
-		t.Error("new.container should be nil in snapshot")
-	}
+	content, ok := snap.Files["/etc/containers/systemd/new.container"]
+	assert.True(t, ok, "new.container should be in snapshot")
+	assert.Nil(t, content, "new.container should be nil in snapshot")
 
 	// old.container → original content
-	if content, ok := snap.Files["/etc/containers/systemd/old.container"]; !ok || string(content) != "original-content" {
-		t.Error("old.container should have original content in snapshot")
-	}
+	assert.Equal(t, []byte("original-content"), snap.Files["/etc/containers/systemd/old.container"])
 
 	// Now restore
-	if err := mgr.Restore(context.Background(), snap); err != nil {
-		t.Fatalf("Restore: %v", err)
-	}
+	require.NoError(t, mgr.Restore(context.Background(), snap))
 
 	// new.container should be removed
-	if len(w.removed) != 1 || w.removed[0] != "/etc/containers/systemd/new.container" {
-		t.Errorf("removed = %v, want [/etc/containers/systemd/new.container]", w.removed)
-	}
+	assert.Equal(t, []string{"/etc/containers/systemd/new.container"}, removed)
 
 	// old.container should be restored
-	if string(w.written["/etc/containers/systemd/old.container"]) != "original-content" {
-		t.Error("old.container not restored correctly")
-	}
-
-	// daemon-reload should be called
-	if sys.reloads != 1 {
-		t.Errorf("reloads = %d, want 1", sys.reloads)
-	}
+	assert.Equal(t, []byte("original-content"), written["/etc/containers/systemd/old.container"])
 }
 
 func TestSnapshotWithRealFilesystem(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	existingPath := filepath.Join(dir, "existing.conf")
-	if err := os.WriteFile(existingPath, []byte("existing"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(existingPath, []byte("existing"), 0o600))
 
-	w := newMockWriter()
-	sys := &mockSystemd{}
-	mgr := New(w, sys)
+	sys := mocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	fw := mocks.NewMockFileWriter(t)
+	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(nil)
+	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
+	fw.EXPECT().Remove(mock.Anything).Return(nil).Maybe()
+
+	mgr := New(fw, sys)
 
 	cs := &reconciler.Changeset{
 		Changes: []reconciler.Change{
@@ -129,22 +99,20 @@ func TestSnapshotWithRealFilesystem(t *testing.T) {
 	}
 
 	snap, err := mgr.Create(cs, os.ReadFile)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+	require.NoError(t, err)
 
-	if string(snap.Files[existingPath]) != "existing" {
-		t.Errorf("snapshot of existing file = %q, want existing", snap.Files[existingPath])
-	}
-	if snap.Files[filepath.Join(dir, "new.conf")] != nil {
-		t.Error("new file should be nil in snapshot")
-	}
+	assert.Equal(t, []byte("existing"), snap.Files[existingPath])
+	assert.Nil(t, snap.Files[filepath.Join(dir, "new.conf")])
+
+	require.NoError(t, mgr.Restore(context.Background(), snap))
 }
 
 func TestCreateSkipsNoop(t *testing.T) {
-	w := newMockWriter()
-	sys := &mockSystemd{}
-	mgr := New(w, sys)
+	t.Parallel()
+	sys := mocks.NewMockSystemdManager(t)
+	fw := mocks.NewMockFileWriter(t)
+	// No expectations — noop should not trigger any calls
+	mgr := New(fw, sys)
 
 	cs := &reconciler.Changeset{
 		Changes: []reconciler.Change{
@@ -153,10 +121,6 @@ func TestCreateSkipsNoop(t *testing.T) {
 	}
 
 	snap, err := mgr.Create(cs, nil)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if len(snap.Files) != 0 {
-		t.Errorf("snapshot should be empty for noop, got %d files", len(snap.Files))
-	}
+	require.NoError(t, err)
+	assert.Empty(t, snap.Files)
 }

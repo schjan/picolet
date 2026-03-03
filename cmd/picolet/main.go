@@ -176,7 +176,7 @@ func runDryRun(ctx context.Context, repoDir, hostname string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	r := resolver.New(repoFS, cfg)
+	r := resolver.New(repoFS, cfg, nil)
 	resolved, err := r.ResolveHost(hostname)
 	if err != nil {
 		return err
@@ -230,7 +230,7 @@ func runValidate(ctx context.Context, repoDir string) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-	r := resolver.New(repoFS, cfg)
+	r := resolver.New(repoFS, cfg, nil)
 	v := validator.New()
 	return v.ValidateAll(ctx, r, cfg)
 }
@@ -240,7 +240,7 @@ func runResolve(repoDir, host string) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-	r := resolver.New(os.DirFS(repoDir), cfg)
+	r := resolver.New(os.DirFS(repoDir), cfg, nil)
 	resolved, err := r.ResolveHost(host)
 	if err != nil {
 		return err

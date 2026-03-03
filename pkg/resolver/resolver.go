@@ -32,13 +32,15 @@ type ResolvedHost struct {
 
 // Resolver renders templates and resolves the desired state for hosts.
 type Resolver struct {
-	fsys fs.FS
-	cfg  *config.Config
+	fsys         fs.FS
+	cfg          *config.Config
+	secretReader SecretReader
 }
 
 // New creates a new Resolver.
-func New(fsys fs.FS, cfg *config.Config) *Resolver {
-	return &Resolver{fsys: fsys, cfg: cfg}
+// Pass nil for secretReader to use placeholder mode (validate/CI).
+func New(fsys fs.FS, cfg *config.Config, secretReader SecretReader) *Resolver {
+	return &Resolver{fsys: fsys, cfg: cfg, secretReader: secretReader}
 }
 
 // ResolveHost computes the complete desired state for a given hostname.
@@ -55,7 +57,7 @@ func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 		return nil, err
 	}
 
-	registry, err := BuildRegistry(r.fsys)
+	registry, err := BuildRegistry(r.fsys, r.secretReader)
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}

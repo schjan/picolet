@@ -2,102 +2,25 @@ package applier
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
+	mock "github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	mocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/reconciler"
 )
 
-// mockSystemd records calls for testing.
-type mockSystemd struct {
-	reloads   int
-	started   []string
-	restarted []string
-	states    map[string]string
-	failStart map[string]bool
-}
-
-func newMockSystemd() *mockSystemd {
-	return &mockSystemd{
-		states:    make(map[string]string),
-		failStart: make(map[string]bool),
-	}
-}
-
-func (m *mockSystemd) DaemonReload(context.Context) error {
-	m.reloads++
-	return nil
-}
-
-func (m *mockSystemd) StartUnit(_ context.Context, name string) error {
-	if m.failStart[name] {
-		return fmt.Errorf("start %s: mock failure", name)
-	}
-	m.started = append(m.started, name)
-	return nil
-}
-
-func (m *mockSystemd) RestartUnit(_ context.Context, name string) error {
-	m.restarted = append(m.restarted, name)
-	return nil
-}
-
-func (m *mockSystemd) GetUnitState(_ context.Context, name string) (string, error) {
-	s, ok := m.states[name]
-	if !ok {
-		return "inactive", nil
-	}
-	return s, nil
-}
-
-//nolint:contextcheck // test mock uses context.Background()
-func (m *mockSystemd) IsActive(_ context.Context, name string) (bool, error) {
-	s, _ := m.GetUnitState(context.Background(), name)
-	return s == "active", nil
-}
-
-// mockPodman records secret operations.
-type mockPodman struct {
-	secrets   map[string][]byte
-	created   []string
-	healthOK  map[string]bool
-	podStates map[string]string
-}
-
-func newMockPodman() *mockPodman {
-	return &mockPodman{
-		secrets:   make(map[string][]byte),
-		healthOK:  make(map[string]bool),
-		podStates: make(map[string]string),
-	}
-}
-
-func (m *mockPodman) SecretExists(_ context.Context, name string) (bool, error) {
-	_, ok := m.secrets[name]
-	return ok, nil
-}
-
-func (m *mockPodman) SecretCreate(_ context.Context, name string, data []byte, _ bool) error {
-	m.secrets[name] = data
-	m.created = append(m.created, name)
-	return nil
-}
-
-func (m *mockPodman) RunHealthcheck(_ context.Context, container string) (bool, error) {
-	return m.healthOK[container], nil
-}
-
-func (m *mockPodman) GetPodState(_ context.Context, pod string) (string, error) {
-	s, ok := m.podStates[pod]
-	if !ok {
-		return "unknown", nil
-	}
-	return s, nil
-}
-
 func TestApplyPhaseOrdering(t *testing.T) {
-	sys := newMockSystemd()
-	pod := newMockPodman()
+	t.Parallel()
+	sys := mocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	pod := mocks.NewMockPodmanClient(t)
+	pod.EXPECT().SecretCreate(mock.Anything, "my_secret", []byte("token=abc"), false).Return(nil)
+
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -115,34 +38,19 @@ func TestApplyPhaseOrdering(t *testing.T) {
 	}
 
 	result, err := a.Apply(context.Background(), cs)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied != 6 {
-		t.Errorf("Applied = %d, want 6", result.Applied)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 6, result.Applied)
 
 	// Verify network was written (file category)
-	if _, ok := fw.written["/etc/containers/systemd/net.network"]; !ok {
-		t.Error("network file not written")
-	}
+	assert.Contains(t, fw.written, "/etc/containers/systemd/net.network")
 	// Verify volume was written
-	if _, ok := fw.written["/etc/containers/systemd/data.volume"]; !ok {
-		t.Error("volume file not written")
-	}
-	// Verify secret was created via podman
-	if _, ok := pod.secrets["my_secret"]; !ok {
-		t.Error("secret not created via podman")
-	}
-	// Verify daemon-reload was called
-	if sys.reloads != 1 {
-		t.Errorf("reloads = %d, want 1", sys.reloads)
-	}
+	assert.Contains(t, fw.written, "/etc/containers/systemd/data.volume")
 }
 
 func TestApplyDryRun(t *testing.T) {
-	sys := newMockSystemd()
-	pod := newMockPodman()
+	t.Parallel()
+	sys := mocks.NewMockSystemdManager(t)
+	pod := mocks.NewMockPodmanClient(t)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, true)
 
@@ -154,24 +62,16 @@ func TestApplyDryRun(t *testing.T) {
 	}
 
 	result, err := a.Apply(context.Background(), cs)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied != 1 {
-		t.Errorf("Applied = %d, want 1", result.Applied)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.Applied)
 	// No actual writes in dry-run
-	if len(fw.written) != 0 {
-		t.Errorf("files written in dry-run: %d", len(fw.written))
-	}
-	if sys.reloads != 0 {
-		t.Errorf("daemon-reload in dry-run: %d", sys.reloads)
-	}
+	assert.Empty(t, fw.written)
 }
 
 func TestApplyNoop(t *testing.T) {
-	sys := newMockSystemd()
-	pod := newMockPodman()
+	t.Parallel()
+	sys := mocks.NewMockSystemdManager(t)
+	pod := mocks.NewMockPodmanClient(t)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -183,17 +83,16 @@ func TestApplyNoop(t *testing.T) {
 	}
 
 	result, err := a.Apply(context.Background(), cs)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied != 0 {
-		t.Errorf("Applied = %d, want 0 (noop)", result.Applied)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 0, result.Applied)
 }
 
 func TestApplyDelete(t *testing.T) {
-	sys := newMockSystemd()
-	pod := newMockPodman()
+	t.Parallel()
+	sys := mocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys.EXPECT().RestartUnit(mock.Anything, "old.service").Return(nil)
+	pod := mocks.NewMockPodmanClient(t)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -205,20 +104,18 @@ func TestApplyDelete(t *testing.T) {
 	}
 
 	result, err := a.Apply(context.Background(), cs)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied != 1 {
-		t.Errorf("Applied = %d, want 1", result.Applied)
-	}
-	if len(fw.removed) != 1 || fw.removed[0] != "/etc/containers/systemd/old.container" {
-		t.Errorf("removed = %v, want [/etc/containers/systemd/old.container]", fw.removed)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.Applied)
+	assert.Equal(t, []string{"/etc/containers/systemd/old.container"}, fw.removed)
 }
 
 func TestApplySelfRestart(t *testing.T) {
-	sys := newMockSystemd()
-	pod := newMockPodman()
+	t.Parallel()
+	sys := mocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	// picolet.service is restarted last
+	sys.EXPECT().RestartUnit(mock.Anything, "picolet.service").Return(nil)
+	pod := mocks.NewMockPodmanClient(t)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -230,18 +127,16 @@ func TestApplySelfRestart(t *testing.T) {
 	}
 
 	result, err := a.Apply(context.Background(), cs)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.NeedsSelfRestart {
-		t.Error("expected NeedsSelfRestart=true")
-	}
+	require.NoError(t, err)
+	assert.True(t, result.NeedsSelfRestart)
 }
 
 func TestApplySecretReplace(t *testing.T) {
-	sys := newMockSystemd()
-	pod := newMockPodman()
-	pod.secrets["cfg"] = []byte("old")
+	t.Parallel()
+	sys := mocks.NewMockSystemdManager(t)
+	pod := mocks.NewMockPodmanClient(t)
+	// ActionUpdate → replace=true
+	pod.EXPECT().SecretCreate(mock.Anything, "cfg", []byte("new-data"), true).Return(nil)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -253,13 +148,6 @@ func TestApplySecretReplace(t *testing.T) {
 	}
 
 	result, err := a.Apply(context.Background(), cs)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied != 1 {
-		t.Errorf("Applied = %d, want 1", result.Applied)
-	}
-	if string(pod.secrets["cfg"]) != "new-data" {
-		t.Errorf("secret content = %q, want new-data", pod.secrets["cfg"])
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.Applied)
 }
