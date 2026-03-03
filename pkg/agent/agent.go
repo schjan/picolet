@@ -287,11 +287,7 @@ func (a *Agent) computeDiff(ctx context.Context, files []resolver.ResolvedFile, 
 
 func (a *Agent) markApplied(headSHA string, st *state.State, store *state.Store) error {
 	slog.Info("no changes to apply", "sha", headSHA)
-	st.AppliedSHA = headSHA
-	st.AppliedAt = time.Now()
-	st.FailedSHA = ""
-	st.FailedCount = 0
-	st.FailedAt = time.Time{}
+	st.MarkApplied(headSHA)
 	return store.Save(st)
 }
 
@@ -340,11 +336,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 }
 
 func (a *Agent) updateState(headSHA string, st *state.State, changeset *reconciler.Changeset) {
-	st.AppliedSHA = headSHA
-	st.AppliedAt = time.Now()
-	st.FailedSHA = ""
-	st.FailedCount = 0
-	st.FailedAt = time.Time{}
+	st.MarkApplied(headSHA)
 	st.ManagedFiles = make(map[string]string)
 	for _, change := range changeset.Changes {
 		if change.Action == reconciler.ActionDelete {

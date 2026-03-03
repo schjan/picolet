@@ -20,6 +20,15 @@ type State struct {
 	FailedAt     time.Time         `json:"failed_at"`
 }
 
+// MarkApplied resets failure tracking and records the SHA as successfully applied.
+func (s *State) MarkApplied(headSHA string) {
+	s.AppliedSHA = headSHA
+	s.AppliedAt = time.Now()
+	s.FailedSHA = ""
+	s.FailedCount = 0
+	s.FailedAt = time.Time{}
+}
+
 // Store manages atomic reads and writes of the state file.
 type Store struct {
 	path string
