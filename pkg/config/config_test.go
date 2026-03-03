@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-//nolint:funlen,cyclop // table-driven test
+//nolint:funlen // table-driven test
 func TestLoadAll(t *testing.T) {
 	t.Parallel()
 	fsys := fstest.MapFS{

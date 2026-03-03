@@ -47,7 +47,7 @@ secrets_dir: /run/secrets
 hostname: rpi5-1
 repo_url: https://github.com/example/fleet.git
 `,
-			want: Config{
+			want: Config{ //nolint:gosec // test fixture, not real credentials
 				Hostname:     "rpi5-1",
 				RepoURL:      "https://github.com/example/fleet.git",
 				RepoBranch:   "main",

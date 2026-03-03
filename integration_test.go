@@ -2,7 +2,6 @@ package picolet_test
 
 import (
 	"context"
-	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -151,7 +150,7 @@ func TestIntegrationErrorPaths(t *testing.T) {
 		_, err = r.ResolveHost("nonexistent")
 		require.Error(t, err)
 		var notFound *resolver.HostNotFoundError
-		assert.ErrorAs(t, err, &notFound)
+		require.ErrorAs(t, err, &notFound)
 		assert.Equal(t, "nonexistent", notFound.Hostname)
 	})
 }

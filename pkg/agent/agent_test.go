@@ -193,6 +193,7 @@ func TestAgentDryRun(t *testing.T) {
 	assert.Empty(t, written, "dry-run should not write files")
 }
 
+//nolint:dupl // similar to TestAgentRetriesFailedSHA by necessity
 func TestAgentSkipsFailedSHA(t *testing.T) {
 	t.Parallel()
 	bareDir := initTestRepo(t)
@@ -249,6 +250,7 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 	assert.Empty(t, written, "should not write files for permanently failed SHA")
 }
 
+//nolint:dupl // similar to TestAgentSkipsFailedSHA by necessity
 func TestAgentRetriesFailedSHA(t *testing.T) {
 	t.Parallel()
 	bareDir := initTestRepo(t)

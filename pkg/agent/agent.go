@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -137,6 +136,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 }
 
+//nolint:cyclop,funlen // multiple early-returns are clearer than restructuring
 func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.Store, healthChecker *health.Checker) error {
 	st, err := store.Load()
 	if err != nil {
@@ -308,13 +308,10 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		slog.Error("apply failed, rolling back", "error", err)
 		metrics.RollbackTotal.Inc()
 
-		// Use a detached context for rollback so it can complete during shutdown
-		rollbackCtx := ctx
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			var cancel context.CancelFunc
-			rollbackCtx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-		}
+		// Use a detached context so rollback can complete even during shutdown.
+		// WithoutCancel preserves parent values (e.g. trace IDs) without inheriting cancellation.
+		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer rollbackCancel()
 
 		if rbErr := rollbackMgr.Restore(rollbackCtx, snap); rbErr != nil {
 			slog.Error("rollback failed", "error", rbErr)

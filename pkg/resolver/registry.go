@@ -15,6 +15,8 @@ type SecretReader func(path string) (string, error)
 
 // BuildRegistry collects all .tmpl files from the filesystem and builds
 // a shared template registry with custom functions.
+//
+//nolint:cyclop // funcmap registration is inherently branchy
 func BuildRegistry(fsys fs.FS, secretReader SecretReader) (*template.Template, error) {
 	sources := make(map[string]string)
 	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
