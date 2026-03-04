@@ -70,6 +70,38 @@ func TestE2EPipeline(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "reconciliation.lock")
 	secretsDir := t.TempDir()
 
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	quadletDir := filepath.Join(home, ".config", "containers", "systemd")
+	systemdDir := filepath.Join(home, ".config", "systemd", "user")
+
+	// Register cleanup on parent t so it runs after ALL sub-tests (including verify)
+	t.Cleanup(func() {
+		// Remove written quadlet files
+		_ = filepath.Walk(quadletDir, func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil || info.IsDir() {
+				return nil
+			}
+			_ = os.Remove(path)
+			return nil
+		})
+		// Remove written systemd units
+		_ = filepath.Walk(systemdDir, func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil || info.IsDir() {
+				return nil
+			}
+			_ = os.Remove(path)
+			return nil
+		})
+		// Daemon-reload to clean up generated units
+		//nolint:gosec // test cleanup command
+		_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+		// Remove the container
+		//nolint:gosec // test cleanup command
+		_ = exec.Command("podman", "rm", "-f", "picolet-e2e-test").Run()
+	})
+
 	// Shared state between sequential sub-tests
 	var headSHA string
 
@@ -98,38 +130,6 @@ func TestE2EPipeline(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
-
-		home, err := os.UserHomeDir()
-		require.NoError(t, err)
-
-		quadletDir := filepath.Join(home, ".config", "containers", "systemd")
-		systemdDir := filepath.Join(home, ".config", "systemd", "user")
-
-		// Register cleanup before reconcile so it runs even on failure
-		t.Cleanup(func() {
-			// Remove written quadlet files
-			_ = filepath.Walk(quadletDir, func(path string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
-					return nil
-				}
-				_ = os.Remove(path)
-				return nil
-			})
-			// Remove written systemd units
-			_ = filepath.Walk(systemdDir, func(path string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
-					return nil
-				}
-				_ = os.Remove(path)
-				return nil
-			})
-			// Daemon-reload to clean up generated units
-			//nolint:gosec // test cleanup command
-			_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
-			// Remove the container
-			//nolint:gosec // test cleanup command
-			_ = exec.Command("podman", "rm", "-f", "picolet-e2e-test").Run()
-		})
 
 		podman, err := applier.NewSocketPodmanClient(ctx, socketPath)
 		require.NoError(t, err, "failed to connect to podman")
@@ -166,12 +166,6 @@ func TestE2EPipeline(t *testing.T) {
 	})
 
 	t.Run("verify", func(t *testing.T) {
-		home, err := os.UserHomeDir()
-		require.NoError(t, err)
-
-		quadletDir := filepath.Join(home, ".config", "containers", "systemd")
-		systemdDir := filepath.Join(home, ".config", "systemd", "user")
-
 		t.Run("quadlet_files_written", func(t *testing.T) {
 			containerFile := filepath.Join(quadletDir, "simple.container")
 			data, err := os.ReadFile(containerFile)
