@@ -185,10 +185,6 @@ func TestE2EPipeline(t *testing.T) {
 			require.NoError(t, err, "internal.network should exist")
 			assert.Contains(t, string(data), "[Network]")
 
-			exporterFile := filepath.Join(quadletDir, "exporter.container")
-			_, err = os.ReadFile(exporterFile)
-			assert.NoError(t, err, "exporter.container should exist")
-
 			socketFile := filepath.Join(systemdDir, "custom.socket")
 			_, err = os.ReadFile(socketFile)
 			assert.NoError(t, err, "custom.socket should exist")

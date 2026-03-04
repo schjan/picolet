@@ -3,10 +3,10 @@ base:
     - quadlets/networks/internal.network
   systemd:
     - systemd/custom.socket
-  containers:
-    - quadlets/containers/exporter.container
 pi_types:
   controller:
+    containers:
+      - quadlets/containers/exporter.container
     volumes:
       - quadlets/volumes/data.volume
     kube:
@@ -15,6 +15,9 @@ pi_types:
       - manifests/app/deployment.yml.tmpl
     secrets:
       - secrets/app_secret.yml.tmpl
+  worker:
+    containers:
+      - quadlets/containers/exporter.container
   e2e:
     containers:
       - quadlets/containers/simple.container.tmpl
