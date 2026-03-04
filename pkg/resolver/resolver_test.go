@@ -200,10 +200,10 @@ func TestRootlessPaths(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 
-	// Verify precomputed dirs contain expected path segments
-	assert.Contains(t, r.quadletDir, filepath.Join(".config", "containers", "systemd"))
-	assert.Contains(t, r.systemdDir, filepath.Join(".config", "systemd", "user"))
-	assert.Contains(t, r.dataDir, filepath.Join(".local", "share", "picolet"))
+	// Verify precomputed dirs use rootless paths
+	assert.Equal(t, filepath.Join(home, ".config", "containers", "systemd"), r.quadletDir)
+	assert.Equal(t, filepath.Join(home, ".config", "systemd", "user"), r.systemdDir)
+	assert.Equal(t, filepath.Join(home, ".local", "share", "picolet"), r.dataDir)
 
 	resolved, err := r.ResolveHost("test-host")
 	require.NoError(t, err)
@@ -222,7 +222,7 @@ func TestRootlessPaths(t *testing.T) {
 
 	// Verify manifest goes to rootless data dir
 	manifest := resolved.Files[2]
-	assert.Contains(t, manifest.DestPath, filepath.Join(home, ".local", "share", "picolet", "manifests"))
+	assert.Equal(t, filepath.Join(home, ".local", "share", "picolet", "manifests", "app", "deployment.yml"), manifest.DestPath)
 }
 
 func TestSecretPathTraversal(t *testing.T) {

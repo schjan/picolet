@@ -225,18 +225,21 @@ func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *config.Config, *reso
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("loading config: %w", err)
 	}
+
+	secretRoot, err := os.OpenRoot(a.cfg.SecretsDir)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("opening secrets dir: %w", err)
+	}
+	defer secretRoot.Close()
+
 	secretReader := func(path string) (string, error) {
-		secretRoot, err := os.OpenRoot(a.cfg.SecretsDir)
-		if err != nil {
-			return "", fmt.Errorf("opening secrets dir: %w", err)
-		}
-		defer secretRoot.Close()
 		data, err := secretRoot.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("reading secret %q: %w", path, err)
 		}
 		return string(data), nil
 	}
+
 	r, err := resolver.New(resolver.Config{
 		FS:           repoFS,
 		Config:       cfg,
@@ -271,13 +274,9 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	}
 
 	changeset := a.computeDiff(ctx, files, st)
-	reconcileResult := &ReconcileResult{
-		HasChanges: changeset.HasChanges(),
-		Summary:    changeset.Summary,
-	}
 
 	if !changeset.HasChanges() {
-		return reconcileResult, a.markApplied(headSHA, st, store)
+		return &ReconcileResult{Summary: changeset.Summary}, a.markApplied(headSHA, st, store)
 	}
 
 	slog.Info("changes detected",
@@ -305,14 +304,16 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		return nil, fmt.Errorf("saving state: %w", err)
 	}
 
-	reconcileResult.ApplyResult = applyResult
-
 	if applyResult.NeedsSelfRestart && !a.dryRun {
 		slog.Info("picolet.container changed, self-update pending")
 		metrics.SelfUpdatePending.Set(1)
 	}
 
-	return reconcileResult, nil
+	return &ReconcileResult{
+		HasChanges:  true,
+		Summary:     changeset.Summary,
+		ApplyResult: applyResult,
+	}, nil
 }
 
 func (a *Agent) computeDiff(ctx context.Context, files []resolver.ResolvedFile, st *state.State) *reconciler.Changeset {

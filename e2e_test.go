@@ -31,7 +31,7 @@ func podmanSocketPath(t *testing.T) string {
 	t.Helper()
 	if s := os.Getenv("PODMAN_SOCKET"); s != "" {
 		s = strings.TrimPrefix(s, "unix:")
-		if _, err := os.Stat(s); err == nil {
+		if _, err := os.Stat(s); err == nil { //nolint:gosec // env-controlled path in E2E test
 			return s
 		}
 	}
@@ -42,29 +42,37 @@ func podmanSocketPath(t *testing.T) string {
 	return fallback
 }
 
+// ciBranch returns the git branch to clone in CI, falling back to "main".
+func ciBranch() string {
+	if ref := os.Getenv("GITHUB_HEAD_REF"); ref != "" {
+		return ref
+	}
+	if ref := os.Getenv("GITHUB_REF_NAME"); ref != "" {
+		return ref
+	}
+	return "main"
+}
+
+// writeTokenFile persists GITHUB_TOKEN to a temp file and returns its path, or "" if unset.
+func writeTokenFile(t *testing.T) string {
+	t.Helper()
+	token := os.Getenv("GITHUB_TOKEN")
+	if token == "" {
+		return ""
+	}
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte(token), 0o600)) //nolint:gosec // env-controlled path in E2E test
+	return tokenFile
+}
+
+//nolint:funlen,tparallel // E2E test with intentionally sequential sub-tests exercising the full pipeline
 func TestE2EPipeline(t *testing.T) {
 	t.Parallel()
 
 	socketPath := podmanSocketPath(t)
-
-	// Determine branch to clone
-	branch := os.Getenv("GITHUB_HEAD_REF")
-	if branch == "" {
-		branch = os.Getenv("GITHUB_REF_NAME")
-	}
-	if branch == "" {
-		branch = "main"
-	}
-
+	branch := ciBranch()
 	repoURL := "https://github.com/schjan/picolet.git"
-
-	// Set up git token if available
-	var tokenPath string
-	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
-		tokenFile := filepath.Join(t.TempDir(), "token")
-		require.NoError(t, os.WriteFile(tokenFile, []byte(token), 0o600))
-		tokenPath = tokenFile
-	}
+	tokenPath := writeTokenFile(t)
 
 	cloneDir := filepath.Join(t.TempDir(), "repo")
 	statePath := filepath.Join(t.TempDir(), "state.json")
@@ -208,8 +216,8 @@ func TestE2EPipeline(t *testing.T) {
 
 		t.Run("no_template_markers", func(t *testing.T) {
 			for _, dir := range []string{quadletDir, systemdDir} {
-				_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-					if err != nil || info.IsDir() {
+				_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+					if err != nil || d.IsDir() {
 						return nil
 					}
 					data, err := os.ReadFile(path)
@@ -262,7 +270,6 @@ func TestE2EPipeline(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 
-			//nolint:gosec // test command with fixed arguments
 			out, err := exec.CommandContext(ctx, "podman", "exec", "picolet-e2e-test", "cat", "/run/secrets/e2e_secret").Output()
 			require.NoError(t, err, "should be able to read secret inside container")
 			assert.Equal(t, "e2e-test-secret-data\n", string(out), "secret content should match")
@@ -343,25 +350,21 @@ func TestE2EResolverRootlessPaths(t *testing.T) {
 	resolved, err := r.ResolveHost("e2e-host")
 	require.NoError(t, err)
 
-	destPaths := make(map[string]bool)
+	destPaths := make(map[string]bool, len(resolved.Files))
 	for _, f := range resolved.Files {
 		destPaths[f.DestPath] = true
 	}
 
-	expectedQuadletDir := filepath.Join(home, ".config", "containers", "systemd")
-	expectedSystemdDir := filepath.Join(home, ".config", "systemd", "user")
+	quadletDir := filepath.Join(home, ".config", "containers", "systemd")
+	systemdDir := filepath.Join(home, ".config", "systemd", "user")
 
-	// Check container file goes to quadlet dir
-	assert.True(t, destPaths[filepath.Join(expectedQuadletDir, "simple.container")],
+	assert.True(t, destPaths[filepath.Join(quadletDir, "simple.container")],
 		"simple.container should be in rootless quadlet dir")
-
-	// Check base resources
-	assert.True(t, destPaths[filepath.Join(expectedQuadletDir, "internal.network")],
+	assert.True(t, destPaths[filepath.Join(quadletDir, "internal.network")],
 		"internal.network should be in rootless quadlet dir")
-	assert.True(t, destPaths[filepath.Join(expectedSystemdDir, "custom.socket")],
+	assert.True(t, destPaths[filepath.Join(systemdDir, "custom.socket")],
 		"custom.socket should be in rootless systemd dir")
 
-	// Verify no rootful paths
 	for path := range destPaths {
 		if strings.HasPrefix(path, "secret:") {
 			continue
