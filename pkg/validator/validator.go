@@ -22,28 +22,40 @@ func New() *Validator {
 	return &Validator{}
 }
 
-// ValidateAll resolves and validates all hosts.
-func (v *Validator) ValidateAll(_ context.Context, r *resolver.Resolver, cfg *config.Config) error {
-	var errs []error
-
-	for _, hostname := range cfg.SortedHostnames() {
-		slog.Info("validating host", "host", hostname)
-		resolved, err := r.ResolveHost(hostname)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("host %s: resolve: %w", hostname, err))
-			continue
-		}
-
-		unitsInfo := buildUnitsInfoFromFiles(resolved.Files)
-
-		for _, f := range resolved.Files {
-			if err := v.validateFile(f, unitsInfo); err != nil {
-				errs = append(errs, fmt.Errorf("host %s: %s: %w", hostname, f.SrcPath, err))
-			}
-		}
-		slog.Info("host validated", "host", hostname, "files", len(resolved.Files))
+// ValidateHost resolves and validates files for a single host.
+func (v *Validator) ValidateHost(_ context.Context, r *resolver.Resolver, hostname string) error {
+	slog.Info("validating host", "host", hostname)
+	resolved, err := r.ResolveHost(hostname)
+	if err != nil {
+		return fmt.Errorf("host %s: resolve: %w", hostname, err)
 	}
 
+	unitsInfo := buildUnitsInfoFromFiles(resolved.Files)
+
+	var errs []error
+	for _, f := range resolved.Files {
+		if err := v.validateFile(f, unitsInfo); err != nil {
+			errs = append(errs, fmt.Errorf("host %s: %s: %w", hostname, f.SrcPath, err))
+		}
+	}
+	if len(errs) > 0 {
+		slog.Warn("host validation failed", "host", hostname, "files", len(resolved.Files), "errorCount", len(errs))
+		return errors.Join(errs...)
+	}
+
+	slog.Info("host validated", "host", hostname, "files", len(resolved.Files))
+	return nil
+}
+
+// ValidateAll resolves and validates all hosts in the fleet config.
+// Intended for CI/CD pipelines; agents should use ValidateHost instead.
+func (v *Validator) ValidateAll(ctx context.Context, r *resolver.Resolver, cfg *config.Config) error {
+	var errs []error
+	for _, hostname := range cfg.SortedHostnames() {
+		if err := v.ValidateHost(ctx, r, hostname); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	return errors.Join(errs...)
 }
 

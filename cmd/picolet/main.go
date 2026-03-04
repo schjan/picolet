@@ -193,15 +193,18 @@ func runDryRun(ctx context.Context, repoDir, hostname string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	r := resolver.New(repoFS, cfg, nil)
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	if err != nil {
+		return fmt.Errorf("creating resolver: %w", err)
+	}
 	resolved, err := r.ResolveHost(hostname)
 	if err != nil {
 		return err
 	}
 
-	// Validate first
+	// Validate this host only — fleet-wide validation belongs in CI
 	v := validator.New()
-	if err := v.ValidateAll(ctx, r, cfg); err != nil {
+	if err := v.ValidateHost(ctx, r, hostname); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -247,7 +250,10 @@ func runValidate(ctx context.Context, repoDir string) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-	r := resolver.New(repoFS, cfg, nil)
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	if err != nil {
+		return fmt.Errorf("creating resolver: %w", err)
+	}
 	v := validator.New()
 	return v.ValidateAll(ctx, r, cfg)
 }
@@ -258,7 +264,10 @@ func runResolve(repoDir, host string) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-	r := resolver.New(repoFS, cfg, nil)
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	if err != nil {
+		return fmt.Errorf("creating resolver: %w", err)
+	}
 	resolved, err := r.ResolveHost(host)
 	if err != nil {
 		return err

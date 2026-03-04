@@ -24,7 +24,7 @@ import (
 const (
 	defaultRepoPath  = "/var/lib/picolet/repo"
 	defaultStatePath = "/var/lib/picolet/state.json"
-	lockPath         = "/var/lib/picolet/reconciliation.lock"
+	defaultLockPath  = "/var/lib/picolet/reconciliation.lock"
 )
 
 // Agent is the main reconciliation loop.
@@ -38,6 +38,7 @@ type Agent struct {
 	// Overridable for testing
 	repoPath  string
 	statePath string
+	lockPath  string
 }
 
 // Option configures the Agent.
@@ -73,12 +74,18 @@ func WithStatePath(path string) Option {
 	return func(a *Agent) { a.statePath = path }
 }
 
+// WithLockPath overrides the reconciliation lock file path.
+func WithLockPath(path string) Option {
+	return func(a *Agent) { a.lockPath = path }
+}
+
 // New creates a new Agent.
 func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 	a := &Agent{
 		cfg:       cfg,
 		repoPath:  defaultRepoPath,
 		statePath: defaultStatePath,
+		lockPath:  defaultLockPath,
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -92,10 +99,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	go a.serveMetrics(ctx)
 
 	// Check for stale lock (unclean shutdown)
-	if _, err := os.Stat(lockPath); err == nil {
+	if _, err := os.Stat(a.lockPath); err == nil {
 		slog.Warn("stale reconciliation lock found, will force full reconciliation")
-		if err := os.Remove(lockPath); err != nil {
-			slog.Warn("removing stale lock failed", "path", lockPath, "error", err)
+		if err := os.Remove(a.lockPath); err != nil {
+			slog.Warn("removing stale lock failed", "path", a.lockPath, "error", err)
 		}
 	}
 
@@ -185,7 +192,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
 
 	start := time.Now()
-	err = a.reconcile(ctx, pollResult.HeadSHA, st, store)
+	_, err = a.ReconcileOnce(ctx, pollResult.HeadSHA, st, store)
 	duration := time.Since(start).Seconds()
 	metrics.ReconciliationDuration.Observe(duration)
 
@@ -212,42 +219,64 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	return nil
 }
 
-func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *config.Config, *resolver.Resolver, error) {
+func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *resolver.Resolver, error) {
 	repoFS := os.DirFS(a.repoPath)
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("loading config: %w", err)
+		return nil, nil, fmt.Errorf("loading config: %w", err)
 	}
+
 	secretReader := func(path string) (string, error) {
 		secretRoot, err := os.OpenRoot(a.cfg.SecretsDir)
 		if err != nil {
 			return "", fmt.Errorf("opening secrets dir: %w", err)
 		}
 		defer secretRoot.Close()
+
 		data, err := secretRoot.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("reading secret %q: %w", path, err)
 		}
 		return string(data), nil
 	}
-	r := resolver.New(repoFS, cfg, secretReader)
+
+	r, err := resolver.New(resolver.Config{
+		FS:           repoFS,
+		Config:       cfg,
+		SecretReader: secretReader,
+		Rootless:     a.cfg.Rootless,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating resolver: %w", err)
+	}
 	resolved, err := r.ResolveHost(a.cfg.Hostname)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("resolving host %s: %w", a.cfg.Hostname, err)
+		return nil, nil, fmt.Errorf("resolving host %s: %w", a.cfg.Hostname, err)
 	}
-	return resolved.Files, cfg, r, nil
+	return resolved.Files, r, nil
 }
 
-func (a *Agent) reconcile(ctx context.Context, headSHA string, st *state.State, store *state.Store) error {
-	files, cfg, r, err := a.loadAndResolve()
+// ReconcileResult contains the outcome of a single reconciliation cycle.
+type ReconcileResult struct {
+	// HasChanges is true if any non-noop changes were applied.
+	HasChanges bool
+	// Summary counts changes per action type.
+	Summary map[reconciler.Action]int
+	// ApplyResult contains details from the apply phase (nil when no changes).
+	ApplyResult *applier.ApplyResult
+}
+
+// ReconcileOnce runs a single reconciliation cycle: load config, resolve, diff, validate, apply, save state.
+func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.State, store *state.Store) (*ReconcileResult, error) {
+	files, r, err := a.loadAndResolve()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	changeset := a.computeDiff(ctx, files, st)
 
 	if !changeset.HasChanges() {
-		return a.markApplied(headSHA, st, store)
+		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary}, a.markApplied(headSHA, st, store)
 	}
 
 	slog.Info("changes detected",
@@ -257,30 +286,34 @@ func (a *Agent) reconcile(ctx context.Context, headSHA string, st *state.State, 
 	)
 
 	v := validator.New()
-	if err := v.ValidateAll(ctx, r, cfg); err != nil {
-		return fmt.Errorf("validation failed: %w", err)
+	if err := v.ValidateHost(ctx, r, a.cfg.Hostname); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	result, err := a.applyWithRollback(ctx, headSHA, changeset)
+	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	for _, e := range result.Errors {
+	for _, e := range applyResult.Errors {
 		slog.Warn("non-fatal apply error", "error", e)
 	}
 
 	a.updateState(headSHA, st, changeset)
 
 	if err := store.Save(st); err != nil {
-		return fmt.Errorf("saving state: %w", err)
+		return nil, fmt.Errorf("saving state: %w", err)
 	}
 
-	if result.NeedsSelfRestart && !a.dryRun {
+	if applyResult.NeedsSelfRestart && !a.dryRun {
 		slog.Info("picolet.container changed, self-update pending")
 		metrics.SelfUpdatePending.Set(1)
 	}
 
-	return nil
+	return &ReconcileResult{
+		HasChanges:  true,
+		Summary:     changeset.Summary,
+		ApplyResult: applyResult,
+	}, nil
 }
 
 func (a *Agent) computeDiff(ctx context.Context, files []resolver.ResolvedFile, st *state.State) *reconciler.Changeset {
@@ -307,8 +340,8 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
-	if err := os.WriteFile(lockPath, []byte(headSHA), 0o600); err != nil {
-		slog.Warn("writing reconciliation lock failed", "path", lockPath, "error", err)
+	if err := os.WriteFile(a.lockPath, []byte(headSHA), 0o600); err != nil {
+		slog.Warn("writing reconciliation lock failed", "path", a.lockPath, "error", err)
 	}
 
 	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun)
@@ -334,8 +367,8 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		"dry_run", a.dryRun,
 	)
 
-	if err := os.Remove(lockPath); err != nil {
-		slog.Warn("removing reconciliation lock failed", "path", lockPath, "error", err)
+	if err := os.Remove(a.lockPath); err != nil {
+		slog.Warn("removing reconciliation lock failed", "path", a.lockPath, "error", err)
 	}
 
 	return result, nil

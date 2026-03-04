@@ -183,6 +183,7 @@ func TestCategoryFromPath(t *testing.T) {
 		{"/etc/containers/systemd/foo.kube", "kube"},
 		{"/etc/systemd/system/foo.socket", "systemd"},
 		{"/var/lib/picolet/manifests/app/deploy.yml", "manifest"},
+		{"/home/runner/.local/share/picolet/manifests/app/deploy.yml", "manifest"},
 		{"/some/other/path", "unknown"},
 	}
 

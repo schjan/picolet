@@ -21,6 +21,58 @@ jobs:
       - name: Test
         run: go test -tags "$BUILD_TAGS" ./... -race -count=1
 
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Setup rootless podman
+        run: |
+          # Enable user lingering for systemd --user + session D-Bus
+          loginctl enable-linger $(whoami)
+
+          # Ubuntu 24.04 may restrict unprivileged user namespaces
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+          # Export runtime vars for this step and subsequent steps
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+
+          # Start podman socket via systemd (preferred over manual podman system service)
+          systemctl --user start podman.socket || {
+            # Fallback: start podman API manually
+            mkdir -p "$XDG_RUNTIME_DIR/podman"
+            podman system service --time=0 "unix://$XDG_RUNTIME_DIR/podman/podman.sock" &
+          }
+
+          echo "PODMAN_SOCKET=$XDG_RUNTIME_DIR/podman/podman.sock" >> "$GITHUB_ENV"
+
+          # Wait for readiness
+          for i in $(seq 1 15); do
+            podman info > /dev/null 2>&1 && echo "Podman ready" && break
+            sleep 1
+          done
+
+          # Final readiness check: fail the step if Podman is not ready
+          if ! podman info > /dev/null 2>&1; then
+            echo "Podman failed to become ready after 15 seconds" >&2
+            exit 1
+          fi
+
+      - name: Run E2E tests
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: go test -tags "e2e,$BUILD_TAGS" -run TestE2E -race -count=1 -v -timeout 300s .
+
   lint:
     runs-on: ubuntu-latest
     steps:

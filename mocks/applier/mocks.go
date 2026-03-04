@@ -361,6 +361,69 @@ func (_m *MockPodmanClient) EXPECT() *MockPodmanClient_Expecter {
 	return &MockPodmanClient_Expecter{mock: &_m.Mock}
 }
 
+// ContainerRemove provides a mock function for the type MockPodmanClient
+func (_mock *MockPodmanClient) ContainerRemove(ctx context.Context, nameOrID string, force bool) error {
+	ret := _mock.Called(ctx, nameOrID, force)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ContainerRemove")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, bool) error); ok {
+		r0 = returnFunc(ctx, nameOrID, force)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockPodmanClient_ContainerRemove_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ContainerRemove'
+type MockPodmanClient_ContainerRemove_Call struct {
+	*mock.Call
+}
+
+// ContainerRemove is a helper method to define mock.On call
+//   - ctx context.Context
+//   - nameOrID string
+//   - force bool
+func (_e *MockPodmanClient_Expecter) ContainerRemove(ctx interface{}, nameOrID interface{}, force interface{}) *MockPodmanClient_ContainerRemove_Call {
+	return &MockPodmanClient_ContainerRemove_Call{Call: _e.mock.On("ContainerRemove", ctx, nameOrID, force)}
+}
+
+func (_c *MockPodmanClient_ContainerRemove_Call) Run(run func(ctx context.Context, nameOrID string, force bool)) *MockPodmanClient_ContainerRemove_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 bool
+		if args[2] != nil {
+			arg2 = args[2].(bool)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+		)
+	})
+	return _c
+}
+
+func (_c *MockPodmanClient_ContainerRemove_Call) Return(err error) *MockPodmanClient_ContainerRemove_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockPodmanClient_ContainerRemove_Call) RunAndReturn(run func(ctx context.Context, nameOrID string, force bool) error) *MockPodmanClient_ContainerRemove_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // GetPodState provides a mock function for the type MockPodmanClient
 func (_mock *MockPodmanClient) GetPodState(ctx context.Context, pod string) (string, error) {
 	ret := _mock.Called(ctx, pod)
@@ -624,6 +687,63 @@ func (_c *MockPodmanClient_SecretExists_Call) Return(b bool, err error) *MockPod
 }
 
 func (_c *MockPodmanClient_SecretExists_Call) RunAndReturn(run func(ctx context.Context, name string) (bool, error)) *MockPodmanClient_SecretExists_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// SecretRemove provides a mock function for the type MockPodmanClient
+func (_mock *MockPodmanClient) SecretRemove(ctx context.Context, name string) error {
+	ret := _mock.Called(ctx, name)
+
+	if len(ret) == 0 {
+		panic("no return value specified for SecretRemove")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) error); ok {
+		r0 = returnFunc(ctx, name)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockPodmanClient_SecretRemove_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SecretRemove'
+type MockPodmanClient_SecretRemove_Call struct {
+	*mock.Call
+}
+
+// SecretRemove is a helper method to define mock.On call
+//   - ctx context.Context
+//   - name string
+func (_e *MockPodmanClient_Expecter) SecretRemove(ctx interface{}, name interface{}) *MockPodmanClient_SecretRemove_Call {
+	return &MockPodmanClient_SecretRemove_Call{Call: _e.mock.On("SecretRemove", ctx, name)}
+}
+
+func (_c *MockPodmanClient_SecretRemove_Call) Run(run func(ctx context.Context, name string)) *MockPodmanClient_SecretRemove_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockPodmanClient_SecretRemove_Call) Return(err error) *MockPodmanClient_SecretRemove_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockPodmanClient_SecretRemove_Call) RunAndReturn(run func(ctx context.Context, name string) error) *MockPodmanClient_SecretRemove_Call {
 	_c.Call.Return(run)
 	return _c
 }

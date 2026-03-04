@@ -109,6 +109,28 @@ func TestApplyDelete(t *testing.T) {
 	assert.Equal(t, []string{"/etc/containers/systemd/old.container"}, fw.removed)
 }
 
+func TestApplyDeleteSecret(t *testing.T) {
+	t.Parallel()
+	sys := mocks.NewMockSystemdManager(t)
+	pod := mocks.NewMockPodmanClient(t)
+	pod.EXPECT().SecretRemove(mock.Anything, "old_secret").Return(nil)
+	fw := newMemFileWriter()
+	a := New(sys, pod, fw, false)
+
+	cs := &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "secret:old_secret", Category: "secret", Action: reconciler.ActionDelete},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionDelete: 1},
+	}
+
+	result, err := a.Apply(context.Background(), cs)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.Applied)
+	// Secret deletes go through podman, not file writer
+	assert.Empty(t, fw.removed)
+}
+
 func TestApplySelfRestart(t *testing.T) {
 	t.Parallel()
 	sys := mocks.NewMockSystemdManager(t)

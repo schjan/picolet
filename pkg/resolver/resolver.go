@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"text/template"
@@ -30,17 +31,54 @@ type ResolvedHost struct {
 	Files    []ResolvedFile
 }
 
+// Config holds configuration for creating a Resolver.
+type Config struct {
+	FS           fs.FS
+	Config       *config.Config
+	SecretReader SecretReader
+	Rootless     bool
+}
+
 // Resolver renders templates and resolves the desired state for hosts.
 type Resolver struct {
 	fsys         fs.FS
 	cfg          *config.Config
 	secretReader SecretReader
+	quadletDir   string
+	systemdDir   string
+	dataDir      string
 }
 
 // New creates a new Resolver.
-// Pass nil for secretReader to use placeholder mode (validate/CI).
-func New(fsys fs.FS, cfg *config.Config, secretReader SecretReader) *Resolver {
-	return &Resolver{fsys: fsys, cfg: cfg, secretReader: secretReader}
+// Pass nil for SecretReader to use placeholder mode (validate/CI).
+// When Rootless is true, destination paths use ~/.config/ and ~/.local/share/ instead of /etc/ and /var/lib/.
+func New(rc Config) (*Resolver, error) {
+	quadletDir, systemdDir, dataDir, err := resolveDirs(rc.Rootless)
+	if err != nil {
+		return nil, err
+	}
+	return &Resolver{
+		fsys:         rc.FS,
+		cfg:          rc.Config,
+		secretReader: rc.SecretReader,
+		quadletDir:   quadletDir,
+		systemdDir:   systemdDir,
+		dataDir:      dataDir,
+	}, nil
+}
+
+// resolveDirs computes destination directories based on rootless mode.
+func resolveDirs(rootless bool) (quadletDir, systemdDir, dataDir string, err error) {
+	if !rootless {
+		return "/etc/containers/systemd", "/etc/systemd/system", "/var/lib/picolet", nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", "", fmt.Errorf("getting home directory: %w", err)
+	}
+	return filepath.Join(home, ".config", "containers", "systemd"),
+		filepath.Join(home, ".config", "systemd", "user"),
+		filepath.Join(home, ".local", "share", "picolet"), nil
 }
 
 // ResolveHost computes the complete desired state for a given hostname.
@@ -71,11 +109,11 @@ func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 		cat     string
 		destDir string
 	}{
-		{fileSet.Networks, "network", "/etc/containers/systemd/"},
-		{fileSet.Systemd, "systemd", "/etc/systemd/system/"},
-		{fileSet.Volumes, "volume", "/etc/containers/systemd/"},
-		{fileSet.Containers, "container", "/etc/containers/systemd/"},
-		{fileSet.Kube, "kube", "/etc/containers/systemd/"},
+		{fileSet.Networks, "network", r.quadletDir},
+		{fileSet.Systemd, "systemd", r.systemdDir},
+		{fileSet.Volumes, "volume", r.quadletDir},
+		{fileSet.Containers, "container", r.quadletDir},
+		{fileSet.Kube, "kube", r.quadletDir},
 	}
 	for _, g := range fileGroups {
 		for _, path := range g.paths {
@@ -128,16 +166,17 @@ func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateDa
 		return nil, fmt.Errorf("resolving %s: %w", srcPath, err)
 	}
 
-	// Strip .tmpl extension for destination filename
-	filename := filepath.Base(srcPath)
-	filename = strings.TrimSuffix(filename, ".tmpl")
-
 	return &ResolvedFile{
 		SrcPath:  srcPath,
-		DestPath: destDir + filename,
+		DestPath: filepath.Join(destDir, destFilename(srcPath)),
 		Content:  content,
 		Category: category,
 	}, nil
+}
+
+// destFilename returns the base filename for a source path, stripping any .tmpl suffix.
+func destFilename(srcPath string) string {
+	return strings.TrimSuffix(filepath.Base(srcPath), ".tmpl")
 }
 
 func (r *Resolver) resolveManifest(registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {
@@ -146,9 +185,9 @@ func (r *Resolver) resolveManifest(registry *template.Template, tmplData *Templa
 		return nil, fmt.Errorf("resolving manifest %s: %w", srcPath, err)
 	}
 
-	// manifests/<app>/deployment.yml.tmpl → /var/lib/picolet/manifests/<app>/deployment.yml
+	// manifests/<app>/deployment.yml.tmpl → <dataDir>/manifests/<app>/deployment.yml
 	relPath := strings.TrimSuffix(srcPath, ".tmpl")
-	destPath := "/var/lib/picolet/" + relPath
+	destPath := filepath.Join(r.dataDir, relPath)
 
 	return &ResolvedFile{
 		SrcPath:  srcPath,
@@ -159,15 +198,14 @@ func (r *Resolver) resolveManifest(registry *template.Template, tmplData *Templa
 }
 
 func (r *Resolver) resolveSecret(registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {
-	content, err := r.renderOrRead(registry, tmplData, srcPath)
+	// secrets/prometheus_config.yml.tmpl → secret name "prometheus_config"
+	filename := destFilename(srcPath)
+	secretName := strings.TrimSuffix(filename, filepath.Ext(filename))
+
+	content, err := r.secretContent(registry, tmplData, srcPath, filename)
 	if err != nil {
 		return nil, fmt.Errorf("resolving secret %s: %w", srcPath, err)
 	}
-
-	// secrets/prometheus_config.yml.tmpl → secret name "prometheus_config"
-	filename := filepath.Base(srcPath)
-	filename = strings.TrimSuffix(filename, ".tmpl")
-	secretName := strings.TrimSuffix(filename, filepath.Ext(filename))
 
 	return &ResolvedFile{
 		SrcPath:  srcPath,
@@ -175,6 +213,20 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 		Content:  content,
 		Category: "secret",
 	}, nil
+}
+
+// secretContent returns the content for a secret entry.
+// Template secrets are rendered with the full template engine.
+// Static secrets are read from SecretsDir via secretReader (never from the repo).
+func (r *Resolver) secretContent(registry *template.Template, tmplData *TemplateData, srcPath, filename string) (string, error) {
+	if strings.HasSuffix(srcPath, ".tmpl") {
+		return r.renderOrRead(registry, tmplData, srcPath)
+	}
+	if r.secretReader != nil {
+		return r.secretReader(filename)
+	}
+	slog.Warn("secret reader not configured, using placeholder", "file", srcPath)
+	return "<secret>", nil
 }
 
 func (r *Resolver) renderOrRead(registry *template.Template, tmplData *TemplateData, path string) (string, error) {
