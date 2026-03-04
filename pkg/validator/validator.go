@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
 
@@ -15,11 +15,7 @@ import (
 )
 
 // Validator validates resolved files.
-type Validator struct {
-	mu           sync.Mutex
-	unitsInfo    map[string]*quadlet.UnitInfo
-	currentFiles []resolver.ResolvedFile
-}
+type Validator struct{}
 
 // New creates a new Validator.
 func New() *Validator {
@@ -38,12 +34,10 @@ func (v *Validator) ValidateAll(_ context.Context, r *resolver.Resolver, cfg *co
 			continue
 		}
 
-		// Set current files for cross-reference resolution (unitsInfoMap)
-		v.currentFiles = resolved.Files
-		v.unitsInfo = nil
+		unitsInfo := buildUnitsInfoFromFiles(resolved.Files)
 
 		for _, f := range resolved.Files {
-			if err := v.validateFile(f); err != nil {
+			if err := v.validateFile(f, unitsInfo); err != nil {
 				errs = append(errs, fmt.Errorf("host %s: %s: %w", hostname, f.SrcPath, err))
 			}
 		}
@@ -53,10 +47,10 @@ func (v *Validator) ValidateAll(_ context.Context, r *resolver.Resolver, cfg *co
 	return errors.Join(errs...)
 }
 
-func (v *Validator) validateFile(f resolver.ResolvedFile) error {
+func (v *Validator) validateFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo) error {
 	switch f.Category {
 	case "network", "volume", "container", "kube":
-		return v.validateQuadlet(f.DestPath, []byte(f.Content))
+		return v.validateQuadlet(f.DestPath, []byte(f.Content), unitsInfo)
 	case "manifest":
 		return v.validateManifest(f.DestPath, []byte(f.Content))
 	case "systemd":
@@ -67,6 +61,19 @@ func (v *Validator) validateFile(f resolver.ResolvedFile) error {
 		slog.Warn("unknown file category, skipping validation", "category", f.Category, "path", f.SrcPath)
 		return nil
 	}
+}
+
+// buildUnitsInfoFromFiles builds a UnitInfo map from resolved files for cross-reference resolution.
+func buildUnitsInfoFromFiles(files []resolver.ResolvedFile) map[string]*quadlet.UnitInfo {
+	units := make(map[string]*quadlet.UnitInfo)
+	for _, f := range files {
+		ext := filepath.Ext(f.DestPath)
+		filename := filepath.Base(f.DestPath)
+		if info := BuildUnitInfo(filename, ext); info != nil {
+			units[filename] = info
+		}
+	}
+	return units
 }
 
 func (v *Validator) validateSystemdUnit(path, content string) error {

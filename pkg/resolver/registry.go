@@ -9,6 +9,8 @@ import (
 	"text/template"
 )
 
+const maxTemplateDepth = 10
+
 // SecretReader reads secret file content.
 // Pass nil for placeholder mode (validate/CI).
 type SecretReader func(path string) (string, error)
@@ -16,7 +18,7 @@ type SecretReader func(path string) (string, error)
 // BuildRegistry collects all .tmpl files from the filesystem and builds
 // a shared template registry with custom functions.
 //
-//nolint:cyclop // funcmap registration is inherently branchy
+//nolint:cyclop,funlen // funcmap registration is inherently branchy
 func BuildRegistry(fsys fs.FS, secretReader SecretReader) (*template.Template, error) {
 	sources := make(map[string]string)
 	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
@@ -53,13 +55,23 @@ func BuildRegistry(fsys fs.FS, secretReader SecretReader) (*template.Template, e
 			}
 			return secretReader(path)
 		},
-		"renderTemplate": func(name string, data any) (string, error) {
-			var buf bytes.Buffer
-			if err := root.ExecuteTemplate(&buf, name, data); err != nil {
-				return "", fmt.Errorf("renderTemplate %q: %w", name, err)
+		// renderTemplate uses a closure depth counter to prevent infinite recursion.
+		// Not goroutine-safe; template rendering must be serial.
+		"renderTemplate": func() any {
+			var depth int
+			return func(name string, data any) (string, error) {
+				depth++
+				if depth > maxTemplateDepth {
+					return "", fmt.Errorf("renderTemplate %q: recursion depth exceeded (%d)", name, maxTemplateDepth)
+				}
+				defer func() { depth-- }()
+				var buf bytes.Buffer
+				if err := root.ExecuteTemplate(&buf, name, data); err != nil {
+					return "", fmt.Errorf("renderTemplate %q: %w", name, err)
+				}
+				return buf.String(), nil
 			}
-			return buf.String(), nil
-		},
+		}(),
 		"has": func(item string, list []string) bool {
 			return slices.Contains(list, item)
 		},

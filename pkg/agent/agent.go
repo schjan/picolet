@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/schjan/picolet/pkg/agentcfg"
@@ -158,6 +157,8 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		}
 	}
 
+	metrics.SelfUpdatePending.Set(0)
+
 	// 2. Git poll
 	pollResult, err := poller.Poll(ctx, st.AppliedSHA)
 	if err != nil {
@@ -218,7 +219,12 @@ func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *config.Config, *reso
 		return nil, nil, nil, fmt.Errorf("loading config: %w", err)
 	}
 	secretReader := func(path string) (string, error) {
-		data, err := os.ReadFile(filepath.Join(a.cfg.SecretsDir, path))
+		secretRoot, err := os.OpenRoot(a.cfg.SecretsDir)
+		if err != nil {
+			return "", fmt.Errorf("opening secrets dir: %w", err)
+		}
+		defer secretRoot.Close()
+		data, err := secretRoot.ReadFile(path)
 		if err != nil {
 			return "", err
 		}
@@ -258,6 +264,9 @@ func (a *Agent) reconcile(ctx context.Context, headSHA string, st *state.State, 
 	result, err := a.applyWithRollback(ctx, headSHA, changeset)
 	if err != nil {
 		return err
+	}
+	for _, e := range result.Errors {
+		slog.Warn("non-fatal apply error", "error", e)
 	}
 
 	a.updateState(headSHA, st, changeset)
@@ -359,7 +368,11 @@ func (a *Agent) serveMetrics(ctx context.Context) {
 
 	go func() {
 		<-ctx.Done()
-		srv.Close()
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("metrics server shutdown error", "error", err)
+		}
 	}()
 
 	slog.Info("metrics server starting", "port", a.cfg.MetricsPort)

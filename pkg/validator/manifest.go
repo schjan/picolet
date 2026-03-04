@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"go.yaml.in/yaml/v4"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	sigsyaml "sigs.k8s.io/yaml"
 )
 
@@ -104,11 +106,15 @@ func unmarshalK8sType(kind string, doc []byte) error {
 
 // splitYAMLDocuments splits a multi-document YAML file on "---" separators.
 func splitYAMLDocuments(content []byte) [][]byte {
+	reader := k8syaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(content)))
 	var docs [][]byte
-	for part := range bytes.SplitSeq(content, []byte("\n---")) {
-		trimmed := bytes.TrimSpace(part)
-		if len(trimmed) > 0 {
-			docs = append(docs, part)
+	for {
+		doc, err := reader.Read()
+		if err != nil {
+			break // io.EOF or parse error
+		}
+		if len(bytes.TrimSpace(doc)) > 0 {
+			docs = append(docs, doc)
 		}
 	}
 	return docs

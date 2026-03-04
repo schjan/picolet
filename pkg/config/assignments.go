@@ -1,5 +1,10 @@
 package config
 
+import (
+	"log/slog"
+	"slices"
+)
+
 // Assignments maps pi_type + features to file sets per host.
 type Assignments struct {
 	Base     AssignmentGroup            `yaml:"base"`
@@ -36,13 +41,28 @@ func (a *Assignments) Resolve(host *HostConfig) *ResolvedFileSet {
 	result.merge(a.Base)
 	if group, ok := a.PiTypes[host.PiType]; ok {
 		result.merge(group)
+	} else if host.PiType != "" {
+		slog.Warn("no assignments for pi_type", "pi_type", host.PiType, "host", host.Hostname)
 	}
 	for _, feature := range host.Features {
 		if group, ok := a.Features[feature]; ok {
 			result.merge(group)
+		} else {
+			slog.Warn("no assignments for feature", "feature", feature, "host", host.Hostname)
 		}
 	}
+	result.deduplicate()
 	return result
+}
+
+func (r *ResolvedFileSet) deduplicate() {
+	r.Networks = slices.Compact(slices.Sorted(slices.Values(r.Networks)))
+	r.Systemd = slices.Compact(slices.Sorted(slices.Values(r.Systemd)))
+	r.Volumes = slices.Compact(slices.Sorted(slices.Values(r.Volumes)))
+	r.Containers = slices.Compact(slices.Sorted(slices.Values(r.Containers)))
+	r.Kube = slices.Compact(slices.Sorted(slices.Values(r.Kube)))
+	r.Manifests = slices.Compact(slices.Sorted(slices.Values(r.Manifests)))
+	r.Secrets = slices.Compact(slices.Sorted(slices.Values(r.Secrets)))
 }
 
 func (r *ResolvedFileSet) merge(g AssignmentGroup) {

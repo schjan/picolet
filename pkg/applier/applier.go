@@ -53,6 +53,7 @@ var categoryOrder = map[string]int{
 	"manifest":  4,
 	"container": 5,
 	"kube":      6,
+	"unknown":   7,
 }
 
 // Applier applies a changeset to the system.

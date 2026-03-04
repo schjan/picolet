@@ -10,7 +10,7 @@ import (
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
 )
 
-func (v *Validator) validateQuadlet(path string, content []byte) error {
+func (v *Validator) validateQuadlet(path string, content []byte, unitsInfoMap map[string]*quadlet.UnitInfo) error {
 	ext := filepath.Ext(path)
 	filename := filepath.Base(path)
 
@@ -20,7 +20,6 @@ func (v *Validator) validateQuadlet(path string, content []byte) error {
 		return fmt.Errorf("%s: parse: %w", path, err)
 	}
 
-	unitsInfoMap := v.unitsInfoMap()
 	// Ensure the unit being validated is in the map (required by Podman's converter)
 	if _, ok := unitsInfoMap[filename]; !ok {
 		unitsInfoMap[filename] = BuildUnitInfo(filename, ext)
@@ -49,27 +48,6 @@ func (v *Validator) validateQuadlet(path string, content []byte) error {
 		return fmt.Errorf("%s: %w", path, convertErr)
 	}
 	return nil
-}
-
-// unitsInfoMap builds the UnitInfo map from all resolved files for the current host.
-// This allows Podman's converter to resolve cross-references between units
-// (e.g., a .container referencing a .network or .volume).
-func (v *Validator) unitsInfoMap() map[string]*quadlet.UnitInfo {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.unitsInfo != nil {
-		return v.unitsInfo
-	}
-
-	v.unitsInfo = make(map[string]*quadlet.UnitInfo)
-	for _, f := range v.currentFiles {
-		ext := filepath.Ext(f.DestPath)
-		filename := filepath.Base(f.DestPath)
-		if info := BuildUnitInfo(filename, ext); info != nil {
-			v.unitsInfo[filename] = info
-		}
-	}
-	return v.unitsInfo
 }
 
 // UnitNameFromPath returns the systemd unit name for a quadlet destination path.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -42,8 +43,14 @@ func New(repoURL, branch, localPath, tokenPath string) *Poller {
 func (p *Poller) Init(ctx context.Context) error {
 	repo, err := git.PlainOpen(p.localPath)
 	if err == nil {
-		p.repo = repo
-		return p.fetch(ctx)
+		if !p.verifyRemote(repo) {
+			if err := os.RemoveAll(p.localPath); err != nil {
+				return fmt.Errorf("removing stale clone: %w", err)
+			}
+		} else {
+			p.repo = repo
+			return p.fetch(ctx)
+		}
 	}
 
 	auth, err := p.auth()
@@ -145,4 +152,20 @@ func (p *Poller) auth() (*http.BasicAuth, error) {
 		Username: "x",
 		Password: token,
 	}, nil
+}
+
+// verifyRemote checks that the existing clone's origin URL matches the expected repo URL.
+func (p *Poller) verifyRemote(repo *git.Repository) bool {
+	remote, err := repo.Remote("origin")
+	if err != nil || len(remote.Config().URLs) == 0 {
+		slog.Warn("existing repo has no origin remote, re-cloning")
+		return false
+	}
+	if remote.Config().URLs[0] != p.repoURL {
+		slog.Warn("existing repo has wrong remote, re-cloning",
+			"expected", p.repoURL,
+			"got", remote.Config().URLs[0])
+		return false
+	}
+	return true
 }

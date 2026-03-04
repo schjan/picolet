@@ -1,6 +1,9 @@
 package resolver
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 	"testing/fstest"
 
@@ -165,4 +168,39 @@ func TestTemplateDataFields(t *testing.T) {
 		assert.Equal(t, "monitoring_server", data.Host.PiType)
 		assert.Equal(t, "gateway.ts.net", data.Host.ExternalHostname)
 	})
+}
+
+func TestRenderTemplateRecursion(t *testing.T) {
+	t.Parallel()
+	// Two templates that reference each other to trigger infinite recursion.
+	fsys := fstest.MapFS{
+		"a.tmpl": &fstest.MapFile{Data: []byte(`{{renderTemplate "b.tmpl" .}}`)},
+		"b.tmpl": &fstest.MapFile{Data: []byte(`{{renderTemplate "a.tmpl" .}}`)},
+	}
+	registry, err := BuildRegistry(fsys, nil)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	err = registry.ExecuteTemplate(&buf, "a.tmpl", nil)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "recursion depth exceeded")
+}
+
+func TestSecretPathTraversal(t *testing.T) {
+	t.Parallel()
+	secretsDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(secretsDir, "valid.txt"), []byte("secret"), 0o600))
+
+	secretRoot, err := os.OpenRoot(secretsDir)
+	require.NoError(t, err)
+	defer secretRoot.Close()
+
+	// Valid read should succeed
+	data, err := secretRoot.ReadFile("valid.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "secret", string(data))
+
+	// Path traversal should fail
+	_, err = secretRoot.ReadFile("../../etc/passwd")
+	require.Error(t, err)
 }

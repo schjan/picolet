@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -78,31 +79,41 @@ func writeTestFile(t *testing.T, root, path, content string) {
 	require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
 }
 
-func newTestMocks(t *testing.T) (*mocks.MockSystemdManager, *mocks.MockPodmanClient, *mocks.MockFileWriter, map[string][]byte) {
+func newBareMocks(t *testing.T) (*mocks.MockSystemdManager, *mocks.MockPodmanClient, *mocks.MockFileWriter) {
 	t.Helper()
-	sys := mocks.NewMockSystemdManager(t)
+	return mocks.NewMockSystemdManager(t), mocks.NewMockPodmanClient(t), mocks.NewMockFileWriter(t)
+}
+
+// setupApplyMocks configures mocks for a test that expects a successful apply
+// (health check + write files + daemon-reload + restart units).
+func setupApplyMocks(sys *mocks.MockSystemdManager, pod *mocks.MockPodmanClient, fw *mocks.MockFileWriter) map[string][]byte {
+	// Health check
 	sys.EXPECT().IsActive(mock.Anything, mock.Anything).Return(true, nil).Maybe()
-	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
-	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-	sys.EXPECT().StartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
 	sys.EXPECT().GetUnitState(mock.Anything, mock.Anything).Return("active", nil).Maybe()
 
-	pod := mocks.NewMockPodmanClient(t)
+	// Apply phase
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
+	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	// Podman (unused in network-only test, but allowed)
 	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
-	pod.EXPECT().SecretCreate(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
-	pod.EXPECT().RunHealthcheck(mock.Anything, mock.Anything).Return(true, nil).Maybe()
-	pod.EXPECT().GetPodState(mock.Anything, mock.Anything).Return("Running", nil).Maybe()
 
 	written := make(map[string][]byte)
-	fw := mocks.NewMockFileWriter(t)
 	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).RunAndReturn(func(path string, content []byte) error {
 		written[path] = content
 		return nil
 	}).Maybe()
 	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
 	fw.EXPECT().Remove(mock.Anything).Return(nil).Maybe()
+	return written
+}
 
-	return sys, pod, fw, written
+// setupNoopMocks configures mocks for a test that should NOT write any files.
+// Only health checks are expected.
+func setupNoopMocks(sys *mocks.MockSystemdManager, pod *mocks.MockPodmanClient) {
+	sys.EXPECT().IsActive(mock.Anything, mock.Anything).Return(true, nil).Maybe()
+	sys.EXPECT().GetUnitState(mock.Anything, mock.Anything).Return("active", nil).Maybe()
+	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
 }
 
 func TestAgentFullCycle(t *testing.T) {
@@ -114,7 +125,8 @@ func TestAgentFullCycle(t *testing.T) {
 
 	metrics.Register()
 
-	sys, pod, fw, written := newTestMocks(t)
+	sys, pod, fw := newBareMocks(t)
+	written := setupApplyMocks(sys, pod, fw)
 
 	cfg := &agentcfg.Config{
 		Hostname:     "test-host",
@@ -158,7 +170,10 @@ func TestAgentDryRun(t *testing.T) {
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
-	sys, pod, fw, written := newTestMocks(t)
+	sys, pod, fw := newBareMocks(t)
+	// Dry-run: health checks happen, but no writes/restarts
+	setupNoopMocks(sys, pod)
+	written := make(map[string][]byte)
 
 	cfg := &agentcfg.Config{
 		Hostname:     "test-host",
@@ -193,7 +208,6 @@ func TestAgentDryRun(t *testing.T) {
 	assert.Empty(t, written, "dry-run should not write files")
 }
 
-//nolint:dupl // similar to TestAgentRetriesFailedSHA by necessity
 func TestAgentSkipsFailedSHA(t *testing.T) {
 	t.Parallel()
 	bareDir := initTestRepo(t)
@@ -201,7 +215,10 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 	stateDir := t.TempDir()
 	statePath := filepath.Join(stateDir, "state.json")
 
-	sys, pod, fw, written := newTestMocks(t)
+	sys, pod, fw := newBareMocks(t)
+	// Skipped SHA: health checks only, no writes expected
+	setupNoopMocks(sys, pod)
+	written := make(map[string][]byte)
 
 	cfg := &agentcfg.Config{
 		Hostname:     "test-host",
@@ -250,7 +267,6 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 	assert.Empty(t, written, "should not write files for permanently failed SHA")
 }
 
-//nolint:dupl // similar to TestAgentSkipsFailedSHA by necessity
 func TestAgentRetriesFailedSHA(t *testing.T) {
 	t.Parallel()
 	bareDir := initTestRepo(t)
@@ -258,7 +274,8 @@ func TestAgentRetriesFailedSHA(t *testing.T) {
 	stateDir := t.TempDir()
 	statePath := filepath.Join(stateDir, "state.json")
 
-	sys, pod, fw, written := newTestMocks(t)
+	sys, pod, fw := newBareMocks(t)
+	written := setupApplyMocks(sys, pod, fw)
 
 	cfg := &agentcfg.Config{
 		Hostname:     "test-host",
@@ -305,4 +322,63 @@ func TestAgentRetriesFailedSHA(t *testing.T) {
 
 	// Should have written files (reconciliation proceeded)
 	assert.Contains(t, written, "/etc/containers/systemd/internal.network")
+}
+
+func TestAgentRollbackOnApplyFailure(t *testing.T) {
+	t.Parallel()
+	bareDir := initTestRepo(t)
+	repoDir := filepath.Join(t.TempDir(), "clone")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+
+	metrics.Register()
+
+	sys, pod, fw := newBareMocks(t)
+
+	// Health checks
+	sys.EXPECT().IsActive(mock.Anything, mock.Anything).Return(true, nil).Maybe()
+	sys.EXPECT().GetUnitState(mock.Anything, mock.Anything).Return("active", nil).Maybe()
+	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
+
+	// WriteFile always fails to trigger rollback
+	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(fmt.Errorf("simulated disk error")).Maybe()
+	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
+	fw.EXPECT().Remove(mock.Anything).Return(nil).Maybe()
+
+	// Rollback daemon-reload
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
+
+	cfg := &agentcfg.Config{
+		Hostname:     "test-host",
+		RepoURL:      bareDir,
+		RepoBranch:   "master",
+		PollInterval: time.Second,
+		MetricsPort:  0,
+		SecretsDir:   t.TempDir(),
+	}
+
+	a := New(cfg,
+		WithSystemd(sys),
+		WithPodman(pod),
+		WithFileWriter(fw),
+		WithRepoPath(repoDir),
+		WithStatePath(statePath),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- a.Run(ctx)
+	}()
+
+	<-ctx.Done()
+	require.NoError(t, <-errCh)
+
+	// Verify state was saved with failure info (not successful apply)
+	store := state.NewStore(statePath)
+	st, err := store.Load()
+	require.NoError(t, err)
+	assert.NotEmpty(t, st.FailedSHA, "failed SHA should be recorded after apply failure")
+	assert.Empty(t, st.AppliedSHA, "applied SHA should not be set after failed apply")
 }

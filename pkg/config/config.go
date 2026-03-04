@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"maps"
 	"slices"
 
@@ -62,6 +63,13 @@ func loadHosts(fsys fs.FS) (map[string]*HostConfig, error) {
 		host, err := loadYAML[HostConfig](fsys, hostPath)
 		if err != nil {
 			return nil, fmt.Errorf("loading %s: %w", hostPath, err)
+		}
+		if err := host.Validate(); err != nil {
+			return nil, fmt.Errorf("host %s: %w", name, err)
+		}
+		if host.Hostname != name {
+			slog.Warn("hostname in host.yml does not match directory name",
+				"dir", name, "hostname", host.Hostname)
 		}
 		hosts[name] = host
 	}

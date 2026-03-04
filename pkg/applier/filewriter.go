@@ -15,9 +15,13 @@ func NewAtomicFileWriter() *AtomicFileWriter {
 	return &AtomicFileWriter{}
 }
 
+// filePerm for quadlet/systemd files; must be world-readable.
+// Secrets are managed via the Podman API, not written to disk.
+const filePerm = 0o644
+
 func (w *AtomicFileWriter) WriteFile(path string, content []byte) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, content, 0o600); err != nil {
+	if err := os.WriteFile(tmp, content, filePerm); err != nil {
 		return fmt.Errorf("writing %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {

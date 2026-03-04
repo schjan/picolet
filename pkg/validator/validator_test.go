@@ -3,6 +3,7 @@ package validator
 import (
 	"testing"
 
+	"github.com/containers/podman/v5/pkg/systemd/quadlet"
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/pkg/resolver"
@@ -68,8 +69,8 @@ Network=nonexistent.network
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			v := New()
-			v.currentFiles = tt.files
-			err := v.validateQuadlet(tt.path, []byte(tt.content))
+			unitsInfo := buildUnitsInfoFromFiles(tt.files)
+			err := v.validateQuadlet(tt.path, []byte(tt.content), unitsInfo)
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errMsg != "" {
@@ -93,28 +94,29 @@ Network=internal.network
 [Install]
 WantedBy=default.target
 `
-	v.currentFiles = []resolver.ResolvedFile{
+	files := []resolver.ResolvedFile{
 		{DestPath: "/etc/containers/systemd/internal.network", Category: "network"},
 	}
-	require.NoError(t, v.validateQuadlet("/etc/containers/systemd/test.kube", []byte(valid)))
+	unitsInfo := buildUnitsInfoFromFiles(files)
+	require.NoError(t, v.validateQuadlet("/etc/containers/systemd/test.kube", []byte(valid), unitsInfo))
 
 	v2 := New()
 	noYaml := "[Kube]\nNetwork=internal.network\n"
-	require.Error(t, v2.validateQuadlet("/etc/containers/systemd/test.kube", []byte(noYaml)))
+	require.Error(t, v2.validateQuadlet("/etc/containers/systemd/test.kube", []byte(noYaml), make(map[string]*quadlet.UnitInfo)))
 }
 
 func TestValidateQuadletNetwork(t *testing.T) {
 	t.Parallel()
 	v := New()
 	valid := "[Network]\nInternal=true\n"
-	require.NoError(t, v.validateQuadlet("/etc/containers/systemd/test.network", []byte(valid)))
+	require.NoError(t, v.validateQuadlet("/etc/containers/systemd/test.network", []byte(valid), make(map[string]*quadlet.UnitInfo)))
 }
 
 func TestValidateQuadletVolume(t *testing.T) {
 	t.Parallel()
 	v := New()
 	valid := "[Volume]\n"
-	require.NoError(t, v.validateQuadlet("/etc/containers/systemd/test.volume", []byte(valid)))
+	require.NoError(t, v.validateQuadlet("/etc/containers/systemd/test.volume", []byte(valid), make(map[string]*quadlet.UnitInfo)))
 }
 
 //nolint:funlen // table-driven validation test
@@ -230,4 +232,19 @@ func TestValidateSystemdUnit(t *testing.T) {
 
 	noSection := "ListenStream=80"
 	require.Error(t, v.validateSystemdUnit("test.socket", noSection))
+}
+
+func TestSplitYAMLDocumentsLeadingSeparator(t *testing.T) {
+	t.Parallel()
+	content := []byte("---\napiVersion: v1\nkind: Pod\nmetadata:\n  name: test\n")
+	docs := splitYAMLDocuments(content)
+	require.Len(t, docs, 1)
+	require.Contains(t, string(docs[0]), "apiVersion: v1")
+}
+
+func TestSplitYAMLDocumentsMulti(t *testing.T) {
+	t.Parallel()
+	content := []byte("---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n---\napiVersion: v1\nkind: Pod\nmetadata:\n  name: b\n")
+	docs := splitYAMLDocuments(content)
+	require.Len(t, docs, 2)
 }

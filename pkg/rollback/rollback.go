@@ -2,6 +2,7 @@ package rollback
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -65,28 +66,30 @@ func (m *Manager) Create(cs *reconciler.Changeset, diskReader DiskReader) (*Snap
 }
 
 // Restore reverts files to their snapshot state and runs daemon-reload.
+// Collects all errors instead of aborting on first failure to maximize recovery.
 func (m *Manager) Restore(ctx context.Context, snap *Snapshot) error {
+	var errs []error
 	for path, content := range snap.Files {
 		if content == nil {
-			// File was created — remove it
 			slog.Info("rollback: removing", "path", path)
 			if err := m.writer.Remove(path); err != nil {
 				slog.Error("rollback: remove failed", "path", path, "error", err)
+				errs = append(errs, fmt.Errorf("removing %s: %w", path, err))
 			}
 			continue
 		}
 
-		// File was modified or deleted — restore original content
 		slog.Info("rollback: restoring", "path", path)
 		if err := m.writer.WriteFile(path, content); err != nil {
-			return fmt.Errorf("rollback: restoring %s: %w", path, err)
+			slog.Error("rollback: restore failed", "path", path, "error", err)
+			errs = append(errs, fmt.Errorf("restoring %s: %w", path, err))
 		}
 	}
 
 	slog.Info("rollback: running daemon-reload")
 	if err := m.systemd.DaemonReload(ctx); err != nil {
-		return fmt.Errorf("rollback: daemon-reload: %w", err)
+		errs = append(errs, fmt.Errorf("daemon-reload: %w", err))
 	}
 
-	return nil
+	return errors.Join(errs...)
 }

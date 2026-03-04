@@ -36,11 +36,15 @@ func (m *DBusSystemdManager) StartUnit(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("starting %s: %w", name, err)
 	}
-	result := <-ch
-	if result != "done" {
-		return fmt.Errorf("starting %s: job result %q", name, result)
+	select {
+	case result := <-ch:
+		if result != "done" {
+			return fmt.Errorf("starting %s: job result %q", name, result)
+		}
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("starting %s: %w", name, ctx.Err())
 	}
-	return nil
 }
 
 func (m *DBusSystemdManager) RestartUnit(ctx context.Context, name string) error {
@@ -49,11 +53,15 @@ func (m *DBusSystemdManager) RestartUnit(ctx context.Context, name string) error
 	if err != nil {
 		return fmt.Errorf("restarting %s: %w", name, err)
 	}
-	result := <-ch
-	if result != "done" {
-		return fmt.Errorf("restarting %s: job result %q", name, result)
+	select {
+	case result := <-ch:
+		if result != "done" {
+			return fmt.Errorf("restarting %s: job result %q", name, result)
+		}
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("restarting %s: %w", name, ctx.Err())
 	}
-	return nil
 }
 
 func (m *DBusSystemdManager) GetUnitState(ctx context.Context, name string) (string, error) {
