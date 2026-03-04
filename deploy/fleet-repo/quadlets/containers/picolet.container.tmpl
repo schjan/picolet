@@ -1,0 +1,62 @@
+[Unit]
+Description=Picolet GitOps Agent
+Documentation=https://github.com/schjan/picolet
+# Ensure Podman socket and network are available before starting.
+After=network-online.target podman.socket
+Wants=network-online.target podman.socket
+
+[Container]
+Image={{ index .Images "picolet" }}
+ContainerName=picolet
+
+# Run as root: required to write to /etc/containers/systemd/, /etc/systemd/system/,
+# and to access Podman and D-Bus system sockets.
+User=root
+
+# Configuration (read-only) and state/repo/manifests (read-write)
+Volume=/etc/picolet:/etc/picolet:ro,z
+Volume=/var/lib/picolet:/var/lib/picolet:z
+
+# Quadlet and systemd unit directories picolet manages on the host
+Volume=/etc/containers/systemd:/etc/containers/systemd:z
+Volume=/etc/systemd/system:/etc/systemd/system:z
+
+# D-Bus and Podman sockets — no :z label: socket files on tmpfs don't need SELinux relabeling
+Volume=/run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+Volume=/run/podman/podman.sock:/run/podman/podman.sock
+
+# Host networking: picolet binds metrics server on the host's port 9417 directly.
+# PublishPort is omitted — it is meaningless (and generates warnings) with Network=host.
+Network=host
+
+Environment=PICOLET_CONFIG=/etc/picolet/config.yml
+
+# Podman-level restart policy
+Restart=always
+RestartSec=10s
+
+# Grace period: 30s for picolet to save state + remove lock before Podman sends SIGKILL.
+# TimeoutStopSec=40 in [Service] gives Podman a 10s buffer to clean up after container exits.
+StopTimeout=30
+
+# Liveness probe using the healthcheck subcommand.
+# Absolute path required: distroless image has no PATH resolution.
+HealthCmd=/picolet healthcheck
+HealthInterval=30s
+HealthRetries=3
+# 90s start period for slow RPi startups (git clone on first run can take time)
+HealthStartPeriod=90s
+HealthTimeout=5s
+# restart (not kill): graceful Podman restart preserves systemd's RestartSec backoff.
+# kill sends SIGKILL directly, risking stale lock files on disk.
+HealthOnFailure=restart
+
+[Service]
+# systemd-level restart for the Podman wrapper process itself (separate from container restart).
+Restart=on-failure
+TimeoutStartSec=90
+# Must exceed StopTimeout (30) + Podman cleanup time. 40s provides a 10s buffer.
+TimeoutStopSec=40
+
+[Install]
+WantedBy=default.target

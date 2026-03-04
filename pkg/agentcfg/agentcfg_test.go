@@ -39,6 +39,7 @@ secrets_dir: /run/secrets
 				PollInterval: 30 * time.Second,
 				MetricsPort:  9418,
 				SecretsDir:   "/run/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
 			},
 		},
 		{
@@ -54,6 +55,7 @@ repo_url: https://github.com/example/fleet.git
 				PollInterval: 60 * time.Second,
 				MetricsPort:  9417,
 				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
 			},
 		},
 		{

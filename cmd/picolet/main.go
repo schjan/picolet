@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/urfave/cli/v3"
 
@@ -92,6 +94,21 @@ func main() {
 				},
 			},
 			{
+				Name:  "healthcheck",
+				Usage: "probe the running agent's health endpoint (for container healthcheck use)",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:    "config",
+						Value:   "/etc/picolet/config.yml",
+						Usage:   "agent config file (to read metrics port)",
+						Sources: cli.EnvVars("PICOLET_CONFIG"),
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return runHealthcheck(ctx, cmd.String("config"))
+				},
+			},
+			{
 				Name:  "dry-run",
 				Usage: "simulate reconciliation without applying changes",
 				Flags: []cli.Flag{
@@ -146,14 +163,14 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 	metrics.Register()
 
 	// Connect to systemd D-Bus
-	systemd, err := applier.NewDBusSystemdManager(ctx)
+	systemd, err := applier.NewDBusSystemdManager(ctx, cfg.Rootless)
 	if err != nil {
 		return fmt.Errorf("connecting to systemd: %w", err)
 	}
 	defer systemd.Close()
 
 	// Connect to Podman socket
-	podman, err := applier.NewSocketPodmanClient(ctx, "/run/podman/podman.sock")
+	podman, err := applier.NewSocketPodmanClient(ctx, cfg.PodmanSocket)
 	if err != nil {
 		return fmt.Errorf("connecting to podman: %w", err)
 	}
@@ -248,6 +265,32 @@ func runResolve(repoDir, host string) error {
 	}
 	for _, f := range resolved.Files {
 		fmt.Printf("=== %s ===\n%s\n", f.DestPath, f.Content)
+	}
+	return nil
+}
+
+func runHealthcheck(_ context.Context, configPath string) error {
+	cfg, err := agentcfg.Load(configPath)
+	if err != nil {
+		return err
+	}
+	// 5s timeout: must complete well within HealthTimeout in the Quadlet.
+	// Uses Background() instead of the parent signal context so SIGTERM during
+	// container shutdown doesn't spuriously cancel the probe.
+	checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	url := fmt.Sprintf("http://localhost:%d/health", cfg.MetricsPort)
+	req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, url, nil) //nolint:contextcheck // intentional detached context — health probe must not inherit signal cancellation
+	if err != nil {
+		return fmt.Errorf("building health check request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // URL is localhost:port from trusted config
+	if err != nil {
+		return fmt.Errorf("health check failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unhealthy: status %d", resp.StatusCode)
 	}
 	return nil
 }

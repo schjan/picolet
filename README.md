@@ -52,6 +52,92 @@ Picolet uses the Podman Go bindings (`pkg/bindings`) as a pure socket client. Th
 
 These tags are also set in the `Containerfile` and `.github/workflows/ci.yml`.
 
+## Deployment
+
+Picolet manages itself via GitOps. Bootstrap gets it running; after that, the fleet git repo controls everything — including picolet's own version.
+
+### 1. Create a Fleet Repository
+
+Use `deploy/fleet-repo/` as a starting point. Your fleet repo needs:
+
+- `fleet.yml` — image versions and ports
+- `assignments.yml` — which files go to which hosts
+- `hosts/<hostname>/host.yml` — per-host config
+- `quadlets/containers/picolet.container.tmpl` — picolet's own Quadlet
+
+See `deploy/fleet-repo/` for a complete example.
+
+### 2. Bootstrap a Host
+
+#### Rootful (production)
+
+```bash
+# 1. Install Podman
+sudo apt install podman
+
+# 2. Create agent config
+sudo mkdir -p /etc/picolet/secrets
+sudo tee /etc/picolet/config.yml << EOF
+hostname: "my-pi"
+repo_url: "https://github.com/yourorg/fleet.git"
+git_token_path: "/etc/picolet/secrets/git_token"
+EOF
+echo "ghp_yourtoken" | sudo tee /etc/picolet/secrets/git_token > /dev/null
+sudo chmod 600 /etc/picolet/config.yml /etc/picolet/secrets/git_token
+
+# 3. Run bootstrap
+sudo bash deploy/bootstrap/bootstrap.sh
+```
+
+#### Rootless (dev/test)
+
+```bash
+# 1. Create agent config
+mkdir -p ~/.config/picolet/secrets
+cat > ~/.config/picolet/config.yml << EOF
+hostname: "my-pi"
+repo_url: "https://github.com/yourorg/fleet.git"
+rootless: true
+git_token_path: "/etc/picolet/secrets/git_token"
+EOF
+echo "ghp_yourtoken" > ~/.config/picolet/secrets/git_token
+chmod 600 ~/.config/picolet/config.yml ~/.config/picolet/secrets/git_token
+
+# 2. Run bootstrap (no sudo)
+bash deploy/bootstrap/bootstrap-rootless.sh
+```
+
+### 3. What Happens Next
+
+1. Picolet starts and clones your fleet repo
+2. First reconcile: picolet replaces the bootstrap container file with the fleet template version → **one-time self-restart** (expected)
+3. After restart: picolet is fully self-managed via GitOps
+
+### 4. Updating Picolet
+
+Bump the image version in your fleet repo's `fleet.yml`:
+
+```yaml
+images:
+  picolet: "ghcr.io/schjan/picolet:v0.2.0"  # was v0.1.0
+```
+
+Push to git. Picolet detects the change, writes the updated Quadlet, and restarts itself with the new image.
+
+### 5. Monitoring
+
+```bash
+# Logs (rootful / rootless)
+journalctl -fu picolet.service
+journalctl --user -fu picolet.service
+
+# Prometheus metrics
+curl http://localhost:9417/metrics
+
+# Health check
+curl http://localhost:9417/health
+```
+
 ## Architecture
 
 ### Config Files (in fleet repo)

@@ -1,0 +1,17 @@
+base: {}
+
+pi_types:
+  # Production: rootful Podman, system-level systemd
+  worker:
+    containers:
+      - quadlets/containers/picolet.container.tmpl
+  controller:
+    containers:
+      - quadlets/containers/picolet.container.tmpl
+
+  # Dev/test: rootless Podman, user-level systemd
+  test:
+    containers:
+      - quadlets/rootless/picolet.container.tmpl
+
+features: {}

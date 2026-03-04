@@ -113,8 +113,8 @@ func TestApplySelfRestart(t *testing.T) {
 	t.Parallel()
 	sys := mocks.NewMockSystemdManager(t)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
-	// picolet.service is restarted last
-	sys.EXPECT().RestartUnit(mock.Anything, "picolet.service").Return(nil)
+	// goroutine fires asynchronously after Apply() returns; may or may not complete before test cleanup
+	sys.EXPECT().RestartUnit(mock.Anything, "picolet.service").Return(nil).Maybe()
 	pod := mocks.NewMockPodmanClient(t)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
@@ -129,6 +129,7 @@ func TestApplySelfRestart(t *testing.T) {
 	result, err := a.Apply(context.Background(), cs)
 	require.NoError(t, err)
 	assert.True(t, result.NeedsSelfRestart)
+	assert.Contains(t, result.RestartedUnits, "picolet.service")
 }
 
 func TestApplySecretReplace(t *testing.T) {

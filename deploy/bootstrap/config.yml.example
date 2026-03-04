@@ -1,0 +1,30 @@
+# Agent runtime configuration
+# Rootful: /etc/picolet/config.yml
+# Rootless: ~/.config/picolet/config.yml
+
+# Required: must exactly match hosts/<name>/host.yml in the fleet repo
+hostname: "rpi5-1"
+
+# Required: HTTPS URL (SSH is not supported)
+repo_url: "https://github.com/yourorg/your-fleet-repo.git"
+
+repo_branch: "main"
+poll_interval: "60s"
+metrics_port: 9417
+secrets_dir: "/etc/picolet/secrets"
+
+# Rootless mode: use session D-Bus instead of system D-Bus.
+# Set to true when running picolet as a rootless Podman container.
+# Default: false (rootful)
+rootless: false
+
+# Podman API socket path (inside the container).
+# Default: /run/podman/podman.sock (correct for both modes — volume mounts handle it)
+# podman_socket: "/run/podman/podman.sock"
+
+# GitHub authentication (for private repos):
+# Create a PAT with Contents: Read-only scope:
+#   Rootful:  echo "ghp_..." > /etc/picolet/secrets/git_token && chmod 600 ...
+#   Rootless: echo "ghp_..." > ~/.config/picolet/secrets/git_token && chmod 600 ...
+git_token_path: "/etc/picolet/secrets/git_token"
+# For public repos: omit or leave empty
