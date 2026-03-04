@@ -197,15 +197,15 @@ func (r *Resolver) resolveManifest(registry *template.Template, tmplData *Templa
 }
 
 func (r *Resolver) resolveSecret(registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {
-	content, err := r.renderOrRead(registry, tmplData, srcPath)
-	if err != nil {
-		return nil, fmt.Errorf("resolving secret %s: %w", srcPath, err)
-	}
-
 	// secrets/prometheus_config.yml.tmpl → secret name "prometheus_config"
 	filename := filepath.Base(srcPath)
 	filename = strings.TrimSuffix(filename, ".tmpl")
 	secretName := strings.TrimSuffix(filename, filepath.Ext(filename))
+
+	content, err := r.secretContent(registry, tmplData, srcPath, filename)
+	if err != nil {
+		return nil, fmt.Errorf("resolving secret %s: %w", srcPath, err)
+	}
 
 	return &ResolvedFile{
 		SrcPath:  srcPath,
@@ -213,6 +213,20 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 		Content:  content,
 		Category: "secret",
 	}, nil
+}
+
+// secretContent returns the content for a secret entry.
+// Template secrets are rendered with the full template engine.
+// Static secrets are read from SecretsDir via secretReader (never from the repo).
+func (r *Resolver) secretContent(registry *template.Template, tmplData *TemplateData, srcPath, filename string) (string, error) {
+	if strings.HasSuffix(srcPath, ".tmpl") {
+		return r.renderOrRead(registry, tmplData, srcPath)
+	}
+	if r.secretReader != nil {
+		return r.secretReader(filename)
+	}
+	slog.Warn("secret reader not configured, using placeholder", "file", srcPath)
+	return "<secret>", nil
 }
 
 func (r *Resolver) renderOrRead(registry *template.Template, tmplData *TemplateData, path string) (string, error) {
