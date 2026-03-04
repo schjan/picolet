@@ -1,53 +1,115 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## Project
 
-Picolet is a single-binary GitOps agent for managing Podman Quadlet files on Raspberry Pi fleets.
+Picolet is a single-binary GitOps agent for managing Podman Quadlet files on Raspberry Pi fleets. Think Flux/ArgoCD, but for hosts running Podman instead of Kubernetes.
 
 Module path: `github.com/schjan/picolet`
 
-## Build
+## Build & Test
 
-Picolet requires CGO_ENABLED=0 and specific build tags because it depends on `containers/podman/v5` but only uses the remote (socket) client. Without these tags, the build pulls in C libraries (gpgme, btrfs, devicemapper) that aren't needed.
+Requires [Task](https://taskfile.dev/) runner. All commands use shared build tags defined in `Taskfile.yml`.
+
+```bash
+task build          # native binary
+task build-arm64    # cross-compile for RPi (linux/arm64)
+task test           # all tests with -race -count=1
+task lint           # golangci-lint (v2 config in .golangci.yml)
+task lint:fix       # golangci-lint with --fix
+task fmt            # run all formatters (gofumpt + gci) via golangci-lint fmt
+```
+
+**Without Task** (build tags are required because podman/v5 otherwise pulls in C libraries):
 
 ```bash
 CGO_ENABLED=0 go build -tags "remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper" -o picolet ./cmd/picolet
-```
-
-## Test
-
-```bash
 go test -tags "remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper" ./... -race -count=1
 ```
 
-## Lint
+**Run a single test:**
 
 ```bash
-go vet -tags "remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper" ./...
-gofmt -l .
+go test -tags "remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper" ./pkg/reconciler -run TestDiffDetectsUpdatedFile -race -count=1
 ```
 
-## Package Architecture
+**Update golden files** (used in integration tests via `goldie`):
 
-- `cmd/picolet` — CLI entry point (urfave/cli v3), defines `run`, `validate`, `resolve` commands
-- `pkg/agent` — Main reconciliation loop: poll → resolve → reconcile → apply → health check
-- `pkg/agentcfg` — Agent configuration loading from YAML
-- `pkg/applier` — Phased applier: writes files, reloads systemd, restarts pods (file → systemd → podman)
-- `pkg/config` — Fleet config loading: fleet.yml, assignments.yml, host.yml
-- `pkg/gitpoll` — Git repository polling and clone/pull with change detection
-- `pkg/health` — Post-apply health checking for managed systemd units
-- `pkg/metrics` — Prometheus metrics (reconciliation counts, errors, durations)
-- `pkg/reconciler` — Computes diff between desired state and current on-disk state
-- `pkg/resolver` — Template rendering and file resolution per host
-- `pkg/rollback` — Snapshot current state before apply, restore on failure
-- `pkg/state` — Persistent state store (last applied commit, file hashes)
-- `pkg/validator` — Validates quadlet files (via podman library), K8s manifests (via k8s.io/api), systemd units
+```bash
+go test -tags "remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper" ./... -update
+```
 
-## Key Dependencies
+## Code Style & Linting
 
-- `containers/podman/v5` — Quadlet validation (uses `quadlet.Convert*()` functions)
-- `k8s.io/api` — Strict K8s manifest validation via real API types
-- `go-git/go-git/v5` — Git clone/pull without shelling out
-- `coreos/go-systemd/v22` — D-Bus systemd control
-- `prometheus/client_golang` — Metrics exposition
-- `urfave/cli/v3` — CLI framework
+- **Formatters**: `gofumpt` + `gci` (import grouping: stdlib / external / localmodule) — run `task fmt` to apply automatically, never reorder imports by hand
+- **Aggressive linters**: `cyclop`, `funlen`, `nestif`, `gosec`, `ireturn`, `dupl`, `containedctx`, `contextcheck` — use `//nolint:lintername` with an explanation comment when suppression is justified
+- All tests must use `t.Parallel()` (enforced by `tparallel` linter)
+
+## Architecture
+
+### Reconciliation Pipeline
+
+The agent runs a timer-based loop (`pkg/agent`). Each tick:
+
+1. **Health enforce** — restart inactive managed units (5min cooldown per unit)
+2. **Git poll** — fetch + hard reset to remote HEAD, compare SHA
+3. **Failure gate** — skip if same SHA failed 3+ times
+4. **Config load** — `fleet.yml`, `assignments.yml`, `hosts/<name>/host.yml` from repo FS
+5. **Resolve** — merge assignments (base → pi_type → features), render templates
+6. **Diff** — compare desired files against `state.ManagedFiles` by SHA-256 content hash
+7. **Validate** — quadlet files via `quadlet.Convert*()`, K8s manifests via strict unmarshal, systemd units structurally
+8. **Snapshot** — save current disk state for rollback
+9. **Apply** — phased by category order: network → volume → secret → systemd → manifest → container → kube, then `DaemonReload` + restart changed units
+10. **State save** — atomic JSON write (tmp + rename) with new SHA + managed file hashes
+
+### Interface Ownership
+
+All three system-boundary interfaces are **defined and implemented in `pkg/applier`**:
+
+- `SystemdManager` — D-Bus systemd control (`DBusSystemdManager`)
+- `PodmanClient` — Podman socket API (`SocketPodmanClient`)
+- `FileWriter` — atomic file writes (`AtomicFileWriter`)
+
+Other packages (`agent`, `health`, `rollback`) consume these interfaces. Mocks are generated by `mockery` in `mocks/applier/`.
+
+Note: `SocketPodmanClient` stores a `connCtx context.Context` because the Podman binding library embeds the socket connection into the context — this is intentional (`//nolint:containedctx`).
+
+### Function Types as Interfaces
+
+`SecretReader` and `DiskReader` in `pkg/resolver` and `pkg/rollback` are function types, not interfaces:
+
+```go
+type SecretReader func(path string) (string, error)
+```
+
+### Configuration Layers
+
+- **Agent config** (`/etc/picolet/config.yml`) — hostname, repo URL, poll interval. Loaded by `pkg/agentcfg`.
+- **Fleet config** (in git repo) — `fleet.yml` (images, ports), `assignments.yml` (file mappings per pi_type/feature), `hosts/<name>/host.yml` (per-host settings). Loaded by `pkg/config`.
+- **Secrets** — read from local filesystem (`cfg.SecretsDir`), not from git.
+
+### Template System
+
+Files ending in `.tmpl` are rendered with Go `text/template` (`missingkey=error`). All templates share a single `template.Template` registry enabling cross-references.
+
+Custom functions: `readFile`, `renderTemplate`, `indent`, `readSecretFile`, `has` (slices.Contains for feature checks).
+
+Template data root: `.Host` (hostname, pi_type, features), `.Fleet` (full config + all hosts), `.Images`, `.Ports`.
+
+### Error Patterns
+
+- Wrap with `fmt.Errorf("context: %w", err)` consistently
+- One custom error type: `*resolver.HostNotFoundError` (check with `errors.As`)
+- `errors.Join` for accumulating validation errors in `pkg/validator`
+- Result structs with `Errors []error` fields for non-fatal errors (health checks, apply)
+
+### Testing Patterns
+
+- **Unit tests**: mockery-generated mocks with `.EXPECT()` fluent API; `pkg/applier` has an in-package `memFileWriter` for self-testing
+- **Integration tests**: `integration_test.go` at root uses `testdata/example-fleet/` with `goldie` golden-file snapshots
+- **Agent integration**: `pkg/agent/agent_test.go` creates a real in-memory git repo via `go-git`, exercises the full loop
+
+### Package Dependencies
+
+`pkg/state` and `pkg/gitpoll` are fully standalone. `pkg/metrics` has only global prometheus vars. Everything else flows through `pkg/agent` which orchestrates the pipeline.

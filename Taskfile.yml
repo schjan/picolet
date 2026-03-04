@@ -33,6 +33,11 @@ tasks:
     cmds:
       - golangci-lint run --build-tags "{{.BUILD_TAGS}}" --fix
 
+  fmt:
+    desc: Run all formatters (gofumpt + gci via golangci-lint)
+    cmds:
+      - golangci-lint fmt --build-tags "{{.BUILD_TAGS}}"
+
   clean:
     desc: Remove build artifacts
     cmds:
