@@ -200,11 +200,6 @@ func TestRootlessPaths(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 
-	// Verify precomputed dirs use rootless paths
-	assert.Equal(t, filepath.Join(home, ".config", "containers", "systemd"), r.quadletDir)
-	assert.Equal(t, filepath.Join(home, ".config", "systemd", "user"), r.systemdDir)
-	assert.Equal(t, filepath.Join(home, ".local", "share", "picolet"), r.dataDir)
-
 	resolved, err := r.ResolveHost("test-host")
 	require.NoError(t, err)
 

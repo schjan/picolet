@@ -24,7 +24,7 @@ import (
 const (
 	defaultRepoPath  = "/var/lib/picolet/repo"
 	defaultStatePath = "/var/lib/picolet/state.json"
-	lockPath         = "/var/lib/picolet/reconciliation.lock"
+	defaultLockPath  = "/var/lib/picolet/reconciliation.lock"
 )
 
 // Agent is the main reconciliation loop.
@@ -85,7 +85,7 @@ func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 		cfg:       cfg,
 		repoPath:  defaultRepoPath,
 		statePath: defaultStatePath,
-		lockPath:  lockPath,
+		lockPath:  defaultLockPath,
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -276,7 +276,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	changeset := a.computeDiff(ctx, files, st)
 
 	if !changeset.HasChanges() {
-		return &ReconcileResult{Summary: changeset.Summary}, a.markApplied(headSHA, st, store)
+		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary}, a.markApplied(headSHA, st, store)
 	}
 
 	slog.Info("changes detected",

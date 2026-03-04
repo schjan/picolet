@@ -109,6 +109,7 @@ func TestE2EPipeline(t *testing.T) {
 		defer cancel()
 		_ = systemd.DaemonReload(cleanupCtx)
 		_ = podman.ContainerRemove(cleanupCtx, "picolet-e2e-test", true)
+		_ = podman.SecretRemove(cleanupCtx, "e2e_secret")
 		systemd.Close()
 	})
 
@@ -233,7 +234,6 @@ func TestE2EPipeline(t *testing.T) {
 		})
 
 		t.Run("state_saved", func(t *testing.T) {
-			store := state.NewStore(statePath)
 			st, err := store.Load()
 			require.NoError(t, err)
 
@@ -248,16 +248,18 @@ func TestE2EPipeline(t *testing.T) {
 		})
 
 		t.Run("container_running", func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-			defer cancel()
-
-			connCtx, err := bindings.NewConnection(ctx, "unix:"+socketPath)
+			connCtx, err := bindings.NewConnection(t.Context(), "unix:"+socketPath)
 			require.NoError(t, err)
 
-			inspectData, err := containers.Inspect(connCtx, "picolet-e2e-test", nil)
-			require.NoError(t, err, "container picolet-e2e-test should exist")
+			// Poll until container reaches running state (image pull + systemd start are async)
+			require.Eventually(t, func() bool {
+				data, err := containers.Inspect(connCtx, "picolet-e2e-test", nil)
+				return err == nil && data.State.Status == "running"
+			}, 60*time.Second, 2*time.Second, "container picolet-e2e-test should reach running state")
 
-			assert.Equal(t, "running", inspectData.State.Status, "container should be running")
+			// Validate config once we know it's running
+			inspectData, err := containers.Inspect(connCtx, "picolet-e2e-test", nil)
+			require.NoError(t, err)
 			assert.Contains(t, inspectData.ImageName, "alpine:3.21", "container image should be alpine:3.21")
 
 			// Verify labels were rendered correctly from template
@@ -278,10 +280,6 @@ func TestE2EPipeline(t *testing.T) {
 		t.Run("secret_in_podman", func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
-
-			t.Cleanup(func() {
-				_ = podman.SecretRemove(context.Background(), "e2e_secret")
-			})
 
 			exists, err := podman.SecretExists(ctx, "e2e_secret")
 			require.NoError(t, err)

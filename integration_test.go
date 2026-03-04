@@ -70,7 +70,7 @@ func TestIntegrationReconcilePipeline(t *testing.T) {
 
 	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
-	hostname := cfg.SortedHostnames()[0] // e2e-host (first alphabetically)
+	hostname := "node-1" // worker + app-a: exercises multi-feature assignment merging
 	resolved, err := r.ResolveHost(hostname)
 	require.NoError(t, err)
 
