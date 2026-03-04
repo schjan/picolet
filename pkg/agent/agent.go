@@ -192,7 +192,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
 
 	start := time.Now()
-	err = a.ReconcileOnce(ctx, pollResult.HeadSHA, st, store)
+	_, err = a.ReconcileOnce(ctx, pollResult.HeadSHA, st, store)
 	duration := time.Since(start).Seconds()
 	metrics.ReconciliationDuration.Observe(duration)
 
@@ -245,17 +245,31 @@ func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *config.Config, *reso
 	return resolved.Files, cfg, r, nil
 }
 
+// ReconcileResult contains the outcome of a single reconciliation cycle.
+type ReconcileResult struct {
+	// HasChanges is true if any non-noop changes were applied.
+	HasChanges bool
+	// Summary counts changes per action type.
+	Summary map[reconciler.Action]int
+	// ApplyResult contains details from the apply phase (nil when no changes).
+	ApplyResult *applier.ApplyResult
+}
+
 // ReconcileOnce runs a single reconciliation cycle: load config, resolve, diff, validate, apply, save state.
-func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.State, store *state.Store) error {
+func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.State, store *state.Store) (*ReconcileResult, error) {
 	files, cfg, r, err := a.loadAndResolve()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	changeset := a.computeDiff(ctx, files, st)
+	reconcileResult := &ReconcileResult{
+		HasChanges: changeset.HasChanges(),
+		Summary:    changeset.Summary,
+	}
 
 	if !changeset.HasChanges() {
-		return a.markApplied(headSHA, st, store)
+		return reconcileResult, a.markApplied(headSHA, st, store)
 	}
 
 	slog.Info("changes detected",
@@ -266,29 +280,31 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 
 	v := validator.New()
 	if err := v.ValidateAll(ctx, r, cfg); err != nil {
-		return fmt.Errorf("validation failed: %w", err)
+		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	result, err := a.applyWithRollback(ctx, headSHA, changeset)
+	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	for _, e := range result.Errors {
+	for _, e := range applyResult.Errors {
 		slog.Warn("non-fatal apply error", "error", e)
 	}
 
 	a.updateState(headSHA, st, changeset)
 
 	if err := store.Save(st); err != nil {
-		return fmt.Errorf("saving state: %w", err)
+		return nil, fmt.Errorf("saving state: %w", err)
 	}
 
-	if result.NeedsSelfRestart && !a.dryRun {
+	reconcileResult.ApplyResult = applyResult
+
+	if applyResult.NeedsSelfRestart && !a.dryRun {
 		slog.Info("picolet.container changed, self-update pending")
 		metrics.SelfUpdatePending.Set(1)
 	}
 
-	return nil
+	return reconcileResult, nil
 }
 
 func (a *Agent) computeDiff(ctx context.Context, files []resolver.ResolvedFile, st *state.State) *reconciler.Changeset {

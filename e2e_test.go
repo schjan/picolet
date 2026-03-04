@@ -132,37 +132,56 @@ func TestE2EPipeline(t *testing.T) {
 		headSHA = result.HeadSHA
 	})
 
+	// Agent and store are shared between reconcile and idempotent sub-tests
+	metrics.Register()
+
+	agentCfg := &agentcfg.Config{
+		Hostname:     "e2e-host",
+		RepoURL:      repoURL,
+		RepoBranch:   branch,
+		PollInterval: time.Minute,
+		MetricsPort:  0,
+		SecretsDir:   secretsDir,
+		Rootless:     true,
+	}
+
+	a := agent.New(agentCfg,
+		agent.WithRepoPath(filepath.Join(cloneDir, "testdata", "example-fleet")),
+		agent.WithFileWriter(applier.NewAtomicFileWriter()),
+		agent.WithPodman(podman),
+		agent.WithSystemd(systemd),
+		agent.WithLockPath(lockPath),
+		agent.WithStatePath(statePath),
+	)
+	store := state.NewStore(statePath)
+
 	t.Run("reconcile", func(t *testing.T) {
 		require.NotEmpty(t, headSHA, "clone sub-test must have set headSHA")
 
 		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
 
-		metrics.Register()
-
-		cfg := &agentcfg.Config{
-			Hostname:     "e2e-host",
-			RepoURL:      repoURL,
-			RepoBranch:   branch,
-			PollInterval: time.Minute,
-			MetricsPort:  0,
-			SecretsDir:   secretsDir,
-			Rootless:     true,
-		}
-
-		a := agent.New(cfg,
-			agent.WithRepoPath(filepath.Join(cloneDir, "testdata", "example-fleet")),
-			agent.WithFileWriter(applier.NewAtomicFileWriter()),
-			agent.WithPodman(podman),
-			agent.WithSystemd(systemd),
-			agent.WithLockPath(lockPath),
-			agent.WithStatePath(statePath),
-		)
-
 		emptyState := &state.State{ManagedFiles: make(map[string]string)}
-		store := state.NewStore(statePath)
-		err = a.ReconcileOnce(ctx, headSHA, emptyState, store)
+		result, err := a.ReconcileOnce(ctx, headSHA, emptyState, store)
 		require.NoError(t, err, "ReconcileOnce should succeed")
+		assert.True(t, result.HasChanges, "first reconcile should have changes")
+		require.NotNil(t, result.ApplyResult, "apply result should be present")
+		assert.Empty(t, result.ApplyResult.Errors, "apply should have no errors")
+	})
+
+	t.Run("idempotent", func(t *testing.T) {
+		require.NotEmpty(t, headSHA, "clone sub-test must have set headSHA")
+
+		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+		defer cancel()
+
+		st, err := store.Load()
+		require.NoError(t, err)
+
+		result, err := a.ReconcileOnce(ctx, headSHA, st, store)
+		require.NoError(t, err, "idempotent ReconcileOnce should succeed")
+		assert.False(t, result.HasChanges, "second reconcile with same state should be a no-op")
+		assert.Nil(t, result.ApplyResult, "no apply should have run")
 	})
 
 	t.Run("verify", func(t *testing.T) {
