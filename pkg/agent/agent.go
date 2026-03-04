@@ -227,12 +227,13 @@ func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *resolver.Resolver, e
 	}
 
 	secretReader := func(path string) (string, error) {
-		root, err := os.OpenRoot(a.cfg.SecretsDir)
+		secretRoot, err := os.OpenRoot(a.cfg.SecretsDir)
 		if err != nil {
 			return "", fmt.Errorf("opening secrets dir: %w", err)
 		}
-		defer root.Close()
-		data, err := root.ReadFile(path)
+		defer secretRoot.Close()
+
+		data, err := secretRoot.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("reading secret %q: %w", path, err)
 		}

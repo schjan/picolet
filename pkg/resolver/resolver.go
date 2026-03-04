@@ -166,16 +166,17 @@ func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateDa
 		return nil, fmt.Errorf("resolving %s: %w", srcPath, err)
 	}
 
-	// Strip .tmpl extension for destination filename
-	filename := filepath.Base(srcPath)
-	filename = strings.TrimSuffix(filename, ".tmpl")
-
 	return &ResolvedFile{
 		SrcPath:  srcPath,
-		DestPath: filepath.Join(destDir, filename),
+		DestPath: filepath.Join(destDir, destFilename(srcPath)),
 		Content:  content,
 		Category: category,
 	}, nil
+}
+
+// destFilename returns the base filename for a source path, stripping any .tmpl suffix.
+func destFilename(srcPath string) string {
+	return strings.TrimSuffix(filepath.Base(srcPath), ".tmpl")
 }
 
 func (r *Resolver) resolveManifest(registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {
@@ -198,8 +199,7 @@ func (r *Resolver) resolveManifest(registry *template.Template, tmplData *Templa
 
 func (r *Resolver) resolveSecret(registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {
 	// secrets/prometheus_config.yml.tmpl → secret name "prometheus_config"
-	filename := filepath.Base(srcPath)
-	filename = strings.TrimSuffix(filename, ".tmpl")
+	filename := destFilename(srcPath)
 	secretName := strings.TrimSuffix(filename, filepath.Ext(filename))
 
 	content, err := r.secretContent(registry, tmplData, srcPath, filename)
