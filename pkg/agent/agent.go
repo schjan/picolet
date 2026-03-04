@@ -219,16 +219,16 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	return nil
 }
 
-func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *config.Config, *resolver.Resolver, error) {
+func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *resolver.Resolver, error) {
 	repoFS := os.DirFS(a.repoPath)
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("loading config: %w", err)
+		return nil, nil, fmt.Errorf("loading config: %w", err)
 	}
 
 	secretRoot, err := os.OpenRoot(a.cfg.SecretsDir)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("opening secrets dir: %w", err)
+		return nil, nil, fmt.Errorf("opening secrets dir: %w", err)
 	}
 	defer secretRoot.Close()
 
@@ -247,13 +247,13 @@ func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *config.Config, *reso
 		Rootless:     a.cfg.Rootless,
 	})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("creating resolver: %w", err)
+		return nil, nil, fmt.Errorf("creating resolver: %w", err)
 	}
 	resolved, err := r.ResolveHost(a.cfg.Hostname)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("resolving host %s: %w", a.cfg.Hostname, err)
+		return nil, nil, fmt.Errorf("resolving host %s: %w", a.cfg.Hostname, err)
 	}
-	return resolved.Files, cfg, r, nil
+	return resolved.Files, r, nil
 }
 
 // ReconcileResult contains the outcome of a single reconciliation cycle.
@@ -268,7 +268,7 @@ type ReconcileResult struct {
 
 // ReconcileOnce runs a single reconciliation cycle: load config, resolve, diff, validate, apply, save state.
 func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.State, store *state.Store) (*ReconcileResult, error) {
-	files, cfg, r, err := a.loadAndResolve()
+	files, r, err := a.loadAndResolve()
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +286,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	)
 
 	v := validator.New()
-	if err := v.ValidateAll(ctx, r, cfg); err != nil {
+	if err := v.ValidateHost(ctx, r, a.cfg.Hostname); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 

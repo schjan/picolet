@@ -202,9 +202,9 @@ func runDryRun(ctx context.Context, repoDir, hostname string) error {
 		return err
 	}
 
-	// Validate first
+	// Validate this host only — fleet-wide validation belongs in CI
 	v := validator.New()
-	if err := v.ValidateAll(ctx, r, cfg); err != nil {
+	if err := v.ValidateHost(ctx, r, hostname); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
