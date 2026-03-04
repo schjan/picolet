@@ -93,7 +93,7 @@ func TestResolveHost(t *testing.T) {
 	cfg, err := config.LoadAll(fsys)
 	require.NoError(t, err)
 
-	r := New(fsys, cfg, nil)
+	r := New(fsys, cfg, nil, false)
 	resolved, err := r.ResolveHost("test-host")
 	require.NoError(t, err)
 
@@ -124,7 +124,7 @@ func TestResolveHostNotFound(t *testing.T) {
 	cfg, err := config.LoadAll(fsys)
 	require.NoError(t, err)
 
-	r := New(fsys, cfg, nil)
+	r := New(fsys, cfg, nil, false)
 	_, err = r.ResolveHost("nonexistent")
 	require.Error(t, err)
 }

@@ -15,6 +15,11 @@ pi_types:
       - manifests/app/deployment.yml.tmpl
     secrets:
       - secrets/app_secret.yml.tmpl
+  e2e:
+    containers:
+      - quadlets/containers/simple.container.tmpl
+    secrets:
+      - secrets/e2e_secret.txt
 features:
   app-a:
     containers:

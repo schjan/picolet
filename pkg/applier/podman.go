@@ -47,6 +47,11 @@ func (c *SocketPodmanClient) SecretCreate(_ context.Context, name string, data [
 }
 
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
+func (c *SocketPodmanClient) SecretRemove(_ context.Context, name string) error {
+	return secrets.Remove(c.connCtx, name)
+}
+
+//nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
 func (c *SocketPodmanClient) RunHealthcheck(_ context.Context, container string) (bool, error) {
 	result, err := containers.RunHealthCheck(c.connCtx, container, nil)
 	if err != nil {

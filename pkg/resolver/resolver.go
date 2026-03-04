@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"text/template"
@@ -35,17 +36,19 @@ type Resolver struct {
 	fsys         fs.FS
 	cfg          *config.Config
 	secretReader SecretReader
+	rootless     bool
 }
 
 // New creates a new Resolver.
 // Pass nil for secretReader to use placeholder mode (validate/CI).
-func New(fsys fs.FS, cfg *config.Config, secretReader SecretReader) *Resolver {
-	return &Resolver{fsys: fsys, cfg: cfg, secretReader: secretReader}
+// When rootless is true, destination paths use ~/.config/ and ~/.local/share/ instead of /etc/ and /var/lib/.
+func New(fsys fs.FS, cfg *config.Config, secretReader SecretReader, rootless bool) *Resolver {
+	return &Resolver{fsys: fsys, cfg: cfg, secretReader: secretReader, rootless: rootless}
 }
 
 // ResolveHost computes the complete desired state for a given hostname.
 //
-//nolint:cyclop // sequential resolution of file categories; splitting would obscure the flow
+//nolint:cyclop,funlen // sequential resolution of file categories; splitting would obscure the flow
 func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 	host, ok := r.cfg.Hosts[hostname]
 	if !ok {
@@ -65,17 +68,22 @@ func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 	fileSet := r.cfg.Assignments.Resolve(host)
 	var files []ResolvedFile
 
+	quadletDir, systemdDir, err := r.destDirs()
+	if err != nil {
+		return nil, err
+	}
+
 	// Standard file categories with their destination directories
 	fileGroups := []struct {
 		paths   []string
 		cat     string
 		destDir string
 	}{
-		{fileSet.Networks, "network", "/etc/containers/systemd/"},
-		{fileSet.Systemd, "systemd", "/etc/systemd/system/"},
-		{fileSet.Volumes, "volume", "/etc/containers/systemd/"},
-		{fileSet.Containers, "container", "/etc/containers/systemd/"},
-		{fileSet.Kube, "kube", "/etc/containers/systemd/"},
+		{fileSet.Networks, "network", quadletDir},
+		{fileSet.Systemd, "systemd", systemdDir},
+		{fileSet.Volumes, "volume", quadletDir},
+		{fileSet.Containers, "container", quadletDir},
+		{fileSet.Kube, "kube", quadletDir},
 	}
 	for _, g := range fileGroups {
 		for _, path := range g.paths {
@@ -146,9 +154,14 @@ func (r *Resolver) resolveManifest(registry *template.Template, tmplData *Templa
 		return nil, fmt.Errorf("resolving manifest %s: %w", srcPath, err)
 	}
 
-	// manifests/<app>/deployment.yml.tmpl → /var/lib/picolet/manifests/<app>/deployment.yml
+	dataDir, err := r.dataDir()
+	if err != nil {
+		return nil, err
+	}
+
+	// manifests/<app>/deployment.yml.tmpl → <dataDir>/manifests/<app>/deployment.yml
 	relPath := strings.TrimSuffix(srcPath, ".tmpl")
-	destPath := "/var/lib/picolet/" + relPath
+	destPath := dataDir + relPath
 
 	return &ResolvedFile{
 		SrcPath:  srcPath,
@@ -175,6 +188,30 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 		Content:  content,
 		Category: "secret",
 	}, nil
+}
+
+// destDirs returns the quadlet and systemd destination directories based on rootless mode.
+func (r *Resolver) destDirs() (quadletDir, systemdDir string, err error) {
+	if !r.rootless {
+		return "/etc/containers/systemd/", "/etc/systemd/system/", nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", fmt.Errorf("getting home directory: %w", err)
+	}
+	return home + "/.config/containers/systemd/", home + "/.config/systemd/user/", nil
+}
+
+// dataDir returns the base directory for data files (manifests, etc.) based on rootless mode.
+func (r *Resolver) dataDir() (string, error) {
+	if !r.rootless {
+		return "/var/lib/picolet/", nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("getting home directory: %w", err)
+	}
+	return home + "/.local/share/picolet/", nil
 }
 
 func (r *Resolver) renderOrRead(registry *template.Template, tmplData *TemplateData, path string) (string, error) {

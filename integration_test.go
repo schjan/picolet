@@ -25,7 +25,7 @@ func TestIntegrationValidate(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r := resolver.New(repoFS, cfg, nil)
+	r := resolver.New(repoFS, cfg, nil, false)
 	v := validator.New()
 	require.NoError(t, v.ValidateAll(context.Background(), r, cfg))
 }
@@ -36,7 +36,7 @@ func TestIntegrationResolveGolden(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r := resolver.New(repoFS, cfg, nil)
+	r := resolver.New(repoFS, cfg, nil, false)
 	g := goldie.New(t, goldie.WithFixtureDir("testdata/fixtures"))
 
 	for _, hostname := range cfg.SortedHostnames() {
@@ -67,7 +67,7 @@ func TestIntegrationReconcilePipeline(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r := resolver.New(repoFS, cfg, nil)
+	r := resolver.New(repoFS, cfg, nil, false)
 	hostname := cfg.SortedHostnames()[0] // node-1 (has feature app-a)
 	resolved, err := r.ResolveHost(hostname)
 	require.NoError(t, err)
@@ -102,7 +102,7 @@ func TestIntegrationMultiHostConsistency(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r := resolver.New(repoFS, cfg, nil)
+	r := resolver.New(repoFS, cfg, nil, false)
 	allResolved, err := r.ResolveAll()
 	require.NoError(t, err)
 
@@ -146,7 +146,7 @@ func TestIntegrationErrorPaths(t *testing.T) {
 		repoFS := os.DirFS(testdataDir)
 		cfg, err := config.LoadAll(repoFS)
 		require.NoError(t, err)
-		r := resolver.New(repoFS, cfg, nil)
+		r := resolver.New(repoFS, cfg, nil, false)
 		_, err = r.ResolveHost("nonexistent")
 		require.Error(t, err)
 		var notFound *resolver.HostNotFoundError

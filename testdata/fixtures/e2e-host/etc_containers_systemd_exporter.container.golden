@@ -1,0 +1,6 @@
+[Container]
+Image=prom/node-exporter:v1.8
+Network=internal.network
+
+[Install]
+WantedBy=default.target

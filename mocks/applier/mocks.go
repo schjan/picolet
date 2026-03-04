@@ -628,6 +628,63 @@ func (_c *MockPodmanClient_SecretExists_Call) RunAndReturn(run func(ctx context.
 	return _c
 }
 
+// SecretRemove provides a mock function for the type MockPodmanClient
+func (_mock *MockPodmanClient) SecretRemove(ctx context.Context, name string) error {
+	ret := _mock.Called(ctx, name)
+
+	if len(ret) == 0 {
+		panic("no return value specified for SecretRemove")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) error); ok {
+		r0 = returnFunc(ctx, name)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockPodmanClient_SecretRemove_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SecretRemove'
+type MockPodmanClient_SecretRemove_Call struct {
+	*mock.Call
+}
+
+// SecretRemove is a helper method to define mock.On call
+//   - ctx context.Context
+//   - name string
+func (_e *MockPodmanClient_Expecter) SecretRemove(ctx interface{}, name interface{}) *MockPodmanClient_SecretRemove_Call {
+	return &MockPodmanClient_SecretRemove_Call{Call: _e.mock.On("SecretRemove", ctx, name)}
+}
+
+func (_c *MockPodmanClient_SecretRemove_Call) Run(run func(ctx context.Context, name string)) *MockPodmanClient_SecretRemove_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockPodmanClient_SecretRemove_Call) Return(err error) *MockPodmanClient_SecretRemove_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockPodmanClient_SecretRemove_Call) RunAndReturn(run func(ctx context.Context, name string) error) *MockPodmanClient_SecretRemove_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // NewMockFileWriter creates a new instance of MockFileWriter. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
 // The first argument is typically a *testing.T value.
 func NewMockFileWriter(t interface {

@@ -1,0 +1,9 @@
+[Container]
+Image={{ index .Images "simple" }}
+ContainerName=picolet-e2e-test
+Label=hostname={{ .Host.Hostname }}
+Label=external={{ .Host.ExternalHostname }}
+Exec=sleep infinity
+
+[Install]
+WantedBy=default.target

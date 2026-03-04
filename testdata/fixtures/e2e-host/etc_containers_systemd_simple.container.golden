@@ -1,0 +1,9 @@
+[Container]
+Image=docker.io/library/alpine:3.21
+ContainerName=picolet-e2e-test
+Label=hostname=e2e-host
+Label=external=e2e-host.test
+Exec=sleep infinity
+
+[Install]
+WantedBy=default.target
