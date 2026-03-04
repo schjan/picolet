@@ -3,6 +3,7 @@
 package picolet_test
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -44,13 +45,7 @@ func podmanSocketPath(t *testing.T) string {
 
 // ciBranch returns the git branch to clone in CI, falling back to "main".
 func ciBranch() string {
-	if ref := os.Getenv("GITHUB_HEAD_REF"); ref != "" {
-		return ref
-	}
-	if ref := os.Getenv("GITHUB_REF_NAME"); ref != "" {
-		return ref
-	}
-	return "main"
+	return cmp.Or(os.Getenv("GITHUB_HEAD_REF"), os.Getenv("GITHUB_REF_NAME"), "main")
 }
 
 // writeTokenFile persists GITHUB_TOKEN to a temp file and returns its path, or "" if unset.
@@ -217,19 +212,18 @@ func TestE2EPipeline(t *testing.T) {
 
 		t.Run("no_template_markers", func(t *testing.T) {
 			for _, dir := range []string{quadletDir, systemdDir} {
-				_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+				err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 					if err != nil || d.IsDir() {
-						return nil
+						return nil //nolint:nilerr // skip unreadable entries gracefully
 					}
-					data, err := os.ReadFile(path)
-					if err != nil {
-						return nil
-					}
+					data, readErr := os.ReadFile(path)
+					require.NoError(t, readErr, "should be able to read %s", path)
 					content := string(data)
 					assert.NotContains(t, content, "{{", "file %s should not contain template markers", path)
 					assert.NotContains(t, content, "}}", "file %s should not contain template markers", path)
 					return nil
 				})
+				assert.NoError(t, err, "walking %s should not fail", dir)
 			}
 		})
 
@@ -356,18 +350,18 @@ func TestE2EResolverRootlessPaths(t *testing.T) {
 	quadletDir := filepath.Join(home, ".config", "containers", "systemd")
 	systemdDir := filepath.Join(home, ".config", "systemd", "user")
 
-	assert.True(t, destPaths[filepath.Join(quadletDir, "simple.container")],
+	assert.Contains(t, destPaths, filepath.Join(quadletDir, "simple.container"),
 		"simple.container should be in rootless quadlet dir")
-	assert.True(t, destPaths[filepath.Join(quadletDir, "internal.network")],
+	assert.Contains(t, destPaths, filepath.Join(quadletDir, "internal.network"),
 		"internal.network should be in rootless quadlet dir")
-	assert.True(t, destPaths[filepath.Join(systemdDir, "custom.socket")],
+	assert.Contains(t, destPaths, filepath.Join(systemdDir, "custom.socket"),
 		"custom.socket should be in rootless systemd dir")
 
-	for path := range destPaths {
-		if strings.HasPrefix(path, "secret:") {
+	for _, f := range resolved.Files {
+		if strings.HasPrefix(f.DestPath, "secret:") {
 			continue
 		}
-		assert.NotContains(t, path, "/etc/", "rootless paths should not use /etc/")
-		assert.NotContains(t, path, "/var/lib/", "rootless paths should not use /var/lib/")
+		assert.NotContains(t, f.DestPath, "/etc/", "rootless paths should not use /etc/")
+		assert.NotContains(t, f.DestPath, "/var/lib/", "rootless paths should not use /var/lib/")
 	}
 }
