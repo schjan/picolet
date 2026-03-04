@@ -169,7 +169,8 @@ func categoryFromPath(destPath string) string {
 	case ".socket", ".service", ".timer":
 		return "systemd"
 	}
-	if strings.Contains(destPath, "/picolet/manifests/") {
+	if strings.HasPrefix(destPath, "/var/lib/picolet/manifests/") ||
+		strings.Contains(destPath, "/.local/share/picolet/manifests/") {
 		return "manifest"
 	}
 	return "unknown"

@@ -31,24 +31,59 @@ type ResolvedHost struct {
 	Files    []ResolvedFile
 }
 
+// Config holds configuration for creating a Resolver.
+type Config struct {
+	FS           fs.FS
+	Config       *config.Config
+	SecretReader SecretReader
+	Rootless     bool
+}
+
 // Resolver renders templates and resolves the desired state for hosts.
 type Resolver struct {
 	fsys         fs.FS
 	cfg          *config.Config
 	secretReader SecretReader
-	rootless     bool
+	quadletDir   string
+	systemdDir   string
+	dataDir      string
 }
 
 // New creates a new Resolver.
-// Pass nil for secretReader to use placeholder mode (validate/CI).
-// When rootless is true, destination paths use ~/.config/ and ~/.local/share/ instead of /etc/ and /var/lib/.
-func New(fsys fs.FS, cfg *config.Config, secretReader SecretReader, rootless bool) *Resolver {
-	return &Resolver{fsys: fsys, cfg: cfg, secretReader: secretReader, rootless: rootless}
+// Pass nil for SecretReader to use placeholder mode (validate/CI).
+// When Rootless is true, destination paths use ~/.config/ and ~/.local/share/ instead of /etc/ and /var/lib/.
+func New(rc Config) (*Resolver, error) {
+	quadletDir, systemdDir, dataDir, err := resolveDirs(rc.Rootless)
+	if err != nil {
+		return nil, err
+	}
+	return &Resolver{
+		fsys:         rc.FS,
+		cfg:          rc.Config,
+		secretReader: rc.SecretReader,
+		quadletDir:   quadletDir,
+		systemdDir:   systemdDir,
+		dataDir:      dataDir,
+	}, nil
+}
+
+// resolveDirs computes destination directories based on rootless mode.
+func resolveDirs(rootless bool) (quadletDir, systemdDir, dataDir string, err error) {
+	if !rootless {
+		return "/etc/containers/systemd", "/etc/systemd/system", "/var/lib/picolet", nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", "", fmt.Errorf("getting home directory: %w", err)
+	}
+	return filepath.Join(home, ".config", "containers", "systemd"),
+		filepath.Join(home, ".config", "systemd", "user"),
+		filepath.Join(home, ".local", "share", "picolet"), nil
 }
 
 // ResolveHost computes the complete desired state for a given hostname.
 //
-//nolint:cyclop,funlen // sequential resolution of file categories; splitting would obscure the flow
+//nolint:cyclop // sequential resolution of file categories; splitting would obscure the flow
 func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 	host, ok := r.cfg.Hosts[hostname]
 	if !ok {
@@ -68,22 +103,17 @@ func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 	fileSet := r.cfg.Assignments.Resolve(host)
 	var files []ResolvedFile
 
-	quadletDir, systemdDir, err := r.destDirs()
-	if err != nil {
-		return nil, err
-	}
-
 	// Standard file categories with their destination directories
 	fileGroups := []struct {
 		paths   []string
 		cat     string
 		destDir string
 	}{
-		{fileSet.Networks, "network", quadletDir},
-		{fileSet.Systemd, "systemd", systemdDir},
-		{fileSet.Volumes, "volume", quadletDir},
-		{fileSet.Containers, "container", quadletDir},
-		{fileSet.Kube, "kube", quadletDir},
+		{fileSet.Networks, "network", r.quadletDir},
+		{fileSet.Systemd, "systemd", r.systemdDir},
+		{fileSet.Volumes, "volume", r.quadletDir},
+		{fileSet.Containers, "container", r.quadletDir},
+		{fileSet.Kube, "kube", r.quadletDir},
 	}
 	for _, g := range fileGroups {
 		for _, path := range g.paths {
@@ -154,14 +184,9 @@ func (r *Resolver) resolveManifest(registry *template.Template, tmplData *Templa
 		return nil, fmt.Errorf("resolving manifest %s: %w", srcPath, err)
 	}
 
-	dataDir, err := r.dataDir()
-	if err != nil {
-		return nil, err
-	}
-
 	// manifests/<app>/deployment.yml.tmpl → <dataDir>/manifests/<app>/deployment.yml
 	relPath := strings.TrimSuffix(srcPath, ".tmpl")
-	destPath := filepath.Join(dataDir, relPath)
+	destPath := filepath.Join(r.dataDir, relPath)
 
 	return &ResolvedFile{
 		SrcPath:  srcPath,
@@ -188,30 +213,6 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 		Content:  content,
 		Category: "secret",
 	}, nil
-}
-
-// destDirs returns the quadlet and systemd destination directories based on rootless mode.
-func (r *Resolver) destDirs() (quadletDir, systemdDir string, err error) {
-	if !r.rootless {
-		return "/etc/containers/systemd", "/etc/systemd/system", nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", "", fmt.Errorf("getting home directory: %w", err)
-	}
-	return filepath.Join(home, ".config", "containers", "systemd"), filepath.Join(home, ".config", "systemd", "user"), nil
-}
-
-// dataDir returns the base directory for data files (manifests, etc.) based on rootless mode.
-func (r *Resolver) dataDir() (string, error) {
-	if !r.rootless {
-		return "/var/lib/picolet", nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("getting home directory: %w", err)
-	}
-	return filepath.Join(home, ".local", "share", "picolet"), nil
 }
 
 func (r *Resolver) renderOrRead(registry *template.Template, tmplData *TemplateData, path string) (string, error) {

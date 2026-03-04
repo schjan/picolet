@@ -93,7 +93,8 @@ func TestResolveHost(t *testing.T) {
 	cfg, err := config.LoadAll(fsys)
 	require.NoError(t, err)
 
-	r := New(fsys, cfg, nil, false)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
 	resolved, err := r.ResolveHost("test-host")
 	require.NoError(t, err)
 
@@ -124,7 +125,8 @@ func TestResolveHostNotFound(t *testing.T) {
 	cfg, err := config.LoadAll(fsys)
 	require.NoError(t, err)
 
-	r := New(fsys, cfg, nil, false)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
 	_, err = r.ResolveHost("nonexistent")
 	require.Error(t, err)
 }
@@ -184,6 +186,43 @@ func TestRenderTemplateRecursion(t *testing.T) {
 	err = registry.ExecuteTemplate(&buf, "a.tmpl", nil)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "recursion depth exceeded")
+}
+
+func TestRootlessPaths(t *testing.T) {
+	t.Parallel()
+	fsys := newTestFS()
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+
+	r, err := New(Config{FS: fsys, Config: cfg, Rootless: true})
+	require.NoError(t, err)
+
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	// Verify precomputed dirs contain expected path segments
+	assert.Contains(t, r.quadletDir, filepath.Join(".config", "containers", "systemd"))
+	assert.Contains(t, r.systemdDir, filepath.Join(".config", "systemd", "user"))
+	assert.Contains(t, r.dataDir, filepath.Join(".local", "share", "picolet"))
+
+	resolved, err := r.ResolveHost("test-host")
+	require.NoError(t, err)
+
+	for _, f := range resolved.Files {
+		if f.Category == "secret" {
+			continue
+		}
+		assert.NotContains(t, f.DestPath, "/etc/", "rootless path should not use /etc/")
+		assert.NotContains(t, f.DestPath, "/var/lib/", "rootless path should not use /var/lib/")
+	}
+
+	// Verify container file goes to rootless quadlet dir
+	cont := resolved.Files[1]
+	assert.Equal(t, filepath.Join(home, ".config", "containers", "systemd", "test.container"), cont.DestPath)
+
+	// Verify manifest goes to rootless data dir
+	manifest := resolved.Files[2]
+	assert.Contains(t, manifest.DestPath, filepath.Join(home, ".local", "share", "picolet", "manifests"))
 }
 
 func TestSecretPathTraversal(t *testing.T) {

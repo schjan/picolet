@@ -30,6 +30,7 @@ import (
 func podmanSocketPath(t *testing.T) string {
 	t.Helper()
 	if s := os.Getenv("PODMAN_SOCKET"); s != "" {
+		s = strings.TrimPrefix(s, "unix:")
 		if _, err := os.Stat(s); err == nil {
 			return s
 		}
@@ -85,22 +86,16 @@ func TestE2EPipeline(t *testing.T) {
 
 	// Register cleanup on parent t so it runs after ALL sub-tests (including verify)
 	t.Cleanup(func() {
-		// Remove written quadlet files
-		_ = filepath.Walk(quadletDir, func(path string, info os.FileInfo, walkErr error) error {
-			if walkErr != nil || info.IsDir() {
-				return nil
+		// Remove only files that picolet actually wrote, based on saved state
+		st, loadErr := state.NewStore(statePath).Load()
+		if loadErr == nil {
+			for destPath := range st.ManagedFiles {
+				if strings.HasPrefix(destPath, "secret:") {
+					continue
+				}
+				_ = os.Remove(destPath)
 			}
-			_ = os.Remove(path)
-			return nil
-		})
-		// Remove written systemd units
-		_ = filepath.Walk(systemdDir, func(path string, info os.FileInfo, walkErr error) error {
-			if walkErr != nil || info.IsDir() {
-				return nil
-			}
-			_ = os.Remove(path)
-			return nil
-		})
+		}
 		// Daemon-reload to clean up generated units and remove the container
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -343,7 +338,8 @@ func TestE2EResolverRootlessPaths(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r := resolver.New(repoFS, cfg, nil, true)
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg, Rootless: true})
+	require.NoError(t, err)
 	resolved, err := r.ResolveHost("e2e-host")
 	require.NoError(t, err)
 

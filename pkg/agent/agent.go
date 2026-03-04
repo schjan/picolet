@@ -237,7 +237,15 @@ func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *config.Config, *reso
 		}
 		return string(data), nil
 	}
-	r := resolver.New(repoFS, cfg, secretReader, a.cfg.Rootless)
+	r, err := resolver.New(resolver.Config{
+		FS:           repoFS,
+		Config:       cfg,
+		SecretReader: secretReader,
+		Rootless:     a.cfg.Rootless,
+	})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("creating resolver: %w", err)
+	}
 	resolved, err := r.ResolveHost(a.cfg.Hostname)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("resolving host %s: %w", a.cfg.Hostname, err)

@@ -24,7 +24,8 @@ func TestIntegrationValidate(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r := resolver.New(repoFS, cfg, nil, false)
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	require.NoError(t, err)
 	v := validator.New()
 	require.NoError(t, v.ValidateAll(t.Context(), r, cfg))
 }
@@ -35,7 +36,8 @@ func TestIntegrationResolveGolden(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r := resolver.New(repoFS, cfg, nil, false)
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	require.NoError(t, err)
 	g := goldie.New(t, goldie.WithFixtureDir("testdata/fixtures"))
 
 	for _, hostname := range cfg.SortedHostnames() {
@@ -66,7 +68,8 @@ func TestIntegrationReconcilePipeline(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r := resolver.New(repoFS, cfg, nil, false)
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	require.NoError(t, err)
 	hostname := cfg.SortedHostnames()[0] // e2e-host (first alphabetically)
 	resolved, err := r.ResolveHost(hostname)
 	require.NoError(t, err)
@@ -101,11 +104,12 @@ func TestIntegrationMultiHostConsistency(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r := resolver.New(repoFS, cfg, nil, false)
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	require.NoError(t, err)
 	allResolved, err := r.ResolveAll()
 	require.NoError(t, err)
 
-	// Base resources (network, systemd, exporter container) should be identical across hosts
+	// Base resources (network, systemd) should be identical across hosts
 	node1 := filesByDest(allResolved["node-1"].Files)
 	node2 := filesByDest(allResolved["node-2"].Files)
 
@@ -145,7 +149,8 @@ func TestIntegrationErrorPaths(t *testing.T) {
 		repoFS := os.DirFS(testdataDir)
 		cfg, err := config.LoadAll(repoFS)
 		require.NoError(t, err)
-		r := resolver.New(repoFS, cfg, nil, false)
+		r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+		require.NoError(t, err)
 		_, err = r.ResolveHost("nonexistent")
 		require.Error(t, err)
 		var notFound *resolver.HostNotFoundError
