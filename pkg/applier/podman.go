@@ -48,7 +48,20 @@ func (c *SocketPodmanClient) SecretCreate(_ context.Context, name string, data [
 
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
 func (c *SocketPodmanClient) SecretRemove(_ context.Context, name string) error {
-	return secrets.Remove(c.connCtx, name)
+	if err := secrets.Remove(c.connCtx, name); err != nil {
+		return fmt.Errorf("removing secret %s: %w", name, err)
+	}
+	return nil
+}
+
+//nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
+func (c *SocketPodmanClient) ContainerRemove(_ context.Context, nameOrID string, force bool) error {
+	opts := new(containers.RemoveOptions).WithForce(force)
+	_, err := containers.Remove(c.connCtx, nameOrID, opts)
+	if err != nil {
+		return fmt.Errorf("removing container %s: %w", nameOrID, err)
+	}
+	return nil
 }
 
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc

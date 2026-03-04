@@ -142,7 +142,7 @@ func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateDa
 
 	return &ResolvedFile{
 		SrcPath:  srcPath,
-		DestPath: destDir + filename,
+		DestPath: filepath.Join(destDir, filename),
 		Content:  content,
 		Category: category,
 	}, nil
@@ -161,7 +161,7 @@ func (r *Resolver) resolveManifest(registry *template.Template, tmplData *Templa
 
 	// manifests/<app>/deployment.yml.tmpl → <dataDir>/manifests/<app>/deployment.yml
 	relPath := strings.TrimSuffix(srcPath, ".tmpl")
-	destPath := dataDir + relPath
+	destPath := filepath.Join(dataDir, relPath)
 
 	return &ResolvedFile{
 		SrcPath:  srcPath,
@@ -193,25 +193,25 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 // destDirs returns the quadlet and systemd destination directories based on rootless mode.
 func (r *Resolver) destDirs() (quadletDir, systemdDir string, err error) {
 	if !r.rootless {
-		return "/etc/containers/systemd/", "/etc/systemd/system/", nil
+		return "/etc/containers/systemd", "/etc/systemd/system", nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", "", fmt.Errorf("getting home directory: %w", err)
 	}
-	return home + "/.config/containers/systemd/", home + "/.config/systemd/user/", nil
+	return filepath.Join(home, ".config", "containers", "systemd"), filepath.Join(home, ".config", "systemd", "user"), nil
 }
 
 // dataDir returns the base directory for data files (manifests, etc.) based on rootless mode.
 func (r *Resolver) dataDir() (string, error) {
 	if !r.rootless {
-		return "/var/lib/picolet/", nil
+		return "/var/lib/picolet", nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("getting home directory: %w", err)
 	}
-	return home + "/.local/share/picolet/", nil
+	return filepath.Join(home, ".local", "share", "picolet"), nil
 }
 
 func (r *Resolver) renderOrRead(registry *template.Template, tmplData *TemplateData, path string) (string, error) {

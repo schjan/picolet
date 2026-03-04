@@ -27,6 +27,7 @@ type PodmanClient interface {
 	SecretExists(ctx context.Context, name string) (bool, error)
 	SecretCreate(ctx context.Context, name string, data []byte, replace bool) error
 	SecretRemove(ctx context.Context, name string) error
+	ContainerRemove(ctx context.Context, nameOrID string, force bool) error
 	RunHealthcheck(ctx context.Context, container string) (bool, error)
 	GetPodState(ctx context.Context, pod string) (string, error)
 }

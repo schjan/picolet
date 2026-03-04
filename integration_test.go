@@ -1,7 +1,6 @@
 package picolet_test
 
 import (
-	"context"
 	"os"
 	"strings"
 	"testing"
@@ -27,7 +26,7 @@ func TestIntegrationValidate(t *testing.T) {
 
 	r := resolver.New(repoFS, cfg, nil, false)
 	v := validator.New()
-	require.NoError(t, v.ValidateAll(context.Background(), r, cfg))
+	require.NoError(t, v.ValidateAll(t.Context(), r, cfg))
 }
 
 func TestIntegrationResolveGolden(t *testing.T) {
@@ -68,7 +67,7 @@ func TestIntegrationReconcilePipeline(t *testing.T) {
 	require.NoError(t, err)
 
 	r := resolver.New(repoFS, cfg, nil, false)
-	hostname := cfg.SortedHostnames()[0] // node-1 (has feature app-a)
+	hostname := cfg.SortedHostnames()[0] // e2e-host (first alphabetically)
 	resolved, err := r.ResolveHost(hostname)
 	require.NoError(t, err)
 

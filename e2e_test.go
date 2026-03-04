@@ -76,6 +76,13 @@ func TestE2EPipeline(t *testing.T) {
 	quadletDir := filepath.Join(home, ".config", "containers", "systemd")
 	systemdDir := filepath.Join(home, ".config", "systemd", "user")
 
+	// Create clients in parent scope for cleanup and sub-test reuse
+	podman, err := applier.NewSocketPodmanClient(t.Context(), socketPath)
+	require.NoError(t, err)
+
+	systemd, err := applier.NewDBusSystemdManager(t.Context(), true)
+	require.NoError(t, err)
+
 	// Register cleanup on parent t so it runs after ALL sub-tests (including verify)
 	t.Cleanup(func() {
 		// Remove written quadlet files
@@ -94,19 +101,19 @@ func TestE2EPipeline(t *testing.T) {
 			_ = os.Remove(path)
 			return nil
 		})
-		// Daemon-reload to clean up generated units
-		//nolint:gosec // test cleanup command
-		_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
-		// Remove the container
-		//nolint:gosec // test cleanup command
-		_ = exec.Command("podman", "rm", "-f", "picolet-e2e-test").Run()
+		// Daemon-reload to clean up generated units and remove the container
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = systemd.DaemonReload(cleanupCtx)
+		_ = podman.ContainerRemove(cleanupCtx, "picolet-e2e-test", true)
+		systemd.Close()
 	})
 
 	// Shared state between sequential sub-tests
 	var headSHA string
 
 	t.Run("clone", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
 
 		poller := gitpoll.New(repoURL, branch, cloneDir, tokenPath)
@@ -128,15 +135,8 @@ func TestE2EPipeline(t *testing.T) {
 	t.Run("reconcile", func(t *testing.T) {
 		require.NotEmpty(t, headSHA, "clone sub-test must have set headSHA")
 
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
-
-		podman, err := applier.NewSocketPodmanClient(ctx, socketPath)
-		require.NoError(t, err, "failed to connect to podman")
-
-		systemd, err := applier.NewDBusSystemdManager(ctx, true)
-		require.NoError(t, err, "failed to connect to session D-Bus")
-		defer systemd.Close()
 
 		metrics.Register()
 
@@ -175,6 +175,7 @@ func TestE2EPipeline(t *testing.T) {
 			assert.Contains(t, content, "[Container]")
 			assert.Contains(t, content, "alpine:3.21", "image should be rendered from template")
 			assert.Contains(t, content, "Network=internal.network", "container should reference internal network")
+			assert.Contains(t, content, "Secret=e2e_secret", "container should mount the secret")
 			assert.Contains(t, content, "hostname=e2e-host", "hostname label should be rendered")
 			assert.Contains(t, content, "external=e2e-host.test", "external hostname label should be rendered")
 			assert.NotContains(t, content, "{{", "template markers should be fully rendered")
@@ -225,7 +226,7 @@ func TestE2EPipeline(t *testing.T) {
 		})
 
 		t.Run("container_running", func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 
 			connCtx, err := bindings.NewConnection(ctx, "unix:"+socketPath)
@@ -236,14 +237,26 @@ func TestE2EPipeline(t *testing.T) {
 
 			assert.Equal(t, "running", inspectData.State.Status, "container should be running")
 			assert.Contains(t, inspectData.ImageName, "alpine:3.21", "container image should be alpine:3.21")
+
+			// Verify labels were rendered correctly from template
+			labels := inspectData.Config.Labels
+			assert.Equal(t, "e2e-host", labels["hostname"], "hostname label should match")
+			assert.Equal(t, "e2e-host.test", labels["external"], "external hostname label should match")
+		})
+
+		t.Run("secret_content_in_container", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+
+			//nolint:gosec // test command with fixed arguments
+			out, err := exec.CommandContext(ctx, "podman", "exec", "picolet-e2e-test", "cat", "/run/secrets/e2e_secret").Output()
+			require.NoError(t, err, "should be able to read secret inside container")
+			assert.Equal(t, "e2e-test-secret-data\n", string(out), "secret content should match")
 		})
 
 		t.Run("secret_in_podman", func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
-
-			podman, err := applier.NewSocketPodmanClient(ctx, socketPath)
-			require.NoError(t, err)
 
 			t.Cleanup(func() {
 				_ = podman.SecretRemove(context.Background(), "e2e_secret")
@@ -257,11 +270,8 @@ func TestE2EPipeline(t *testing.T) {
 
 	t.Run("podman_api", func(t *testing.T) {
 		t.Run("secret_lifecycle", func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
-
-			podman, err := applier.NewSocketPodmanClient(ctx, socketPath)
-			require.NoError(t, err)
 
 			secretName := fmt.Sprintf("picolet-e2e-%d", time.Now().UnixNano())
 			t.Cleanup(func() {
@@ -323,17 +333,17 @@ func TestE2EResolverRootlessPaths(t *testing.T) {
 		destPaths[f.DestPath] = true
 	}
 
-	expectedQuadletDir := home + "/.config/containers/systemd/"
-	expectedSystemdDir := home + "/.config/systemd/user/"
+	expectedQuadletDir := filepath.Join(home, ".config", "containers", "systemd")
+	expectedSystemdDir := filepath.Join(home, ".config", "systemd", "user")
 
 	// Check container file goes to quadlet dir
-	assert.True(t, destPaths[expectedQuadletDir+"simple.container"],
+	assert.True(t, destPaths[filepath.Join(expectedQuadletDir, "simple.container")],
 		"simple.container should be in rootless quadlet dir")
 
 	// Check base resources
-	assert.True(t, destPaths[expectedQuadletDir+"internal.network"],
+	assert.True(t, destPaths[filepath.Join(expectedQuadletDir, "internal.network")],
 		"internal.network should be in rootless quadlet dir")
-	assert.True(t, destPaths[expectedSystemdDir+"custom.socket"],
+	assert.True(t, destPaths[filepath.Join(expectedSystemdDir, "custom.socket")],
 		"custom.socket should be in rootless systemd dir")
 
 	// Verify no rootful paths
