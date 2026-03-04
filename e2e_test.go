@@ -174,6 +174,7 @@ func TestE2EPipeline(t *testing.T) {
 			content := string(data)
 			assert.Contains(t, content, "[Container]")
 			assert.Contains(t, content, "alpine:3.21", "image should be rendered from template")
+			assert.Contains(t, content, "Network=internal.network", "container should reference internal network")
 			assert.Contains(t, content, "hostname=e2e-host", "hostname label should be rendered")
 			assert.Contains(t, content, "external=e2e-host.test", "external hostname label should be rendered")
 			assert.NotContains(t, content, "{{", "template markers should be fully rendered")

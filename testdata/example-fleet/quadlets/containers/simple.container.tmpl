@@ -1,6 +1,7 @@
 [Container]
 Image={{ index .Images "simple" }}
 ContainerName=picolet-e2e-test
+Network=internal.network
 Label=hostname={{ .Host.Hostname }}
 Label=external={{ .Host.ExternalHostname }}
 Exec=sleep infinity
