@@ -11,7 +11,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
-	mock "github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	mocks "github.com/schjan/picolet/mocks/applier"
@@ -333,18 +333,12 @@ func TestAgentRollbackOnApplyFailure(t *testing.T) {
 	metrics.Register()
 
 	sys, pod, fw := newBareMocks(t)
-
-	// Health checks
-	sys.EXPECT().IsActive(mock.Anything, mock.Anything).Return(true, nil).Maybe()
-	sys.EXPECT().GetUnitState(mock.Anything, mock.Anything).Return("active", nil).Maybe()
-	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
+	setupNoopMocks(sys, pod)
 
 	// WriteFile always fails to trigger rollback
 	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(fmt.Errorf("simulated disk error")).Maybe()
 	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
 	fw.EXPECT().Remove(mock.Anything).Return(nil).Maybe()
-
-	// Rollback daemon-reload
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
 
 	cfg := &agentcfg.Config{

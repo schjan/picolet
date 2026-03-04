@@ -56,13 +56,18 @@ func (a *Assignments) Resolve(host *HostConfig) *ResolvedFileSet {
 }
 
 func (r *ResolvedFileSet) deduplicate() {
-	r.Networks = slices.Compact(slices.Sorted(slices.Values(r.Networks)))
-	r.Systemd = slices.Compact(slices.Sorted(slices.Values(r.Systemd)))
-	r.Volumes = slices.Compact(slices.Sorted(slices.Values(r.Volumes)))
-	r.Containers = slices.Compact(slices.Sorted(slices.Values(r.Containers)))
-	r.Kube = slices.Compact(slices.Sorted(slices.Values(r.Kube)))
-	r.Manifests = slices.Compact(slices.Sorted(slices.Values(r.Manifests)))
-	r.Secrets = slices.Compact(slices.Sorted(slices.Values(r.Secrets)))
+	r.Networks = sortedUnique(r.Networks)
+	r.Systemd = sortedUnique(r.Systemd)
+	r.Volumes = sortedUnique(r.Volumes)
+	r.Containers = sortedUnique(r.Containers)
+	r.Kube = sortedUnique(r.Kube)
+	r.Manifests = sortedUnique(r.Manifests)
+	r.Secrets = sortedUnique(r.Secrets)
+}
+
+// sortedUnique returns a sorted copy with duplicates removed.
+func sortedUnique(s []string) []string {
+	return slices.Compact(slices.Sorted(slices.Values(s)))
 }
 
 func (r *ResolvedFileSet) merge(g AssignmentGroup) {

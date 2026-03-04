@@ -36,11 +36,11 @@ func (v *Validator) validateManifest(path string, content []byte) error {
 	var errs []error
 
 	docs := splitYAMLDocuments(content)
-	for docIdx, doc := range docs {
-		if len(bytes.TrimSpace(doc)) == 0 {
-			continue
-		}
+	if len(docs) == 0 {
+		return fmt.Errorf("%s: empty manifest (no YAML documents)", path)
+	}
 
+	for docIdx, doc := range docs {
 		// First pass: extract kind for dispatch
 		var meta k8sMeta
 		if err := yaml.Unmarshal(doc, &meta); err != nil {
@@ -69,10 +69,6 @@ func (v *Validator) validateManifest(path string, content []byte) error {
 		if err := unmarshalK8sType(meta.Kind, doc); err != nil {
 			errs = append(errs, fmt.Errorf("%s: document %d: %s: %w", path, docIdx, meta.Kind, err))
 		}
-	}
-
-	if len(docs) == 0 {
-		errs = append(errs, fmt.Errorf("%s: empty manifest (no YAML documents)", path))
 	}
 
 	return errors.Join(errs...)

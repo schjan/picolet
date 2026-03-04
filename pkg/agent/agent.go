@@ -226,7 +226,7 @@ func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *config.Config, *reso
 		defer secretRoot.Close()
 		data, err := secretRoot.ReadFile(path)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("reading secret %q: %w", path, err)
 		}
 		return string(data), nil
 	}

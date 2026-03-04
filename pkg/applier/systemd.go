@@ -36,15 +36,7 @@ func (m *DBusSystemdManager) StartUnit(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("starting %s: %w", name, err)
 	}
-	select {
-	case result := <-ch:
-		if result != "done" {
-			return fmt.Errorf("starting %s: job result %q", name, result)
-		}
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("starting %s: %w", name, ctx.Err())
-	}
+	return waitJobResult(ctx, ch, "starting", name)
 }
 
 func (m *DBusSystemdManager) RestartUnit(ctx context.Context, name string) error {
@@ -53,14 +45,19 @@ func (m *DBusSystemdManager) RestartUnit(ctx context.Context, name string) error
 	if err != nil {
 		return fmt.Errorf("restarting %s: %w", name, err)
 	}
+	return waitJobResult(ctx, ch, "restarting", name)
+}
+
+// waitJobResult waits for a systemd job result or context cancellation.
+func waitJobResult(ctx context.Context, ch <-chan string, verb, unit string) error {
 	select {
 	case result := <-ch:
 		if result != "done" {
-			return fmt.Errorf("restarting %s: job result %q", name, result)
+			return fmt.Errorf("%s %s: job result %q", verb, unit, result)
 		}
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("restarting %s: %w", name, ctx.Err())
+		return fmt.Errorf("%s %s: %w", verb, unit, ctx.Err())
 	}
 }
 

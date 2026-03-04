@@ -47,3 +47,8 @@ tasks:
     desc: Build container image for linux/arm64
     cmds:
       - docker buildx build --platform linux/arm64 -t ghcr.io/schjan/picolet:{{.VERSION}} .
+
+  fix:
+    desc: Run go fix
+    cmds:
+      - go fix -tags "{{.BUILD_TAGS}}" ./...

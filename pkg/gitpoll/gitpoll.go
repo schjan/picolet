@@ -42,14 +42,14 @@ func New(repoURL, branch, localPath, tokenPath string) *Poller {
 // Init opens an existing clone or clones fresh.
 func (p *Poller) Init(ctx context.Context) error {
 	repo, err := git.PlainOpen(p.localPath)
+	if err == nil && p.verifyRemote(repo) {
+		p.repo = repo
+		return p.fetch(ctx)
+	}
 	if err == nil {
-		if !p.verifyRemote(repo) {
-			if err := os.RemoveAll(p.localPath); err != nil {
-				return fmt.Errorf("removing stale clone: %w", err)
-			}
-		} else {
-			p.repo = repo
-			return p.fetch(ctx)
+		// Existing clone has wrong remote — remove and re-clone.
+		if err := os.RemoveAll(p.localPath); err != nil {
+			return fmt.Errorf("removing stale clone: %w", err)
 		}
 	}
 
