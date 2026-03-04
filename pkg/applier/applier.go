@@ -193,11 +193,10 @@ func (a *Applier) applyCreateOrUpdate(ctx context.Context, change reconciler.Cha
 	return a.writer.WriteFile(change.DestPath, []byte(change.NewContent))
 }
 
-func (a *Applier) applyDelete(_ context.Context, change reconciler.Change) error {
+func (a *Applier) applyDelete(ctx context.Context, change reconciler.Change) error {
 	if change.Category == "secret" {
-		// Podman secrets have no versioned delete — skip
-		slog.Warn("skipping secret deletion (not supported)", "path", change.DestPath)
-		return nil
+		name := reconciler.SecretNameFromPath(change.DestPath)
+		return a.podman.SecretRemove(ctx, name)
 	}
 	return a.writer.Remove(change.DestPath)
 }

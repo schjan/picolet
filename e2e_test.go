@@ -74,6 +74,9 @@ func TestE2EPipeline(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "reconciliation.lock")
 	secretsDir := t.TempDir()
 
+	// Write the real secret value to the local secrets dir (secrets are never read from git)
+	require.NoError(t, os.WriteFile(filepath.Join(secretsDir, "e2e_secret.txt"), []byte("e2e-test-secret-data\n"), 0o600))
+
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 

@@ -38,8 +38,13 @@ func (v *Validator) ValidateHost(_ context.Context, r *resolver.Resolver, hostna
 			errs = append(errs, fmt.Errorf("host %s: %s: %w", hostname, f.SrcPath, err))
 		}
 	}
+	if len(errs) > 0 {
+		slog.Warn("host validation failed", "host", hostname, "files", len(resolved.Files), "errorCount", len(errs))
+		return errors.Join(errs...)
+	}
+
 	slog.Info("host validated", "host", hostname, "files", len(resolved.Files))
-	return errors.Join(errs...)
+	return nil
 }
 
 // ValidateAll resolves and validates all hosts in the fleet config.

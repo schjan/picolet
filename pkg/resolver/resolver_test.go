@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -101,19 +102,28 @@ func TestResolveHost(t *testing.T) {
 	assert.Equal(t, "test-host", resolved.Hostname)
 	require.Len(t, resolved.Files, 3)
 
+	var net, cont, manifest ResolvedFile
+	for _, f := range resolved.Files {
+		switch {
+		case strings.HasSuffix(f.DestPath, "internal.network"):
+			net = f
+		case strings.HasSuffix(f.DestPath, "test.container"):
+			cont = f
+		case strings.HasSuffix(f.DestPath, "deployment.yml"):
+			manifest = f
+		}
+	}
+
 	// Check network file (static)
-	net := resolved.Files[0]
 	assert.Equal(t, "network", net.Category)
 	assert.Contains(t, net.Content, "Internal=true")
 
 	// Check container file (templated)
-	cont := resolved.Files[1]
 	assert.Equal(t, "container", cont.Category)
 	assert.Contains(t, cont.Content, "Image=traefik:v3.6.9")
 	assert.Equal(t, "/etc/containers/systemd/test.container", cont.DestPath)
 
 	// Check manifest (templated)
-	manifest := resolved.Files[2]
 	assert.Equal(t, "manifest", manifest.Category)
 	assert.Contains(t, manifest.Content, "image: \"traefik:v3.6.9\"")
 	assert.Contains(t, manifest.Content, "containerPort: 12345")
@@ -211,12 +221,21 @@ func TestRootlessPaths(t *testing.T) {
 		assert.NotContains(t, f.DestPath, "/var/lib/", "rootless path should not use /var/lib/")
 	}
 
+	// Find files by suffix to avoid depending on slice order
+	var cont, manifest ResolvedFile
+	for _, f := range resolved.Files {
+		switch {
+		case strings.HasSuffix(f.DestPath, "test.container"):
+			cont = f
+		case strings.HasSuffix(f.DestPath, "deployment.yml"):
+			manifest = f
+		}
+	}
+
 	// Verify container file goes to rootless quadlet dir
-	cont := resolved.Files[1]
 	assert.Equal(t, filepath.Join(home, ".config", "containers", "systemd", "test.container"), cont.DestPath)
 
 	// Verify manifest goes to rootless data dir
-	manifest := resolved.Files[2]
 	assert.Equal(t, filepath.Join(home, ".local", "share", "picolet", "manifests", "app", "deployment.yml"), manifest.DestPath)
 }
 

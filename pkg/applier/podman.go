@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/containers/podman/v5/libpod/define"
 	"github.com/containers/podman/v5/pkg/bindings"
@@ -49,6 +50,10 @@ func (c *SocketPodmanClient) SecretCreate(_ context.Context, name string, data [
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
 func (c *SocketPodmanClient) SecretRemove(_ context.Context, name string) error {
 	if err := secrets.Remove(c.connCtx, name); err != nil {
+		code, _ := bindings.CheckResponseCode(err)
+		if code == http.StatusNotFound {
+			return nil // already gone
+		}
 		return fmt.Errorf("removing secret %s: %w", name, err)
 	}
 	return nil
