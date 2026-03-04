@@ -18,6 +18,8 @@ type Config struct {
 	PollInterval time.Duration `yaml:"poll_interval"`
 	MetricsPort  int           `yaml:"metrics_port"`
 	SecretsDir   string        `yaml:"secrets_dir"`
+	Rootless     bool          `yaml:"rootless"`
+	PodmanSocket string        `yaml:"podman_socket"`
 }
 
 // Load reads and parses the agent config from disk.
@@ -49,6 +51,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.SecretsDir == "" {
 		c.SecretsDir = "/etc/picolet/secrets"
+	}
+	if c.PodmanSocket == "" {
+		c.PodmanSocket = "/run/podman/podman.sock"
 	}
 }
 

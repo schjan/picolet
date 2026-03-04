@@ -1,0 +1,55 @@
+[Unit]
+Description=Picolet GitOps Agent
+Documentation=https://github.com/schjan/picolet
+After=network-online.target podman.socket
+Wants=network-online.target podman.socket
+
+[Container]
+Image={{ index .Images "picolet" }}
+ContainerName=picolet
+
+# No User=root needed: rootless container runs as the current user.
+# UID 0 inside maps to host user via user namespace.
+
+# Config (user-owned, read-only into container)
+Volume=%h/.config/picolet:/etc/picolet:ro
+
+# State: repo clone, state.json, manifests (user-owned)
+Volume=%h/.local/share/picolet:/var/lib/picolet
+
+# Quadlet output: user's container systemd directory
+Volume=%h/.config/containers/systemd:/etc/containers/systemd
+
+# systemd user units
+Volume=%h/.config/systemd/user:/etc/systemd/system
+
+# Session D-Bus socket — %t expands to XDG_RUNTIME_DIR on the host
+Volume=%t/bus:/run/dbus/session_bus_socket
+# Tell go-systemd where to find the session bus inside the container
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/session_bus_socket
+
+# Podman socket (rootless — lives under XDG_RUNTIME_DIR)
+Volume=%t/podman/podman.sock:/run/podman/podman.sock
+
+Network=host
+
+Environment=PICOLET_CONFIG=/etc/picolet/config.yml
+
+Restart=always
+RestartSec=10s
+StopTimeout=30
+
+HealthCmd=/picolet healthcheck
+HealthInterval=30s
+HealthRetries=3
+HealthStartPeriod=90s
+HealthTimeout=5s
+HealthOnFailure=restart
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=90
+TimeoutStopSec=40
+
+[Install]
+WantedBy=default.target

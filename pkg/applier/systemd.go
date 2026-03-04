@@ -13,10 +13,19 @@ type DBusSystemdManager struct {
 }
 
 // NewDBusSystemdManager creates a new SystemdManager backed by D-Bus.
-func NewDBusSystemdManager(ctx context.Context) (*DBusSystemdManager, error) {
-	conn, err := dbus.NewSystemConnectionContext(ctx)
+// When rootless is true, it connects to the session bus (for rootless Podman/systemd --user).
+func NewDBusSystemdManager(ctx context.Context, rootless bool) (*DBusSystemdManager, error) {
+	var conn *dbus.Conn
+	var err error
+	busType := "system"
+	if rootless {
+		conn, err = dbus.NewUserConnectionContext(ctx)
+		busType = "session"
+	} else {
+		conn, err = dbus.NewSystemConnectionContext(ctx)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("connecting to systemd D-Bus: %w", err)
+		return nil, fmt.Errorf("connecting to %s D-Bus: %w", busType, err)
 	}
 	return &DBusSystemdManager{conn: conn}, nil
 }

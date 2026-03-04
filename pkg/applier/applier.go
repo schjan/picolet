@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/validator"
@@ -156,12 +157,21 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]bool
 		}
 	}
 	if changedUnits["picolet.service"] {
-		slog.Info("restarting picolet (self-update)")
-		if err := a.systemd.RestartUnit(ctx, "picolet.service"); err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("restarting picolet.service: %w", err))
-		} else {
-			result.RestartedUnits = append(result.RestartedUnits, "picolet.service")
-		}
+		slog.Info("restarting picolet (self-update), state will be saved before shutdown")
+		result.RestartedUnits = append(result.RestartedUnits, "picolet.service")
+		// Fire-and-forget: detached context so Apply() returns promptly, allowing
+		// applyWithRollback() to remove the lock and reconcile() to call store.Save()
+		// before SIGTERM arrives from systemd's stop sequence.
+		// 60s timeout covers StopTimeout=30 + Podman cleanup overhead.
+		//nolint:contextcheck // intentional detached context for self-restart
+		go func() {
+			restartCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			if err := a.systemd.RestartUnit(restartCtx, "picolet.service"); err != nil {
+				// Expected: process is killed mid-D-Bus call during shutdown.
+				slog.Debug("self-restart D-Bus result (may be interrupted by shutdown)", "error", err)
+			}
+		}()
 	}
 	return nil
 }
