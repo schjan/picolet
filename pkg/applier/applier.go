@@ -17,6 +17,7 @@ import (
 type SystemdManager interface {
 	DaemonReload(ctx context.Context) error
 	StartUnit(ctx context.Context, name string) error
+	StopUnit(ctx context.Context, name string) error
 	RestartUnit(ctx context.Context, name string) error
 	GetUnitState(ctx context.Context, name string) (string, error)
 	IsActive(ctx context.Context, name string) (bool, error)
@@ -85,18 +86,19 @@ func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyRe
 		return cmp.Compare(categoryOrder[x.Category], categoryOrder[y.Category])
 	})
 
-	changedUnits, err := a.applyPhase(ctx, sorted, result)
+	changedUnits, needsReload, err := a.applyPhase(ctx, sorted, result)
 	if err != nil {
 		return result, err
 	}
 	if a.dryRun {
 		return result, nil
 	}
-	return result, a.restartUnits(ctx, changedUnits, result)
+	return result, a.restartUnits(ctx, changedUnits, needsReload, result)
 }
 
-func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (map[string]bool, error) {
-	changedUnits := make(map[string]bool)
+//nolint:cyclop // multiple early-continues are clearer than restructuring
+func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (changedUnits map[string]bool, needsReload bool, err error) {
+	changedUnits = make(map[string]bool)
 	for _, change := range sorted {
 		if change.Action == reconciler.ActionNoop {
 			continue
@@ -111,11 +113,28 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			result.Applied++
 			continue
 		}
+		// For non-secret deletes: stop the unit before removing the file so that
+		// systemd terminates the managed container cleanly. daemon-reload alone does
+		// not stop running services — it only removes the unit definition.
+		if change.Action == reconciler.ActionDelete && change.Category != "secret" {
+			if unitName := validator.UnitNameFromPath(change.DestPath); unitName != "" {
+				if stopErr := a.systemd.StopUnit(ctx, unitName); stopErr != nil {
+					slog.Warn("stopping unit before file removal", "unit", unitName, "error", stopErr)
+				}
+			}
+		}
 		if err := a.applyChange(ctx, change); err != nil {
-			return nil, fmt.Errorf("applying %s (%s): %w", change.DestPath, change.Action, err)
+			return nil, false, fmt.Errorf("applying %s (%s): %w", change.DestPath, change.Action, err)
 		}
 		result.Applied++
 		if change.Category == "secret" {
+			continue
+		}
+		// All non-secret file changes (including deletes) require a daemon-reload.
+		needsReload = true
+		if change.Action == reconciler.ActionDelete {
+			// Deleted units must NOT be restarted — the unit no longer exists after
+			// daemon-reload. StopUnit above already terminated the running service.
 			continue
 		}
 		if unitName := validator.UnitNameFromPath(change.DestPath); unitName != "" {
@@ -125,7 +144,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			result.NeedsSelfRestart = true
 		}
 	}
-	return changedUnits, nil
+	return changedUnits, needsReload, nil
 }
 
 func (a *Applier) applyChange(ctx context.Context, change reconciler.Change) error {
@@ -139,8 +158,8 @@ func (a *Applier) applyChange(ctx context.Context, change reconciler.Change) err
 	}
 }
 
-func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]bool, result *ApplyResult) error {
-	if len(changedUnits) == 0 {
+func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]bool, needsReload bool, result *ApplyResult) error {
+	if len(changedUnits) == 0 && !needsReload {
 		return nil
 	}
 	slog.Info("running systemd daemon-reload")

@@ -579,7 +579,7 @@ features:
 		assert.True(t, result.HasChanges)
 		assert.GreaterOrEqual(t, result.Summary[reconciler.ActionDelete], 1)
 		require.NotNil(t, result.ApplyResult)
-		// Do NOT assert Errors is empty — RestartUnit("simple.service") fails after the unit file is gone
+		assert.Empty(t, result.ApplyResult.Errors)
 
 		t.Run("simple_container_removed", func(t *testing.T) {
 			assert.NoFileExists(t, filepath.Join(quadletDir, "simple.container"))

@@ -93,6 +93,7 @@ func setupApplyMocks(sys *mocks.MockSystemdManager, _ *mocks.MockPodmanClient, f
 
 	// Apply phase
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
+	sys.EXPECT().StopUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
 	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	written := make(map[string][]byte)

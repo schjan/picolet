@@ -48,6 +48,15 @@ func (m *DBusSystemdManager) StartUnit(ctx context.Context, name string) error {
 	return waitJobResult(ctx, ch, "starting", name)
 }
 
+func (m *DBusSystemdManager) StopUnit(ctx context.Context, name string) error {
+	ch := make(chan string, 1)
+	_, err := m.conn.StopUnitContext(ctx, name, "replace", ch)
+	if err != nil {
+		return fmt.Errorf("stopping %s: %w", name, err)
+	}
+	return waitJobResult(ctx, ch, "stopping", name)
+}
+
 func (m *DBusSystemdManager) RestartUnit(ctx context.Context, name string) error {
 	ch := make(chan string, 1)
 	_, err := m.conn.RestartUnitContext(ctx, name, "replace", ch)

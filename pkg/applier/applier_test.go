@@ -90,8 +90,9 @@ func TestApplyNoop(t *testing.T) {
 func TestApplyDelete(t *testing.T) {
 	t.Parallel()
 	sys := mocks.NewMockSystemdManager(t)
+	sys.EXPECT().StopUnit(mock.Anything, "old.service").Return(nil)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
-	sys.EXPECT().RestartUnit(mock.Anything, "old.service").Return(nil)
+	// RestartUnit must NOT be called for deletes — the unit is gone after daemon-reload
 	pod := mocks.NewMockPodmanClient(t)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
