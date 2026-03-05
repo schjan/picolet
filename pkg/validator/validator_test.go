@@ -16,7 +16,7 @@ func newParsedFile(t *testing.T, category, destPath, content string) resolver.Re
 	t.Helper()
 	unit := parser.NewUnitFile()
 	unit.Filename = filepath.Base(destPath)
-	_ = unit.Parse(content)
+	require.NoError(t, unit.Parse(content))
 	return resolver.ResolvedFile{
 		DestPath:   destPath,
 		Category:   category,

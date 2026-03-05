@@ -44,6 +44,14 @@ linters:
       - std-error-handling
     paths:
       - third-party
+  settings:
+    ireturn:
+      allow:
+        - anon
+        - error
+        - empty
+        - stdlib
+        - "transport.AuthMethod"
 
 formatters:
   enable:

@@ -78,37 +78,26 @@ func classifyFile(f resolver.ResolvedFile, currentState *state.State) Change {
 	newHash := hash(f.Content)
 	oldHash, managed := currentState.ManagedFiles[f.DestPath]
 
-	if !managed {
-		return Change{
-			DestPath:    f.DestPath,
-			Category:    f.Category,
-			Action:      ActionCreate,
-			NewContent:  f.Content,
-			NewHash:     newHash,
-			ServiceName: f.ServiceName,
-		}
-	}
-
-	if oldHash == newHash {
-		return Change{
-			DestPath:    f.DestPath,
-			Category:    f.Category,
-			Action:      ActionNoop,
-			OldHash:     oldHash,
-			NewHash:     newHash,
-			ServiceName: f.ServiceName,
-		}
-	}
-
-	return Change{
+	c := Change{
 		DestPath:    f.DestPath,
 		Category:    f.Category,
-		Action:      ActionUpdate,
-		NewContent:  f.Content,
 		OldHash:     oldHash,
 		NewHash:     newHash,
 		ServiceName: f.ServiceName,
 	}
+
+	switch {
+	case !managed:
+		c.Action = ActionCreate
+		c.NewContent = f.Content
+	case oldHash == newHash:
+		c.Action = ActionNoop
+	default:
+		c.Action = ActionUpdate
+		c.NewContent = f.Content
+	}
+
+	return c
 }
 
 func (cs *Changeset) addChange(c Change) {

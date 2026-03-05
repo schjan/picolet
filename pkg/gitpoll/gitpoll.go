@@ -141,7 +141,7 @@ func isSSHURL(url string) bool {
 	return strings.HasPrefix(url, "ssh://") || strings.HasPrefix(url, "git@")
 }
 
-//nolint:nilnil,ireturn // nil signals anonymous access; interface needed for SSH vs HTTP auth
+//nolint:nilnil // nil signals anonymous access; interface needed for SSH vs HTTP auth
 func (p *Poller) auth() (transport.AuthMethod, error) {
 	if isSSHURL(p.repoURL) {
 		auth, err := ssh.NewSSHAgentAuth("git")

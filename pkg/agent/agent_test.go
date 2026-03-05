@@ -244,6 +244,7 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 	store := state.NewStore(statePath)
 	st := &state.State{
 		ManagedFiles: make(map[string]string),
+		ServiceNames: make(map[string]string),
 		FailedSHA:    head.Hash().String(),
 		FailedCount:  3, // maxRetries reached → will be skipped
 	}
@@ -301,6 +302,7 @@ func TestAgentRetriesFailedSHA(t *testing.T) {
 	store := state.NewStore(statePath)
 	st := &state.State{
 		ManagedFiles: make(map[string]string),
+		ServiceNames: make(map[string]string),
 		FailedSHA:    head.Hash().String(),
 		FailedCount:  1, // only 1 failure, will retry
 	}
