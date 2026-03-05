@@ -28,7 +28,6 @@ import (
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
-	"github.com/schjan/picolet/pkg/validator"
 )
 
 func podmanSocketPath(t *testing.T) string {
@@ -173,7 +172,7 @@ func TestE2EPipeline(t *testing.T) {
 		agent.WithStatePath(statePath),
 	)
 	store := state.NewStore(statePath)
-	healthChecker := health.New(systemd, validator.UnitNameFromFile)
+	healthChecker := health.New(systemd)
 
 	t.Run("reconcile", func(t *testing.T) {
 		require.NotEmpty(t, headSHA, "clone sub-test must have set headSHA")
@@ -260,6 +259,11 @@ func TestE2EPipeline(t *testing.T) {
 			assert.Contains(t, st.ManagedFiles, simpleContainerKey, "should contain simple.container path")
 
 			assert.Empty(t, st.FailedSHA, "failed SHA should be empty")
+
+			// ServiceNames must be populated for quadlets so the health checker can read them
+			networkKey := filepath.Join(quadletDir, "internal.network")
+			assert.Equal(t, "simple.service", st.ServiceNames[simpleContainerKey])
+			assert.Equal(t, "internal-network.service", st.ServiceNames[networkKey])
 		})
 
 		t.Run("container_running", func(t *testing.T) {
@@ -453,7 +457,7 @@ func TestE2EPipeline(t *testing.T) {
 		assert.Contains(t, result.Healthy, "internal-network.service")
 		assert.Empty(t, result.Unhealthy, "all managed units should be active")
 		assert.Empty(t, result.Errors, "no health check errors expected")
-		// Note: custom.socket is not checked (UnitNameFromFile returns "" for .socket)
+		// Note: custom.socket is not checked — systemd category files have no ServiceNames entry
 	})
 
 	t.Run("health_enforce_restart", func(t *testing.T) {
@@ -589,6 +593,11 @@ WantedBy=default.target
 			assert.NotContains(t, st.ManagedFiles, simpleKey)
 			assert.Contains(t, st.ManagedFiles, extraKey)
 			assert.Contains(t, st.ManagedFiles, networkKey)
+
+			// Deleted container must not retain a ServiceNames entry
+			assert.NotContains(t, st.ServiceNames, simpleKey, "removed container should be gone from ServiceNames")
+			assert.Equal(t, "extra.service", st.ServiceNames[extraKey])
+			assert.Equal(t, "internal-network.service", st.ServiceNames[networkKey])
 		})
 	})
 

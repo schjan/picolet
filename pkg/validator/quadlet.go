@@ -10,40 +10,40 @@ import (
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
 )
 
-func parseQuadletUnit(filename, content string) (*parser.UnitFile, error) {
-	unit := parser.NewUnitFile()
-	unit.Filename = filename
-	if err := unit.Parse(content); err != nil {
-		return nil, err
-	}
-	return unit, nil
-}
-
-func unitServiceName(unit *parser.UnitFile) string {
+// buildUnitInfo mirrors Podman's generateUnitsInfoMap logic exactly.
+// GetUnitServiceName returns the base service name without ".service" suffix; we add it here.
+// ResourceName must be pre-filled for .container (network reuse resolution via GetContainerResourceName).
+// Convert* fills ResourceName for all other types (.network, .volume, .kube).
+func buildUnitInfo(unit *parser.UnitFile) *quadlet.UnitInfo {
 	serviceName, err := quadlet.GetUnitServiceName(unit)
 	if err != nil {
-		return ""
+		return nil
 	}
-	return serviceName + ".service"
+	info := &quadlet.UnitInfo{ServiceName: serviceName + ".service"}
+	if strings.HasSuffix(unit.Filename, ".container") {
+		info.ResourceName = quadlet.GetContainerResourceName(unit)
+	}
+	// .network, .volume, .kube: ResourceName left empty — Convert* sets it
+	return info
 }
 
-func (v *Validator) validateQuadlet(path string, content []byte, unitsInfoMap map[string]*quadlet.UnitInfo) error {
-	ext := filepath.Ext(path)
-	filename := filepath.Base(path)
-
-	unit, err := parseQuadletUnit(filename, string(content))
-	if err != nil {
-		return fmt.Errorf("%s: parse: %w", path, err)
+// validateQuadlet validates a pre-parsed quadlet unit against the units info map.
+// The unit must already be parsed by the caller (via ValidateFiles or validateFile).
+// Podman's Convert* functions require the unit's own entry in unitsInfoMap
+// (via initServiceUnitFile), so we ensure it is populated before converting.
+func (v *Validator) validateQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.UnitInfo) error {
+	// Ensure the unit's own entry is in the map. In the ValidateFiles path this is
+	// pre-populated by buildUnitsInfoFromFiles; this handles direct calls (e.g. tests).
+	if _, ok := unitsInfoMap[unit.Filename]; !ok {
+		if info := buildUnitInfo(unit); info != nil {
+			unitsInfoMap[unit.Filename] = info
+		}
 	}
 
-	// Ensure the unit being validated is in the map (required by Podman's converter)
-	if _, ok := unitsInfoMap[filename]; !ok {
-		unitsInfoMap[filename] = BuildUnitInfo(filename, ext)
-	}
+	ext := filepath.Ext(unit.Filename)
 
 	var warn error
 	var convertErr error
-
 	switch ext {
 	case ".container":
 		_, warn, convertErr = quadlet.ConvertContainer(unit, unitsInfoMap, false)
@@ -54,65 +54,14 @@ func (v *Validator) validateQuadlet(path string, content []byte, unitsInfoMap ma
 	case ".kube":
 		_, convertErr = quadlet.ConvertKube(unit, unitsInfoMap, false)
 	default:
-		return fmt.Errorf("%s: unknown quadlet extension %q", path, ext)
+		return fmt.Errorf("%s: unknown quadlet extension %q", unit.Filename, ext)
 	}
 
 	if warn != nil {
-		slog.Warn("quadlet warning", "file", path, "warning", warn)
+		slog.Warn("quadlet warning", "file", unit.Filename, "warning", warn)
 	}
 	if convertErr != nil {
-		return fmt.Errorf("%s: %w", path, convertErr)
-	}
-	return nil
-}
-
-// UnitNameFromContent returns the systemd unit name for a quadlet given its
-// filename and content string, respecting any ServiceName= override.
-// Returns empty string for non-quadlet filenames or unparseable content.
-func UnitNameFromContent(filename, content string) string {
-	unit, err := parseQuadletUnit(filename, content)
-	if err != nil {
-		return ""
-	}
-	return unitServiceName(unit)
-}
-
-// UnitNameFromFile returns the systemd unit name for a quadlet file on disk,
-// respecting any ServiceName= override in the file content.
-// Returns empty string if the file cannot be read or is not a quadlet.
-func UnitNameFromFile(destPath string) string {
-	unit, err := parser.ParseUnitFile(destPath)
-	if err != nil {
-		return ""
-	}
-	return unitServiceName(unit)
-}
-
-// BuildUnitInfo returns the UnitInfo for a quadlet file, mapping filename + extension
-// to systemd service name and Podman resource name. Returns nil for unknown extensions.
-func BuildUnitInfo(filename, ext string) *quadlet.UnitInfo {
-	baseName := strings.TrimSuffix(filename, ext)
-	switch ext {
-	case ".container":
-		return &quadlet.UnitInfo{
-			ServiceName:  baseName + ".service",
-			ResourceName: baseName,
-		}
-	case ".network":
-		return &quadlet.UnitInfo{
-			ServiceName:  baseName + "-network.service",
-			ResourceName: "systemd-" + baseName,
-		}
-	case ".volume":
-		return &quadlet.UnitInfo{
-			ServiceName:  baseName + "-volume.service",
-			ResourceName: "systemd-" + baseName,
-		}
-	case ".kube":
-		return &quadlet.UnitInfo{
-			ServiceName:  baseName + ".service",
-			ResourceName: baseName,
-		}
+		return fmt.Errorf("%s: %w", unit.Filename, convertErr)
 	}
 	return nil
 }

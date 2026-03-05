@@ -186,7 +186,7 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 	return a.Run(ctx)
 }
 
-func runDryRun(ctx context.Context, repoDir, hostname string) error {
+func runDryRun(_ context.Context, repoDir, hostname string) error {
 	repoFS := os.DirFS(repoDir)
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
@@ -204,7 +204,7 @@ func runDryRun(ctx context.Context, repoDir, hostname string) error {
 
 	// Validate this host only — fleet-wide validation belongs in CI
 	v := validator.New()
-	if err := v.ValidateHost(ctx, r, hostname); err != nil {
+	if err := v.ValidateFiles(resolved.Files); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -213,11 +213,10 @@ func runDryRun(ctx context.Context, repoDir, hostname string) error {
 	st, err := store.Load()
 	if err != nil {
 		slog.Warn("could not load state, using empty state", "error", err)
-		st = &state.State{ManagedFiles: make(map[string]string)}
+		st = &state.State{ManagedFiles: make(map[string]string), ServiceNames: make(map[string]string)}
 	}
 
-	rec := reconciler.New()
-	changeset := rec.Diff(resolved.Files, st)
+	changeset := reconciler.Diff(resolved.Files, st)
 
 	if !changeset.HasChanges() {
 		slog.Info("no changes detected")

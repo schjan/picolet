@@ -10,6 +10,9 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/containers/podman/v5/pkg/systemd/parser"
+	"github.com/containers/podman/v5/pkg/systemd/quadlet"
+
 	"github.com/schjan/picolet/pkg/config"
 )
 
@@ -23,6 +26,10 @@ type ResolvedFile struct {
 	Content string
 	// Category describes the file type (network, container, kube, manifest, etc.).
 	Category string
+	// ParsedUnit is the parsed quadlet unit file; nil for non-quadlet files or on parse error.
+	ParsedUnit *parser.UnitFile
+	// ServiceName is the derived systemd service name (e.g. "foo.service"); "" for non-quadlets.
+	ServiceName string
 }
 
 // ResolvedHost is the complete desired state for a single host.
@@ -166,12 +173,46 @@ func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateDa
 		return nil, fmt.Errorf("resolving %s: %w", srcPath, err)
 	}
 
+	filename := destFilename(srcPath)
+	var parsedUnit *parser.UnitFile
+	var serviceName string
+	if isQuadletCategory(category) {
+		unit := parser.NewUnitFile()
+		unit.Filename = filename
+		if err := unit.Parse(content); err == nil {
+			parsedUnit = unit
+			serviceName = unitServiceName(unit)
+		}
+		// Parse errors are silent here — validator catches them with proper error messages
+	}
+
 	return &ResolvedFile{
-		SrcPath:  srcPath,
-		DestPath: filepath.Join(destDir, destFilename(srcPath)),
-		Content:  content,
-		Category: category,
+		SrcPath:     srcPath,
+		DestPath:    filepath.Join(destDir, filename),
+		Content:     content,
+		Category:    category,
+		ParsedUnit:  parsedUnit,
+		ServiceName: serviceName,
 	}, nil
+}
+
+// unitServiceName returns "foo.service" from a parsed quadlet unit, using Podman's
+// GetUnitServiceName which handles all quadlet types and ServiceName= overrides.
+func unitServiceName(unit *parser.UnitFile) string {
+	name, err := quadlet.GetUnitServiceName(unit)
+	if err != nil {
+		return ""
+	}
+	return name + ".service"
+}
+
+// isQuadletCategory returns true for file categories that produce quadlet units.
+func isQuadletCategory(category string) bool {
+	switch category {
+	case "container", "network", "volume", "kube":
+		return true
+	}
+	return false
 }
 
 // destFilename returns the base filename for a source path, stripping any .tmpl suffix.

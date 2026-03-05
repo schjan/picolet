@@ -1,20 +1,44 @@
 package validator
 
 import (
+	"path/filepath"
 	"testing"
 
+	"github.com/containers/podman/v5/pkg/systemd/parser"
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/pkg/resolver"
 )
 
+// newParsedFile returns a ResolvedFile with ParsedUnit populated, for use in test fixtures.
+func newParsedFile(t *testing.T, category, destPath, content string) resolver.ResolvedFile {
+	t.Helper()
+	unit := parser.NewUnitFile()
+	unit.Filename = filepath.Base(destPath)
+	_ = unit.Parse(content)
+	return resolver.ResolvedFile{
+		DestPath:   destPath,
+		Category:   category,
+		Content:    content,
+		ParsedUnit: unit,
+	}
+}
+
+// parseUnit parses a quadlet unit for use in validateQuadlet tests.
+func parseUnit(t *testing.T, filename, content string) *parser.UnitFile {
+	t.Helper()
+	unit := parser.NewUnitFile()
+	unit.Filename = filename
+	require.NoError(t, unit.Parse(content))
+	return unit
+}
+
 //nolint:funlen // table-driven validation test
 func TestValidateQuadletContainer(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
-		path    string
 		content string
 		files   []resolver.ResolvedFile // pre-populate unitsInfoMap
 		wantErr bool
@@ -22,7 +46,6 @@ func TestValidateQuadletContainer(t *testing.T) {
 	}{
 		{
 			name: "valid container with network ref",
-			path: "/etc/containers/systemd/test.container",
 			content: `[Container]
 Image=docker.io/traefik:v3
 Network=internal.network
@@ -31,31 +54,27 @@ Network=internal.network
 WantedBy=default.target
 `,
 			files: []resolver.ResolvedFile{
-				{DestPath: "/etc/containers/systemd/internal.network", Category: "network"},
+				newParsedFile(t, "network", "/etc/containers/systemd/internal.network", "[Network]\n"),
 			},
 		},
 		{
 			name: "valid minimal container",
-			path: "/etc/containers/systemd/test.container",
 			content: `[Container]
 Image=docker.io/traefik:v3
 `,
 		},
 		{
 			name:    "missing Image key",
-			path:    "/etc/containers/systemd/test.container",
 			content: "[Container]\n",
 			wantErr: true,
 		},
 		{
 			name:    "empty content",
-			path:    "/etc/containers/systemd/test.container",
 			content: "",
 			wantErr: true,
 		},
 		{
 			name: "unresolved network reference",
-			path: "/etc/containers/systemd/test.container",
 			content: `[Container]
 Image=docker.io/traefik:v3
 Network=nonexistent.network
@@ -70,7 +89,12 @@ Network=nonexistent.network
 			t.Parallel()
 			v := New()
 			unitsInfo := buildUnitsInfoFromFiles(tt.files)
-			err := v.validateQuadlet(tt.path, []byte(tt.content), unitsInfo)
+
+			unit := parser.NewUnitFile()
+			unit.Filename = "test.container"
+			_ = unit.Parse(tt.content)
+
+			err := v.validateQuadlet(unit, unitsInfo)
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errMsg != "" {
@@ -95,28 +119,30 @@ Network=internal.network
 WantedBy=default.target
 `
 	files := []resolver.ResolvedFile{
-		{DestPath: "/etc/containers/systemd/internal.network", Category: "network"},
+		newParsedFile(t, "network", "/etc/containers/systemd/internal.network", "[Network]\n"),
 	}
 	unitsInfo := buildUnitsInfoFromFiles(files)
-	require.NoError(t, v.validateQuadlet("/etc/containers/systemd/test.kube", []byte(valid), unitsInfo))
+	unit := parseUnit(t, "test.kube", valid)
+	require.NoError(t, v.validateQuadlet(unit, unitsInfo))
 
 	v2 := New()
 	noYaml := "[Kube]\nNetwork=internal.network\n"
-	require.Error(t, v2.validateQuadlet("/etc/containers/systemd/test.kube", []byte(noYaml), make(map[string]*quadlet.UnitInfo)))
+	unit2 := parseUnit(t, "test.kube", noYaml)
+	require.Error(t, v2.validateQuadlet(unit2, make(map[string]*quadlet.UnitInfo)))
 }
 
 func TestValidateQuadletNetwork(t *testing.T) {
 	t.Parallel()
 	v := New()
-	valid := "[Network]\nInternal=true\n"
-	require.NoError(t, v.validateQuadlet("/etc/containers/systemd/test.network", []byte(valid), make(map[string]*quadlet.UnitInfo)))
+	unit := parseUnit(t, "test.network", "[Network]\nInternal=true\n")
+	require.NoError(t, v.validateQuadlet(unit, make(map[string]*quadlet.UnitInfo)))
 }
 
 func TestValidateQuadletVolume(t *testing.T) {
 	t.Parallel()
 	v := New()
-	valid := "[Volume]\n"
-	require.NoError(t, v.validateQuadlet("/etc/containers/systemd/test.volume", []byte(valid), make(map[string]*quadlet.UnitInfo)))
+	unit := parseUnit(t, "test.volume", "[Volume]\n")
+	require.NoError(t, v.validateQuadlet(unit, make(map[string]*quadlet.UnitInfo)))
 }
 
 //nolint:funlen // table-driven validation test

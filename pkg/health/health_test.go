@@ -19,18 +19,17 @@ func TestEnforceAllHealthy(t *testing.T) {
 		return s == "foo.service" || s == "bar-network.service"
 	})).Return(true, nil).Times(2)
 
-	namer := func(path string) string {
-		return map[string]string{
-			"/etc/containers/systemd/foo.container": "foo.service",
-			"/etc/containers/systemd/bar.network":   "bar-network.service",
-		}[path]
-	}
-	c := New(sys, namer)
+	c := New(sys)
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": "sha256:abc",
 			"/etc/containers/systemd/bar.network":   "sha256:def",
-			"secret:my_secret":                      "sha256:ghi", // skipped — namer returns ""
+			"secret:my_secret":                      "sha256:ghi",
+		},
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
+			"/etc/containers/systemd/bar.network":   "bar-network.service",
+			// secret has no entry — skipped automatically
 		},
 	}
 
@@ -46,13 +45,13 @@ func TestEnforceRestartsUnhealthy(t *testing.T) {
 	sys.EXPECT().IsActive(mock.Anything, "foo.service").Return(false, nil)
 	sys.EXPECT().RestartUnit(mock.Anything, "foo.service").Return(nil)
 
-	namer := func(path string) string {
-		return map[string]string{"/etc/containers/systemd/foo.container": "foo.service"}[path]
-	}
-	c := New(sys, namer)
+	c := New(sys)
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": "sha256:abc",
+		},
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
 		},
 	}
 
@@ -65,13 +64,14 @@ func TestEnforceSkipsSecretsAndManifests(t *testing.T) {
 	t.Parallel()
 	sys := mocks.NewMockSystemdManager(t)
 	// No expectations — no units should be checked
-	c := New(sys, func(_ string) string { return "" })
+	c := New(sys)
 
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"secret:my_secret": "sha256:abc",
 			"/var/lib/picolet/manifests/app/deployment.yml": "sha256:def",
 		},
+		ServiceNames: make(map[string]string), // no quadlet units
 	}
 
 	result, err := c.Enforce(context.Background(), st)
@@ -85,13 +85,13 @@ func TestEnforceHandlesCheckError(t *testing.T) {
 	sys := mocks.NewMockSystemdManager(t)
 	sys.EXPECT().IsActive(mock.Anything, "foo.service").Return(false, assert.AnError)
 
-	namer := func(path string) string {
-		return map[string]string{"/etc/containers/systemd/foo.container": "foo.service"}[path]
-	}
-	c := New(sys, namer)
+	c := New(sys)
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": "sha256:abc",
+		},
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
 		},
 	}
 
@@ -108,14 +108,14 @@ func TestEnforceRestartCooldown(t *testing.T) {
 	// RestartUnit should only be called once (cooldown prevents second restart)
 	sys.EXPECT().RestartUnit(mock.Anything, "foo.service").Return(nil).Once()
 
-	namer := func(path string) string {
-		return map[string]string{"/etc/containers/systemd/foo.container": "foo.service"}[path]
-	}
-	c := New(sys, namer)
+	c := New(sys)
 
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": "sha256:abc",
+		},
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
 		},
 	}
 

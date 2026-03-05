@@ -113,7 +113,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	store := state.NewStore(a.statePath)
-	healthChecker := health.New(a.systemd, validator.UnitNameFromFile)
+	healthChecker := health.New(a.systemd)
 
 	slog.Info("agent started",
 		"hostname", a.cfg.Hostname,
@@ -219,11 +219,11 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	return nil
 }
 
-func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *resolver.Resolver, error) {
+func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, error) {
 	repoFS := os.DirFS(a.repoPath)
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
-		return nil, nil, fmt.Errorf("loading config: %w", err)
+		return nil, fmt.Errorf("loading config: %w", err)
 	}
 
 	secretReader := func(path string) (string, error) {
@@ -247,13 +247,13 @@ func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *resolver.Resolver, e
 		Rootless:     a.cfg.Rootless,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("creating resolver: %w", err)
+		return nil, fmt.Errorf("creating resolver: %w", err)
 	}
 	resolved, err := r.ResolveHost(a.cfg.Hostname)
 	if err != nil {
-		return nil, nil, fmt.Errorf("resolving host %s: %w", a.cfg.Hostname, err)
+		return nil, fmt.Errorf("resolving host %s: %w", a.cfg.Hostname, err)
 	}
-	return resolved.Files, r, nil
+	return resolved.Files, nil
 }
 
 // ReconcileResult contains the outcome of a single reconciliation cycle.
@@ -268,12 +268,12 @@ type ReconcileResult struct {
 
 // ReconcileOnce runs a single reconciliation cycle: load config, resolve, diff, validate, apply, save state.
 func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.State, store *state.Store) (*ReconcileResult, error) {
-	files, r, err := a.loadAndResolve()
+	files, err := a.loadAndResolve()
 	if err != nil {
 		return nil, err
 	}
 
-	changeset := reconciler.New().Diff(files, st)
+	changeset := reconciler.Diff(files, st)
 
 	if !changeset.HasChanges() {
 		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary}, a.markApplied(headSHA, st, store)
@@ -286,7 +286,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	)
 
 	v := validator.New()
-	if err := v.ValidateHost(ctx, r, a.cfg.Hostname); err != nil {
+	if err := v.ValidateFiles(files); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -366,11 +366,15 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 func (a *Agent) updateState(headSHA string, st *state.State, changeset *reconciler.Changeset) {
 	st.MarkApplied(headSHA)
 	st.ManagedFiles = make(map[string]string)
+	st.ServiceNames = make(map[string]string)
 	for _, change := range changeset.Changes {
 		if change.Action == reconciler.ActionDelete {
 			continue
 		}
 		st.ManagedFiles[change.DestPath] = change.NewHash
+		if change.ServiceName != "" {
+			st.ServiceNames[change.DestPath] = change.ServiceName
+		}
 	}
 
 	metrics.ManagedUnitsTotal.Set(float64(len(st.ManagedFiles)))

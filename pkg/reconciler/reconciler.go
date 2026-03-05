@@ -22,12 +22,13 @@ const (
 
 // Change represents a single file change.
 type Change struct {
-	DestPath   string
-	Category   string
-	Action     Action
-	NewContent string // empty for delete
-	OldHash    string // from state, empty for create
-	NewHash    string // sha256 of NewContent
+	DestPath    string
+	Category    string
+	Action      Action
+	NewContent  string // empty for delete
+	OldHash     string // from state, empty for create
+	NewHash     string // sha256 of NewContent
+	ServiceName string // "foo.service"; "" for non-quadlets/secrets
 }
 
 // Changeset is the complete set of changes to apply.
@@ -41,16 +42,8 @@ func (cs *Changeset) HasChanges() bool {
 	return cs.Summary[ActionCreate] > 0 || cs.Summary[ActionUpdate] > 0 || cs.Summary[ActionDelete] > 0
 }
 
-// Reconciler computes the diff between desired and current state.
-type Reconciler struct{}
-
-// New creates a new Reconciler.
-func New() *Reconciler {
-	return &Reconciler{}
-}
-
 // Diff computes the changeset between desired files and current state.
-func (r *Reconciler) Diff(
+func Diff(
 	desired []resolver.ResolvedFile,
 	currentState *state.State,
 ) *Changeset {
@@ -68,10 +61,11 @@ func (r *Reconciler) Diff(
 	for destPath := range currentState.ManagedFiles {
 		if !seen[destPath] {
 			cs.addChange(Change{
-				DestPath: destPath,
-				Category: categoryFromPath(destPath),
-				Action:   ActionDelete,
-				OldHash:  currentState.ManagedFiles[destPath],
+				DestPath:    destPath,
+				Category:    categoryFromPath(destPath),
+				Action:      ActionDelete,
+				OldHash:     currentState.ManagedFiles[destPath],
+				ServiceName: currentState.ServiceNames[destPath], // "" for non-quadlets
 			})
 		}
 	}
@@ -86,31 +80,34 @@ func classifyFile(f resolver.ResolvedFile, currentState *state.State) Change {
 
 	if !managed {
 		return Change{
-			DestPath:   f.DestPath,
-			Category:   f.Category,
-			Action:     ActionCreate,
-			NewContent: f.Content,
-			NewHash:    newHash,
+			DestPath:    f.DestPath,
+			Category:    f.Category,
+			Action:      ActionCreate,
+			NewContent:  f.Content,
+			NewHash:     newHash,
+			ServiceName: f.ServiceName,
 		}
 	}
 
 	if oldHash == newHash {
 		return Change{
-			DestPath: f.DestPath,
-			Category: f.Category,
-			Action:   ActionNoop,
-			OldHash:  oldHash,
-			NewHash:  newHash,
+			DestPath:    f.DestPath,
+			Category:    f.Category,
+			Action:      ActionNoop,
+			OldHash:     oldHash,
+			NewHash:     newHash,
+			ServiceName: f.ServiceName,
 		}
 	}
 
 	return Change{
-		DestPath:   f.DestPath,
-		Category:   f.Category,
-		Action:     ActionUpdate,
-		NewContent: f.Content,
-		OldHash:    oldHash,
-		NewHash:    newHash,
+		DestPath:    f.DestPath,
+		Category:    f.Category,
+		Action:      ActionUpdate,
+		NewContent:  f.Content,
+		OldHash:     oldHash,
+		NewHash:     newHash,
+		ServiceName: f.ServiceName,
 	}
 }
 

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/schjan/picolet/pkg/reconciler"
-	"github.com/schjan/picolet/pkg/validator"
 )
 
 // SystemdManager controls systemd units via D-Bus.
@@ -121,7 +120,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		// systemd terminates the managed container cleanly. daemon-reload alone does
 		// not stop running services — it only removes the unit definition.
 		if change.Action == reconciler.ActionDelete && change.Category != "secret" {
-			if unitName := validator.UnitNameFromFile(change.DestPath); unitName != "" {
+			if unitName := unitNameForDelete(change); unitName != "" {
 				if stopErr := a.systemd.StopUnit(ctx, unitName); stopErr != nil {
 					slog.Warn("stopping unit before file removal", "unit", unitName, "error", stopErr)
 				}
@@ -141,14 +140,29 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			// daemon-reload. StopUnit above already terminated the running service.
 			continue
 		}
-		if unitName := validator.UnitNameFromContent(filepath.Base(change.DestPath), change.NewContent); unitName != "" {
-			changedUnits[unitName] = true
+		if change.ServiceName != "" {
+			changedUnits[change.ServiceName] = true
 		}
 		if filepath.Base(change.DestPath) == selfContainerFile {
 			result.NeedsSelfRestart = true
 		}
 	}
 	return changedUnits, needsReload, nil
+}
+
+// unitNameForDelete returns the systemd unit name to stop before a file is removed.
+// Quadlet categories use the pre-computed ServiceName from state.
+// Systemd category: the filename IS the unit name (no parse needed).
+// Secrets and manifests don't have associated units.
+func unitNameForDelete(change reconciler.Change) string {
+	switch change.Category {
+	case "container", "network", "volume", "kube":
+		return change.ServiceName // from state.ServiceNames; "" if unknown
+	case "systemd":
+		return filepath.Base(change.DestPath) // e.g. "foo.service"
+	default:
+		return ""
+	}
 }
 
 func (a *Applier) applyChange(ctx context.Context, change reconciler.Change) error {
