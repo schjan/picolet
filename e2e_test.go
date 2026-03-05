@@ -108,7 +108,7 @@ func TestE2EPipeline(t *testing.T) {
 		defer cancel()
 		_ = systemd.DaemonReload(cleanupCtx)
 		_ = podman.ContainerRemove(cleanupCtx, "picolet-e2e-test", true)
-		_ = podman.ContainerRemove(cleanupCtx, "systemd-exporter", true)
+		_ = podman.ContainerRemove(cleanupCtx, "systemd-extra", true)
 		_ = podman.SecretRemove(cleanupCtx, "e2e_secret")
 		systemd.Close()
 	})
@@ -353,7 +353,7 @@ pi_types:
   e2e:
     containers:
       - quadlets/containers/simple.container.tmpl
-      - quadlets/containers/exporter.container
+      - quadlets/containers/extra.container
     secrets:
       - secrets/e2e_secret.txt
 features:
@@ -374,9 +374,9 @@ features:
 		require.NotNil(t, result.ApplyResult)
 		assert.Empty(t, result.ApplyResult.Errors)
 
-		t.Run("exporter_file_written", func(t *testing.T) {
-			_, err := os.Stat(filepath.Join(quadletDir, "exporter.container"))
-			assert.NoError(t, err, "exporter.container should exist")
+		t.Run("extra_file_written", func(t *testing.T) {
+			_, err := os.Stat(filepath.Join(quadletDir, "extra.container"))
+			assert.NoError(t, err, "extra.container should exist")
 		})
 
 		t.Run("simple_container_intact", func(t *testing.T) {
@@ -387,9 +387,9 @@ features:
 		t.Run("state_has_both", func(t *testing.T) {
 			st, err := store.Load()
 			require.NoError(t, err)
-			exporterKey := filepath.Join(quadletDir, "exporter.container")
+			extraKey := filepath.Join(quadletDir, "extra.container")
 			simpleKey := filepath.Join(quadletDir, "simple.container")
-			assert.Contains(t, st.ManagedFiles, exporterKey)
+			assert.Contains(t, st.ManagedFiles, extraKey)
 			assert.Contains(t, st.ManagedFiles, simpleKey)
 		})
 	})
@@ -489,7 +489,7 @@ pi_types:
   e2e:
     containers:
       - quadlets/containers/simple.container.tmpl
-      - quadlets/containers/exporter.container
+      - quadlets/containers/extra.container
       - quadlets/containers/bad.container
     secrets:
       - secrets/e2e_secret.txt
@@ -550,7 +550,7 @@ pi_types:
       - quadlets/containers/exporter.container
   e2e:
     containers:
-      - quadlets/containers/exporter.container
+      - quadlets/containers/extra.container
     secrets:
       - secrets/e2e_secret.txt
 features:
@@ -580,23 +580,24 @@ features:
 		t.Run("picolet_e2e_test_stopped", func(t *testing.T) {
 			connCtx, err := bindings.NewConnection(t.Context(), "unix:"+socketPath)
 			require.NoError(t, err)
-			// DaemonReload may or may not stop the container depending on systemd version.
+			// After DaemonReload removes simple.service, systemd stops the container.
+			// This takes a few seconds, so poll until it's gone or no longer running.
 			require.Eventually(t, func() bool {
 				data, inspectErr := containers.Inspect(connCtx, "picolet-e2e-test", nil)
 				if inspectErr != nil {
 					return true // not found = container gone
 				}
 				return data.State.Status != "running"
-			}, 90*time.Second, 3*time.Second,
-				"container picolet-e2e-test should stop or be removed")
+			}, 30*time.Second, 2*time.Second,
+				"container picolet-e2e-test should stop after simple.service is removed by daemon-reload")
 
-			// Explicitly remove container as safety net for subsequent tests
+			// Force-remove as cleanup so subsequent tests start clean
 			_ = podman.ContainerRemove(ctx, "picolet-e2e-test", true)
 		})
 
-		t.Run("exporter_still_exists", func(t *testing.T) {
-			_, err := os.Stat(filepath.Join(quadletDir, "exporter.container"))
-			assert.NoError(t, err, "exporter.container should still exist")
+		t.Run("extra_still_exists", func(t *testing.T) {
+			_, err := os.Stat(filepath.Join(quadletDir, "extra.container"))
+			assert.NoError(t, err, "extra.container should still exist")
 		})
 
 		t.Run("state_cleaned", func(t *testing.T) {
@@ -604,10 +605,10 @@ features:
 			require.NoError(t, err)
 			assert.Equal(t, "remove-container-sha", st.AppliedSHA)
 			simpleKey := filepath.Join(quadletDir, "simple.container")
-			exporterKey := filepath.Join(quadletDir, "exporter.container")
+			extraKey := filepath.Join(quadletDir, "extra.container")
 			networkKey := filepath.Join(quadletDir, "internal.network")
 			assert.NotContains(t, st.ManagedFiles, simpleKey)
-			assert.Contains(t, st.ManagedFiles, exporterKey)
+			assert.Contains(t, st.ManagedFiles, extraKey)
 			assert.Contains(t, st.ManagedFiles, networkKey)
 		})
 	})
@@ -639,7 +640,7 @@ pi_types:
       - quadlets/containers/exporter.container
   e2e:
     containers:
-      - quadlets/containers/exporter.container
+      - quadlets/containers/extra.container
 features:
   app-a:
     containers:
@@ -673,12 +674,12 @@ features:
 			require.NoError(t, err)
 			assert.Equal(t, "remove-secret-sha", st.AppliedSHA)
 			assert.NotContains(t, st.ManagedFiles, "secret:e2e_secret")
-			exporterKey := filepath.Join(quadletDir, "exporter.container")
-			assert.Contains(t, st.ManagedFiles, exporterKey)
+			extraKey := filepath.Join(quadletDir, "extra.container")
+			assert.Contains(t, st.ManagedFiles, extraKey)
 		})
 
-		t.Run("exporter_intact", func(t *testing.T) {
-			_, err := os.Stat(filepath.Join(quadletDir, "exporter.container"))
+		t.Run("extra_intact", func(t *testing.T) {
+			_, err := os.Stat(filepath.Join(quadletDir, "extra.container"))
 			assert.NoError(t, err)
 			networkFile := filepath.Join(quadletDir, "internal.network")
 			_, err = os.Stat(networkFile)

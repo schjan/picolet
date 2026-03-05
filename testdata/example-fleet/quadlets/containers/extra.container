@@ -1,0 +1,7 @@
+[Container]
+Image=docker.io/library/alpine:3.21
+Network=internal.network
+Exec=sleep infinity
+
+[Install]
+WantedBy=default.target
