@@ -46,21 +46,32 @@ func podmanSocketPath(t *testing.T) string {
 	return fallback
 }
 
-// ciBranch returns the git branch to clone in CI, falling back to "main".
+// ciBranch returns the git branch to clone.
+// In CI it uses GitHub env vars; locally it reads the current branch from git.
 func ciBranch() string {
-	return cmp.Or(os.Getenv("GITHUB_HEAD_REF"), os.Getenv("GITHUB_REF_NAME"), "main")
+	if b := cmp.Or(os.Getenv("GITHUB_HEAD_REF"), os.Getenv("GITHUB_REF_NAME")); b != "" {
+		return b
+	}
+	if out, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
+		if b := strings.TrimSpace(string(out)); b != "" && b != "HEAD" {
+			return b
+		}
+	}
+	return "main"
 }
 
-// writeTokenFile persists GITHUB_TOKEN to a temp file and returns its path, or "" if unset.
-func writeTokenFile(t *testing.T) string {
+// repoAuth returns the repo URL and token file path based on the environment.
+// In CI (GITHUB_TOKEN set), it uses HTTPS with token auth.
+// Locally (no token), it uses SSH so the user's SSH agent handles authentication.
+func repoAuth(t *testing.T) (repoURL, tokenPath string) {
 	t.Helper()
 	token := os.Getenv("GITHUB_TOKEN")
 	if token == "" {
-		return ""
+		return "git@github.com:schjan/picolet.git", ""
 	}
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	require.NoError(t, os.WriteFile(tokenFile, []byte(token), 0o600)) //nolint:gosec // env-controlled path in E2E test
-	return tokenFile
+	return "https://github.com/schjan/picolet.git", tokenFile
 }
 
 //nolint:funlen,tparallel // E2E test with intentionally sequential sub-tests exercising the full pipeline
@@ -69,8 +80,7 @@ func TestE2EPipeline(t *testing.T) {
 
 	socketPath := podmanSocketPath(t)
 	branch := ciBranch()
-	repoURL := "https://github.com/schjan/picolet.git"
-	tokenPath := writeTokenFile(t)
+	repoURL, tokenPath := repoAuth(t)
 
 	cloneDir := filepath.Join(t.TempDir(), "repo")
 	statePath := filepath.Join(t.TempDir(), "state.json")
@@ -86,8 +96,11 @@ func TestE2EPipeline(t *testing.T) {
 	quadletDir := filepath.Join(home, ".config", "containers", "systemd")
 	systemdDir := filepath.Join(home, ".config", "systemd", "user")
 
-	// Create clients in parent scope for cleanup and sub-test reuse
-	podman, err := applier.NewSocketPodmanClient(t.Context(), socketPath)
+	// Create clients in parent scope for cleanup and sub-test reuse.
+	// Use context.Background() because Podman bindings embed the connection in the
+	// context — t.Context() is cancelled before t.Cleanup runs, which would cause
+	// cleanup calls (SecretRemove, ContainerRemove) to silently fail.
+	podman, err := applier.NewSocketPodmanClient(context.Background(), socketPath)
 	require.NoError(t, err)
 
 	systemd, err := applier.NewDBusSystemdManager(t.Context(), true)
