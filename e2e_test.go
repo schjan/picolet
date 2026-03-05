@@ -585,22 +585,16 @@ features:
 			assert.NoFileExists(t, filepath.Join(quadletDir, "simple.container"))
 		})
 
-		t.Run("picolet_e2e_test_stopped", func(t *testing.T) {
+		t.Run("picolet_e2e_test_removed", func(t *testing.T) {
 			connCtx, err := bindings.NewConnection(t.Context(), "unix:"+socketPath)
 			require.NoError(t, err)
-			// After DaemonReload removes simple.service, systemd stops the container.
-			// This takes a few seconds, so poll until it's gone or no longer running.
+			// StopUnit triggers ExecStop=podman rm -v -f -i, which removes the container.
+			// Poll until Inspect returns an error (container fully gone from Podman).
 			require.Eventually(t, func() bool {
-				data, inspectErr := containers.Inspect(connCtx, "picolet-e2e-test", nil)
-				if inspectErr != nil {
-					return true // not found = container gone
-				}
-				return data.State.Status != "running"
+				_, inspectErr := containers.Inspect(connCtx, "picolet-e2e-test", nil)
+				return inspectErr != nil // not found = fully removed
 			}, 30*time.Second, 2*time.Second,
-				"container picolet-e2e-test should stop after simple.service is removed by daemon-reload")
-
-			// Force-remove as cleanup so subsequent tests start clean
-			_ = podman.ContainerRemove(ctx, "picolet-e2e-test", true)
+				"container picolet-e2e-test should be fully removed after simple.service is stopped")
 		})
 
 		t.Run("extra_still_exists", func(t *testing.T) {

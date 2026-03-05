@@ -7,6 +7,13 @@ import (
 	"github.com/coreos/go-systemd/v22/dbus"
 )
 
+// systemd job result strings as documented in go-systemd dbus/methods.go:97-102.
+// No library constants exist; these values are sent over D-Bus.
+const (
+	systemdJobDone    = "done"
+	systemdJobSkipped = "skipped"
+)
+
 // DBusSystemdManager implements SystemdManager using the systemd D-Bus API.
 type DBusSystemdManager struct {
 	conn *dbus.Conn
@@ -45,7 +52,7 @@ func (m *DBusSystemdManager) StartUnit(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("starting %s: %w", name, err)
 	}
-	return waitJobResult(ctx, ch, "starting", name)
+	return waitJobResult(ctx, ch, "starting", name, false)
 }
 
 func (m *DBusSystemdManager) StopUnit(ctx context.Context, name string) error {
@@ -54,7 +61,7 @@ func (m *DBusSystemdManager) StopUnit(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("stopping %s: %w", name, err)
 	}
-	return waitJobResult(ctx, ch, "stopping", name)
+	return waitJobResult(ctx, ch, "stopping", name, true)
 }
 
 func (m *DBusSystemdManager) RestartUnit(ctx context.Context, name string) error {
@@ -63,17 +70,23 @@ func (m *DBusSystemdManager) RestartUnit(ctx context.Context, name string) error
 	if err != nil {
 		return fmt.Errorf("restarting %s: %w", name, err)
 	}
-	return waitJobResult(ctx, ch, "restarting", name)
+	return waitJobResult(ctx, ch, "restarting", name, false)
 }
 
 // waitJobResult waits for a systemd job result or context cancellation.
-func waitJobResult(ctx context.Context, ch <-chan string, verb, unit string) error {
+// allowSkipped must be true only for stop operations: systemd returns "skipped"
+// when the unit is already inactive, which is a valid outcome for stop but not
+// for start or restart.
+func waitJobResult(ctx context.Context, ch <-chan string, verb, unit string, allowSkipped bool) error {
 	select {
 	case result := <-ch:
-		if result != "done" {
-			return fmt.Errorf("%s %s: job result %q", verb, unit, result)
+		if result == systemdJobDone {
+			return nil
 		}
-		return nil
+		if result == systemdJobSkipped && allowSkipped {
+			return nil
+		}
+		return fmt.Errorf("%s %s: job result %q", verb, unit, result)
 	case <-ctx.Done():
 		return fmt.Errorf("%s %s: %w", verb, unit, ctx.Err())
 	}
