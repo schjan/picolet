@@ -48,6 +48,10 @@ type ApplyResult struct {
 	RestartedUnits   []string
 }
 
+// selfContainerFile is the quadlet filename for picolet's own container unit.
+// Its presence in a create/update changeset triggers a self-restart via picolet.service.
+const selfContainerFile = "picolet.container"
+
 // categoryOrder defines the apply phase ordering.
 var categoryOrder = map[string]int{
 	"network":   0,
@@ -140,7 +144,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		if unitName := validator.UnitNameFromContent(filepath.Base(change.DestPath), change.NewContent); unitName != "" {
 			changedUnits[unitName] = true
 		}
-		if filepath.Base(change.DestPath) == "picolet.container" {
+		if filepath.Base(change.DestPath) == selfContainerFile {
 			result.NeedsSelfRestart = true
 		}
 	}

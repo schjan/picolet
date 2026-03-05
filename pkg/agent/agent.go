@@ -273,7 +273,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		return nil, err
 	}
 
-	changeset := a.computeDiff(ctx, files, st)
+	changeset := reconciler.New().Diff(files, st)
 
 	if !changeset.HasChanges() {
 		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary}, a.markApplied(headSHA, st, store)
@@ -314,10 +314,6 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		Summary:     changeset.Summary,
 		ApplyResult: applyResult,
 	}, nil
-}
-
-func (a *Agent) computeDiff(_ context.Context, files []resolver.ResolvedFile, st *state.State) *reconciler.Changeset {
-	return reconciler.New().Diff(files, st)
 }
 
 func (a *Agent) markApplied(headSHA string, st *state.State, store *state.Store) error {

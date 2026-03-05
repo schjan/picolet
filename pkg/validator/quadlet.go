@@ -3,7 +3,6 @@ package validator
 import (
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -11,13 +10,29 @@ import (
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
 )
 
+func parseQuadletUnit(filename, content string) (*parser.UnitFile, error) {
+	unit := parser.NewUnitFile()
+	unit.Filename = filename
+	if err := unit.Parse(content); err != nil {
+		return nil, err
+	}
+	return unit, nil
+}
+
+func unitServiceName(unit *parser.UnitFile) string {
+	serviceName, err := quadlet.GetUnitServiceName(unit)
+	if err != nil {
+		return ""
+	}
+	return serviceName + ".service"
+}
+
 func (v *Validator) validateQuadlet(path string, content []byte, unitsInfoMap map[string]*quadlet.UnitInfo) error {
 	ext := filepath.Ext(path)
 	filename := filepath.Base(path)
 
-	unit := parser.NewUnitFile()
-	unit.Filename = filename
-	if err := unit.Parse(string(content)); err != nil {
+	unit, err := parseQuadletUnit(filename, string(content))
+	if err != nil {
 		return fmt.Errorf("%s: parse: %w", path, err)
 	}
 
@@ -55,27 +70,22 @@ func (v *Validator) validateQuadlet(path string, content []byte, unitsInfoMap ma
 // filename and content string, respecting any ServiceName= override.
 // Returns empty string for non-quadlet filenames or unparseable content.
 func UnitNameFromContent(filename, content string) string {
-	unit := parser.NewUnitFile()
-	unit.Filename = filename
-	if err := unit.Parse(content); err != nil {
-		return ""
-	}
-	serviceName, err := quadlet.GetUnitServiceName(unit)
+	unit, err := parseQuadletUnit(filename, content)
 	if err != nil {
 		return ""
 	}
-	return serviceName + ".service"
+	return unitServiceName(unit)
 }
 
 // UnitNameFromFile returns the systemd unit name for a quadlet file on disk,
 // respecting any ServiceName= override in the file content.
 // Returns empty string if the file cannot be read or is not a quadlet.
 func UnitNameFromFile(destPath string) string {
-	content, err := os.ReadFile(destPath)
+	unit, err := parser.ParseUnitFile(destPath)
 	if err != nil {
 		return ""
 	}
-	return UnitNameFromContent(filepath.Base(destPath), string(content))
+	return unitServiceName(unit)
 }
 
 // BuildUnitInfo returns the UnitInfo for a quadlet file, mapping filename + extension
