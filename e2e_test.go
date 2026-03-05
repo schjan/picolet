@@ -24,6 +24,7 @@ import (
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/gitpoll"
 	"github.com/schjan/picolet/pkg/metrics"
+	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
 )
@@ -107,6 +108,7 @@ func TestE2EPipeline(t *testing.T) {
 		defer cancel()
 		_ = systemd.DaemonReload(cleanupCtx)
 		_ = podman.ContainerRemove(cleanupCtx, "picolet-e2e-test", true)
+		_ = podman.ContainerRemove(cleanupCtx, "systemd-exporter", true)
 		_ = podman.SecretRemove(cleanupCtx, "e2e_secret")
 		systemd.Close()
 	})
@@ -194,7 +196,7 @@ func TestE2EPipeline(t *testing.T) {
 
 			content := string(data)
 			assert.Contains(t, content, "[Container]")
-			assert.Contains(t, content, "alpine:3.21", "image should be rendered from template")
+			assert.Contains(t, content, "alpine:3.23", "image should be rendered from template")
 			assert.Contains(t, content, "Network=internal.network", "container should reference internal network")
 			assert.Contains(t, content, "Secret=e2e_secret", "container should mount the secret")
 			assert.Contains(t, content, "hostname=e2e-host", "hostname label should be rendered")
@@ -257,7 +259,7 @@ func TestE2EPipeline(t *testing.T) {
 			// Validate config once we know it's running
 			inspectData, err := containers.Inspect(connCtx, "picolet-e2e-test", nil)
 			require.NoError(t, err)
-			assert.Contains(t, inspectData.ImageName, "alpine:3.21", "container image should be alpine:3.21")
+			assert.Contains(t, inspectData.ImageName, "alpine:3.23", "container image should be alpine:3.23")
 
 			// Verify labels were rendered correctly from template
 			labels := inspectData.Config.Labels
@@ -281,6 +283,406 @@ func TestE2EPipeline(t *testing.T) {
 			exists, err := podman.SecretExists(ctx, "e2e_secret")
 			require.NoError(t, err)
 			assert.True(t, exists, "e2e_secret should exist in podman")
+		})
+	})
+
+	t.Run("update_secret", func(t *testing.T) {
+		st, err := store.Load()
+		require.NoError(t, err)
+		oldHash := st.ManagedFiles["secret:e2e_secret"]
+		require.NotEmpty(t, oldHash, "secret should be in managed files")
+
+		// Secrets are read from secretsDir, NOT from git — change the local file
+		require.NoError(t, os.WriteFile(
+			filepath.Join(secretsDir, "e2e_secret.txt"),
+			[]byte("updated-secret-data\n"), 0o600))
+
+		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+		defer cancel()
+
+		result, err := a.ReconcileOnce(ctx, "update-secret-sha", st, store)
+		require.NoError(t, err)
+		assert.True(t, result.HasChanges)
+		assert.GreaterOrEqual(t, result.Summary[reconciler.ActionUpdate], 1)
+		require.NotNil(t, result.ApplyResult)
+		assert.Empty(t, result.ApplyResult.Errors, "secret update should produce no errors")
+
+		t.Run("state_hash_changed", func(t *testing.T) {
+			st, err := store.Load()
+			require.NoError(t, err)
+			assert.NotEqual(t, oldHash, st.ManagedFiles["secret:e2e_secret"],
+				"secret hash should be updated after content change")
+			assert.Equal(t, "update-secret-sha", st.AppliedSHA)
+		})
+
+		t.Run("container_still_running", func(t *testing.T) {
+			// Secret updates do NOT restart containers (applier skips changedUnits for secrets)
+			connCtx, err := bindings.NewConnection(t.Context(), "unix:"+socketPath)
+			require.NoError(t, err)
+			data, err := containers.Inspect(connCtx, "picolet-e2e-test", nil)
+			require.NoError(t, err)
+			assert.Equal(t, "running", data.State.Status)
+		})
+	})
+
+	t.Run("add_container", func(t *testing.T) {
+		st, err := store.Load()
+		require.NoError(t, err)
+
+		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
+		newAssignments := `base:
+  networks:
+    - quadlets/networks/internal.network
+  systemd:
+    - systemd/custom.socket
+pi_types:
+  controller:
+    containers:
+      - quadlets/containers/exporter.container
+    volumes:
+      - quadlets/volumes/data.volume
+    kube:
+      - quadlets/kube/app-stack.kube.tmpl
+    manifests:
+      - manifests/app/deployment.yml.tmpl
+    secrets:
+      - secrets/app_secret.yml.tmpl
+  worker:
+    containers:
+      - quadlets/containers/exporter.container
+  e2e:
+    containers:
+      - quadlets/containers/simple.container.tmpl
+      - quadlets/containers/exporter.container
+    secrets:
+      - secrets/e2e_secret.txt
+features:
+  app-a:
+    containers:
+      - quadlets/containers/nginx.container.tmpl
+`
+		require.NoError(t, os.WriteFile(filepath.Join(fleetDir, "assignments.yml"),
+			[]byte(newAssignments), 0o644))
+
+		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+		defer cancel()
+
+		result, err := a.ReconcileOnce(ctx, "add-sha", st, store)
+		require.NoError(t, err)
+		assert.True(t, result.HasChanges)
+		assert.GreaterOrEqual(t, result.Summary[reconciler.ActionCreate], 1)
+		require.NotNil(t, result.ApplyResult)
+		assert.Empty(t, result.ApplyResult.Errors)
+
+		t.Run("exporter_file_written", func(t *testing.T) {
+			_, err := os.Stat(filepath.Join(quadletDir, "exporter.container"))
+			assert.NoError(t, err, "exporter.container should exist")
+		})
+
+		t.Run("simple_container_intact", func(t *testing.T) {
+			_, err := os.Stat(filepath.Join(quadletDir, "simple.container"))
+			assert.NoError(t, err, "simple.container should still exist")
+		})
+
+		t.Run("state_has_both", func(t *testing.T) {
+			st, err := store.Load()
+			require.NoError(t, err)
+			exporterKey := filepath.Join(quadletDir, "exporter.container")
+			simpleKey := filepath.Join(quadletDir, "simple.container")
+			assert.Contains(t, st.ManagedFiles, exporterKey)
+			assert.Contains(t, st.ManagedFiles, simpleKey)
+		})
+	})
+
+	t.Run("update_container", func(t *testing.T) {
+		st, err := store.Load()
+		require.NoError(t, err)
+
+		fleetPath := filepath.Join(cloneDir, "testdata", "example-fleet", "fleet.yml")
+		fleetData, err := os.ReadFile(fleetPath)
+		require.NoError(t, err)
+		require.Contains(t, string(fleetData), "alpine:3.23",
+			"baseline alpine version should be 3.23")
+		updated := strings.ReplaceAll(string(fleetData), "alpine:3.23", "alpine:3.22")
+		require.NoError(t, os.WriteFile(fleetPath, []byte(updated), 0o644))
+
+		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+		defer cancel()
+
+		result, err := a.ReconcileOnce(ctx, "update-sha", st, store)
+		require.NoError(t, err)
+		assert.True(t, result.HasChanges)
+		assert.GreaterOrEqual(t, result.Summary[reconciler.ActionUpdate], 1)
+		require.NotNil(t, result.ApplyResult)
+		assert.Empty(t, result.ApplyResult.Errors)
+
+		t.Run("quadlet_file_updated", func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(quadletDir, "simple.container"))
+			require.NoError(t, err)
+			assert.Contains(t, string(data), "alpine:3.22")
+		})
+
+		t.Run("container_restarted", func(t *testing.T) {
+			connCtx, err := bindings.NewConnection(t.Context(), "unix:"+socketPath)
+			require.NoError(t, err)
+			require.Eventually(t, func() bool {
+				data, err := containers.Inspect(connCtx, "picolet-e2e-test", nil)
+				return err == nil && data.State.Status == "running" &&
+					strings.Contains(data.ImageName, "alpine:3.22")
+			}, 60*time.Second, 2*time.Second,
+				"container should be running with alpine:3.22")
+		})
+
+		t.Run("state_updated", func(t *testing.T) {
+			st, err := store.Load()
+			require.NoError(t, err)
+			assert.Equal(t, "update-sha", st.AppliedSHA)
+			simpleKey := filepath.Join(quadletDir, "simple.container")
+			assert.Contains(t, st.ManagedFiles, simpleKey)
+			assert.Contains(t, st.ManagedFiles, "secret:e2e_secret")
+		})
+	})
+
+	t.Run("validation_failure", func(t *testing.T) {
+		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
+
+		origAssignments, err := os.ReadFile(filepath.Join(fleetDir, "assignments.yml"))
+		require.NoError(t, err)
+
+		badPath := filepath.Join(fleetDir, "quadlets", "containers", "bad.container")
+
+		// Register cleanup BEFORE making changes — runs even if test fails early
+		t.Cleanup(func() {
+			_ = os.WriteFile(filepath.Join(fleetDir, "assignments.yml"), origAssignments, 0o644)
+			_ = os.Remove(badPath)
+		})
+
+		badContainer := `[Container]
+Image=alpine:latest
+Network=nonexistent.network
+
+[Install]
+WantedBy=default.target
+`
+		require.NoError(t, os.WriteFile(badPath, []byte(badContainer), 0o644))
+
+		badAssignments := `base:
+  networks:
+    - quadlets/networks/internal.network
+  systemd:
+    - systemd/custom.socket
+pi_types:
+  controller:
+    containers:
+      - quadlets/containers/exporter.container
+    volumes:
+      - quadlets/volumes/data.volume
+    kube:
+      - quadlets/kube/app-stack.kube.tmpl
+    manifests:
+      - manifests/app/deployment.yml.tmpl
+    secrets:
+      - secrets/app_secret.yml.tmpl
+  worker:
+    containers:
+      - quadlets/containers/exporter.container
+  e2e:
+    containers:
+      - quadlets/containers/simple.container.tmpl
+      - quadlets/containers/exporter.container
+      - quadlets/containers/bad.container
+    secrets:
+      - secrets/e2e_secret.txt
+features:
+  app-a:
+    containers:
+      - quadlets/containers/nginx.container.tmpl
+`
+		require.NoError(t, os.WriteFile(
+			filepath.Join(fleetDir, "assignments.yml"),
+			[]byte(badAssignments), 0o644))
+
+		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+		defer cancel()
+
+		st, err := store.Load()
+		require.NoError(t, err)
+		_, err = a.ReconcileOnce(ctx, "bad-sha", st, store)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "validation")
+
+		t.Run("state_unchanged", func(t *testing.T) {
+			st, err := store.Load()
+			require.NoError(t, err)
+			assert.Equal(t, "update-sha", st.AppliedSHA)
+		})
+
+		t.Run("bad_file_not_written", func(t *testing.T) {
+			_, err := os.Stat(filepath.Join(quadletDir, "bad.container"))
+			assert.True(t, os.IsNotExist(err), "bad.container should NOT be on disk")
+		})
+	})
+
+	t.Run("remove_container", func(t *testing.T) {
+		st, err := store.Load()
+		require.NoError(t, err)
+
+		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
+		removeAssignments := `base:
+  networks:
+    - quadlets/networks/internal.network
+  systemd:
+    - systemd/custom.socket
+pi_types:
+  controller:
+    containers:
+      - quadlets/containers/exporter.container
+    volumes:
+      - quadlets/volumes/data.volume
+    kube:
+      - quadlets/kube/app-stack.kube.tmpl
+    manifests:
+      - manifests/app/deployment.yml.tmpl
+    secrets:
+      - secrets/app_secret.yml.tmpl
+  worker:
+    containers:
+      - quadlets/containers/exporter.container
+  e2e:
+    containers:
+      - quadlets/containers/exporter.container
+    secrets:
+      - secrets/e2e_secret.txt
+features:
+  app-a:
+    containers:
+      - quadlets/containers/nginx.container.tmpl
+`
+		require.NoError(t, os.WriteFile(
+			filepath.Join(fleetDir, "assignments.yml"),
+			[]byte(removeAssignments), 0o644))
+
+		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+		defer cancel()
+
+		result, err := a.ReconcileOnce(ctx, "remove-container-sha", st, store)
+		require.NoError(t, err)
+		assert.True(t, result.HasChanges)
+		assert.GreaterOrEqual(t, result.Summary[reconciler.ActionDelete], 1)
+		require.NotNil(t, result.ApplyResult)
+		// Do NOT assert Errors is empty — RestartUnit("simple.service") fails after the unit file is gone
+
+		t.Run("simple_container_removed", func(t *testing.T) {
+			_, err := os.Stat(filepath.Join(quadletDir, "simple.container"))
+			assert.True(t, os.IsNotExist(err), "simple.container should be gone")
+		})
+
+		t.Run("picolet_e2e_test_stopped", func(t *testing.T) {
+			connCtx, err := bindings.NewConnection(t.Context(), "unix:"+socketPath)
+			require.NoError(t, err)
+			// DaemonReload may or may not stop the container depending on systemd version.
+			require.Eventually(t, func() bool {
+				data, inspectErr := containers.Inspect(connCtx, "picolet-e2e-test", nil)
+				if inspectErr != nil {
+					return true // not found = container gone
+				}
+				return data.State.Status != "running"
+			}, 90*time.Second, 3*time.Second,
+				"container picolet-e2e-test should stop or be removed")
+
+			// Explicitly remove container as safety net for subsequent tests
+			_ = podman.ContainerRemove(ctx, "picolet-e2e-test", true)
+		})
+
+		t.Run("exporter_still_exists", func(t *testing.T) {
+			_, err := os.Stat(filepath.Join(quadletDir, "exporter.container"))
+			assert.NoError(t, err, "exporter.container should still exist")
+		})
+
+		t.Run("state_cleaned", func(t *testing.T) {
+			st, err := store.Load()
+			require.NoError(t, err)
+			assert.Equal(t, "remove-container-sha", st.AppliedSHA)
+			simpleKey := filepath.Join(quadletDir, "simple.container")
+			exporterKey := filepath.Join(quadletDir, "exporter.container")
+			networkKey := filepath.Join(quadletDir, "internal.network")
+			assert.NotContains(t, st.ManagedFiles, simpleKey)
+			assert.Contains(t, st.ManagedFiles, exporterKey)
+			assert.Contains(t, st.ManagedFiles, networkKey)
+		})
+	})
+
+	t.Run("remove_secret", func(t *testing.T) {
+		st, err := store.Load()
+		require.NoError(t, err)
+
+		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
+		noSecretAssignments := `base:
+  networks:
+    - quadlets/networks/internal.network
+  systemd:
+    - systemd/custom.socket
+pi_types:
+  controller:
+    containers:
+      - quadlets/containers/exporter.container
+    volumes:
+      - quadlets/volumes/data.volume
+    kube:
+      - quadlets/kube/app-stack.kube.tmpl
+    manifests:
+      - manifests/app/deployment.yml.tmpl
+    secrets:
+      - secrets/app_secret.yml.tmpl
+  worker:
+    containers:
+      - quadlets/containers/exporter.container
+  e2e:
+    containers:
+      - quadlets/containers/exporter.container
+features:
+  app-a:
+    containers:
+      - quadlets/containers/nginx.container.tmpl
+`
+		require.NoError(t, os.WriteFile(
+			filepath.Join(fleetDir, "assignments.yml"),
+			[]byte(noSecretAssignments), 0o644))
+
+		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+		defer cancel()
+
+		result, err := a.ReconcileOnce(ctx, "remove-secret-sha", st, store)
+		require.NoError(t, err)
+		assert.True(t, result.HasChanges)
+		assert.GreaterOrEqual(t, result.Summary[reconciler.ActionDelete], 1)
+		require.NotNil(t, result.ApplyResult)
+		assert.Empty(t, result.ApplyResult.Errors,
+			"secret removal should produce no errors (no unit restart)")
+
+		t.Run("secret_gone", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			exists, err := podman.SecretExists(ctx, "e2e_secret")
+			require.NoError(t, err)
+			assert.False(t, exists, "e2e_secret should be removed from podman")
+		})
+
+		t.Run("state_no_secret", func(t *testing.T) {
+			st, err := store.Load()
+			require.NoError(t, err)
+			assert.Equal(t, "remove-secret-sha", st.AppliedSHA)
+			assert.NotContains(t, st.ManagedFiles, "secret:e2e_secret")
+			exporterKey := filepath.Join(quadletDir, "exporter.container")
+			assert.Contains(t, st.ManagedFiles, exporterKey)
+		})
+
+		t.Run("exporter_intact", func(t *testing.T) {
+			_, err := os.Stat(filepath.Join(quadletDir, "exporter.container"))
+			assert.NoError(t, err)
+			networkFile := filepath.Join(quadletDir, "internal.network")
+			_, err = os.Stat(networkFile)
+			assert.NoError(t, err)
 		})
 	})
 

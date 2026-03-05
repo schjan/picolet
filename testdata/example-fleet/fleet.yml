@@ -2,7 +2,7 @@ images:
   nginx: "nginx:1.27"
   exporter: "prom/node-exporter:v1.8"
   app: "myapp:v2.1"
-  simple: "docker.io/library/alpine:3.21"
+  simple: "docker.io/library/alpine:3.23"
 ports:
   http: 8080
   metrics: 9090

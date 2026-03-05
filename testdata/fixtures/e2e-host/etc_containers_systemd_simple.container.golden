@@ -1,5 +1,5 @@
 [Container]
-Image=docker.io/library/alpine:3.21
+Image=docker.io/library/alpine:3.23
 ContainerName=picolet-e2e-test
 Network=internal.network
 Secret=e2e_secret

@@ -217,7 +217,7 @@ func runDryRun(ctx context.Context, repoDir, hostname string) error {
 	}
 
 	rec := reconciler.New()
-	changeset := rec.Diff(resolved.Files, st, nil)
+	changeset := rec.Diff(resolved.Files, st)
 
 	if !changeset.HasChanges() {
 		slog.Info("no changes detected")

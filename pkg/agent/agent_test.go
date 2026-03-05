@@ -86,7 +86,7 @@ func newBareMocks(t *testing.T) (*mocks.MockSystemdManager, *mocks.MockPodmanCli
 
 // setupApplyMocks configures mocks for a test that expects a successful apply
 // (health check + write files + daemon-reload + restart units).
-func setupApplyMocks(sys *mocks.MockSystemdManager, pod *mocks.MockPodmanClient, fw *mocks.MockFileWriter) map[string][]byte {
+func setupApplyMocks(sys *mocks.MockSystemdManager, _ *mocks.MockPodmanClient, fw *mocks.MockFileWriter) map[string][]byte {
 	// Health check
 	sys.EXPECT().IsActive(mock.Anything, mock.Anything).Return(true, nil).Maybe()
 	sys.EXPECT().GetUnitState(mock.Anything, mock.Anything).Return("active", nil).Maybe()
@@ -94,9 +94,6 @@ func setupApplyMocks(sys *mocks.MockSystemdManager, pod *mocks.MockPodmanClient,
 	// Apply phase
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
 	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-
-	// Podman (unused in network-only test, but allowed)
-	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
 
 	written := make(map[string][]byte)
 	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).RunAndReturn(func(path string, content []byte) error {
@@ -110,10 +107,9 @@ func setupApplyMocks(sys *mocks.MockSystemdManager, pod *mocks.MockPodmanClient,
 
 // setupNoopMocks configures mocks for a test that should NOT write any files.
 // Only health checks are expected.
-func setupNoopMocks(sys *mocks.MockSystemdManager, pod *mocks.MockPodmanClient) {
+func setupNoopMocks(sys *mocks.MockSystemdManager, _ *mocks.MockPodmanClient) {
 	sys.EXPECT().IsActive(mock.Anything, mock.Anything).Return(true, nil).Maybe()
 	sys.EXPECT().GetUnitState(mock.Anything, mock.Anything).Return("active", nil).Maybe()
-	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
 }
 
 func TestAgentFullCycle(t *testing.T) {

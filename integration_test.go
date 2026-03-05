@@ -78,7 +78,7 @@ func TestIntegrationReconcilePipeline(t *testing.T) {
 
 	// First deploy: all creates
 	emptyState := &state.State{ManagedFiles: make(map[string]string)}
-	cs := rec.Diff(resolved.Files, emptyState, nil)
+	cs := rec.Diff(resolved.Files, emptyState)
 	assert.True(t, cs.HasChanges())
 	assert.Equal(t, len(resolved.Files), cs.Summary[reconciler.ActionCreate])
 	assert.Equal(t, 0, cs.Summary[reconciler.ActionUpdate])
@@ -93,7 +93,7 @@ func TestIntegrationReconcilePipeline(t *testing.T) {
 	}
 
 	// Idempotent: all noops
-	cs2 := rec.Diff(resolved.Files, fullState, nil)
+	cs2 := rec.Diff(resolved.Files, fullState)
 	assert.False(t, cs2.HasChanges())
 	assert.Equal(t, len(resolved.Files), cs2.Summary[reconciler.ActionNoop])
 }

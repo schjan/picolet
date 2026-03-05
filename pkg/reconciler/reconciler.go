@@ -49,15 +49,10 @@ func New() *Reconciler {
 	return &Reconciler{}
 }
 
-// SecretChecker checks if a Podman secret already exists.
-type SecretChecker func(name string) (bool, error)
-
 // Diff computes the changeset between desired files and current state.
-// secretChecker is used for skip_if_exists secrets; pass nil if not needed.
 func (r *Reconciler) Diff(
 	desired []resolver.ResolvedFile,
 	currentState *state.State,
-	secretChecker SecretChecker,
 ) *Changeset {
 	cs := &Changeset{
 		Summary: make(map[Action]int),
@@ -66,7 +61,7 @@ func (r *Reconciler) Diff(
 	seen := make(map[string]bool)
 	for _, f := range desired {
 		seen[f.DestPath] = true
-		cs.addChange(classifyFile(f, currentState, secretChecker))
+		cs.addChange(classifyFile(f, currentState))
 	}
 
 	// Files in state but not in desired → delete
@@ -85,24 +80,9 @@ func (r *Reconciler) Diff(
 }
 
 // classifyFile determines the action for a single desired file.
-func classifyFile(f resolver.ResolvedFile, currentState *state.State, secretChecker SecretChecker) Change {
+func classifyFile(f resolver.ResolvedFile, currentState *state.State) Change {
 	newHash := hash(f.Content)
 	oldHash, managed := currentState.ManagedFiles[f.DestPath]
-
-	// For secrets with skip_if_exists: if already managed AND exists in Podman, noop.
-	if f.Category == "secret" && managed && secretChecker != nil {
-		secretName := SecretNameFromPath(f.DestPath)
-		exists, err := secretChecker(secretName)
-		if err == nil && exists {
-			return Change{
-				DestPath: f.DestPath,
-				Category: f.Category,
-				Action:   ActionNoop,
-				OldHash:  oldHash,
-				NewHash:  newHash,
-			}
-		}
-	}
 
 	if !managed {
 		return Change{

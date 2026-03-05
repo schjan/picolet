@@ -316,15 +316,8 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	}, nil
 }
 
-func (a *Agent) computeDiff(ctx context.Context, files []resolver.ResolvedFile, st *state.State) *reconciler.Changeset {
-	rec := reconciler.New()
-	var secretChecker reconciler.SecretChecker
-	if a.podman != nil {
-		secretChecker = func(name string) (bool, error) {
-			return a.podman.SecretExists(ctx, name)
-		}
-	}
-	return rec.Diff(files, st, secretChecker)
+func (a *Agent) computeDiff(_ context.Context, files []resolver.ResolvedFile, st *state.State) *reconciler.Changeset {
+	return reconciler.New().Diff(files, st)
 }
 
 func (a *Agent) markApplied(headSHA string, st *state.State, store *state.Store) error {
