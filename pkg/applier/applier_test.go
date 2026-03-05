@@ -2,6 +2,8 @@ package applier
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -97,9 +99,16 @@ func TestApplyDelete(t *testing.T) {
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
+	// UnitNameFromFile reads from disk to resolve the unit name (including any
+	// ServiceName= override) before stopping. memFileWriter doesn't write to disk,
+	// so we create the file explicitly.
+	quadletDir := t.TempDir()
+	containerPath := filepath.Join(quadletDir, "old.container")
+	require.NoError(t, os.WriteFile(containerPath, []byte("[Container]\nImage=test\n"), 0o600))
+
 	cs := &reconciler.Changeset{
 		Changes: []reconciler.Change{
-			{DestPath: "/etc/containers/systemd/old.container", Category: "container", Action: reconciler.ActionDelete},
+			{DestPath: containerPath, Category: "container", Action: reconciler.ActionDelete},
 		},
 		Summary: map[reconciler.Action]int{reconciler.ActionDelete: 1},
 	}
@@ -107,7 +116,7 @@ func TestApplyDelete(t *testing.T) {
 	result, err := a.Apply(context.Background(), cs)
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.Applied)
-	assert.Equal(t, []string{"/etc/containers/systemd/old.container"}, fw.removed)
+	assert.Equal(t, []string{containerPath}, fw.removed)
 }
 
 func TestApplyDeleteSecret(t *testing.T) {
@@ -144,7 +153,7 @@ func TestApplySelfRestart(t *testing.T) {
 
 	cs := &reconciler.Changeset{
 		Changes: []reconciler.Change{
-			{DestPath: "/etc/containers/systemd/picolet.container", Category: "container", Action: reconciler.ActionUpdate, NewContent: "updated"},
+			{DestPath: "/etc/containers/systemd/picolet.container", Category: "container", Action: reconciler.ActionUpdate, NewContent: "[Container]\nImage=ghcr.io/picolet:latest\n"},
 		},
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
 	}

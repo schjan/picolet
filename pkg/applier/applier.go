@@ -117,7 +117,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		// systemd terminates the managed container cleanly. daemon-reload alone does
 		// not stop running services — it only removes the unit definition.
 		if change.Action == reconciler.ActionDelete && change.Category != "secret" {
-			if unitName := validator.UnitNameFromPath(change.DestPath); unitName != "" {
+			if unitName := validator.UnitNameFromFile(change.DestPath); unitName != "" {
 				if stopErr := a.systemd.StopUnit(ctx, unitName); stopErr != nil {
 					slog.Warn("stopping unit before file removal", "unit", unitName, "error", stopErr)
 				}
@@ -137,7 +137,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			// daemon-reload. StopUnit above already terminated the running service.
 			continue
 		}
-		if unitName := validator.UnitNameFromPath(change.DestPath); unitName != "" {
+		if unitName := validator.UnitNameFromContent(filepath.Base(change.DestPath), change.NewContent); unitName != "" {
 			changedUnits[unitName] = true
 		}
 		if filepath.Base(change.DestPath) == "picolet.container" {

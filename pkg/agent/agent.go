@@ -113,7 +113,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	store := state.NewStore(a.statePath)
-	healthChecker := health.New(a.systemd)
+	healthChecker := health.New(a.systemd, validator.UnitNameFromFile)
 
 	slog.Info("agent started",
 		"hostname", a.cfg.Hostname,

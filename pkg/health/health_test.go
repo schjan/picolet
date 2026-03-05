@@ -19,12 +19,18 @@ func TestEnforceAllHealthy(t *testing.T) {
 		return s == "foo.service" || s == "bar-network.service"
 	})).Return(true, nil).Times(2)
 
-	c := New(sys)
+	namer := func(path string) string {
+		return map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
+			"/etc/containers/systemd/bar.network":   "bar-network.service",
+		}[path]
+	}
+	c := New(sys, namer)
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": "sha256:abc",
 			"/etc/containers/systemd/bar.network":   "sha256:def",
-			"secret:my_secret":                      "sha256:ghi", // skipped
+			"secret:my_secret":                      "sha256:ghi", // skipped — namer returns ""
 		},
 	}
 
@@ -40,7 +46,10 @@ func TestEnforceRestartsUnhealthy(t *testing.T) {
 	sys.EXPECT().IsActive(mock.Anything, "foo.service").Return(false, nil)
 	sys.EXPECT().RestartUnit(mock.Anything, "foo.service").Return(nil)
 
-	c := New(sys)
+	namer := func(path string) string {
+		return map[string]string{"/etc/containers/systemd/foo.container": "foo.service"}[path]
+	}
+	c := New(sys, namer)
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": "sha256:abc",
@@ -56,7 +65,7 @@ func TestEnforceSkipsSecretsAndManifests(t *testing.T) {
 	t.Parallel()
 	sys := mocks.NewMockSystemdManager(t)
 	// No expectations — no units should be checked
-	c := New(sys)
+	c := New(sys, func(_ string) string { return "" })
 
 	st := &state.State{
 		ManagedFiles: map[string]string{
@@ -76,7 +85,10 @@ func TestEnforceHandlesCheckError(t *testing.T) {
 	sys := mocks.NewMockSystemdManager(t)
 	sys.EXPECT().IsActive(mock.Anything, "foo.service").Return(false, assert.AnError)
 
-	c := New(sys)
+	namer := func(path string) string {
+		return map[string]string{"/etc/containers/systemd/foo.container": "foo.service"}[path]
+	}
+	c := New(sys, namer)
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": "sha256:abc",
@@ -96,7 +108,10 @@ func TestEnforceRestartCooldown(t *testing.T) {
 	// RestartUnit should only be called once (cooldown prevents second restart)
 	sys.EXPECT().RestartUnit(mock.Anything, "foo.service").Return(nil).Once()
 
-	c := New(sys)
+	namer := func(path string) string {
+		return map[string]string{"/etc/containers/systemd/foo.container": "foo.service"}[path]
+	}
+	c := New(sys, namer)
 
 	st := &state.State{
 		ManagedFiles: map[string]string{

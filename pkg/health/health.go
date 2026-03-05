@@ -7,7 +7,6 @@ import (
 
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/state"
-	"github.com/schjan/picolet/pkg/validator"
 )
 
 const restartCooldown = 5 * time.Minute
@@ -19,16 +18,22 @@ type CheckResult struct {
 	Errors    []error
 }
 
+// UnitNameResolver resolves a managed file path to its systemd unit name.
+// Returns empty string for non-quadlet files.
+type UnitNameResolver func(path string) string
+
 // Checker enforces that managed systemd units are active.
 type Checker struct {
 	systemd     applier.SystemdManager
+	unitNamer   UnitNameResolver
 	lastRestart map[string]time.Time
 }
 
 // New creates a new health Checker.
-func New(systemd applier.SystemdManager) *Checker {
+func New(systemd applier.SystemdManager, unitNamer UnitNameResolver) *Checker {
 	return &Checker{
 		systemd:     systemd,
+		unitNamer:   unitNamer,
 		lastRestart: make(map[string]time.Time),
 	}
 }
@@ -41,7 +46,7 @@ func (c *Checker) Enforce(ctx context.Context, st *state.State) (*CheckResult, e
 	// Derive unique unit names from managed files
 	units := make(map[string]bool)
 	for destPath := range st.ManagedFiles {
-		unitName := validator.UnitNameFromPath(destPath)
+		unitName := c.unitNamer(destPath)
 		if unitName == "" {
 			continue
 		}

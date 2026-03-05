@@ -3,6 +3,7 @@ package validator
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -50,17 +51,31 @@ func (v *Validator) validateQuadlet(path string, content []byte, unitsInfoMap ma
 	return nil
 }
 
-// UnitNameFromPath returns the systemd unit name for a quadlet destination path.
-// For example, "/etc/containers/systemd/foo.container" → "foo.service".
-// Returns empty string for non-quadlet paths.
-func UnitNameFromPath(destPath string) string {
-	filename := filepath.Base(destPath)
-	ext := filepath.Ext(destPath)
-	info := BuildUnitInfo(filename, ext)
-	if info == nil {
+// UnitNameFromContent returns the systemd unit name for a quadlet given its
+// filename and content string, respecting any ServiceName= override.
+// Returns empty string for non-quadlet filenames or unparseable content.
+func UnitNameFromContent(filename, content string) string {
+	unit := parser.NewUnitFile()
+	unit.Filename = filename
+	if err := unit.Parse(content); err != nil {
 		return ""
 	}
-	return info.ServiceName
+	serviceName, err := quadlet.GetUnitServiceName(unit)
+	if err != nil {
+		return ""
+	}
+	return serviceName + ".service"
+}
+
+// UnitNameFromFile returns the systemd unit name for a quadlet file on disk,
+// respecting any ServiceName= override in the file content.
+// Returns empty string if the file cannot be read or is not a quadlet.
+func UnitNameFromFile(destPath string) string {
+	content, err := os.ReadFile(destPath)
+	if err != nil {
+		return ""
+	}
+	return UnitNameFromContent(filepath.Base(destPath), string(content))
 }
 
 // BuildUnitInfo returns the UnitInfo for a quadlet file, mapping filename + extension
