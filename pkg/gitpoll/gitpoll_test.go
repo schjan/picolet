@@ -87,6 +87,25 @@ func TestPollerInitAndPoll(t *testing.T) {
 	assert.Equal(t, newSHA, result3.HeadSHA)
 }
 
+func TestIsSSHURL(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		url  string
+		want bool
+	}{
+		{"ssh://git@github.com/org/repo.git", true},
+		{"git+ssh://git@github.com/org/repo.git", true},
+		{"git@github.com:org/repo.git", true},
+		{"https://github.com/org/repo.git", false},
+		{"http://github.com/org/repo.git", false},
+		{"/local/path/repo", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, isSSHURL(tt.url), "isSSHURL(%q)", tt.url)
+	}
+}
+
 func TestPollerReopenExisting(t *testing.T) {
 	t.Parallel()
 	bareDir := initBareRepo(t)

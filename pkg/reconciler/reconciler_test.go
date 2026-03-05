@@ -16,7 +16,7 @@ func TestDiffCreateNewFiles(t *testing.T) {
 		{DestPath: "/etc/containers/systemd/foo.container", Content: "image=foo", Category: "container", ServiceName: "foo.service"},
 		{DestPath: "/etc/containers/systemd/bar.network", Content: "internal=true", Category: "network", ServiceName: "bar-network.service"},
 	}
-	st := &state.State{ManagedFiles: make(map[string]string), ServiceNames: make(map[string]string)}
+	st := state.NewState()
 
 	cs := Diff(desired, st)
 
@@ -155,7 +155,7 @@ func TestDiffServiceNamePropagated(t *testing.T) {
 	desired := []resolver.ResolvedFile{
 		{DestPath: "/etc/containers/systemd/app.container", Content: "content", Category: "container", ServiceName: "app.service"},
 	}
-	st := &state.State{ManagedFiles: make(map[string]string), ServiceNames: make(map[string]string)}
+	st := state.NewState()
 
 	cs := Diff(desired, st)
 

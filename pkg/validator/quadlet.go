@@ -31,7 +31,7 @@ func buildUnitInfo(unit *parser.UnitFile) *quadlet.UnitInfo {
 // The unit must already be parsed by the caller (via ValidateFiles or validateFile).
 // Podman's Convert* functions require the unit's own entry in unitsInfoMap
 // (via initServiceUnitFile), so we ensure it is populated before converting.
-func (v *Validator) validateQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.UnitInfo) error {
+func validateQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.UnitInfo) error {
 	// Ensure the unit's own entry is in the map. In the ValidateFiles path this is
 	// pre-populated by buildUnitsInfoFromFiles; this handles direct calls (e.g. tests).
 	if _, ok := unitsInfoMap[unit.Filename]; !ok {

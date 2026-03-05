@@ -138,7 +138,9 @@ func (p *Poller) headSHA() (string, error) {
 }
 
 func isSSHURL(url string) bool {
-	return strings.HasPrefix(url, "ssh://") || strings.HasPrefix(url, "git@")
+	return strings.HasPrefix(url, "ssh://") ||
+		strings.HasPrefix(url, "git+ssh://") ||
+		strings.HasPrefix(url, "git@")
 }
 
 //nolint:nilnil // nil signals anonymous access; interface needed for SSH vs HTTP auth

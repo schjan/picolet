@@ -180,7 +180,7 @@ func TestE2EPipeline(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
 
-		emptyState := &state.State{ManagedFiles: make(map[string]string)}
+		emptyState := state.NewState()
 		result, err := a.ReconcileOnce(ctx, headSHA, emptyState, store)
 		require.NoError(t, err, "ReconcileOnce should succeed")
 		assert.True(t, result.HasChanges, "first reconcile should have changes")

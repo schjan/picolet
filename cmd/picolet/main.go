@@ -203,17 +203,16 @@ func runDryRun(_ context.Context, repoDir, hostname string) error {
 	}
 
 	// Validate this host only — fleet-wide validation belongs in CI
-	v := validator.New()
-	if err := v.ValidateFiles(resolved.Files); err != nil {
+	if err := validator.ValidateFiles(resolved.Files); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
 	// Diff against disk state (or empty state for fresh host)
-	store := state.NewStore("/var/lib/picolet/state.json")
+	store := state.NewStore(agent.DefaultStatePath)
 	st, err := store.Load()
 	if err != nil {
 		slog.Warn("could not load state, using empty state", "error", err)
-		st = &state.State{ManagedFiles: make(map[string]string), ServiceNames: make(map[string]string)}
+		st = state.NewState()
 	}
 
 	changeset := reconciler.Diff(resolved.Files, st)
@@ -253,8 +252,7 @@ func runValidate(ctx context.Context, repoDir string) error {
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)
 	}
-	v := validator.New()
-	return v.ValidateAll(ctx, r, cfg)
+	return validator.ValidateAll(ctx, r, cfg)
 }
 
 func runResolve(repoDir, host string) error {

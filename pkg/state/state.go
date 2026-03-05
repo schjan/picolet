@@ -21,6 +21,14 @@ type State struct {
 	FailedAt     time.Time         `json:"failed_at"`
 }
 
+// NewState returns a zero State with initialized maps, suitable for first-run or testing.
+func NewState() *State {
+	return &State{
+		ManagedFiles: make(map[string]string),
+		ServiceNames: make(map[string]string),
+	}
+}
+
 // MarkApplied resets failure tracking and records the SHA as successfully applied.
 func (s *State) MarkApplied(headSHA string) {
 	s.AppliedSHA = headSHA
@@ -45,7 +53,7 @@ func (s *Store) Load() (*State, error) {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return &State{ManagedFiles: make(map[string]string), ServiceNames: make(map[string]string)}, nil
+			return NewState(), nil
 		}
 		return nil, fmt.Errorf("reading state %s: %w", s.path, err)
 	}

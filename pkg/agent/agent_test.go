@@ -242,12 +242,9 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 	require.NoError(t, err)
 
 	store := state.NewStore(statePath)
-	st := &state.State{
-		ManagedFiles: make(map[string]string),
-		ServiceNames: make(map[string]string),
-		FailedSHA:    head.Hash().String(),
-		FailedCount:  3, // maxRetries reached → will be skipped
-	}
+	st := state.NewState()
+	st.FailedSHA = head.Hash().String()
+	st.FailedCount = 3 // maxRetries reached → will be skipped
 	require.NoError(t, store.Save(st))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -300,12 +297,9 @@ func TestAgentRetriesFailedSHA(t *testing.T) {
 	require.NoError(t, err)
 
 	store := state.NewStore(statePath)
-	st := &state.State{
-		ManagedFiles: make(map[string]string),
-		ServiceNames: make(map[string]string),
-		FailedSHA:    head.Hash().String(),
-		FailedCount:  1, // only 1 failure, will retry
-	}
+	st := state.NewState()
+	st.FailedSHA = head.Hash().String()
+	st.FailedCount = 1 // only 1 failure, will retry
 	require.NoError(t, store.Save(st))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

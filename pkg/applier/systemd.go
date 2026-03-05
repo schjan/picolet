@@ -3,6 +3,7 @@ package applier
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/coreos/go-systemd/v22/dbus"
 )
@@ -52,7 +53,7 @@ func (m *DBusSystemdManager) StartUnit(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("starting %s: %w", name, err)
 	}
-	return waitJobResult(ctx, ch, "starting", name, false)
+	return waitJobDone(ctx, ch, "starting", name)
 }
 
 func (m *DBusSystemdManager) StopUnit(ctx context.Context, name string) error {
@@ -61,7 +62,7 @@ func (m *DBusSystemdManager) StopUnit(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("stopping %s: %w", name, err)
 	}
-	return waitJobResult(ctx, ch, "stopping", name, true)
+	return waitJobDoneOrSkipped(ctx, ch, "stopping", name)
 }
 
 func (m *DBusSystemdManager) RestartUnit(ctx context.Context, name string) error {
@@ -70,20 +71,27 @@ func (m *DBusSystemdManager) RestartUnit(ctx context.Context, name string) error
 	if err != nil {
 		return fmt.Errorf("restarting %s: %w", name, err)
 	}
-	return waitJobResult(ctx, ch, "restarting", name, false)
+	return waitJobDone(ctx, ch, "restarting", name)
+}
+
+// waitJobDone waits for a systemd job to complete with "done".
+func waitJobDone(ctx context.Context, ch <-chan string, verb, unit string) error {
+	return waitJobResult(ctx, ch, verb, unit, systemdJobDone)
+}
+
+// waitJobDoneOrSkipped waits for a systemd job to complete with "done" or "skipped".
+// Stop operations return "skipped" when the unit is already inactive, which is a
+// valid outcome.
+func waitJobDoneOrSkipped(ctx context.Context, ch <-chan string, verb, unit string) error {
+	return waitJobResult(ctx, ch, verb, unit, systemdJobDone, systemdJobSkipped)
 }
 
 // waitJobResult waits for a systemd job result or context cancellation.
-// allowSkipped must be true only for stop operations: systemd returns "skipped"
-// when the unit is already inactive, which is a valid outcome for stop but not
-// for start or restart.
-func waitJobResult(ctx context.Context, ch <-chan string, verb, unit string, allowSkipped bool) error {
+// The result must match one of the accepted values; any other result is an error.
+func waitJobResult(ctx context.Context, ch <-chan string, verb, unit string, accepted ...string) error {
 	select {
 	case result := <-ch:
-		if result == systemdJobDone {
-			return nil
-		}
-		if result == systemdJobSkipped && allowSkipped {
+		if slices.Contains(accepted, result) {
 			return nil
 		}
 		return fmt.Errorf("%s %s: job result %q", verb, unit, result)

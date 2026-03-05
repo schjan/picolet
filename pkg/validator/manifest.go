@@ -32,7 +32,7 @@ type k8sMeta struct {
 	} `yaml:"metadata"`
 }
 
-func (v *Validator) validateManifest(path string, content []byte) error {
+func validateManifest(path string, content []byte) error {
 	var errs []error
 
 	docs := splitYAMLDocuments(content)

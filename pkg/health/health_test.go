@@ -66,13 +66,10 @@ func TestEnforceSkipsSecretsAndManifests(t *testing.T) {
 	// No expectations — no units should be checked
 	c := New(sys)
 
-	st := &state.State{
-		ManagedFiles: map[string]string{
-			"secret:my_secret": "sha256:abc",
-			"/var/lib/picolet/manifests/app/deployment.yml": "sha256:def",
-		},
-		ServiceNames: make(map[string]string), // no quadlet units
-	}
+	st := state.NewState()
+	st.ManagedFiles["secret:my_secret"] = "sha256:abc"
+	st.ManagedFiles["/var/lib/picolet/manifests/app/deployment.yml"] = "sha256:def"
+	// no quadlet units → ServiceNames stays empty
 
 	result, err := c.Enforce(context.Background(), st)
 	require.NoError(t, err)

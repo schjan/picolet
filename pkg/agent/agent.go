@@ -22,9 +22,12 @@ import (
 )
 
 const (
-	defaultRepoPath  = "/var/lib/picolet/repo"
-	defaultStatePath = "/var/lib/picolet/state.json"
-	defaultLockPath  = "/var/lib/picolet/reconciliation.lock"
+	defaultRepoPath = "/var/lib/picolet/repo"
+	defaultLockPath = "/var/lib/picolet/reconciliation.lock"
+
+	// DefaultStatePath is the default location for the reconciliation state file.
+	// Exported so that CLI subcommands (e.g. dry-run) can read from the same path.
+	DefaultStatePath = "/var/lib/picolet/state.json"
 )
 
 // Agent is the main reconciliation loop.
@@ -84,7 +87,7 @@ func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 	a := &Agent{
 		cfg:       cfg,
 		repoPath:  defaultRepoPath,
-		statePath: defaultStatePath,
+		statePath: DefaultStatePath,
 		lockPath:  defaultLockPath,
 	}
 	for _, opt := range opts {
@@ -276,7 +279,12 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	changeset := reconciler.Diff(files, st)
 
 	if !changeset.HasChanges() {
-		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary}, a.markApplied(headSHA, st, store)
+		slog.Info("no changes to apply", "sha", headSHA)
+		st.MarkApplied(headSHA)
+		if err := store.Save(st); err != nil {
+			return nil, fmt.Errorf("saving state: %w", err)
+		}
+		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary}, nil
 	}
 
 	slog.Info("changes detected",
@@ -285,8 +293,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		"delete", changeset.Summary[reconciler.ActionDelete],
 	)
 
-	v := validator.New()
-	if err := v.ValidateFiles(files); err != nil {
+	if err := validator.ValidateFiles(files); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -314,12 +321,6 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		Summary:     changeset.Summary,
 		ApplyResult: applyResult,
 	}, nil
-}
-
-func (a *Agent) markApplied(headSHA string, st *state.State, store *state.Store) error {
-	slog.Info("no changes to apply", "sha", headSHA)
-	st.MarkApplied(headSHA)
-	return store.Save(st)
 }
 
 func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset) (*applier.ApplyResult, error) {

@@ -87,14 +87,13 @@ Network=nonexistent.network
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			v := New()
 			unitsInfo := buildUnitsInfoFromFiles(tt.files)
 
 			unit := parser.NewUnitFile()
 			unit.Filename = "test.container"
 			_ = unit.Parse(tt.content)
 
-			err := v.validateQuadlet(unit, unitsInfo)
+			err := validateQuadlet(unit, unitsInfo)
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errMsg != "" {
@@ -109,7 +108,6 @@ Network=nonexistent.network
 
 func TestValidateQuadletKube(t *testing.T) {
 	t.Parallel()
-	v := New()
 
 	valid := `[Kube]
 Yaml=/var/lib/picolet/manifests/alloy/deployment.yml
@@ -123,32 +121,28 @@ WantedBy=default.target
 	}
 	unitsInfo := buildUnitsInfoFromFiles(files)
 	unit := parseUnit(t, "test.kube", valid)
-	require.NoError(t, v.validateQuadlet(unit, unitsInfo))
+	require.NoError(t, validateQuadlet(unit, unitsInfo))
 
-	v2 := New()
 	noYaml := "[Kube]\nNetwork=internal.network\n"
 	unit2 := parseUnit(t, "test.kube", noYaml)
-	require.Error(t, v2.validateQuadlet(unit2, make(map[string]*quadlet.UnitInfo)))
+	require.Error(t, validateQuadlet(unit2, make(map[string]*quadlet.UnitInfo)))
 }
 
 func TestValidateQuadletNetwork(t *testing.T) {
 	t.Parallel()
-	v := New()
 	unit := parseUnit(t, "test.network", "[Network]\nInternal=true\n")
-	require.NoError(t, v.validateQuadlet(unit, make(map[string]*quadlet.UnitInfo)))
+	require.NoError(t, validateQuadlet(unit, make(map[string]*quadlet.UnitInfo)))
 }
 
 func TestValidateQuadletVolume(t *testing.T) {
 	t.Parallel()
-	v := New()
 	unit := parseUnit(t, "test.volume", "[Volume]\n")
-	require.NoError(t, v.validateQuadlet(unit, make(map[string]*quadlet.UnitInfo)))
+	require.NoError(t, validateQuadlet(unit, make(map[string]*quadlet.UnitInfo)))
 }
 
 //nolint:funlen // table-driven validation test
 func TestValidateManifest(t *testing.T) {
 	t.Parallel()
-	v := New()
 
 	tests := []struct {
 		name    string
@@ -233,7 +227,7 @@ spec:
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := v.validateManifest("test.yml", []byte(tt.content))
+			err := validateManifest("test.yml", []byte(tt.content))
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errMsg != "" {
@@ -248,16 +242,15 @@ spec:
 
 func TestValidateSystemdUnit(t *testing.T) {
 	t.Parallel()
-	v := New()
 
 	valid := "[Socket]\nListenStream=80\n"
-	require.NoError(t, v.validateSystemdUnit("test.socket", valid))
+	require.NoError(t, validateSystemdUnit("test.socket", valid))
 
 	empty := ""
-	require.Error(t, v.validateSystemdUnit("test.socket", empty))
+	require.Error(t, validateSystemdUnit("test.socket", empty))
 
 	noSection := "ListenStream=80"
-	require.Error(t, v.validateSystemdUnit("test.socket", noSection))
+	require.Error(t, validateSystemdUnit("test.socket", noSection))
 }
 
 func TestSplitYAMLDocumentsLeadingSeparator(t *testing.T) {
