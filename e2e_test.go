@@ -398,6 +398,15 @@ features:
 		st, err := store.Load()
 		require.NoError(t, err)
 
+		// Confirm baseline: container is still running with the original image
+		connCtx, err := bindings.NewConnection(t.Context(), "unix:"+socketPath)
+		require.NoError(t, err)
+		baseline, err := containers.Inspect(connCtx, "picolet-e2e-test", nil)
+		require.NoError(t, err)
+		require.Equal(t, "running", baseline.State.Status)
+		require.Contains(t, baseline.ImageName, "alpine:3.23",
+			"container should be running with alpine:3.23 before the update")
+
 		fleetPath := filepath.Join(cloneDir, "testdata", "example-fleet", "fleet.yml")
 		fleetData, err := os.ReadFile(fleetPath)
 		require.NoError(t, err)
@@ -573,8 +582,7 @@ features:
 		// Do NOT assert Errors is empty — RestartUnit("simple.service") fails after the unit file is gone
 
 		t.Run("simple_container_removed", func(t *testing.T) {
-			_, err := os.Stat(filepath.Join(quadletDir, "simple.container"))
-			assert.True(t, os.IsNotExist(err), "simple.container should be gone")
+			assert.NoFileExists(t, filepath.Join(quadletDir, "simple.container"))
 		})
 
 		t.Run("picolet_e2e_test_stopped", func(t *testing.T) {
