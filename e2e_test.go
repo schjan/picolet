@@ -23,10 +23,12 @@ import (
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/gitpoll"
+	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
+	"github.com/schjan/picolet/pkg/validator"
 )
 
 func podmanSocketPath(t *testing.T) string {
@@ -158,6 +160,7 @@ func TestE2EPipeline(t *testing.T) {
 		agent.WithStatePath(statePath),
 	)
 	store := state.NewStore(statePath)
+	healthChecker := health.New(systemd, validator.UnitNameFromFile)
 
 	t.Run("reconcile", func(t *testing.T) {
 		require.NotEmpty(t, headSHA, "clone sub-test must have set headSHA")
@@ -330,39 +333,11 @@ func TestE2EPipeline(t *testing.T) {
 		require.NoError(t, err)
 
 		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
-		newAssignments := `base:
-  networks:
-    - quadlets/networks/internal.network
-  systemd:
-    - systemd/custom.socket
-pi_types:
-  controller:
-    containers:
-      - quadlets/containers/exporter.container
-    volumes:
-      - quadlets/volumes/data.volume
-    kube:
-      - quadlets/kube/app-stack.kube.tmpl
-    manifests:
-      - manifests/app/deployment.yml.tmpl
-    secrets:
-      - secrets/app_secret.yml.tmpl
-  worker:
-    containers:
-      - quadlets/containers/exporter.container
-  e2e:
-    containers:
-      - quadlets/containers/simple.container.tmpl
-      - quadlets/containers/extra.container
-    secrets:
-      - secrets/e2e_secret.txt
-features:
-  app-a:
-    containers:
-      - quadlets/containers/nginx.container.tmpl
-`
 		require.NoError(t, os.WriteFile(filepath.Join(fleetDir, "assignments.yml"),
-			[]byte(newAssignments), 0o644))
+			[]byte(e2eAssignments([]string{
+				"quadlets/containers/simple.container.tmpl",
+				"quadlets/containers/extra.container",
+			}, true)), 0o644))
 
 		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
@@ -452,6 +427,51 @@ features:
 		})
 	})
 
+	t.Run("health_enforce_healthy", func(t *testing.T) {
+		st, err := store.Load()
+		require.NoError(t, err)
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+
+		result, err := healthChecker.Enforce(ctx, st)
+		require.NoError(t, err)
+		assert.Contains(t, result.Healthy, "simple.service")
+		assert.Contains(t, result.Healthy, "extra.service")
+		assert.Contains(t, result.Healthy, "internal-network.service")
+		assert.Empty(t, result.Unhealthy, "all managed units should be active")
+		assert.Empty(t, result.Errors, "no health check errors expected")
+		// Note: custom.socket is not checked (UnitNameFromFile returns "" for .socket)
+	})
+
+	t.Run("health_enforce_restart", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+		defer cancel()
+
+		// Phase 1: force extra.service inactive — StopUnit is synchronous, no poll needed
+		require.NoError(t, systemd.StopUnit(ctx, "extra.service"))
+
+		// Phase 2: confirm detection — Enforce should see extra.service as unhealthy and call RestartUnit
+		st, err := store.Load()
+		require.NoError(t, err)
+		result, err := healthChecker.Enforce(ctx, st)
+		require.NoError(t, err)
+		assert.Contains(t, result.Unhealthy, "extra.service")
+		assert.Len(t, result.Unhealthy, 1, "only extra.service should be unhealthy")
+		assert.Empty(t, result.Errors)
+
+		// Phase 3: confirm recovery — RestartUnit was called by Enforce; poll until active
+		require.Eventually(t, func() bool {
+			active, _ := systemd.IsActive(ctx, "extra.service")
+			return active
+		}, 60*time.Second, 2*time.Second,
+			"extra.service should recover after health enforcement")
+
+		result2, err := healthChecker.Enforce(ctx, st)
+		require.NoError(t, err)
+		assert.Contains(t, result2.Healthy, "extra.service")
+		assert.NotContains(t, result2.Unhealthy, "extra.service")
+	})
+
 	t.Run("validation_failure", func(t *testing.T) {
 		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
 
@@ -475,41 +495,13 @@ WantedBy=default.target
 `
 		require.NoError(t, os.WriteFile(badPath, []byte(badContainer), 0o644))
 
-		badAssignments := `base:
-  networks:
-    - quadlets/networks/internal.network
-  systemd:
-    - systemd/custom.socket
-pi_types:
-  controller:
-    containers:
-      - quadlets/containers/exporter.container
-    volumes:
-      - quadlets/volumes/data.volume
-    kube:
-      - quadlets/kube/app-stack.kube.tmpl
-    manifests:
-      - manifests/app/deployment.yml.tmpl
-    secrets:
-      - secrets/app_secret.yml.tmpl
-  worker:
-    containers:
-      - quadlets/containers/exporter.container
-  e2e:
-    containers:
-      - quadlets/containers/simple.container.tmpl
-      - quadlets/containers/extra.container
-      - quadlets/containers/bad.container
-    secrets:
-      - secrets/e2e_secret.txt
-features:
-  app-a:
-    containers:
-      - quadlets/containers/nginx.container.tmpl
-`
 		require.NoError(t, os.WriteFile(
 			filepath.Join(fleetDir, "assignments.yml"),
-			[]byte(badAssignments), 0o644))
+			[]byte(e2eAssignments([]string{
+				"quadlets/containers/simple.container.tmpl",
+				"quadlets/containers/extra.container",
+				"quadlets/containers/bad.container",
+			}, true)), 0o644))
 
 		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
@@ -537,39 +529,11 @@ features:
 		require.NoError(t, err)
 
 		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
-		removeAssignments := `base:
-  networks:
-    - quadlets/networks/internal.network
-  systemd:
-    - systemd/custom.socket
-pi_types:
-  controller:
-    containers:
-      - quadlets/containers/exporter.container
-    volumes:
-      - quadlets/volumes/data.volume
-    kube:
-      - quadlets/kube/app-stack.kube.tmpl
-    manifests:
-      - manifests/app/deployment.yml.tmpl
-    secrets:
-      - secrets/app_secret.yml.tmpl
-  worker:
-    containers:
-      - quadlets/containers/exporter.container
-  e2e:
-    containers:
-      - quadlets/containers/extra.container
-    secrets:
-      - secrets/e2e_secret.txt
-features:
-  app-a:
-    containers:
-      - quadlets/containers/nginx.container.tmpl
-`
 		require.NoError(t, os.WriteFile(
 			filepath.Join(fleetDir, "assignments.yml"),
-			[]byte(removeAssignments), 0o644))
+			[]byte(e2eAssignments([]string{
+				"quadlets/containers/extra.container",
+			}, true)), 0o644))
 
 		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
@@ -620,37 +584,11 @@ features:
 		require.NoError(t, err)
 
 		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
-		noSecretAssignments := `base:
-  networks:
-    - quadlets/networks/internal.network
-  systemd:
-    - systemd/custom.socket
-pi_types:
-  controller:
-    containers:
-      - quadlets/containers/exporter.container
-    volumes:
-      - quadlets/volumes/data.volume
-    kube:
-      - quadlets/kube/app-stack.kube.tmpl
-    manifests:
-      - manifests/app/deployment.yml.tmpl
-    secrets:
-      - secrets/app_secret.yml.tmpl
-  worker:
-    containers:
-      - quadlets/containers/exporter.container
-  e2e:
-    containers:
-      - quadlets/containers/extra.container
-features:
-  app-a:
-    containers:
-      - quadlets/containers/nginx.container.tmpl
-`
 		require.NoError(t, os.WriteFile(
 			filepath.Join(fleetDir, "assignments.yml"),
-			[]byte(noSecretAssignments), 0o644))
+			[]byte(e2eAssignments([]string{
+				"quadlets/containers/extra.container",
+			}, false)), 0o644))
 
 		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
@@ -732,6 +670,47 @@ features:
 			assert.False(t, exists)
 		})
 	})
+}
+
+// e2eAssignments builds an assignments.yml YAML string with the shared base
+// structure, parameterising only the e2e pi_type's containers and optional secret.
+func e2eAssignments(e2eContainers []string, withSecret bool) string {
+	var sb strings.Builder
+	sb.WriteString(`base:
+  networks:
+    - quadlets/networks/internal.network
+  systemd:
+    - systemd/custom.socket
+pi_types:
+  controller:
+    containers:
+      - quadlets/containers/exporter.container
+    volumes:
+      - quadlets/volumes/data.volume
+    kube:
+      - quadlets/kube/app-stack.kube.tmpl
+    manifests:
+      - manifests/app/deployment.yml.tmpl
+    secrets:
+      - secrets/app_secret.yml.tmpl
+  worker:
+    containers:
+      - quadlets/containers/exporter.container
+  e2e:
+    containers:
+`)
+	for _, c := range e2eContainers {
+		fmt.Fprintf(&sb, "      - %s\n", c)
+	}
+	if withSecret {
+		sb.WriteString("    secrets:\n      - secrets/e2e_secret.txt\n")
+	}
+	sb.WriteString(`features:
+  app-a:
+    containers:
+      - quadlets/containers/nginx.container.tmpl
+`)
+	return sb.String()
 }
 
 // TestE2EResolverRootlessPaths verifies rootless path resolution produces correct paths.
