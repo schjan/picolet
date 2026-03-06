@@ -64,7 +64,7 @@ func (r *Resolver) Rootless() bool { return r.rootless }
 // Pass nil for SecretReader to use placeholder mode (validate/CI).
 // When Rootless is true, destination paths use ~/.config/ and ~/.local/share/ instead of /etc/ and /var/lib/.
 func New(rc Config) (*Resolver, error) {
-	quadletDir, systemdDir, dataDir, err := resolveDirs(rc.Rootless)
+	quadletDir, systemdDir, dataDir, err := ResolveDirs(rc.Rootless)
 	if err != nil {
 		return nil, err
 	}
@@ -79,16 +79,18 @@ func New(rc Config) (*Resolver, error) {
 	}, nil
 }
 
-// resolveDirs computes destination directories based on rootless mode.
-func resolveDirs(rootless bool) (quadletDir, systemdDir, dataDir string, err error) {
+// ResolveDirs computes destination directories based on rootless mode.
+// Quadlet files are placed in a picolet-owned subdirectory so that orphan
+// detection can safely scan and remove any file in that directory.
+func ResolveDirs(rootless bool) (quadletDir, systemdDir, dataDir string, err error) {
 	if !rootless {
-		return "/etc/containers/systemd", "/etc/systemd/system", "/var/lib/picolet", nil
+		return "/etc/containers/systemd/picolet", "/etc/systemd/system", "/var/lib/picolet", nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", "", "", fmt.Errorf("getting home directory: %w", err)
 	}
-	return filepath.Join(home, ".config", "containers", "systemd"),
+	return filepath.Join(home, ".config", "containers", "systemd", "picolet"),
 		filepath.Join(home, ".config", "systemd", "user"),
 		filepath.Join(home, ".local", "share", "picolet"), nil
 }

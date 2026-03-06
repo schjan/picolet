@@ -93,7 +93,7 @@ func TestE2EPipeline(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 
-	quadletDir := filepath.Join(home, ".config", "containers", "systemd")
+	quadletDir := filepath.Join(home, ".config", "containers", "systemd", "picolet")
 	systemdDir := filepath.Join(home, ".config", "systemd", "user")
 
 	// Create clients in parent scope for cleanup and sub-test reuse.
@@ -803,7 +803,7 @@ func TestE2EResolverRootlessPaths(t *testing.T) {
 		destPaths[f.DestPath] = true
 	}
 
-	quadletDir := filepath.Join(home, ".config", "containers", "systemd")
+	quadletDir := filepath.Join(home, ".config", "containers", "systemd", "picolet")
 	systemdDir := filepath.Join(home, ".config", "systemd", "user")
 
 	assert.Contains(t, destPaths, filepath.Join(quadletDir, "simple.container"),

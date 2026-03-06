@@ -121,7 +121,7 @@ func TestResolveHost(t *testing.T) {
 	// Check container file (templated)
 	assert.Equal(t, "container", cont.Category)
 	assert.Contains(t, cont.Content, "Image=traefik:v3.6.9")
-	assert.Equal(t, "/etc/containers/systemd/test.container", cont.DestPath)
+	assert.Equal(t, "/etc/containers/systemd/picolet/test.container", cont.DestPath)
 
 	// Check manifest (templated)
 	assert.Equal(t, "manifest", manifest.Category)
@@ -233,7 +233,7 @@ func TestRootlessPaths(t *testing.T) {
 	}
 
 	// Verify container file goes to rootless quadlet dir
-	assert.Equal(t, filepath.Join(home, ".config", "containers", "systemd", "test.container"), cont.DestPath)
+	assert.Equal(t, filepath.Join(home, ".config", "containers", "systemd", "picolet", "test.container"), cont.DestPath)
 
 	// Verify manifest goes to rootless data dir
 	assert.Equal(t, filepath.Join(home, ".local", "share", "picolet", "manifests", "app", "deployment.yml"), manifest.DestPath)

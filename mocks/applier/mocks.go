@@ -418,6 +418,66 @@ func (_m *MockPodmanClient) EXPECT() *MockPodmanClient_Expecter {
 	return &MockPodmanClient_Expecter{mock: &_m.Mock}
 }
 
+// ListManagedSecrets provides a mock function for the type MockPodmanClient
+func (_mock *MockPodmanClient) ListManagedSecrets(ctx context.Context) ([]string, error) {
+	ret := _mock.Called(ctx)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ListManagedSecrets")
+	}
+
+	var r0 []string
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context) ([]string, error)); ok {
+		return returnFunc(ctx)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context) []string); ok {
+		r0 = returnFunc(ctx)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]string)
+		}
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context) error); ok {
+		r1 = returnFunc(ctx)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockPodmanClient_ListManagedSecrets_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ListManagedSecrets'
+type MockPodmanClient_ListManagedSecrets_Call struct {
+	*mock.Call
+}
+
+// ListManagedSecrets is a helper method to define mock.On call
+//   - ctx context.Context
+func (_e *MockPodmanClient_Expecter) ListManagedSecrets(ctx interface{}) *MockPodmanClient_ListManagedSecrets_Call {
+	return &MockPodmanClient_ListManagedSecrets_Call{Call: _e.mock.On("ListManagedSecrets", ctx)}
+}
+
+func (_c *MockPodmanClient_ListManagedSecrets_Call) Run(run func(ctx context.Context)) *MockPodmanClient_ListManagedSecrets_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		run(arg0)
+	})
+	return _c
+}
+
+func (_c *MockPodmanClient_ListManagedSecrets_Call) Return(names []string, err error) *MockPodmanClient_ListManagedSecrets_Call {
+	_c.Call.Return(names, err)
+	return _c
+}
+
+func (_c *MockPodmanClient_ListManagedSecrets_Call) RunAndReturn(run func(ctx context.Context) ([]string, error)) *MockPodmanClient_ListManagedSecrets_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // ContainerRemove provides a mock function for the type MockPodmanClient
 func (_mock *MockPodmanClient) ContainerRemove(ctx context.Context, nameOrID string, force bool) error {
 	ret := _mock.Called(ctx, nameOrID, force)

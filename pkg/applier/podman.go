@@ -39,12 +39,31 @@ func (c *SocketPodmanClient) SecretExists(_ context.Context, name string) (bool,
 
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
 func (c *SocketPodmanClient) SecretCreate(_ context.Context, name string, data []byte, replace bool) error {
-	opts := new(secrets.CreateOptions).WithName(name).WithReplace(replace)
+	opts := new(secrets.CreateOptions).
+		WithName(name).
+		WithReplace(replace).
+		WithLabels(map[string]string{"managed-by": "picolet"})
 	_, err := secrets.Create(c.connCtx, bytes.NewReader(data), opts)
 	if err != nil {
 		return fmt.Errorf("creating secret %s: %w", name, err)
 	}
 	return nil
+}
+
+//nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
+func (c *SocketPodmanClient) ListManagedSecrets(_ context.Context) ([]string, error) {
+	opts := new(secrets.ListOptions).WithFilters(map[string][]string{
+		"label": {"managed-by=picolet"},
+	})
+	list, err := secrets.List(c.connCtx, opts)
+	if err != nil {
+		return nil, fmt.Errorf("listing managed secrets: %w", err)
+	}
+	names := make([]string, 0, len(list))
+	for _, s := range list {
+		names = append(names, s.Spec.Name)
+	}
+	return names, nil
 }
 
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc

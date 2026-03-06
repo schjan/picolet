@@ -14,6 +14,7 @@ import (
 	"github.com/schjan/picolet/pkg/gitpoll"
 	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
+	"github.com/schjan/picolet/pkg/orphan"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/rollback"
@@ -117,6 +118,8 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	store := state.NewStore(a.statePath)
 	healthChecker := health.New(a.systemd)
+
+	a.scanOrphans(ctx, store)
 
 	slog.Info("agent started",
 		"hostname", a.cfg.Hostname,
@@ -381,6 +384,28 @@ func (a *Agent) updateState(headSHA string, st *state.State, changeset *reconcil
 	metrics.ManagedUnitsTotal.Set(float64(len(st.ManagedFiles)))
 	metrics.AppliedGitSHA.Reset()
 	metrics.AppliedGitSHA.WithLabelValues(headSHA).Set(1)
+}
+
+// scanOrphans detects and removes files/secrets placed by a previous picolet run that
+// are no longer tracked in state. Runs once at startup; errors are logged, not fatal.
+func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
+	if a.dryRun {
+		return
+	}
+	quadletDir, systemdDir, dataDir, err := resolver.ResolveDirs(a.cfg.Rootless)
+	if err != nil {
+		slog.Warn("resolving dirs for orphan scan failed", "error", err)
+		return
+	}
+	st, err := store.Load()
+	if err != nil {
+		slog.Warn("loading state for orphan scan failed", "error", err)
+		return
+	}
+	scanner := orphan.New(a.writer, a.podman, quadletDir, systemdDir, dataDir)
+	if err := scanner.Scan(ctx, st.ManagedFiles); err != nil {
+		slog.Warn("orphan scan error", "error", err)
+	}
 }
 
 func (a *Agent) serveMetrics(ctx context.Context) {
