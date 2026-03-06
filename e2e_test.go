@@ -82,6 +82,7 @@ func TestE2EPipeline(t *testing.T) {
 	repoURL, tokenPath := repoAuth(t)
 
 	cloneDir := filepath.Join(t.TempDir(), "repo")
+	fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	lockPath := filepath.Join(t.TempDir(), "reconciliation.lock")
 	secretsDir := t.TempDir()
@@ -164,7 +165,7 @@ func TestE2EPipeline(t *testing.T) {
 	}
 
 	a := agent.New(agentCfg,
-		agent.WithRepoPath(filepath.Join(cloneDir, "testdata", "example-fleet")),
+		agent.WithRepoPath(fleetDir),
 		agent.WithFileWriter(applier.NewAtomicFileWriter()),
 		agent.WithPodman(podman),
 		agent.WithSystemd(systemd),
@@ -349,7 +350,6 @@ func TestE2EPipeline(t *testing.T) {
 		st, err := store.Load()
 		require.NoError(t, err)
 
-		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
 		require.NoError(t, os.WriteFile(filepath.Join(fleetDir, "assignments.yml"),
 			[]byte(e2eAssignments([]string{
 				"quadlets/containers/simple.container.tmpl",
@@ -490,8 +490,6 @@ func TestE2EPipeline(t *testing.T) {
 	})
 
 	t.Run("validation_failure", func(t *testing.T) {
-		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
-
 		origAssignments, err := os.ReadFile(filepath.Join(fleetDir, "assignments.yml"))
 		require.NoError(t, err)
 
@@ -545,7 +543,6 @@ WantedBy=default.target
 		st, err := store.Load()
 		require.NoError(t, err)
 
-		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
 		require.NoError(t, os.WriteFile(
 			filepath.Join(fleetDir, "assignments.yml"),
 			[]byte(e2eAssignments([]string{
@@ -605,7 +602,6 @@ WantedBy=default.target
 		st, err := store.Load()
 		require.NoError(t, err)
 
-		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
 		require.NoError(t, os.WriteFile(
 			filepath.Join(fleetDir, "assignments.yml"),
 			[]byte(e2eAssignments([]string{
@@ -653,7 +649,6 @@ WantedBy=default.target
 		st, err := store.Load()
 		require.NoError(t, err)
 
-		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
 		// Clear all assignments — every file in state becomes a delete
 		require.NoError(t, os.WriteFile(
 			filepath.Join(fleetDir, "assignments.yml"),
