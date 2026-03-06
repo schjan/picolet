@@ -64,6 +64,10 @@ func (c *SocketPodmanClient) ContainerRemove(_ context.Context, nameOrID string,
 	opts := new(containers.RemoveOptions).WithForce(force)
 	_, err := containers.Remove(c.connCtx, nameOrID, opts)
 	if err != nil {
+		code, _ := bindings.CheckResponseCode(err)
+		if code == http.StatusNotFound {
+			return nil // already gone (auto-removed or cleaned up by ExecStop)
+		}
 		return fmt.Errorf("removing container %s: %w", nameOrID, err)
 	}
 	return nil

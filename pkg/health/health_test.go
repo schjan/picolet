@@ -24,7 +24,12 @@ func TestEnforceAllHealthy(t *testing.T) {
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": "sha256:abc",
 			"/etc/containers/systemd/bar.network":   "sha256:def",
-			"secret:my_secret":                      "sha256:ghi", // skipped
+			"secret:my_secret":                      "sha256:ghi",
+		},
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
+			"/etc/containers/systemd/bar.network":   "bar-network.service",
+			// secret has no entry — skipped automatically
 		},
 	}
 
@@ -45,6 +50,9 @@ func TestEnforceRestartsUnhealthy(t *testing.T) {
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": "sha256:abc",
 		},
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
+		},
 	}
 
 	result, err := c.Enforce(context.Background(), st)
@@ -58,12 +66,10 @@ func TestEnforceSkipsSecretsAndManifests(t *testing.T) {
 	// No expectations — no units should be checked
 	c := New(sys)
 
-	st := &state.State{
-		ManagedFiles: map[string]string{
-			"secret:my_secret": "sha256:abc",
-			"/var/lib/picolet/manifests/app/deployment.yml": "sha256:def",
-		},
-	}
+	st := state.NewState()
+	st.ManagedFiles["secret:my_secret"] = "sha256:abc"
+	st.ManagedFiles["/var/lib/picolet/manifests/app/deployment.yml"] = "sha256:def"
+	// no quadlet units → ServiceNames stays empty
 
 	result, err := c.Enforce(context.Background(), st)
 	require.NoError(t, err)
@@ -80,6 +86,9 @@ func TestEnforceHandlesCheckError(t *testing.T) {
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": "sha256:abc",
+		},
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
 		},
 	}
 
@@ -101,6 +110,9 @@ func TestEnforceRestartCooldown(t *testing.T) {
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": "sha256:abc",
+		},
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
 		},
 	}
 

@@ -15,9 +15,18 @@ type State struct {
 	AppliedSHA   string            `json:"applied_sha"`
 	AppliedAt    time.Time         `json:"applied_at"`
 	ManagedFiles map[string]string `json:"managed_files"` // destPath → "sha256:..."
+	ServiceNames map[string]string `json:"service_names"` // destPath → "foo.service" for quadlets
 	FailedSHA    string            `json:"failed_sha"`
 	FailedCount  int               `json:"failed_count"`
 	FailedAt     time.Time         `json:"failed_at"`
+}
+
+// NewState returns a zero State with initialized maps, suitable for first-run or testing.
+func NewState() *State {
+	return &State{
+		ManagedFiles: make(map[string]string),
+		ServiceNames: make(map[string]string),
+	}
 }
 
 // MarkApplied resets failure tracking and records the SHA as successfully applied.
@@ -44,7 +53,7 @@ func (s *Store) Load() (*State, error) {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return &State{ManagedFiles: make(map[string]string)}, nil
+			return NewState(), nil
 		}
 		return nil, fmt.Errorf("reading state %s: %w", s.path, err)
 	}
@@ -54,6 +63,9 @@ func (s *Store) Load() (*State, error) {
 	}
 	if st.ManagedFiles == nil {
 		st.ManagedFiles = make(map[string]string)
+	}
+	if st.ServiceNames == nil {
+		st.ServiceNames = make(map[string]string)
 	}
 	return &st, nil
 }

@@ -86,17 +86,15 @@ func newBareMocks(t *testing.T) (*mocks.MockSystemdManager, *mocks.MockPodmanCli
 
 // setupApplyMocks configures mocks for a test that expects a successful apply
 // (health check + write files + daemon-reload + restart units).
-func setupApplyMocks(sys *mocks.MockSystemdManager, pod *mocks.MockPodmanClient, fw *mocks.MockFileWriter) map[string][]byte {
+func setupApplyMocks(sys *mocks.MockSystemdManager, _ *mocks.MockPodmanClient, fw *mocks.MockFileWriter) map[string][]byte {
 	// Health check
 	sys.EXPECT().IsActive(mock.Anything, mock.Anything).Return(true, nil).Maybe()
 	sys.EXPECT().GetUnitState(mock.Anything, mock.Anything).Return("active", nil).Maybe()
 
 	// Apply phase
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
+	sys.EXPECT().StopUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
 	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-
-	// Podman (unused in network-only test, but allowed)
-	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
 
 	written := make(map[string][]byte)
 	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).RunAndReturn(func(path string, content []byte) error {
@@ -110,10 +108,9 @@ func setupApplyMocks(sys *mocks.MockSystemdManager, pod *mocks.MockPodmanClient,
 
 // setupNoopMocks configures mocks for a test that should NOT write any files.
 // Only health checks are expected.
-func setupNoopMocks(sys *mocks.MockSystemdManager, pod *mocks.MockPodmanClient) {
+func setupNoopMocks(sys *mocks.MockSystemdManager, _ *mocks.MockPodmanClient) {
 	sys.EXPECT().IsActive(mock.Anything, mock.Anything).Return(true, nil).Maybe()
 	sys.EXPECT().GetUnitState(mock.Anything, mock.Anything).Return("active", nil).Maybe()
-	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
 }
 
 func TestAgentFullCycle(t *testing.T) {
@@ -245,11 +242,9 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 	require.NoError(t, err)
 
 	store := state.NewStore(statePath)
-	st := &state.State{
-		ManagedFiles: make(map[string]string),
-		FailedSHA:    head.Hash().String(),
-		FailedCount:  3, // maxRetries reached → will be skipped
-	}
+	st := state.NewState()
+	st.FailedSHA = head.Hash().String()
+	st.FailedCount = 3 // maxRetries reached → will be skipped
 	require.NoError(t, store.Save(st))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -302,11 +297,9 @@ func TestAgentRetriesFailedSHA(t *testing.T) {
 	require.NoError(t, err)
 
 	store := state.NewStore(statePath)
-	st := &state.State{
-		ManagedFiles: make(map[string]string),
-		FailedSHA:    head.Hash().String(),
-		FailedCount:  1, // only 1 failure, will retry
-	}
+	st := state.NewState()
+	st.FailedSHA = head.Hash().String()
+	st.FailedCount = 1 // only 1 failure, will retry
 	require.NoError(t, store.Save(st))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

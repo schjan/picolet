@@ -1,7 +1,6 @@
 package reconciler
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,39 +12,39 @@ import (
 
 func TestDiffCreateNewFiles(t *testing.T) {
 	t.Parallel()
-	r := New()
 	desired := []resolver.ResolvedFile{
-		{DestPath: "/etc/containers/systemd/foo.container", Content: "image=foo", Category: "container"},
-		{DestPath: "/etc/containers/systemd/bar.network", Content: "internal=true", Category: "network"},
+		{DestPath: "/etc/containers/systemd/foo.container", Content: "image=foo", Category: "container", ServiceName: "foo.service"},
+		{DestPath: "/etc/containers/systemd/bar.network", Content: "internal=true", Category: "network", ServiceName: "bar-network.service"},
 	}
-	st := &state.State{ManagedFiles: make(map[string]string)}
+	st := state.NewState()
 
-	cs := r.Diff(desired, st, nil)
+	cs := Diff(desired, st)
 
 	require.True(t, cs.HasChanges())
 	assert.Equal(t, 2, cs.Summary[ActionCreate])
 	for _, c := range cs.Changes {
 		assert.Equal(t, ActionCreate, c.Action)
 		assert.NotEmpty(t, c.NewHash)
+		assert.NotEmpty(t, c.ServiceName)
 	}
 }
 
 func TestDiffNoopWhenUnchanged(t *testing.T) {
 	t.Parallel()
-	r := New()
 	content := "image=foo"
 	h := hash(content)
 
 	desired := []resolver.ResolvedFile{
-		{DestPath: "/etc/containers/systemd/foo.container", Content: content, Category: "container"},
+		{DestPath: "/etc/containers/systemd/foo.container", Content: content, Category: "container", ServiceName: "foo.service"},
 	}
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": h,
 		},
+		ServiceNames: make(map[string]string),
 	}
 
-	cs := r.Diff(desired, st, nil)
+	cs := Diff(desired, st)
 
 	assert.False(t, cs.HasChanges())
 	assert.Equal(t, 1, cs.Summary[ActionNoop])
@@ -53,7 +52,6 @@ func TestDiffNoopWhenUnchanged(t *testing.T) {
 
 func TestDiffUpdateChangedContent(t *testing.T) {
 	t.Parallel()
-	r := New()
 
 	desired := []resolver.ResolvedFile{
 		{DestPath: "/etc/containers/systemd/foo.container", Content: "image=foo:v2", Category: "container"},
@@ -62,9 +60,10 @@ func TestDiffUpdateChangedContent(t *testing.T) {
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/foo.container": "sha256:oldolddead",
 		},
+		ServiceNames: make(map[string]string),
 	}
 
-	cs := r.Diff(desired, st, nil)
+	cs := Diff(desired, st)
 
 	require.True(t, cs.HasChanges())
 	assert.Equal(t, 1, cs.Summary[ActionUpdate])
@@ -72,25 +71,27 @@ func TestDiffUpdateChangedContent(t *testing.T) {
 
 func TestDiffDeleteRemovedFiles(t *testing.T) {
 	t.Parallel()
-	r := New()
 
 	desired := []resolver.ResolvedFile{}
 	st := &state.State{
 		ManagedFiles: map[string]string{
 			"/etc/containers/systemd/old.container": "sha256:abc",
 		},
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/old.container": "old.service",
+		},
 	}
 
-	cs := r.Diff(desired, st, nil)
+	cs := Diff(desired, st)
 
 	require.True(t, cs.HasChanges())
 	assert.Equal(t, 1, cs.Summary[ActionDelete])
 	assert.Equal(t, "container", cs.Changes[0].Category)
+	assert.Equal(t, "old.service", cs.Changes[0].ServiceName)
 }
 
 func TestDiffMixedOperations(t *testing.T) {
 	t.Parallel()
-	r := New()
 
 	keepContent := "keep"
 	keepHash := hash(keepContent)
@@ -106,9 +107,10 @@ func TestDiffMixedOperations(t *testing.T) {
 			"/etc/containers/systemd/update.kube":      "sha256:old",
 			"/etc/containers/systemd/remove.container": "sha256:gone",
 		},
+		ServiceNames: make(map[string]string),
 	}
 
-	cs := r.Diff(desired, st, nil)
+	cs := Diff(desired, st)
 
 	assert.Equal(t, 1, cs.Summary[ActionNoop])
 	assert.Equal(t, 1, cs.Summary[ActionCreate])
@@ -116,58 +118,49 @@ func TestDiffMixedOperations(t *testing.T) {
 	assert.Equal(t, 1, cs.Summary[ActionDelete])
 }
 
-func TestDiffSecretSkipIfExists(t *testing.T) {
+func TestDiffSecretUpdate(t *testing.T) {
 	t.Parallel()
-	r := New()
+
+	content := "token=abc"
+	sameHash := hash(content)
 
 	desired := []resolver.ResolvedFile{
-		{DestPath: "secret:my_secret", Content: "token=abc", Category: "secret"},
+		{DestPath: "secret:my_secret", Content: content, Category: "secret"},
 	}
-	st := &state.State{
+
+	// Same content → noop
+	stSame := &state.State{
+		ManagedFiles: map[string]string{
+			"secret:my_secret": sameHash,
+		},
+		ServiceNames: make(map[string]string),
+	}
+	csNoop := Diff(desired, stSame)
+	assert.Equal(t, 1, csNoop.Summary[ActionNoop], "unchanged secret content should be noop")
+
+	// Different content hash → update
+	stOld := &state.State{
 		ManagedFiles: map[string]string{
 			"secret:my_secret": "sha256:old",
 		},
+		ServiceNames: make(map[string]string),
 	}
-
-	// Secret exists in Podman → noop
-	checker := func(name string) (bool, error) {
-		if name == "my_secret" {
-			return true, nil
-		}
-		return false, nil
-	}
-
-	cs := r.Diff(desired, st, checker)
-	assert.Equal(t, 1, cs.Summary[ActionNoop], "skip_if_exists should be noop")
-
-	// Secret does NOT exist in Podman → update (hash differs)
-	noChecker := func(_ string) (bool, error) {
-		return false, nil
-	}
-	cs2 := r.Diff(desired, st, noChecker)
-	assert.Equal(t, 1, cs2.Summary[ActionUpdate], "missing secret should be updated")
+	csUpdate := Diff(desired, stOld)
+	assert.Equal(t, 1, csUpdate.Summary[ActionUpdate], "changed secret content should produce update")
 }
 
-func TestDiffSecretCheckerError(t *testing.T) {
+func TestDiffServiceNamePropagated(t *testing.T) {
 	t.Parallel()
-	r := New()
 
 	desired := []resolver.ResolvedFile{
-		{DestPath: "secret:err_secret", Content: "data", Category: "secret"},
+		{DestPath: "/etc/containers/systemd/app.container", Content: "content", Category: "container", ServiceName: "app.service"},
 	}
-	st := &state.State{
-		ManagedFiles: map[string]string{
-			"secret:err_secret": "sha256:old",
-		},
-	}
+	st := state.NewState()
 
-	errChecker := func(_ string) (bool, error) {
-		return false, errors.New("connection refused")
-	}
+	cs := Diff(desired, st)
 
-	// On error, fall through to normal diff (update because hash differs)
-	cs := r.Diff(desired, st, errChecker)
-	assert.Equal(t, 1, cs.Summary[ActionUpdate], "fallback on checker error")
+	require.Equal(t, 1, cs.Summary[ActionCreate])
+	assert.Equal(t, "app.service", cs.Changes[0].ServiceName)
 }
 
 func TestCategoryFromPath(t *testing.T) {

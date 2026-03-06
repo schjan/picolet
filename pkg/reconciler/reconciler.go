@@ -22,12 +22,13 @@ const (
 
 // Change represents a single file change.
 type Change struct {
-	DestPath   string
-	Category   string
-	Action     Action
-	NewContent string // empty for delete
-	OldHash    string // from state, empty for create
-	NewHash    string // sha256 of NewContent
+	DestPath    string
+	Category    string
+	Action      Action
+	NewContent  string // empty for delete
+	OldHash     string // from state, empty for create
+	NewHash     string // sha256 of NewContent
+	ServiceName string // "foo.service"; "" for non-quadlets/secrets
 }
 
 // Changeset is the complete set of changes to apply.
@@ -41,23 +42,10 @@ func (cs *Changeset) HasChanges() bool {
 	return cs.Summary[ActionCreate] > 0 || cs.Summary[ActionUpdate] > 0 || cs.Summary[ActionDelete] > 0
 }
 
-// Reconciler computes the diff between desired and current state.
-type Reconciler struct{}
-
-// New creates a new Reconciler.
-func New() *Reconciler {
-	return &Reconciler{}
-}
-
-// SecretChecker checks if a Podman secret already exists.
-type SecretChecker func(name string) (bool, error)
-
 // Diff computes the changeset between desired files and current state.
-// secretChecker is used for skip_if_exists secrets; pass nil if not needed.
-func (r *Reconciler) Diff(
+func Diff(
 	desired []resolver.ResolvedFile,
 	currentState *state.State,
-	secretChecker SecretChecker,
 ) *Changeset {
 	cs := &Changeset{
 		Summary: make(map[Action]int),
@@ -66,17 +54,18 @@ func (r *Reconciler) Diff(
 	seen := make(map[string]bool)
 	for _, f := range desired {
 		seen[f.DestPath] = true
-		cs.addChange(classifyFile(f, currentState, secretChecker))
+		cs.addChange(classifyFile(f, currentState))
 	}
 
 	// Files in state but not in desired → delete
 	for destPath := range currentState.ManagedFiles {
 		if !seen[destPath] {
 			cs.addChange(Change{
-				DestPath: destPath,
-				Category: categoryFromPath(destPath),
-				Action:   ActionDelete,
-				OldHash:  currentState.ManagedFiles[destPath],
+				DestPath:    destPath,
+				Category:    categoryFromPath(destPath),
+				Action:      ActionDelete,
+				OldHash:     currentState.ManagedFiles[destPath],
+				ServiceName: currentState.ServiceNames[destPath], // "" for non-quadlets
 			})
 		}
 	}
@@ -85,53 +74,30 @@ func (r *Reconciler) Diff(
 }
 
 // classifyFile determines the action for a single desired file.
-func classifyFile(f resolver.ResolvedFile, currentState *state.State, secretChecker SecretChecker) Change {
+func classifyFile(f resolver.ResolvedFile, currentState *state.State) Change {
 	newHash := hash(f.Content)
 	oldHash, managed := currentState.ManagedFiles[f.DestPath]
 
-	// For secrets with skip_if_exists: if already managed AND exists in Podman, noop.
-	if f.Category == "secret" && managed && secretChecker != nil {
-		secretName := SecretNameFromPath(f.DestPath)
-		exists, err := secretChecker(secretName)
-		if err == nil && exists {
-			return Change{
-				DestPath: f.DestPath,
-				Category: f.Category,
-				Action:   ActionNoop,
-				OldHash:  oldHash,
-				NewHash:  newHash,
-			}
-		}
+	c := Change{
+		DestPath:    f.DestPath,
+		Category:    f.Category,
+		OldHash:     oldHash,
+		NewHash:     newHash,
+		ServiceName: f.ServiceName,
 	}
 
-	if !managed {
-		return Change{
-			DestPath:   f.DestPath,
-			Category:   f.Category,
-			Action:     ActionCreate,
-			NewContent: f.Content,
-			NewHash:    newHash,
-		}
+	switch {
+	case !managed:
+		c.Action = ActionCreate
+		c.NewContent = f.Content
+	case oldHash == newHash:
+		c.Action = ActionNoop
+	default:
+		c.Action = ActionUpdate
+		c.NewContent = f.Content
 	}
 
-	if oldHash == newHash {
-		return Change{
-			DestPath: f.DestPath,
-			Category: f.Category,
-			Action:   ActionNoop,
-			OldHash:  oldHash,
-			NewHash:  newHash,
-		}
-	}
-
-	return Change{
-		DestPath:   f.DestPath,
-		Category:   f.Category,
-		Action:     ActionUpdate,
-		NewContent: f.Content,
-		OldHash:    oldHash,
-		NewHash:    newHash,
-	}
+	return c
 }
 
 func (cs *Changeset) addChange(c Change) {

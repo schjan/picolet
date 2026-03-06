@@ -7,7 +7,6 @@ import (
 
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/state"
-	"github.com/schjan/picolet/pkg/validator"
 )
 
 const restartCooldown = 5 * time.Minute
@@ -38,14 +37,12 @@ func New(systemd applier.SystemdManager) *Checker {
 func (c *Checker) Enforce(ctx context.Context, st *state.State) (*CheckResult, error) {
 	result := &CheckResult{}
 
-	// Derive unique unit names from managed files
+	// Derive unique unit names from the service names map
 	units := make(map[string]bool)
-	for destPath := range st.ManagedFiles {
-		unitName := validator.UnitNameFromPath(destPath)
-		if unitName == "" {
-			continue
+	for _, unitName := range st.ServiceNames {
+		if unitName != "" {
+			units[unitName] = true
 		}
-		units[unitName] = true
 	}
 
 	for unit := range units {

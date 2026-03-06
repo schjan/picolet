@@ -10,6 +10,9 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/containers/podman/v5/pkg/systemd/parser"
+	"github.com/containers/podman/v5/pkg/systemd/quadlet"
+
 	"github.com/schjan/picolet/pkg/config"
 )
 
@@ -23,6 +26,10 @@ type ResolvedFile struct {
 	Content string
 	// Category describes the file type (network, container, kube, manifest, etc.).
 	Category string
+	// ParsedUnit is the parsed quadlet unit file; nil for non-quadlet files or on parse error.
+	ParsedUnit *parser.UnitFile
+	// ServiceName is the derived systemd service name (e.g. "foo.service"); "" for non-quadlets.
+	ServiceName string
 }
 
 // ResolvedHost is the complete desired state for a single host.
@@ -103,21 +110,23 @@ func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 	fileSet := r.cfg.Assignments.Resolve(host)
 	var files []ResolvedFile
 
-	// Standard file categories with their destination directories
+	// Standard file categories with their destination directories.
+	// quadlet=true causes the file to be parsed as a quadlet unit.
 	fileGroups := []struct {
 		paths   []string
 		cat     string
 		destDir string
+		quadlet bool
 	}{
-		{fileSet.Networks, "network", r.quadletDir},
-		{fileSet.Systemd, "systemd", r.systemdDir},
-		{fileSet.Volumes, "volume", r.quadletDir},
-		{fileSet.Containers, "container", r.quadletDir},
-		{fileSet.Kube, "kube", r.quadletDir},
+		{fileSet.Networks, "network", r.quadletDir, true},
+		{fileSet.Systemd, "systemd", r.systemdDir, false},
+		{fileSet.Volumes, "volume", r.quadletDir, true},
+		{fileSet.Containers, "container", r.quadletDir, true},
+		{fileSet.Kube, "kube", r.quadletDir, true},
 	}
 	for _, g := range fileGroups {
 		for _, path := range g.paths {
-			f, err := r.resolveFile(registry, tmplData, path, g.cat, g.destDir)
+			f, err := r.resolveFile(registry, tmplData, path, g.cat, g.destDir, g.quadlet)
 			if err != nil {
 				return nil, err
 			}
@@ -160,18 +169,43 @@ func (r *Resolver) ResolveAll() (map[string]*ResolvedHost, error) {
 	return results, nil
 }
 
-func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateData, srcPath, category, destDir string) (*ResolvedFile, error) {
+func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateData, srcPath, category, destDir string, quadlet bool) (*ResolvedFile, error) {
 	content, err := r.renderOrRead(registry, tmplData, srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving %s: %w", srcPath, err)
 	}
 
+	filename := destFilename(srcPath)
+	var parsedUnit *parser.UnitFile
+	var serviceName string
+	if quadlet {
+		unit := parser.NewUnitFile()
+		unit.Filename = filename
+		if err := unit.Parse(content); err == nil {
+			parsedUnit = unit
+			serviceName = unitServiceName(unit)
+		}
+		// Parse errors are silent here — validator catches them with proper error messages
+	}
+
 	return &ResolvedFile{
-		SrcPath:  srcPath,
-		DestPath: filepath.Join(destDir, destFilename(srcPath)),
-		Content:  content,
-		Category: category,
+		SrcPath:     srcPath,
+		DestPath:    filepath.Join(destDir, filename),
+		Content:     content,
+		Category:    category,
+		ParsedUnit:  parsedUnit,
+		ServiceName: serviceName,
 	}, nil
+}
+
+// unitServiceName returns "foo.service" from a parsed quadlet unit, using Podman's
+// GetUnitServiceName which handles all quadlet types and ServiceName= overrides.
+func unitServiceName(unit *parser.UnitFile) string {
+	name, err := quadlet.GetUnitServiceName(unit)
+	if err != nil {
+		return ""
+	}
+	return name + ".service"
 }
 
 // destFilename returns the base filename for a source path, stripping any .tmpl suffix.

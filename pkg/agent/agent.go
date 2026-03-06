@@ -22,9 +22,12 @@ import (
 )
 
 const (
-	defaultRepoPath  = "/var/lib/picolet/repo"
-	defaultStatePath = "/var/lib/picolet/state.json"
-	defaultLockPath  = "/var/lib/picolet/reconciliation.lock"
+	defaultRepoPath = "/var/lib/picolet/repo"
+	defaultLockPath = "/var/lib/picolet/reconciliation.lock"
+
+	// DefaultStatePath is the default location for the reconciliation state file.
+	// Exported so that CLI subcommands (e.g. dry-run) can read from the same path.
+	DefaultStatePath = "/var/lib/picolet/state.json"
 )
 
 // Agent is the main reconciliation loop.
@@ -84,7 +87,7 @@ func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 	a := &Agent{
 		cfg:       cfg,
 		repoPath:  defaultRepoPath,
-		statePath: defaultStatePath,
+		statePath: DefaultStatePath,
 		lockPath:  defaultLockPath,
 	}
 	for _, opt := range opts {
@@ -219,11 +222,11 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	return nil
 }
 
-func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *resolver.Resolver, error) {
+func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, error) {
 	repoFS := os.DirFS(a.repoPath)
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
-		return nil, nil, fmt.Errorf("loading config: %w", err)
+		return nil, fmt.Errorf("loading config: %w", err)
 	}
 
 	secretReader := func(path string) (string, error) {
@@ -247,13 +250,13 @@ func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, *resolver.Resolver, e
 		Rootless:     a.cfg.Rootless,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("creating resolver: %w", err)
+		return nil, fmt.Errorf("creating resolver: %w", err)
 	}
 	resolved, err := r.ResolveHost(a.cfg.Hostname)
 	if err != nil {
-		return nil, nil, fmt.Errorf("resolving host %s: %w", a.cfg.Hostname, err)
+		return nil, fmt.Errorf("resolving host %s: %w", a.cfg.Hostname, err)
 	}
-	return resolved.Files, r, nil
+	return resolved.Files, nil
 }
 
 // ReconcileResult contains the outcome of a single reconciliation cycle.
@@ -268,15 +271,20 @@ type ReconcileResult struct {
 
 // ReconcileOnce runs a single reconciliation cycle: load config, resolve, diff, validate, apply, save state.
 func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.State, store *state.Store) (*ReconcileResult, error) {
-	files, r, err := a.loadAndResolve()
+	files, err := a.loadAndResolve()
 	if err != nil {
 		return nil, err
 	}
 
-	changeset := a.computeDiff(ctx, files, st)
+	changeset := reconciler.Diff(files, st)
 
 	if !changeset.HasChanges() {
-		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary}, a.markApplied(headSHA, st, store)
+		slog.Info("no changes to apply", "sha", headSHA)
+		st.MarkApplied(headSHA)
+		if err := store.Save(st); err != nil {
+			return nil, fmt.Errorf("saving state: %w", err)
+		}
+		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary}, nil
 	}
 
 	slog.Info("changes detected",
@@ -285,8 +293,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		"delete", changeset.Summary[reconciler.ActionDelete],
 	)
 
-	v := validator.New()
-	if err := v.ValidateHost(ctx, r, a.cfg.Hostname); err != nil {
+	if err := validator.ValidateFiles(files); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -314,23 +321,6 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		Summary:     changeset.Summary,
 		ApplyResult: applyResult,
 	}, nil
-}
-
-func (a *Agent) computeDiff(ctx context.Context, files []resolver.ResolvedFile, st *state.State) *reconciler.Changeset {
-	rec := reconciler.New()
-	var secretChecker reconciler.SecretChecker
-	if a.podman != nil {
-		secretChecker = func(name string) (bool, error) {
-			return a.podman.SecretExists(ctx, name)
-		}
-	}
-	return rec.Diff(files, st, secretChecker)
-}
-
-func (a *Agent) markApplied(headSHA string, st *state.State, store *state.Store) error {
-	slog.Info("no changes to apply", "sha", headSHA)
-	st.MarkApplied(headSHA)
-	return store.Save(st)
 }
 
 func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset) (*applier.ApplyResult, error) {
@@ -377,11 +367,15 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 func (a *Agent) updateState(headSHA string, st *state.State, changeset *reconciler.Changeset) {
 	st.MarkApplied(headSHA)
 	st.ManagedFiles = make(map[string]string)
+	st.ServiceNames = make(map[string]string)
 	for _, change := range changeset.Changes {
 		if change.Action == reconciler.ActionDelete {
 			continue
 		}
 		st.ManagedFiles[change.DestPath] = change.NewHash
+		if change.ServiceName != "" {
+			st.ServiceNames[change.DestPath] = change.ServiceName
+		}
 	}
 
 	metrics.ManagedUnitsTotal.Set(float64(len(st.ManagedFiles)))

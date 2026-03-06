@@ -3,8 +3,16 @@ package applier
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/coreos/go-systemd/v22/dbus"
+)
+
+// systemd job result strings as documented in go-systemd dbus/methods.go:97-102.
+// No library constants exist; these values are sent over D-Bus.
+const (
+	systemdJobDone    = "done"
+	systemdJobSkipped = "skipped"
 )
 
 // DBusSystemdManager implements SystemdManager using the systemd D-Bus API.
@@ -45,7 +53,16 @@ func (m *DBusSystemdManager) StartUnit(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("starting %s: %w", name, err)
 	}
-	return waitJobResult(ctx, ch, "starting", name)
+	return waitJobDone(ctx, ch, "starting", name)
+}
+
+func (m *DBusSystemdManager) StopUnit(ctx context.Context, name string) error {
+	ch := make(chan string, 1)
+	_, err := m.conn.StopUnitContext(ctx, name, "replace", ch)
+	if err != nil {
+		return fmt.Errorf("stopping %s: %w", name, err)
+	}
+	return waitJobDoneOrSkipped(ctx, ch, "stopping", name)
 }
 
 func (m *DBusSystemdManager) RestartUnit(ctx context.Context, name string) error {
@@ -54,17 +71,30 @@ func (m *DBusSystemdManager) RestartUnit(ctx context.Context, name string) error
 	if err != nil {
 		return fmt.Errorf("restarting %s: %w", name, err)
 	}
-	return waitJobResult(ctx, ch, "restarting", name)
+	return waitJobDone(ctx, ch, "restarting", name)
+}
+
+// waitJobDone waits for a systemd job to complete with "done".
+func waitJobDone(ctx context.Context, ch <-chan string, verb, unit string) error {
+	return waitJobResult(ctx, ch, verb, unit, systemdJobDone)
+}
+
+// waitJobDoneOrSkipped waits for a systemd job to complete with "done" or "skipped".
+// Stop operations return "skipped" when the unit is already inactive, which is a
+// valid outcome.
+func waitJobDoneOrSkipped(ctx context.Context, ch <-chan string, verb, unit string) error {
+	return waitJobResult(ctx, ch, verb, unit, systemdJobDone, systemdJobSkipped)
 }
 
 // waitJobResult waits for a systemd job result or context cancellation.
-func waitJobResult(ctx context.Context, ch <-chan string, verb, unit string) error {
+// The result must match one of the accepted values; any other result is an error.
+func waitJobResult(ctx context.Context, ch <-chan string, verb, unit string, accepted ...string) error {
 	select {
 	case result := <-ch:
-		if result != "done" {
-			return fmt.Errorf("%s %s: job result %q", verb, unit, result)
+		if slices.Contains(accepted, result) {
+			return nil
 		}
-		return nil
+		return fmt.Errorf("%s %s: job result %q", verb, unit, result)
 	case <-ctx.Done():
 		return fmt.Errorf("%s %s: %w", verb, unit, ctx.Err())
 	}

@@ -10,13 +10,13 @@ import (
 	"time"
 
 	"github.com/schjan/picolet/pkg/reconciler"
-	"github.com/schjan/picolet/pkg/validator"
 )
 
 // SystemdManager controls systemd units via D-Bus.
 type SystemdManager interface {
 	DaemonReload(ctx context.Context) error
 	StartUnit(ctx context.Context, name string) error
+	StopUnit(ctx context.Context, name string) error
 	RestartUnit(ctx context.Context, name string) error
 	GetUnitState(ctx context.Context, name string) (string, error)
 	IsActive(ctx context.Context, name string) (bool, error)
@@ -46,6 +46,10 @@ type ApplyResult struct {
 	NeedsSelfRestart bool
 	RestartedUnits   []string
 }
+
+// selfContainerFile is the quadlet filename for picolet's own container unit.
+// Its presence in a create/update changeset triggers a self-restart via picolet.service.
+const selfContainerFile = "picolet.container"
 
 // categoryOrder defines the apply phase ordering.
 var categoryOrder = map[string]int{
@@ -85,18 +89,19 @@ func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyRe
 		return cmp.Compare(categoryOrder[x.Category], categoryOrder[y.Category])
 	})
 
-	changedUnits, err := a.applyPhase(ctx, sorted, result)
+	changedUnits, needsReload, err := a.applyPhase(ctx, sorted, result)
 	if err != nil {
 		return result, err
 	}
 	if a.dryRun {
 		return result, nil
 	}
-	return result, a.restartUnits(ctx, changedUnits, result)
+	return result, a.restartUnits(ctx, changedUnits, needsReload, result)
 }
 
-func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (map[string]bool, error) {
-	changedUnits := make(map[string]bool)
+//nolint:cyclop // multiple early-continues are clearer than restructuring
+func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (changedUnits map[string]bool, needsReload bool, err error) {
+	changedUnits = make(map[string]bool)
 	for _, change := range sorted {
 		if change.Action == reconciler.ActionNoop {
 			continue
@@ -111,21 +116,53 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			result.Applied++
 			continue
 		}
+		// For non-secret deletes: stop the unit before removing the file so that
+		// systemd terminates the managed container cleanly. daemon-reload alone does
+		// not stop running services — it only removes the unit definition.
+		if change.Action == reconciler.ActionDelete && change.Category != "secret" {
+			if unitName := unitNameForDelete(change); unitName != "" {
+				if stopErr := a.systemd.StopUnit(ctx, unitName); stopErr != nil {
+					slog.Warn("stopping unit before file removal", "unit", unitName, "error", stopErr)
+				}
+			}
+		}
 		if err := a.applyChange(ctx, change); err != nil {
-			return nil, fmt.Errorf("applying %s (%s): %w", change.DestPath, change.Action, err)
+			return nil, false, fmt.Errorf("applying %s (%s): %w", change.DestPath, change.Action, err)
 		}
 		result.Applied++
 		if change.Category == "secret" {
 			continue
 		}
-		if unitName := validator.UnitNameFromPath(change.DestPath); unitName != "" {
-			changedUnits[unitName] = true
+		// All non-secret file changes (including deletes) require a daemon-reload.
+		needsReload = true
+		if change.Action == reconciler.ActionDelete {
+			// Deleted units must NOT be restarted — the unit no longer exists after
+			// daemon-reload. StopUnit above already terminated the running service.
+			continue
 		}
-		if filepath.Base(change.DestPath) == "picolet.container" {
+		if change.ServiceName != "" {
+			changedUnits[change.ServiceName] = true
+		}
+		if filepath.Base(change.DestPath) == selfContainerFile {
 			result.NeedsSelfRestart = true
 		}
 	}
-	return changedUnits, nil
+	return changedUnits, needsReload, nil
+}
+
+// unitNameForDelete returns the systemd unit name to stop before a file is removed.
+// Quadlet categories use the pre-computed ServiceName from state.
+// Systemd category: the filename IS the unit name (no parse needed).
+// Secrets and manifests don't have associated units.
+func unitNameForDelete(change reconciler.Change) string {
+	switch change.Category {
+	case "container", "network", "volume", "kube":
+		return change.ServiceName // from state.ServiceNames; "" if unknown
+	case "systemd":
+		return filepath.Base(change.DestPath) // e.g. "foo.service"
+	default:
+		return ""
+	}
 }
 
 func (a *Applier) applyChange(ctx context.Context, change reconciler.Change) error {
@@ -139,8 +176,8 @@ func (a *Applier) applyChange(ctx context.Context, change reconciler.Change) err
 	}
 }
 
-func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]bool, result *ApplyResult) error {
-	if len(changedUnits) == 0 {
+func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]bool, needsReload bool, result *ApplyResult) error {
+	if len(changedUnits) == 0 && !needsReload {
 		return nil
 	}
 	slog.Info("running systemd daemon-reload")

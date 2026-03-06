@@ -90,15 +90,17 @@ func TestApplyNoop(t *testing.T) {
 func TestApplyDelete(t *testing.T) {
 	t.Parallel()
 	sys := mocks.NewMockSystemdManager(t)
+	sys.EXPECT().StopUnit(mock.Anything, "old.service").Return(nil)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
-	sys.EXPECT().RestartUnit(mock.Anything, "old.service").Return(nil)
+	// RestartUnit must NOT be called for deletes — the unit is gone after daemon-reload
 	pod := mocks.NewMockPodmanClient(t)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
+	const containerPath = "/etc/containers/systemd/old.container"
 	cs := &reconciler.Changeset{
 		Changes: []reconciler.Change{
-			{DestPath: "/etc/containers/systemd/old.container", Category: "container", Action: reconciler.ActionDelete},
+			{DestPath: containerPath, Category: "container", Action: reconciler.ActionDelete, ServiceName: "old.service"},
 		},
 		Summary: map[reconciler.Action]int{reconciler.ActionDelete: 1},
 	}
@@ -106,7 +108,7 @@ func TestApplyDelete(t *testing.T) {
 	result, err := a.Apply(context.Background(), cs)
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.Applied)
-	assert.Equal(t, []string{"/etc/containers/systemd/old.container"}, fw.removed)
+	assert.Equal(t, []string{containerPath}, fw.removed)
 }
 
 func TestApplyDeleteSecret(t *testing.T) {
@@ -143,7 +145,7 @@ func TestApplySelfRestart(t *testing.T) {
 
 	cs := &reconciler.Changeset{
 		Changes: []reconciler.Change{
-			{DestPath: "/etc/containers/systemd/picolet.container", Category: "container", Action: reconciler.ActionUpdate, NewContent: "updated"},
+			{DestPath: "/etc/containers/systemd/picolet.container", Category: "container", Action: reconciler.ActionUpdate, NewContent: "[Container]\nImage=ghcr.io/picolet:latest\n", ServiceName: "picolet.service"},
 		},
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
 	}

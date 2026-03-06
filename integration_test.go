@@ -26,8 +26,7 @@ func TestIntegrationValidate(t *testing.T) {
 
 	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
-	v := validator.New()
-	require.NoError(t, v.ValidateAll(t.Context(), r, cfg))
+	require.NoError(t, validator.ValidateAll(t.Context(), r, cfg))
 }
 
 func TestIntegrationResolveGolden(t *testing.T) {
@@ -74,26 +73,27 @@ func TestIntegrationReconcilePipeline(t *testing.T) {
 	resolved, err := r.ResolveHost(hostname)
 	require.NoError(t, err)
 
-	rec := reconciler.New()
-
 	// First deploy: all creates
-	emptyState := &state.State{ManagedFiles: make(map[string]string)}
-	cs := rec.Diff(resolved.Files, emptyState, nil)
+	emptyState := state.NewState()
+	cs := reconciler.Diff(resolved.Files, emptyState)
 	assert.True(t, cs.HasChanges())
 	assert.Equal(t, len(resolved.Files), cs.Summary[reconciler.ActionCreate])
 	assert.Equal(t, 0, cs.Summary[reconciler.ActionUpdate])
 	assert.Equal(t, 0, cs.Summary[reconciler.ActionDelete])
 
 	// Build full state from changeset (simulating post-apply)
-	fullState := &state.State{ManagedFiles: make(map[string]string)}
+	fullState := state.NewState()
 	for _, c := range cs.Changes {
 		if c.Action != reconciler.ActionDelete {
 			fullState.ManagedFiles[c.DestPath] = c.NewHash
+			if c.ServiceName != "" {
+				fullState.ServiceNames[c.DestPath] = c.ServiceName
+			}
 		}
 	}
 
 	// Idempotent: all noops
-	cs2 := rec.Diff(resolved.Files, fullState, nil)
+	cs2 := reconciler.Diff(resolved.Files, fullState)
 	assert.False(t, cs2.HasChanges())
 	assert.Equal(t, len(resolved.Files), cs2.Summary[reconciler.ActionNoop])
 }

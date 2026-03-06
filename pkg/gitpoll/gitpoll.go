@@ -11,7 +11,9 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
+	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 )
 
 // Poller manages a local clone of a remote git repo and polls for changes.
@@ -135,8 +137,26 @@ func (p *Poller) headSHA() (string, error) {
 	return ref.Hash().String(), nil
 }
 
-//nolint:nilnil // nil *http.BasicAuth signals anonymous access to go-git; this is intentional
-func (p *Poller) auth() (*http.BasicAuth, error) {
+func isSSHURL(url string) bool {
+	return strings.HasPrefix(url, "ssh://") ||
+		strings.HasPrefix(url, "git+ssh://") ||
+		strings.HasPrefix(url, "git@")
+}
+
+//nolint:nilnil // nil signals anonymous access; interface needed for SSH vs HTTP auth
+func (p *Poller) auth() (transport.AuthMethod, error) {
+	if isSSHURL(p.repoURL) {
+		user := "git"
+		if ep, err := transport.NewEndpoint(p.repoURL); err == nil && ep.User != "" {
+			user = ep.User
+		}
+		auth, err := ssh.NewSSHAgentAuth(user)
+		if err != nil {
+			return nil, fmt.Errorf("SSH agent auth: %w", err)
+		}
+		return auth, nil
+	}
+
 	if p.tokenPath == "" {
 		return nil, nil
 	}
