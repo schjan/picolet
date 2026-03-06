@@ -94,7 +94,7 @@ func (s *Scanner) scanMarkedDir(dir string, managedFiles map[string]string) (boo
 	}
 	var removed bool
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if !entry.Type().IsRegular() {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
