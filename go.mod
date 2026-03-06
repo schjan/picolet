@@ -1,6 +1,6 @@
 module github.com/schjan/picolet
 
-go 1.26.0
+go 1.26.1
 
 require (
 	github.com/containers/podman/v5 v5.8.0
