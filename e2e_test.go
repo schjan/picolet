@@ -82,6 +82,7 @@ func TestE2EPipeline(t *testing.T) {
 	repoURL, tokenPath := repoAuth(t)
 
 	cloneDir := filepath.Join(t.TempDir(), "repo")
+	fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	lockPath := filepath.Join(t.TempDir(), "reconciliation.lock")
 	secretsDir := t.TempDir()
@@ -164,7 +165,7 @@ func TestE2EPipeline(t *testing.T) {
 	}
 
 	a := agent.New(agentCfg,
-		agent.WithRepoPath(filepath.Join(cloneDir, "testdata", "example-fleet")),
+		agent.WithRepoPath(fleetDir),
 		agent.WithFileWriter(applier.NewAtomicFileWriter()),
 		agent.WithPodman(podman),
 		agent.WithSystemd(systemd),
@@ -349,7 +350,6 @@ func TestE2EPipeline(t *testing.T) {
 		st, err := store.Load()
 		require.NoError(t, err)
 
-		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
 		require.NoError(t, os.WriteFile(filepath.Join(fleetDir, "assignments.yml"),
 			[]byte(e2eAssignments([]string{
 				"quadlets/containers/simple.container.tmpl",
@@ -490,8 +490,6 @@ func TestE2EPipeline(t *testing.T) {
 	})
 
 	t.Run("validation_failure", func(t *testing.T) {
-		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
-
 		origAssignments, err := os.ReadFile(filepath.Join(fleetDir, "assignments.yml"))
 		require.NoError(t, err)
 
@@ -545,7 +543,6 @@ WantedBy=default.target
 		st, err := store.Load()
 		require.NoError(t, err)
 
-		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
 		require.NoError(t, os.WriteFile(
 			filepath.Join(fleetDir, "assignments.yml"),
 			[]byte(e2eAssignments([]string{
@@ -605,7 +602,6 @@ WantedBy=default.target
 		st, err := store.Load()
 		require.NoError(t, err)
 
-		fleetDir := filepath.Join(cloneDir, "testdata", "example-fleet")
 		require.NoError(t, os.WriteFile(
 			filepath.Join(fleetDir, "assignments.yml"),
 			[]byte(e2eAssignments([]string{
@@ -646,6 +642,57 @@ WantedBy=default.target
 			networkFile := filepath.Join(quadletDir, "internal.network")
 			_, err = os.Stat(networkFile)
 			assert.NoError(t, err)
+		})
+	})
+
+	t.Run("remove_all", func(t *testing.T) {
+		st, err := store.Load()
+		require.NoError(t, err)
+
+		// Clear all assignments — every file in state becomes a delete
+		require.NoError(t, os.WriteFile(
+			filepath.Join(fleetDir, "assignments.yml"),
+			[]byte("base: {}\npi_types:\n  e2e: {}\n"), 0o644))
+
+		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+		defer cancel()
+
+		result, err := a.ReconcileOnce(ctx, "remove-all-sha", st, store)
+		require.NoError(t, err)
+		assert.True(t, result.HasChanges)
+		// extra.container + internal.network + custom.socket
+		assert.GreaterOrEqual(t, result.Summary[reconciler.ActionDelete], 3)
+		require.NotNil(t, result.ApplyResult)
+		assert.Empty(t, result.ApplyResult.Errors)
+
+		t.Run("network_removed", func(t *testing.T) {
+			assert.NoFileExists(t, filepath.Join(quadletDir, "internal.network"))
+		})
+
+		t.Run("socket_removed", func(t *testing.T) {
+			assert.NoFileExists(t, filepath.Join(systemdDir, "custom.socket"))
+		})
+
+		t.Run("container_removed", func(t *testing.T) {
+			assert.NoFileExists(t, filepath.Join(quadletDir, "extra.container"))
+		})
+
+		t.Run("extra_container_gone_from_podman", func(t *testing.T) {
+			connCtx, err := bindings.NewConnection(t.Context(), "unix:"+socketPath)
+			require.NoError(t, err)
+			require.Eventually(t, func() bool {
+				_, inspectErr := containers.Inspect(connCtx, "systemd-extra", nil)
+				return inspectErr != nil
+			}, 30*time.Second, 2*time.Second,
+				"container systemd-extra should be fully removed after extra.service is stopped")
+		})
+
+		t.Run("state_empty", func(t *testing.T) {
+			st, err := store.Load()
+			require.NoError(t, err)
+			assert.Equal(t, "remove-all-sha", st.AppliedSHA)
+			assert.Empty(t, st.ManagedFiles, "all managed files should be gone")
+			assert.Empty(t, st.ServiceNames, "all service names should be gone")
 		})
 	})
 
