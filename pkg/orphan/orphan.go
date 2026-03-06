@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/schjan/picolet/pkg/applier"
+	"github.com/schjan/picolet/pkg/resolver"
 )
 
 // Scanner detects and removes files that were deployed by picolet but are no longer
@@ -144,10 +145,11 @@ func (s *Scanner) removeOrphan(path string) bool {
 func hasPicoletMarker(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
+		slog.Warn("orphan scan: cannot open file for marker check", "path", path, "error", err)
 		return false
 	}
 	defer f.Close()
-	buf := make([]byte, len(applier.PicoletMarker))
+	buf := make([]byte, len(resolver.PicoletMarker))
 	_, err = io.ReadFull(f, buf)
-	return err == nil && string(buf) == applier.PicoletMarker
+	return err == nil && string(buf) == resolver.PicoletMarker
 }

@@ -22,10 +22,6 @@ type SystemdManager interface {
 	IsActive(ctx context.Context, name string) (bool, error)
 }
 
-// PicoletMarker is the comment header prepended to systemd unit files written by picolet.
-// The orphan scanner uses this to identify picolet-owned files in the shared systemd directory.
-const PicoletMarker = "# Managed by picolet"
-
 // PodmanClient interacts with the Podman API.
 type PodmanClient interface {
 	SecretExists(ctx context.Context, name string) (bool, error)
@@ -229,17 +225,11 @@ func (a *Applier) applyCreateOrUpdate(ctx context.Context, change reconciler.Cha
 	}
 
 	// Regular file: ensure directory exists, write atomically.
-	// Systemd unit files get a picolet marker as the first line so the orphan
-	// scanner can identify picolet-owned files in the shared systemd directory.
-	content := []byte(change.NewContent)
-	if change.Category == "systemd" {
-		content = append([]byte(PicoletMarker+"\n"), content...)
-	}
 	dir := filepath.Dir(change.DestPath)
 	if err := a.writer.MkdirAll(dir); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
-	return a.writer.WriteFile(change.DestPath, content)
+	return a.writer.WriteFile(change.DestPath, []byte(change.NewContent))
 }
 
 func (a *Applier) applyDelete(ctx context.Context, change reconciler.Change) error {

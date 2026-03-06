@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/containers/podman/v5/libpod/define"
@@ -57,8 +58,9 @@ func (c *SocketPodmanClient) ListManagedSecrets(_ context.Context) ([]string, er
 	})
 	list, err := secrets.List(c.connCtx, opts)
 	if err != nil {
-		// Older Podman versions don't support label filtering on secrets.
-		// Fall back to listing all secrets and filtering client-side.
+		// Older Podman versions may not support label filtering on secrets.
+		// Log and fall back to listing all secrets and filtering client-side.
+		slog.Warn("listing secrets with label filter failed, falling back to full list", "error", err)
 		list, err = secrets.List(c.connCtx, nil)
 		if err != nil {
 			return nil, fmt.Errorf("listing secrets: %w", err)

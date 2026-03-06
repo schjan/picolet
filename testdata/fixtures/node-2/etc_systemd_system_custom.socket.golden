@@ -1,3 +1,4 @@
+# Managed by picolet
 [Socket]
 ListenStream=8080
 

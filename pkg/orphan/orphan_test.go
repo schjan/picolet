@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	mocks "github.com/schjan/picolet/mocks/applier"
-	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/orphan"
+	"github.com/schjan/picolet/pkg/resolver"
 )
 
 func TestScanOwnedDir_RemovesOrphans(t *testing.T) {
@@ -60,7 +60,7 @@ func TestScanMarkedDir_RemovesOrphans(t *testing.T) {
 
 	// Write an orphan with the picolet marker
 	orphanPath := filepath.Join(systemdDir, "old.service")
-	content := applier.PicoletMarker + "\n[Service]\nExecStart=/bin/true\n"
+	content := resolver.PicoletMarker + "\n[Service]\nExecStart=/bin/true\n"
 	require.NoError(t, os.WriteFile(orphanPath, []byte(content), 0o600))
 
 	fw := mocks.NewMockFileWriter(t)
@@ -101,7 +101,7 @@ func TestScanMarkedDir_KeepsManagedFiles(t *testing.T) {
 	systemdDir := t.TempDir()
 
 	managedPath := filepath.Join(systemdDir, "managed.service")
-	content := applier.PicoletMarker + "\n[Service]\nExecStart=/bin/true\n"
+	content := resolver.PicoletMarker + "\n[Service]\nExecStart=/bin/true\n"
 	require.NoError(t, os.WriteFile(managedPath, []byte(content), 0o600))
 
 	fw := mocks.NewMockFileWriter(t)
