@@ -107,6 +107,14 @@ func TestE2EPipeline(t *testing.T) {
 	systemd, err := applier.NewDBusSystemdManager(t.Context(), true)
 	require.NoError(t, err)
 
+	// Pre-cleanup: remove stale resources from a previous interrupted run.
+	// Without this, reconcile fails with "secret name in use" if e2e_secret persists.
+	preCtx, preCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	_ = podman.SecretRemove(preCtx, "e2e_secret")
+	_ = podman.ContainerRemove(preCtx, "picolet-e2e-test", true)
+	_ = podman.ContainerRemove(preCtx, "systemd-extra", true)
+	preCancel()
+
 	// Register cleanup on parent t so it runs after ALL sub-tests (including verify)
 	t.Cleanup(func() {
 		// Remove only files that picolet actually wrote, based on saved state
