@@ -232,6 +232,12 @@ func TestE2EPipeline(t *testing.T) {
 		require.NoError(t, podman.SecretCreate(ctx, "e2e_orphan_secret", []byte("orphan-data"), false))
 		t.Cleanup(func() { _ = podman.SecretRemove(context.Background(), "e2e_orphan_secret") })
 
+		// Check if Podman supports secret labels (older versions silently ignore them).
+		// ListManagedSecrets relies on the managed-by=picolet label to identify orphans.
+		managedSecrets, err := podman.ListManagedSecrets(ctx)
+		require.NoError(t, err)
+		secretLabelsSupported := len(managedSecrets) > 0
+
 		// 5. Run the orphan scanner
 		scanner := orphan.New(applier.NewAtomicFileWriter(), podman, quadletDir, systemdDir, dataDir)
 		removed, err := scanner.Scan(ctx, st.ManagedFiles)
@@ -248,10 +254,14 @@ func TestE2EPipeline(t *testing.T) {
 		// 8. Assert foreign file is untouched
 		assert.FileExists(t, foreignSystemd, "foreign systemd file must not be removed")
 
-		// 9. Assert orphan secret is gone
-		exists, err := podman.SecretExists(ctx, "e2e_orphan_secret")
-		require.NoError(t, err)
-		assert.False(t, exists, "orphan Podman secret should be removed")
+		// 9. Assert orphan secret is gone (only when Podman supports secret labels)
+		if secretLabelsSupported {
+			exists, err := podman.SecretExists(ctx, "e2e_orphan_secret")
+			require.NoError(t, err)
+			assert.False(t, exists, "orphan Podman secret should be removed")
+		} else {
+			t.Log("skipping orphan secret assertion: Podman version does not support secret labels")
+		}
 
 		// 10. Assert managed files are still on disk
 		assert.FileExists(t, filepath.Join(quadletDir, "simple.container"), "managed file must survive scan")
