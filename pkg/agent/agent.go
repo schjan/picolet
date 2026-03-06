@@ -43,6 +43,8 @@ type Agent struct {
 	repoPath  string
 	statePath string
 	lockPath  string
+
+	webhookCh chan struct{}
 }
 
 // Option configures the Agent.
@@ -90,6 +92,7 @@ func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 		repoPath:  defaultRepoPath,
 		statePath: DefaultStatePath,
 		lockPath:  defaultLockPath,
+		webhookCh: make(chan struct{}, 1),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -97,7 +100,7 @@ func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 	return a
 }
 
-// Run starts the reconciliation loop. Blocks until ctx is cancelled.
+//nolint:cyclop // sequential startup steps + select loop; splitting reduces readability
 func (a *Agent) Run(ctx context.Context) error {
 	// Start metrics server
 	go a.serveMetrics(ctx)
@@ -144,6 +147,12 @@ func (a *Agent) Run(ctx context.Context) error {
 			if err := a.tick(ctx, poller, store, healthChecker); err != nil {
 				slog.Error("reconciliation tick failed", "error", err)
 			}
+		case <-a.webhookCh:
+			slog.Info("webhook-triggered reconciliation")
+			if err := a.tick(ctx, poller, store, healthChecker); err != nil {
+				slog.Error("webhook-triggered reconciliation failed", "error", err)
+			}
+			ticker.Reset(a.cfg.PollInterval)
 		}
 	}
 }
@@ -414,6 +423,14 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	}
 }
 
+func (a *Agent) triggerReconcile() {
+	select {
+	case a.webhookCh <- struct{}{}:
+	default:
+		// channel full — reconciliation already pending
+	}
+}
+
 func (a *Agent) serveMetrics(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", metrics.Handler())
@@ -422,6 +439,8 @@ func (a *Agent) serveMetrics(ctx context.Context) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+
+	mux.Handle("/webhook", webhookHandler(a.triggerReconcile, a.cfg.WebhookSecretPath))
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", a.cfg.MetricsPort),

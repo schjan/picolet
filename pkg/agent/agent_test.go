@@ -3,8 +3,11 @@ package agent
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -464,4 +467,64 @@ func TestAgentRollbackOnApplyFailure(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, st.FailedSHA, "failed SHA should be recorded after apply failure")
 	assert.Empty(t, st.AppliedSHA, "applied SHA should not be set after failed apply")
+}
+
+func TestTriggerReconcileChannel(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{
+		Hostname: "test",
+		RepoURL:  "https://example.com/repo.git",
+	}
+	a := New(cfg)
+
+	// First send should succeed
+	a.triggerReconcile()
+
+	// Second send should be dropped (channel full, buffered=1)
+	a.triggerReconcile()
+
+	// Drain: should get exactly one signal
+	select {
+	case <-a.webhookCh:
+		// expected
+	default:
+		t.Fatal("expected signal in webhookCh")
+	}
+
+	// Channel should now be empty
+	select {
+	case <-a.webhookCh:
+		t.Fatal("channel should be empty after drain")
+	default:
+		// expected
+	}
+}
+
+func TestWebhookOnMetricsServer(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{
+		Hostname: "test",
+		RepoURL:  "https://example.com/repo.git",
+	}
+	a := New(cfg)
+
+	// Build the same mux as serveMetrics
+	mux := http.NewServeMux()
+	mux.Handle("/webhook", webhookHandler(a.triggerReconcile, ""))
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/webhook", "application/json", strings.NewReader("{}")) //nolint:noctx // test helper, no context needed
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	// Channel should have received a signal
+	select {
+	case <-a.webhookCh:
+		// expected
+	default:
+		t.Fatal("expected signal in webhookCh after POST /webhook")
+	}
 }

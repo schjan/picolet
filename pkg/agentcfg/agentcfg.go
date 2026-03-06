@@ -11,15 +11,16 @@ import (
 
 // Config holds the agent runtime configuration from /etc/picolet/config.yml.
 type Config struct {
-	Hostname     string        `yaml:"hostname"`
-	RepoURL      string        `yaml:"repo_url"`
-	RepoBranch   string        `yaml:"repo_branch"`
-	GitTokenPath string        `yaml:"git_token_path"`
-	PollInterval time.Duration `yaml:"poll_interval"`
-	MetricsPort  int           `yaml:"metrics_port"`
-	SecretsDir   string        `yaml:"secrets_dir"`
-	Rootless     bool          `yaml:"rootless"`
-	PodmanSocket string        `yaml:"podman_socket"`
+	Hostname          string        `yaml:"hostname"`
+	RepoURL           string        `yaml:"repo_url"`
+	RepoBranch        string        `yaml:"repo_branch"`
+	GitTokenPath      string        `yaml:"git_token_path"`
+	PollInterval      time.Duration `yaml:"poll_interval"`
+	MetricsPort       int           `yaml:"metrics_port"`
+	SecretsDir        string        `yaml:"secrets_dir"`
+	Rootless          bool          `yaml:"rootless"`
+	PodmanSocket      string        `yaml:"podman_socket"`
+	WebhookSecretPath string        `yaml:"webhook_secret_path"`
 }
 
 // Load reads and parses the agent config from disk.
