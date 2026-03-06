@@ -256,7 +256,7 @@ func TestE2EPipeline(t *testing.T) {
 			assert.NotEmpty(t, st.ManagedFiles, "managed files should be non-empty")
 			assert.Contains(t, st.ManagedFiles, "secret:e2e_secret", "should contain e2e_secret")
 
-			simpleContainerKey := filepath.Join(home, ".config", "containers", "systemd", "simple.container")
+			simpleContainerKey := filepath.Join(home, ".config", "containers", "systemd", "picolet", "simple.container")
 			assert.Contains(t, st.ManagedFiles, simpleContainerKey, "should contain simple.container path")
 
 			assert.Empty(t, st.FailedSHA, "failed SHA should be empty")
