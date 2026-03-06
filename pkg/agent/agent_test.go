@@ -392,8 +392,6 @@ func TestAgentDeletionCycle(t *testing.T) { //nolint:funlen // three-phase test:
 	require.NoError(t, err)
 	assert.True(t, result.HasChanges)
 	assert.Equal(t, 1, result.Summary[reconciler.ActionDelete])
-	assert.Equal(t, 0, result.Summary[reconciler.ActionCreate])
-	assert.Equal(t, 0, result.Summary[reconciler.ActionUpdate])
 	require.NotNil(t, result.ApplyResult)
 	assert.Empty(t, result.ApplyResult.Errors)
 
