@@ -318,7 +318,7 @@ func TestAgentRetriesFailedSHA(t *testing.T) {
 	assert.Contains(t, written, "/etc/containers/systemd/internal.network")
 }
 
-func TestAgentDeletionCycle(t *testing.T) {
+func TestAgentDeletionCycle(t *testing.T) { //nolint:funlen // three-phase test: create cycle, disk mutation, deletion reconcile
 	t.Parallel()
 	bareDir := initTestRepo(t)
 	repoDir := filepath.Join(t.TempDir(), "clone")
