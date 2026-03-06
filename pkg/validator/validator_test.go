@@ -82,13 +82,13 @@ Network=nonexistent.network
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			unitsInfo := buildUnitsInfoFromFiles(tt.files)
+			unitsInfo := buildUnitsInfoFromFiles(tt.files, false)
 
 			unit := parser.NewUnitFile()
 			unit.Filename = "test.container"
 			require.NoError(t, unit.Parse(tt.content))
 
-			err := validateQuadlet(unit, unitsInfo)
+			err := validateQuadlet(unit, unitsInfo, false)
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.errMsg != "" {
@@ -114,25 +114,25 @@ WantedBy=default.target
 	files := []resolver.ResolvedFile{
 		newParsedFile(t, "network", "/etc/containers/systemd/internal.network", "[Network]\n"),
 	}
-	unitsInfo := buildUnitsInfoFromFiles(files)
+	unitsInfo := buildUnitsInfoFromFiles(files, false)
 	unit := parseUnit(t, "test.kube", valid)
-	require.NoError(t, validateQuadlet(unit, unitsInfo))
+	require.NoError(t, validateQuadlet(unit, unitsInfo, false))
 
 	noYaml := "[Kube]\nNetwork=internal.network\n"
 	unit2 := parseUnit(t, "test.kube", noYaml)
-	require.Error(t, validateQuadlet(unit2, make(map[string]*quadlet.UnitInfo)))
+	require.Error(t, validateQuadlet(unit2, make(map[string]*quadlet.UnitInfo), false))
 }
 
 func TestValidateQuadletNetwork(t *testing.T) {
 	t.Parallel()
 	unit := parseUnit(t, "test.network", "[Network]\nInternal=true\n")
-	require.NoError(t, validateQuadlet(unit, make(map[string]*quadlet.UnitInfo)))
+	require.NoError(t, validateQuadlet(unit, make(map[string]*quadlet.UnitInfo), false))
 }
 
 func TestValidateQuadletVolume(t *testing.T) {
 	t.Parallel()
 	unit := parseUnit(t, "test.volume", "[Volume]\n")
-	require.NoError(t, validateQuadlet(unit, make(map[string]*quadlet.UnitInfo)))
+	require.NoError(t, validateQuadlet(unit, make(map[string]*quadlet.UnitInfo), false))
 }
 
 //nolint:funlen // table-driven validation test
