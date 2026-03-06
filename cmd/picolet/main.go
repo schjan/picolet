@@ -307,7 +307,7 @@ func runTrigger(_ context.Context, configPath, urlOverride string) error {
 		webhookURL = fmt.Sprintf("http://localhost:%d/webhook", cfg.MetricsPort)
 	}
 
-	body := []byte{}
+	var body []byte
 
 	triggerCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
