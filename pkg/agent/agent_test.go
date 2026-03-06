@@ -331,6 +331,8 @@ func TestAgentDeletionCycle(t *testing.T) { //nolint:funlen // three-phase test:
 	metrics.Register()
 
 	sys, pod, fw := newBareMocks(t)
+	// Orphan scan at startup calls ListManagedSecrets
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
 	// Health checks
 	sys.EXPECT().IsActive(mock.Anything, mock.Anything).Return(true, nil).Maybe()
 	sys.EXPECT().GetUnitState(mock.Anything, mock.Anything).Return("active", nil).Maybe()
@@ -377,12 +379,12 @@ func TestAgentDeletionCycle(t *testing.T) { //nolint:funlen // three-phase test:
 	<-runCtx.Done()
 	require.NoError(t, <-errCh)
 
-	assert.Contains(t, written, "/etc/containers/systemd/internal.network",
+	assert.Contains(t, written, "/etc/containers/systemd/picolet/internal.network",
 		"first cycle should have written the network file")
 	st, err := store.Load()
 	require.NoError(t, err)
 	require.NotEmpty(t, st.AppliedSHA, "first cycle must have saved state")
-	require.Contains(t, st.ManagedFiles, "/etc/containers/systemd/internal.network")
+	require.Contains(t, st.ManagedFiles, "/etc/containers/systemd/picolet/internal.network")
 
 	// Phase 2: simulate repo change — clear assignments on disk.
 	// loadAndResolve reads os.DirFS(repoPath) directly; no git operations needed.
@@ -399,7 +401,7 @@ func TestAgentDeletionCycle(t *testing.T) { //nolint:funlen // three-phase test:
 	require.NotNil(t, result.ApplyResult)
 	assert.Empty(t, result.ApplyResult.Errors)
 
-	assert.Contains(t, removed, "/etc/containers/systemd/internal.network",
+	assert.Contains(t, removed, "/etc/containers/systemd/picolet/internal.network",
 		"network file should have been passed to FileWriter.Remove")
 
 	// Verify state is updated: deleted file must be removed
