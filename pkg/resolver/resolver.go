@@ -54,7 +54,11 @@ type Resolver struct {
 	quadletDir   string
 	systemdDir   string
 	dataDir      string
+	rootless     bool
 }
+
+// Rootless reports whether the resolver is configured for rootless mode.
+func (r *Resolver) Rootless() bool { return r.rootless }
 
 // New creates a new Resolver.
 // Pass nil for SecretReader to use placeholder mode (validate/CI).
@@ -71,6 +75,7 @@ func New(rc Config) (*Resolver, error) {
 		quadletDir:   quadletDir,
 		systemdDir:   systemdDir,
 		dataDir:      dataDir,
+		rootless:     rc.Rootless,
 	}, nil
 }
 

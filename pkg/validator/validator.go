@@ -15,11 +15,13 @@ import (
 )
 
 // ValidateFiles validates a set of already-resolved files.
-func ValidateFiles(files []resolver.ResolvedFile) error {
-	unitsInfo := buildUnitsInfoFromFiles(files)
+// rootless must match the target host's Podman mode so that quadlet conversion
+// generates correct systemd unit dependencies (user vs system session).
+func ValidateFiles(files []resolver.ResolvedFile, rootless bool) error {
+	unitsInfo := buildUnitsInfoFromFiles(files, rootless)
 	var errs []error
 	for _, f := range files {
-		if err := validateFile(f, unitsInfo); err != nil {
+		if err := validateFile(f, unitsInfo, rootless); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -33,7 +35,7 @@ func ValidateHost(_ context.Context, r *resolver.Resolver, hostname string) erro
 	if err != nil {
 		return fmt.Errorf("host %s: resolve: %w", hostname, err)
 	}
-	if err := ValidateFiles(resolved.Files); err != nil {
+	if err := ValidateFiles(resolved.Files, r.Rootless()); err != nil {
 		return fmt.Errorf("host %s: %w", hostname, err)
 	}
 	slog.Info("host validated", "host", hostname, "files", len(resolved.Files))
@@ -52,13 +54,13 @@ func ValidateAll(ctx context.Context, r *resolver.Resolver, cfg *config.Config) 
 	return errors.Join(errs...)
 }
 
-func validateFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo) error {
+func validateFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo, rootless bool) error {
 	switch f.Category {
 	case "network", "volume", "container", "kube":
 		if f.ParsedUnit == nil {
 			return fmt.Errorf("%s: quadlet unit could not be parsed (invalid INI syntax)", f.DestPath)
 		}
-		return validateQuadlet(f.ParsedUnit, unitsInfo)
+		return validateQuadlet(f.ParsedUnit, unitsInfo, rootless)
 	case "manifest":
 		return validateManifest(f.DestPath, []byte(f.Content))
 	case "systemd":
@@ -76,7 +78,7 @@ func validateFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInf
 //  1. Pre-populate all unit entries (with ServiceName; ResourceName for containers).
 //  2. Call Convert* for network/volume/kube to populate their ResourceName so that
 //     containers referencing them can resolve the cross-reference via ConvertContainer.
-func buildUnitsInfoFromFiles(files []resolver.ResolvedFile) map[string]*quadlet.UnitInfo {
+func buildUnitsInfoFromFiles(files []resolver.ResolvedFile, rootless bool) map[string]*quadlet.UnitInfo {
 	units := make(map[string]*quadlet.UnitInfo)
 
 	// Pass 1: build initial info entries
@@ -104,11 +106,11 @@ func buildUnitsInfoFromFiles(files []resolver.ResolvedFile) map[string]*quadlet.
 		var err error
 		switch f.Category {
 		case "network":
-			_, _, err = quadlet.ConvertNetwork(f.ParsedUnit, units, false)
+			_, _, err = quadlet.ConvertNetwork(f.ParsedUnit, units, rootless)
 		case "volume":
-			_, _, err = quadlet.ConvertVolume(f.ParsedUnit, units, false)
+			_, _, err = quadlet.ConvertVolume(f.ParsedUnit, units, rootless)
 		case "kube":
-			_, err = quadlet.ConvertKube(f.ParsedUnit, units, false)
+			_, err = quadlet.ConvertKube(f.ParsedUnit, units, rootless)
 		}
 		if err != nil {
 			slog.Debug("pre-populating units info: conversion failed, will be reported in per-file validation",

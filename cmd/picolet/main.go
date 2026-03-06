@@ -203,7 +203,7 @@ func runDryRun(_ context.Context, repoDir, hostname string) error {
 	}
 
 	// Validate this host only — fleet-wide validation belongs in CI
-	if err := validator.ValidateFiles(resolved.Files); err != nil {
+	if err := validator.ValidateFiles(resolved.Files, false); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 

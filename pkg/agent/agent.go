@@ -293,7 +293,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		"delete", changeset.Summary[reconciler.ActionDelete],
 	)
 
-	if err := validator.ValidateFiles(files); err != nil {
+	if err := validator.ValidateFiles(files, a.cfg.Rootless); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
