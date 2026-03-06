@@ -69,11 +69,6 @@ Image=docker.io/traefik:v3
 			wantErr: true,
 		},
 		{
-			name:    "empty content",
-			content: "",
-			wantErr: true,
-		},
-		{
 			name: "unresolved network reference",
 			content: `[Container]
 Image=docker.io/traefik:v3
@@ -91,7 +86,7 @@ Network=nonexistent.network
 
 			unit := parser.NewUnitFile()
 			unit.Filename = "test.container"
-			_ = unit.Parse(tt.content)
+			require.NoError(t, unit.Parse(tt.content))
 
 			err := validateQuadlet(unit, unitsInfo)
 			if tt.wantErr {

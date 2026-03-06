@@ -1,5 +1,5 @@
 [Container]
-Image=docker.io/library/alpine:3.21
+Image=docker.io/library/alpine:3.23
 Network=internal.network
 Exec=sleep infinity
 

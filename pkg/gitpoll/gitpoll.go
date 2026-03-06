@@ -146,7 +146,11 @@ func isSSHURL(url string) bool {
 //nolint:nilnil // nil signals anonymous access; interface needed for SSH vs HTTP auth
 func (p *Poller) auth() (transport.AuthMethod, error) {
 	if isSSHURL(p.repoURL) {
-		auth, err := ssh.NewSSHAgentAuth("git")
+		user := "git"
+		if ep, err := transport.NewEndpoint(p.repoURL); err == nil && ep.User != "" {
+			user = ep.User
+		}
+		auth, err := ssh.NewSSHAgentAuth(user)
 		if err != nil {
 			return nil, fmt.Errorf("SSH agent auth: %w", err)
 		}

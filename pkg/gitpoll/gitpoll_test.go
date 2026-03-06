@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -103,6 +104,24 @@ func TestIsSSHURL(t *testing.T) {
 	}
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, isSSHURL(tt.url), "isSSHURL(%q)", tt.url)
+	}
+}
+
+func TestSSHAuthUser(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ url, want string }{
+		{"git@github.com:org/repo.git", "git"},
+		{"ssh://deploy@host/repo.git", "deploy"},
+		{"ssh://host/repo.git", "git"},         // no user → default
+		{"https://github.com/org/repo", "git"}, // non-SSH → default (won't be called)
+	}
+	for _, tt := range tests {
+		ep, err := transport.NewEndpoint(tt.url)
+		user := "git"
+		if err == nil && ep.User != "" {
+			user = ep.User
+		}
+		assert.Equal(t, tt.want, user, "url=%s", tt.url)
 	}
 }
 
