@@ -14,6 +14,12 @@ import (
 	"github.com/containers/podman/v5/pkg/bindings/secrets"
 )
 
+// secretLabelKey and secretLabelValue are the Podman label applied to all picolet-managed secrets.
+const (
+	secretLabelKey   = "managed-by"
+	secretLabelValue = "picolet"
+)
+
 // SocketPodmanClient implements PodmanClient using the Podman bindings over a Unix socket.
 // The Podman bindings library embeds the socket connection into the context, so every
 // binding call must use connCtx rather than the caller's request context.
@@ -43,7 +49,7 @@ func (c *SocketPodmanClient) SecretCreate(_ context.Context, name string, data [
 	opts := new(secrets.CreateOptions).
 		WithName(name).
 		WithReplace(replace).
-		WithLabels(map[string]string{"managed-by": "picolet"})
+		WithLabels(map[string]string{secretLabelKey: secretLabelValue})
 	_, err := secrets.Create(c.connCtx, bytes.NewReader(data), opts)
 	if err != nil {
 		return fmt.Errorf("creating secret %s: %w", name, err)
@@ -54,7 +60,7 @@ func (c *SocketPodmanClient) SecretCreate(_ context.Context, name string, data [
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
 func (c *SocketPodmanClient) ListManagedSecrets(_ context.Context) ([]string, error) {
 	opts := new(secrets.ListOptions).WithFilters(map[string][]string{
-		"label": {"managed-by=picolet"},
+		"label": {secretLabelKey + "=" + secretLabelValue},
 	})
 	list, err := secrets.List(c.connCtx, opts)
 	if err != nil {
@@ -68,7 +74,7 @@ func (c *SocketPodmanClient) ListManagedSecrets(_ context.Context) ([]string, er
 	}
 	names := make([]string, 0, len(list))
 	for _, s := range list {
-		if s.Spec.Labels["managed-by"] == "picolet" {
+		if s.Spec.Labels[secretLabelKey] == secretLabelValue {
 			names = append(names, s.Spec.Name)
 		}
 	}
