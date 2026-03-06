@@ -403,8 +403,14 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 		return
 	}
 	scanner := orphan.New(a.writer, a.podman, quadletDir, systemdDir, dataDir)
-	if err := scanner.Scan(ctx, st.ManagedFiles); err != nil {
+	removed, err := scanner.Scan(ctx, st.ManagedFiles)
+	if err != nil {
 		slog.Warn("orphan scan error", "error", err)
+	}
+	if removed {
+		if err := a.systemd.DaemonReload(ctx); err != nil {
+			slog.Warn("daemon-reload after orphan cleanup failed", "error", err)
+		}
 	}
 }
 

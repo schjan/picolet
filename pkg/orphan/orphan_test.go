@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
@@ -32,9 +33,11 @@ func TestScanOwnedDir_RemovesOrphans(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
 	s := orphan.New(fw, pod, quadletDir, t.TempDir(), t.TempDir())
-	require.NoError(t, s.Scan(context.Background(), map[string]string{
+	removed, err := s.Scan(context.Background(), map[string]string{
 		managedPath: "sha256:abc",
-	}))
+	})
+	require.NoError(t, err)
+	assert.True(t, removed)
 }
 
 func TestScanOwnedDir_DirNotExist(t *testing.T) {
@@ -46,7 +49,9 @@ func TestScanOwnedDir_DirNotExist(t *testing.T) {
 	nonExistent := filepath.Join(t.TempDir(), "does-not-exist")
 	s := orphan.New(fw, pod, nonExistent, t.TempDir(), t.TempDir())
 	// Should return nil — non-existent dir means no orphans
-	require.NoError(t, s.Scan(context.Background(), map[string]string{}))
+	removed, err := s.Scan(context.Background(), map[string]string{})
+	require.NoError(t, err)
+	assert.False(t, removed)
 }
 
 func TestScanMarkedDir_RemovesOrphans(t *testing.T) {
@@ -64,7 +69,9 @@ func TestScanMarkedDir_RemovesOrphans(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
 	s := orphan.New(fw, pod, t.TempDir(), systemdDir, t.TempDir())
-	require.NoError(t, s.Scan(context.Background(), map[string]string{}))
+	removed, err := s.Scan(context.Background(), map[string]string{})
+	require.NoError(t, err)
+	assert.True(t, removed)
 }
 
 func TestScanMarkedDir_IgnoresUnmarkedFiles(t *testing.T) {
@@ -84,7 +91,9 @@ func TestScanMarkedDir_IgnoresUnmarkedFiles(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
 	s := orphan.New(fw, pod, t.TempDir(), systemdDir, t.TempDir())
-	require.NoError(t, s.Scan(context.Background(), map[string]string{}))
+	removed, err := s.Scan(context.Background(), map[string]string{})
+	require.NoError(t, err)
+	assert.False(t, removed)
 }
 
 func TestScanMarkedDir_KeepsManagedFiles(t *testing.T) {
@@ -101,9 +110,11 @@ func TestScanMarkedDir_KeepsManagedFiles(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
 	s := orphan.New(fw, pod, t.TempDir(), systemdDir, t.TempDir())
-	require.NoError(t, s.Scan(context.Background(), map[string]string{
+	removed, err := s.Scan(context.Background(), map[string]string{
 		managedPath: "sha256:abc",
-	}))
+	})
+	require.NoError(t, err)
+	assert.False(t, removed)
 }
 
 func TestScanSecrets_RemovesOrphans(t *testing.T) {
@@ -115,9 +126,11 @@ func TestScanSecrets_RemovesOrphans(t *testing.T) {
 	pod.EXPECT().SecretRemove(mock.Anything, "orphan").Return(nil)
 
 	s := orphan.New(fw, pod, t.TempDir(), t.TempDir(), t.TempDir())
-	require.NoError(t, s.Scan(context.Background(), map[string]string{
+	removed, err := s.Scan(context.Background(), map[string]string{
 		"secret:kept": "sha256:abc",
-	}))
+	})
+	require.NoError(t, err)
+	assert.True(t, removed)
 }
 
 func TestScanSecrets_KeepsAllManaged(t *testing.T) {
@@ -128,8 +141,10 @@ func TestScanSecrets_KeepsAllManaged(t *testing.T) {
 	// No SecretRemove calls expected
 
 	s := orphan.New(fw, pod, t.TempDir(), t.TempDir(), t.TempDir())
-	require.NoError(t, s.Scan(context.Background(), map[string]string{
+	removed, err := s.Scan(context.Background(), map[string]string{
 		"secret:db-pass": "sha256:abc",
 		"secret:api-key": "sha256:def",
-	}))
+	})
+	require.NoError(t, err)
+	assert.False(t, removed)
 }
