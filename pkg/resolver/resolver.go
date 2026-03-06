@@ -16,6 +16,12 @@ import (
 	"github.com/schjan/picolet/pkg/config"
 )
 
+// PicoletMarker is the comment header prepended to systemd unit files managed by picolet.
+// Including it in Content (and thus in the state hash) ensures orphan detection works
+// correctly: a one-time ActionUpdate rewrites any pre-existing file with the marker,
+// after which the hash remains stable.
+const PicoletMarker = "# Managed by picolet"
+
 // ResolvedFile represents a single rendered file with its destination path.
 type ResolvedFile struct {
 	// SrcPath is the source template/file path within the repo.
@@ -64,7 +70,7 @@ func (r *Resolver) Rootless() bool { return r.rootless }
 // Pass nil for SecretReader to use placeholder mode (validate/CI).
 // When Rootless is true, destination paths use ~/.config/ and ~/.local/share/ instead of /etc/ and /var/lib/.
 func New(rc Config) (*Resolver, error) {
-	quadletDir, systemdDir, dataDir, err := resolveDirs(rc.Rootless)
+	quadletDir, systemdDir, dataDir, err := ResolveDirs(rc.Rootless)
 	if err != nil {
 		return nil, err
 	}
@@ -79,16 +85,18 @@ func New(rc Config) (*Resolver, error) {
 	}, nil
 }
 
-// resolveDirs computes destination directories based on rootless mode.
-func resolveDirs(rootless bool) (quadletDir, systemdDir, dataDir string, err error) {
+// ResolveDirs computes destination directories based on rootless mode.
+// Quadlet files are placed in a picolet-owned subdirectory so that orphan
+// detection can safely scan and remove any file in that directory.
+func ResolveDirs(rootless bool) (quadletDir, systemdDir, dataDir string, err error) {
 	if !rootless {
-		return "/etc/containers/systemd", "/etc/systemd/system", "/var/lib/picolet", nil
+		return "/etc/containers/systemd/picolet", "/etc/systemd/system", "/var/lib/picolet", nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", "", "", fmt.Errorf("getting home directory: %w", err)
 	}
-	return filepath.Join(home, ".config", "containers", "systemd"),
+	return filepath.Join(home, ".config", "containers", "systemd", "picolet"),
 		filepath.Join(home, ".config", "systemd", "user"),
 		filepath.Join(home, ".local", "share", "picolet"), nil
 }
@@ -178,6 +186,10 @@ func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateDa
 	content, err := r.renderOrRead(registry, tmplData, srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving %s: %w", srcPath, err)
+	}
+
+	if !quadlet && category == "systemd" {
+		content = PicoletMarker + "\n" + content
 	}
 
 	filename := destFilename(srcPath)

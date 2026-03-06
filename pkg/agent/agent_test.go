@@ -87,7 +87,9 @@ func newBareMocks(t *testing.T) (*mocks.MockSystemdManager, *mocks.MockPodmanCli
 
 // setupApplyMocks configures mocks for a test that expects a successful apply
 // (health check + write files + daemon-reload + restart units).
-func setupApplyMocks(sys *mocks.MockSystemdManager, _ *mocks.MockPodmanClient, fw *mocks.MockFileWriter) map[string][]byte {
+func setupApplyMocks(sys *mocks.MockSystemdManager, pod *mocks.MockPodmanClient, fw *mocks.MockFileWriter) map[string][]byte {
+	// Orphan scan at startup calls ListManagedSecrets
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
 	// Health check
 	sys.EXPECT().IsActive(mock.Anything, mock.Anything).Return(true, nil).Maybe()
 	sys.EXPECT().GetUnitState(mock.Anything, mock.Anything).Return("active", nil).Maybe()
@@ -109,9 +111,11 @@ func setupApplyMocks(sys *mocks.MockSystemdManager, _ *mocks.MockPodmanClient, f
 
 // setupNoopMocks configures mocks for a test that should NOT write any files.
 // Only health checks are expected.
-func setupNoopMocks(sys *mocks.MockSystemdManager, _ *mocks.MockPodmanClient) {
+func setupNoopMocks(sys *mocks.MockSystemdManager, pod *mocks.MockPodmanClient) {
 	sys.EXPECT().IsActive(mock.Anything, mock.Anything).Return(true, nil).Maybe()
 	sys.EXPECT().GetUnitState(mock.Anything, mock.Anything).Return("active", nil).Maybe()
+	// Orphan scan at startup calls ListManagedSecrets (not in dry-run)
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
 }
 
 func TestAgentFullCycle(t *testing.T) {
@@ -155,7 +159,7 @@ func TestAgentFullCycle(t *testing.T) {
 	require.NoError(t, <-errCh)
 
 	// Verify that files were written
-	assert.Contains(t, written, "/etc/containers/systemd/internal.network")
+	assert.Contains(t, written, "/etc/containers/systemd/picolet/internal.network")
 
 	// Verify state was saved
 	_, err := os.Stat(statePath)
@@ -315,7 +319,7 @@ func TestAgentRetriesFailedSHA(t *testing.T) {
 	require.NoError(t, <-errCh)
 
 	// Should have written files (reconciliation proceeded)
-	assert.Contains(t, written, "/etc/containers/systemd/internal.network")
+	assert.Contains(t, written, "/etc/containers/systemd/picolet/internal.network")
 }
 
 func TestAgentDeletionCycle(t *testing.T) { //nolint:funlen // three-phase test: create cycle, disk mutation, deletion reconcile
@@ -327,6 +331,8 @@ func TestAgentDeletionCycle(t *testing.T) { //nolint:funlen // three-phase test:
 	metrics.Register()
 
 	sys, pod, fw := newBareMocks(t)
+	// Orphan scan at startup calls ListManagedSecrets
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
 	// Health checks
 	sys.EXPECT().IsActive(mock.Anything, mock.Anything).Return(true, nil).Maybe()
 	sys.EXPECT().GetUnitState(mock.Anything, mock.Anything).Return("active", nil).Maybe()
@@ -373,12 +379,12 @@ func TestAgentDeletionCycle(t *testing.T) { //nolint:funlen // three-phase test:
 	<-runCtx.Done()
 	require.NoError(t, <-errCh)
 
-	assert.Contains(t, written, "/etc/containers/systemd/internal.network",
+	assert.Contains(t, written, "/etc/containers/systemd/picolet/internal.network",
 		"first cycle should have written the network file")
 	st, err := store.Load()
 	require.NoError(t, err)
 	require.NotEmpty(t, st.AppliedSHA, "first cycle must have saved state")
-	require.Contains(t, st.ManagedFiles, "/etc/containers/systemd/internal.network")
+	require.Contains(t, st.ManagedFiles, "/etc/containers/systemd/picolet/internal.network")
 
 	// Phase 2: simulate repo change — clear assignments on disk.
 	// loadAndResolve reads os.DirFS(repoPath) directly; no git operations needed.
@@ -395,7 +401,7 @@ func TestAgentDeletionCycle(t *testing.T) { //nolint:funlen // three-phase test:
 	require.NotNil(t, result.ApplyResult)
 	assert.Empty(t, result.ApplyResult.Errors)
 
-	assert.Contains(t, removed, "/etc/containers/systemd/internal.network",
+	assert.Contains(t, removed, "/etc/containers/systemd/picolet/internal.network",
 		"network file should have been passed to FileWriter.Remove")
 
 	// Verify state is updated: deleted file must be removed
@@ -421,6 +427,8 @@ func TestAgentRollbackOnApplyFailure(t *testing.T) {
 	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
 	fw.EXPECT().Remove(mock.Anything).Return(nil).Maybe()
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
+	// Orphan scan at startup
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
 
 	cfg := &agentcfg.Config{
 		Hostname:     "test-host",

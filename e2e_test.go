@@ -25,6 +25,7 @@ import (
 	"github.com/schjan/picolet/pkg/gitpoll"
 	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
+	"github.com/schjan/picolet/pkg/orphan"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
@@ -93,7 +94,7 @@ func TestE2EPipeline(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 
-	quadletDir := filepath.Join(home, ".config", "containers", "systemd")
+	quadletDir := filepath.Join(home, ".config", "containers", "systemd", "picolet")
 	systemdDir := filepath.Join(home, ".config", "systemd", "user")
 
 	// Create clients in parent scope for cleanup and sub-test reuse.
@@ -105,6 +106,14 @@ func TestE2EPipeline(t *testing.T) {
 
 	systemd, err := applier.NewDBusSystemdManager(t.Context(), true)
 	require.NoError(t, err)
+
+	// Pre-cleanup: remove stale resources from a previous interrupted run.
+	// Without this, reconcile fails with "secret name in use" if e2e_secret persists.
+	preCtx, preCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	_ = podman.SecretRemove(preCtx, "e2e_secret")
+	_ = podman.ContainerRemove(preCtx, "picolet-e2e-test", true)
+	_ = podman.ContainerRemove(preCtx, "systemd-extra", true)
+	preCancel()
 
 	// Register cleanup on parent t so it runs after ALL sub-tests (including verify)
 	t.Cleanup(func() {
@@ -204,6 +213,69 @@ func TestE2EPipeline(t *testing.T) {
 		assert.Nil(t, result.ApplyResult, "no apply should have run")
 	})
 
+	t.Run("orphan_scan", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+
+		st, err := store.Load()
+		require.NoError(t, err)
+
+		dataDir := filepath.Join(home, ".local", "share", "picolet")
+
+		// 1. Plant orphan quadlet file (picolet-owned dir — all files safe to remove)
+		orphanQuadlet := filepath.Join(quadletDir, "orphan.container")
+		require.NoError(t, os.WriteFile(orphanQuadlet, []byte("[Container]\nImage=ghost\n"), 0o644))
+
+		// 2. Plant orphan systemd file WITH picolet marker (shared dir — marker required)
+		orphanSystemd := filepath.Join(systemdDir, "orphan-picolet.service")
+		content := resolver.PicoletMarker + "\n[Unit]\nDescription=orphan\n"
+		require.NoError(t, os.WriteFile(orphanSystemd, []byte(content), 0o644))
+
+		// 3. Plant foreign systemd file WITHOUT marker — must NOT be removed
+		foreignSystemd := filepath.Join(systemdDir, "foreign.service")
+		require.NoError(t, os.WriteFile(foreignSystemd, []byte("[Unit]\nDescription=foreign\n"), 0o644))
+		t.Cleanup(func() { _ = os.Remove(foreignSystemd) })
+
+		// 4. Create orphan Podman secret (labeled managed-by=picolet by SecretCreate)
+		require.NoError(t, podman.SecretCreate(ctx, "e2e_orphan_secret", []byte("orphan-data"), false))
+		t.Cleanup(func() { _ = podman.SecretRemove(context.Background(), "e2e_orphan_secret") })
+
+		// Check if Podman supports secret labels (older versions silently ignore them).
+		// ListManagedSecrets relies on the managed-by=picolet label to identify orphans.
+		managedSecrets, err := podman.ListManagedSecrets(ctx)
+		require.NoError(t, err)
+		secretLabelsSupported := len(managedSecrets) > 0
+
+		// 5. Run the orphan scanner
+		scanner := orphan.New(applier.NewAtomicFileWriter(), podman, quadletDir, systemdDir, dataDir)
+		removed, err := scanner.Scan(ctx, st.ManagedFiles)
+		require.NoError(t, err)
+		assert.True(t, removed, "scanner should report removals")
+
+		// 6. Call DaemonReload (mirrors what agent.scanOrphans does after removals)
+		require.NoError(t, systemd.DaemonReload(ctx))
+
+		// 7. Assert orphans are gone
+		assert.NoFileExists(t, orphanQuadlet, "orphan quadlet file should be removed")
+		assert.NoFileExists(t, orphanSystemd, "orphan systemd file should be removed")
+
+		// 8. Assert foreign file is untouched
+		assert.FileExists(t, foreignSystemd, "foreign systemd file must not be removed")
+
+		// 9. Assert orphan secret is gone (only when Podman supports secret labels)
+		if secretLabelsSupported {
+			exists, err := podman.SecretExists(ctx, "e2e_orphan_secret")
+			require.NoError(t, err)
+			assert.False(t, exists, "orphan Podman secret should be removed")
+		} else {
+			t.Log("skipping orphan secret assertion: Podman version does not support secret labels")
+		}
+
+		// 10. Assert managed files are still on disk
+		assert.FileExists(t, filepath.Join(quadletDir, "simple.container"), "managed file must survive scan")
+		assert.FileExists(t, filepath.Join(quadletDir, "internal.network"), "managed network must survive scan")
+	})
+
 	t.Run("verify", func(t *testing.T) {
 		t.Run("quadlet_files_written", func(t *testing.T) {
 			containerFile := filepath.Join(quadletDir, "simple.container")
@@ -256,7 +328,7 @@ func TestE2EPipeline(t *testing.T) {
 			assert.NotEmpty(t, st.ManagedFiles, "managed files should be non-empty")
 			assert.Contains(t, st.ManagedFiles, "secret:e2e_secret", "should contain e2e_secret")
 
-			simpleContainerKey := filepath.Join(home, ".config", "containers", "systemd", "simple.container")
+			simpleContainerKey := filepath.Join(home, ".config", "containers", "systemd", "picolet", "simple.container")
 			assert.Contains(t, st.ManagedFiles, simpleContainerKey, "should contain simple.container path")
 
 			assert.Empty(t, st.FailedSHA, "failed SHA should be empty")
@@ -803,7 +875,7 @@ func TestE2EResolverRootlessPaths(t *testing.T) {
 		destPaths[f.DestPath] = true
 	}
 
-	quadletDir := filepath.Join(home, ".config", "containers", "systemd")
+	quadletDir := filepath.Join(home, ".config", "containers", "systemd", "picolet")
 	systemdDir := filepath.Join(home, ".config", "systemd", "user")
 
 	assert.Contains(t, destPaths, filepath.Join(quadletDir, "simple.container"),

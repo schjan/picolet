@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/containers/podman/v5/libpod/define"
@@ -11,6 +12,12 @@ import (
 	"github.com/containers/podman/v5/pkg/bindings/containers"
 	"github.com/containers/podman/v5/pkg/bindings/pods"
 	"github.com/containers/podman/v5/pkg/bindings/secrets"
+)
+
+// secretLabelKey and secretLabelValue are the Podman label applied to all picolet-managed secrets.
+const (
+	secretLabelKey   = "managed-by"
+	secretLabelValue = "picolet"
 )
 
 // SocketPodmanClient implements PodmanClient using the Podman bindings over a Unix socket.
@@ -39,12 +46,39 @@ func (c *SocketPodmanClient) SecretExists(_ context.Context, name string) (bool,
 
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
 func (c *SocketPodmanClient) SecretCreate(_ context.Context, name string, data []byte, replace bool) error {
-	opts := new(secrets.CreateOptions).WithName(name).WithReplace(replace)
+	opts := new(secrets.CreateOptions).
+		WithName(name).
+		WithReplace(replace).
+		WithLabels(map[string]string{secretLabelKey: secretLabelValue})
 	_, err := secrets.Create(c.connCtx, bytes.NewReader(data), opts)
 	if err != nil {
 		return fmt.Errorf("creating secret %s: %w", name, err)
 	}
 	return nil
+}
+
+//nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
+func (c *SocketPodmanClient) ListManagedSecrets(_ context.Context) ([]string, error) {
+	opts := new(secrets.ListOptions).WithFilters(map[string][]string{
+		"label": {secretLabelKey + "=" + secretLabelValue},
+	})
+	list, err := secrets.List(c.connCtx, opts)
+	if err != nil {
+		// Older Podman versions may not support label filtering on secrets.
+		// Log and fall back to listing all secrets and filtering client-side.
+		slog.Warn("listing secrets with label filter failed, falling back to full list", "error", err)
+		list, err = secrets.List(c.connCtx, nil)
+		if err != nil {
+			return nil, fmt.Errorf("listing secrets: %w", err)
+		}
+	}
+	names := make([]string, 0, len(list))
+	for _, s := range list {
+		if s.Spec.Labels[secretLabelKey] == secretLabelValue {
+			names = append(names, s.Spec.Name)
+		}
+	}
+	return names, nil
 }
 
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc

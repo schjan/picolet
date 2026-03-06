@@ -114,22 +114,22 @@ func TestIntegrationMultiHostConsistency(t *testing.T) {
 	node2 := filesByDest(allResolved["node-2"].Files)
 
 	// Both should have internal.network with identical content
-	n1Net, ok1 := node1["/etc/containers/systemd/internal.network"]
-	n2Net, ok2 := node2["/etc/containers/systemd/internal.network"]
+	n1Net, ok1 := node1["/etc/containers/systemd/picolet/internal.network"]
+	n2Net, ok2 := node2["/etc/containers/systemd/picolet/internal.network"]
 	require.True(t, ok1, "node-1 should have internal.network")
 	require.True(t, ok2, "node-2 should have internal.network")
 	assert.Equal(t, n1Net.Content, n2Net.Content)
 
 	// node-1 (worker + app-a) should have nginx.container
-	assert.Contains(t, node1, "/etc/containers/systemd/nginx.container")
+	assert.Contains(t, node1, "/etc/containers/systemd/picolet/nginx.container")
 	// node-2 (controller) should NOT have nginx.container
-	assert.NotContains(t, node2, "/etc/containers/systemd/nginx.container")
+	assert.NotContains(t, node2, "/etc/containers/systemd/picolet/nginx.container")
 
 	// node-2 (controller) should have kube and manifest
-	assert.Contains(t, node2, "/etc/containers/systemd/app-stack.kube")
+	assert.Contains(t, node2, "/etc/containers/systemd/picolet/app-stack.kube")
 	assert.Contains(t, node2, "/var/lib/picolet/manifests/app/deployment.yml")
 	// node-1 (worker) should NOT have these
-	assert.NotContains(t, node1, "/etc/containers/systemd/app-stack.kube")
+	assert.NotContains(t, node1, "/etc/containers/systemd/picolet/app-stack.kube")
 	assert.NotContains(t, node1, "/var/lib/picolet/manifests/app/deployment.yml")
 }
 
