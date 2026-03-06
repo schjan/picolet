@@ -102,8 +102,8 @@ func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 
 //nolint:cyclop // sequential startup steps + select loop; splitting reduces readability
 func (a *Agent) Run(ctx context.Context) error {
-	// Start metrics server
-	go a.serveMetrics(ctx)
+	// Start HTTP server (metrics, health, webhook)
+	go a.serveHTTP(ctx)
 
 	// Check for stale lock (unclean shutdown)
 	if _, err := os.Stat(a.lockPath); err == nil {
@@ -431,7 +431,7 @@ func (a *Agent) triggerReconcile() {
 	}
 }
 
-func (a *Agent) serveMetrics(ctx context.Context) {
+func (a *Agent) newMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -439,12 +439,14 @@ func (a *Agent) serveMetrics(ctx context.Context) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-
 	mux.Handle("/webhook", webhookHandler(a.triggerReconcile, a.cfg.WebhookSecretPath))
+	return mux
+}
 
+func (a *Agent) serveHTTP(ctx context.Context) {
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", a.cfg.MetricsPort),
-		Handler:           mux,
+		Handler:           a.newMux(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -453,12 +455,12 @@ func (a *Agent) serveMetrics(ctx context.Context) {
 		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Warn("metrics server shutdown error", "error", err)
+			slog.Warn("http server shutdown error", "error", err)
 		}
 	}()
 
-	slog.Info("metrics server starting", "port", a.cfg.MetricsPort)
+	slog.Info("http server starting", "port", a.cfg.MetricsPort)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		slog.Error("metrics server error", "error", err)
+		slog.Error("http server error", "error", err)
 	}
 }

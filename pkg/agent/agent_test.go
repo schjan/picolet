@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -500,7 +501,7 @@ func TestTriggerReconcileChannel(t *testing.T) {
 	}
 }
 
-func TestWebhookOnMetricsServer(t *testing.T) {
+func TestWebhookOnHTTPServer(t *testing.T) {
 	t.Parallel()
 	cfg := &agentcfg.Config{
 		Hostname: "test",
@@ -508,11 +509,7 @@ func TestWebhookOnMetricsServer(t *testing.T) {
 	}
 	a := New(cfg)
 
-	// Build the same mux as serveMetrics
-	mux := http.NewServeMux()
-	mux.Handle("/webhook", webhookHandler(a.triggerReconcile, ""))
-
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(a.newMux())
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/webhook", "application/json", strings.NewReader("{}")) //nolint:noctx // test helper, no context needed
@@ -527,4 +524,142 @@ func TestWebhookOnMetricsServer(t *testing.T) {
 	default:
 		t.Fatal("expected signal in webhookCh after POST /webhook")
 	}
+}
+
+func pushToTestRepo(t *testing.T, bareDir string, files map[string]string) {
+	t.Helper()
+	workDir := filepath.Join(t.TempDir(), "push-work")
+	repo, err := git.PlainClone(workDir, false, &git.CloneOptions{URL: bareDir})
+	require.NoError(t, err)
+	for path, content := range files {
+		writeTestFile(t, workDir, path, content)
+	}
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+	_, err = wt.Add(".")
+	require.NoError(t, err)
+	_, err = wt.Commit("update", &git.CommitOptions{
+		Author: &object.Signature{Name: "test", Email: "test@test.com", When: time.Now()},
+	})
+	require.NoError(t, err)
+	err = repo.Push(&git.PushOptions{})
+	require.NoError(t, err)
+}
+
+//nolint:funlen // integration test: setup + two sub-tests for valid/invalid webhook
+func TestWebhookTriggersReconciliation(t *testing.T) {
+	t.Parallel()
+	bareDir := initTestRepo(t)
+	repoDir := filepath.Join(t.TempDir(), "clone")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+
+	metrics.Register()
+
+	sys, pod, fw := newBareMocks(t)
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
+	sys.EXPECT().IsActive(mock.Anything, mock.Anything).Return(true, nil).Maybe()
+	sys.EXPECT().GetUnitState(mock.Anything, mock.Anything).Return("active", nil).Maybe()
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
+	sys.EXPECT().StopUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
+	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
+	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
+	fw.EXPECT().Remove(mock.Anything).Return(nil).Maybe()
+
+	var mu sync.Mutex
+	written := make(map[string][]byte)
+	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).RunAndReturn(func(path string, content []byte) error {
+		mu.Lock()
+		defer mu.Unlock()
+		written[path] = content
+		return nil
+	}).Maybe()
+
+	secretFile := filepath.Join(t.TempDir(), "webhook-secret")
+	require.NoError(t, os.WriteFile(secretFile, []byte("test-secret"), 0o600))
+
+	cfg := &agentcfg.Config{
+		Hostname:          "test-host",
+		RepoURL:           bareDir,
+		RepoBranch:        "master",
+		PollInterval:      time.Hour, // only webhook-triggered reconciliation
+		MetricsPort:       0,
+		SecretsDir:        t.TempDir(),
+		WebhookSecretPath: secretFile,
+	}
+
+	a := New(cfg,
+		WithSystemd(sys),
+		WithPodman(pod),
+		WithFileWriter(fw),
+		WithRepoPath(repoDir),
+		WithStatePath(statePath),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- a.Run(ctx)
+	}()
+
+	srv := httptest.NewServer(a.newMux())
+	defer srv.Close()
+
+	// Wait for initial tick to complete
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(written) > 0
+	}, 10*time.Second, 50*time.Millisecond, "initial tick should write files")
+
+	// Push a new commit that adds hello.container
+	pushToTestRepo(t, bareDir, map[string]string{
+		"assignments.yml": `base:
+  networks:
+    - quadlets/networks/internal.network
+  containers:
+    - quadlets/containers/hello.container
+`,
+		"quadlets/containers/hello.container": `[Container]
+Image=hello-world:latest
+`,
+	})
+
+	// Wrong signature → 403, no trigger
+	badReq, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/webhook", strings.NewReader("{}"))
+	require.NoError(t, err)
+	badReq.Header.Set("X-Hub-Signature-256", "sha256=invalid")
+	badResp, err := http.DefaultClient.Do(badReq) //nolint:gosec // test-only request to local httptest server
+	require.NoError(t, err)
+	defer badResp.Body.Close()
+	assert.Equal(t, http.StatusForbidden, badResp.StatusCode)
+
+	select {
+	case <-a.webhookCh:
+		t.Fatal("trigger should not have been called")
+	default:
+		// expected — handler returned 403, no trigger
+	}
+
+	// Valid signature → 202, triggers reconciliation
+	body := []byte("{}")
+	sig := ComputeSignature(body, "test-secret")
+	goodReq, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/webhook", strings.NewReader(string(body)))
+	require.NoError(t, err)
+	goodReq.Header.Set("X-Hub-Signature-256", sig)
+	goodResp, err := http.DefaultClient.Do(goodReq) //nolint:gosec // test-only request to local httptest server
+	require.NoError(t, err)
+	defer goodResp.Body.Close()
+	assert.Equal(t, http.StatusAccepted, goodResp.StatusCode)
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		_, ok := written["/etc/containers/systemd/picolet/hello.container"]
+		return ok
+	}, 10*time.Second, 50*time.Millisecond, "webhook should trigger reconciliation that writes hello.container")
+
+	cancel()
+	require.NoError(t, <-errCh)
 }
