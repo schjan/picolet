@@ -57,11 +57,18 @@ func (c *SocketPodmanClient) ListManagedSecrets(_ context.Context) ([]string, er
 	})
 	list, err := secrets.List(c.connCtx, opts)
 	if err != nil {
-		return nil, fmt.Errorf("listing managed secrets: %w", err)
+		// Older Podman versions don't support label filtering on secrets.
+		// Fall back to listing all secrets and filtering client-side.
+		list, err = secrets.List(c.connCtx, nil)
+		if err != nil {
+			return nil, fmt.Errorf("listing secrets: %w", err)
+		}
 	}
 	names := make([]string, 0, len(list))
 	for _, s := range list {
-		names = append(names, s.Spec.Name)
+		if s.Spec.Labels["managed-by"] == "picolet" {
+			names = append(names, s.Spec.Name)
+		}
 	}
 	return names, nil
 }
