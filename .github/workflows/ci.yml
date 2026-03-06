@@ -11,6 +11,7 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
 
@@ -19,7 +20,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Test
-        run: go test -tags "$BUILD_TAGS" ./... -race -count=1
+        run: go test -tags "$BUILD_TAGS" ./... -race -count=1 -timeout 120s
 
   e2e:
     runs-on: ubuntu-24.04
