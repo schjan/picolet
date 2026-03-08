@@ -630,7 +630,7 @@ Image=hello-world:latest
 	badReq, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/webhook", strings.NewReader("{}"))
 	require.NoError(t, err)
 	badReq.Header.Set("X-Hub-Signature-256", "sha256=invalid")
-	badResp, err := http.DefaultClient.Do(badReq) //nolint:gosec // test-only request to local httptest server
+	badResp, err := http.DefaultClient.Do(badReq)
 	require.NoError(t, err)
 	defer badResp.Body.Close()
 	assert.Equal(t, http.StatusForbidden, badResp.StatusCode)
@@ -648,7 +648,7 @@ Image=hello-world:latest
 	goodReq, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/webhook", strings.NewReader(string(body)))
 	require.NoError(t, err)
 	goodReq.Header.Set("X-Hub-Signature-256", sig)
-	goodResp, err := http.DefaultClient.Do(goodReq) //nolint:gosec // test-only request to local httptest server
+	goodResp, err := http.DefaultClient.Do(goodReq)
 	require.NoError(t, err)
 	defer goodResp.Body.Close()
 	assert.Equal(t, http.StatusAccepted, goodResp.StatusCode)

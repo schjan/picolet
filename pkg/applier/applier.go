@@ -204,7 +204,7 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]bool
 		// applyWithRollback() to remove the lock and reconcile() to call store.Save()
 		// before SIGTERM arrives from systemd's stop sequence.
 		// 60s timeout covers StopTimeout=30 + Podman cleanup overhead.
-		//nolint:contextcheck // intentional detached context for self-restart
+		//nolint:contextcheck,gosec // intentional detached context for self-restart
 		go func() {
 			restartCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()

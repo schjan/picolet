@@ -327,7 +327,7 @@ func runTrigger(_ context.Context, configPath, urlOverride string) error {
 		req.Header.Set("X-Hub-Signature-256", sig)
 	}
 
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec // URL is localhost:port from trusted config or user-provided flag
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("trigger request failed: %w", err)
 	}
@@ -359,7 +359,7 @@ func runHealthcheck(_ context.Context, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("building health check request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec // URL is localhost:port from trusted config
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("health check failed: %w", err)
 	}
