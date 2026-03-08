@@ -138,9 +138,11 @@ curl http://localhost:9417/metrics
 curl http://localhost:9417/health
 ```
 
-## Architecture
+## Fleet Repository Reference
 
-### Config Files (in fleet repo)
+Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a complete example.
+
+### Config Files
 
 | File | Purpose |
 |------|---------|
@@ -148,21 +150,23 @@ curl http://localhost:9417/health
 | `assignments.yml` | Maps pi_type + features to file sets per host |
 | `hosts/<name>/host.yml` | Per-host config: hostname, type, features, secrets |
 
-### Template Processing
+### File Categories
 
-Files ending in `.tmpl` are processed by Go `text/template` with `missingkey=error`. Static files are deployed as-is.
+| Directory | Extension | Deploys to |
+|-----------|-----------|------------|
+| `quadlets/networks/` | `.network` | `/etc/containers/systemd/picolet/` |
+| `quadlets/volumes/` | `.volume` | `/etc/containers/systemd/picolet/` |
+| `quadlets/containers/` | `.container` | `/etc/containers/systemd/picolet/` |
+| `quadlets/kube/` | `.kube` | `/etc/containers/systemd/picolet/` |
+| `manifests/<app>/` | `.yml` | `/var/lib/picolet/manifests/<app>/` |
+| `secrets/` | `.yml` | Podman secrets |
+| `systemd/` | `.socket` | `/etc/systemd/system/` |
 
-Template data available as `.`:
+### Templates
 
-- `.Host.Hostname`, `.Host.AnsibleHost`, `.Host.PiType`
-- `.Host.AlloyMode` (`"agent"` or `"gateway"`)
-- `.Host.IsGateway`, `.Host.HasMosquitto`
-- `.Images` (map of image names to full refs)
-- `.Ports` (map of port names to numbers)
-- `.Fleet.Config.Prometheus.*` (Prometheus config)
-- `.Fleet.Hosts` (all hosts, for fleet-aware templates)
+Files ending in `.tmpl` are rendered with Go `text/template` (`missingkey=error`). Static files are deployed as-is.
 
-Custom template functions:
+Available data: `.Host` (hostname, pi_type, features), `.Images`, `.Ports`, `.Fleet` (all hosts + config).
 
 | Function | Purpose |
 |----------|---------|
@@ -170,41 +174,10 @@ Custom template functions:
 | `renderTemplate(name, data)` | Render another template inline |
 | `indent(n, str)` | Indent all lines by n spaces |
 | `readSecretFile(path)` | Read secret (placeholder in CI mode) |
-
-### File Categories
-
-| Directory | Extension | Deploys to |
-|-----------|-----------|------------|
-| `quadlets/networks/` | `.network` | `/etc/containers/systemd/` |
-| `quadlets/volumes/` | `.volume` | `/etc/containers/systemd/` |
-| `quadlets/containers/` | `.container` | `/etc/containers/systemd/` |
-| `quadlets/kube/` | `.kube` | `/etc/containers/systemd/` |
-| `manifests/<app>/` | `.yml` | `/var/lib/picolet/manifests/<app>/` |
-| `secrets/` | `.yml` | Podman secrets |
-| `systemd/` | `.socket` | `/etc/systemd/system/` |
+| `has(slice, item)` | Check if a feature is assigned |
 
 ### Validation
 
-- **Quadlet files**: Validated using Podman's own `quadlet.Convert*()` functions (same code as `podman-system-generator`), including cross-reference resolution between units (e.g., a `.container` referencing a `.network`)
-- **K8s manifests**: Strict unmarshalling into real `k8s.io/api` types (`Deployment`, `DaemonSet`, `Pod`, `ConfigMap`, `Secret`, `PersistentVolumeClaim`) — catches unknown fields, wrong types, structural issues
-- **Systemd units**: Section header presence
-- **Templates**: `missingkey=error` catches undefined variables at render time
+All files are validated before deployment: quadlet files via Podman's own `quadlet.Convert*()`, K8s manifests via strict unmarshalling into `k8s.io/api` types, systemd units structurally, and templates at render time (`missingkey=error`).
 
-## Project Structure
-
-```
-cmd/picolet/main.go        CLI entry point (urfave/cli v3)
-pkg/
-  agent/                    Main reconciliation loop orchestrator
-  agentcfg/                 Agent configuration loading
-  applier/                  Phased file + systemd + podman applier
-  config/                   Config loading (fleet, hosts, assignments)
-  gitpoll/                  Git repository polling
-  health/                   Health checking for managed units
-  metrics/                  Prometheus metrics
-  reconciler/               Desired vs current state diffing
-  resolver/                 Template rendering + file resolution
-  rollback/                 Snapshot and restore on failure
-  state/                    Persistent reconciliation state
-  validator/                Quadlet + manifest validation
-```
+Run `./picolet validate` in CI to catch errors before pushing.

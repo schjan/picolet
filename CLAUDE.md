@@ -21,23 +21,14 @@ task lint:fix       # golangci-lint with --fix
 task fmt            # run all formatters (gofumpt + gci) via golangci-lint fmt
 ```
 
-**Without Task** (build tags are required because podman/v5 otherwise pulls in C libraries):
+**Regenerate mocks** (after changing interfaces in `pkg/applier`): `go tool mockery`
+
+**Without Task**: all `go build`/`go test` commands require the build tags from `Taskfile.yml` (podman/v5 otherwise pulls in C libraries):
 
 ```bash
-CGO_ENABLED=0 go build -tags "remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper" -o picolet ./cmd/picolet
-go test -tags "remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper" ./... -race -count=1
-```
-
-**Run a single test:**
-
-```bash
-go test -tags "remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper" ./pkg/reconciler -run TestDiffDetectsUpdatedFile -race -count=1
-```
-
-**Update golden files** (used in integration tests via `goldie`):
-
-```bash
-go test -tags "remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper" ./... -update
+TAGS="remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper"
+go test -tags "$TAGS" ./pkg/reconciler -run TestName -race -count=1   # single test
+go test -tags "$TAGS" ./... -update                                    # update golden files (goldie)
 ```
 
 ## Code Style & Linting
@@ -62,6 +53,10 @@ The agent runs a timer-based loop (`pkg/agent`). Each tick:
 8. **Snapshot** — save current disk state for rollback
 9. **Apply** — phased by category order: network → volume → secret → systemd → manifest → container → kube, then `DaemonReload` + restart changed units
 10. **State save** — atomic JSON write (tmp + rename) with new SHA + managed file hashes
+
+### Orphan Detection & Ownership Markers
+
+Quadlet files are written to `/etc/containers/systemd/picolet/` (picolet-owned subdir). Systemd files get `# Managed by picolet` prepended (`applier.PicoletMarker`). Secrets are labeled `managed-by=picolet`. At startup, `pkg/orphan` scans for and removes stale managed files/secrets.
 
 ### Interface Ownership
 
