@@ -43,6 +43,8 @@ type Agent struct {
 	repoPath  string
 	statePath string
 	lockPath  string
+
+	webhookCh chan struct{}
 }
 
 // Option configures the Agent.
@@ -90,6 +92,7 @@ func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 		repoPath:  defaultRepoPath,
 		statePath: DefaultStatePath,
 		lockPath:  defaultLockPath,
+		webhookCh: make(chan struct{}, 1),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -97,10 +100,10 @@ func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 	return a
 }
 
-// Run starts the reconciliation loop. Blocks until ctx is cancelled.
+//nolint:cyclop // sequential startup steps + select loop; splitting reduces readability
 func (a *Agent) Run(ctx context.Context) error {
-	// Start metrics server
-	go a.serveMetrics(ctx)
+	// Start HTTP server (metrics, health, webhook)
+	go a.serveHTTP(ctx)
 
 	// Check for stale lock (unclean shutdown)
 	if _, err := os.Stat(a.lockPath); err == nil {
@@ -144,6 +147,12 @@ func (a *Agent) Run(ctx context.Context) error {
 			if err := a.tick(ctx, poller, store, healthChecker); err != nil {
 				slog.Error("reconciliation tick failed", "error", err)
 			}
+		case <-a.webhookCh:
+			slog.Info("webhook-triggered reconciliation")
+			if err := a.tick(ctx, poller, store, healthChecker); err != nil {
+				slog.Error("webhook-triggered reconciliation failed", "error", err)
+			}
+			ticker.Reset(a.cfg.PollInterval)
 		}
 	}
 }
@@ -414,7 +423,15 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	}
 }
 
-func (a *Agent) serveMetrics(ctx context.Context) {
+func (a *Agent) triggerReconcile() {
+	select {
+	case a.webhookCh <- struct{}{}:
+	default:
+		// channel full — reconciliation already pending
+	}
+}
+
+func (a *Agent) newMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -422,10 +439,14 @@ func (a *Agent) serveMetrics(ctx context.Context) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+	mux.Handle("/webhook", webhookHandler(a.triggerReconcile, a.cfg.WebhookSecretPath))
+	return mux
+}
 
+func (a *Agent) serveHTTP(ctx context.Context) {
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", a.cfg.MetricsPort),
-		Handler:           mux,
+		Handler:           a.newMux(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -434,12 +455,12 @@ func (a *Agent) serveMetrics(ctx context.Context) {
 		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Warn("metrics server shutdown error", "error", err)
+			slog.Warn("http server shutdown error", "error", err)
 		}
 	}()
 
-	slog.Info("metrics server starting", "port", a.cfg.MetricsPort)
+	slog.Info("http server starting", "port", a.cfg.MetricsPort)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		slog.Error("metrics server error", "error", err)
+		slog.Error("http server error", "error", err)
 	}
 }

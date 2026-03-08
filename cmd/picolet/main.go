@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -106,6 +108,25 @@ func main() {
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					return runHealthcheck(ctx, cmd.String("config"))
+				},
+			},
+			{
+				Name:  "trigger",
+				Usage: "trigger immediate reconciliation via webhook",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:    "config",
+						Value:   "/etc/picolet/config.yml",
+						Usage:   "agent config file",
+						Sources: cli.EnvVars("PICOLET_CONFIG"),
+					},
+					&cli.StringFlag{
+						Name:  "url",
+						Usage: "webhook URL override (default: http://localhost:<metrics_port>/webhook)",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return runTrigger(ctx, cmd.String("config"), cmd.String("url"))
 				},
 			},
 			{
@@ -275,6 +296,54 @@ func runResolve(repoDir, host string) error {
 	return nil
 }
 
+func runTrigger(_ context.Context, configPath, urlOverride string) error {
+	cfg, err := agentcfg.Load(configPath)
+	if err != nil {
+		return err
+	}
+
+	webhookURL := urlOverride
+	if webhookURL == "" {
+		webhookURL = fmt.Sprintf("http://localhost:%d/webhook", cfg.MetricsPort)
+	}
+
+	var body []byte
+
+	triggerCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(triggerCtx, http.MethodPost, webhookURL, bytes.NewReader(body)) //nolint:contextcheck // intentional detached context — trigger must not inherit signal cancellation
+	if err != nil {
+		return fmt.Errorf("building trigger request: %w", err)
+	}
+
+	if cfg.WebhookSecretPath != "" {
+		secretData, err := os.ReadFile(cfg.WebhookSecretPath)
+		if err != nil {
+			return fmt.Errorf("reading webhook secret: %w", err)
+		}
+		secret := strings.TrimSpace(string(secretData))
+		sig := agent.ComputeSignature(body, secret)
+		req.Header.Set("X-Hub-Signature-256", sig)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("trigger request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusAccepted:
+		slog.Info("reconciliation triggered")
+		return nil
+	case http.StatusForbidden:
+		return fmt.Errorf("forbidden (status 403) — webhook secret may be required or incorrect")
+	default:
+		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+}
+
 func runHealthcheck(_ context.Context, configPath string) error {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
@@ -290,7 +359,7 @@ func runHealthcheck(_ context.Context, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("building health check request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec // URL is localhost:port from trusted config
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("health check failed: %w", err)
 	}

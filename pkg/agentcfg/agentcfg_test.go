@@ -29,17 +29,19 @@ git_token_path: /etc/picolet/git-token
 poll_interval: 30s
 metrics_port: 9418
 secrets_dir: /run/secrets
+webhook_secret_path: /etc/picolet/webhook-secret
 `,
 			//nolint:gosec // G101: test fixture, not real credentials
 			want: Config{
-				Hostname:     "rpi5-1",
-				RepoURL:      "https://github.com/example/fleet.git",
-				RepoBranch:   "develop",
-				GitTokenPath: "/etc/picolet/git-token",
-				PollInterval: 30 * time.Second,
-				MetricsPort:  9418,
-				SecretsDir:   "/run/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
+				Hostname:          "rpi5-1",
+				RepoURL:           "https://github.com/example/fleet.git",
+				RepoBranch:        "develop",
+				GitTokenPath:      "/etc/picolet/git-token",
+				PollInterval:      30 * time.Second,
+				MetricsPort:       9418,
+				SecretsDir:        "/run/secrets",
+				PodmanSocket:      "/run/podman/podman.sock",
+				WebhookSecretPath: "/etc/picolet/webhook-secret",
 			},
 		},
 		{
