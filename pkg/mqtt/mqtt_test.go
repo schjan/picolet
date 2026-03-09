@@ -1,0 +1,225 @@
+package mqtt_test
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"net/url"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	pahopkg "github.com/eclipse/paho.golang/paho"
+	mqttserver "github.com/mochi-mqtt/server/v2"
+	"github.com/mochi-mqtt/server/v2/hooks/auth"
+	"github.com/mochi-mqtt/server/v2/listeners"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/schjan/picolet/pkg/metrics"
+	"github.com/schjan/picolet/pkg/mqtt"
+)
+
+func init() {
+	metrics.Register()
+}
+
+func startTestBroker(t *testing.T) string {
+	t.Helper()
+	server := mqttserver.New(&mqttserver.Options{
+		Logger: nil,
+	})
+	require.NoError(t, server.AddHook(new(auth.AllowHook), nil))
+
+	tcp := listeners.NewTCP(listeners.Config{ID: "test-" + t.Name(), Address: "127.0.0.1:0"})
+	require.NoError(t, server.AddListener(tcp))
+
+	go func() { _ = server.Serve() }()
+	t.Cleanup(func() { _ = server.Close() })
+
+	return "tcp://" + tcp.Address()
+}
+
+func rawPublish(ctx context.Context, brokerURL, topic, payload string, retain bool) error {
+	u, err := url.Parse(brokerURL)
+	if err != nil {
+		return fmt.Errorf("parsing broker URL: %w", err)
+	}
+	conn, err := net.DialTimeout("tcp", u.Host, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+
+	c := pahopkg.NewClient(pahopkg.ClientConfig{Conn: conn})
+	if _, err = c.Connect(ctx, &pahopkg.Connect{
+		ClientID:   fmt.Sprintf("test-pub-%d", time.Now().UnixNano()),
+		CleanStart: true,
+		KeepAlive:  10,
+	}); err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("connect: %w", err)
+	}
+
+	if _, err = c.Publish(ctx, &pahopkg.Publish{
+		Topic:   topic,
+		QoS:     1,
+		Retain:  retain,
+		Payload: []byte(payload),
+	}); err != nil {
+		_ = c.Disconnect(&pahopkg.Disconnect{})
+		return fmt.Errorf("publish: %w", err)
+	}
+
+	_ = c.Disconnect(&pahopkg.Disconnect{})
+	return nil
+}
+
+func TestPauseSubscription(t *testing.T) {
+	t.Parallel()
+	brokerURL := startTestBroker(t)
+
+	cfg := mqtt.Config{BrokerURL: brokerURL, TopicPrefix: "picolet"}
+	client := mqtt.NewClient(cfg, "test-host")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var pauseFlag atomic.Bool
+	require.NoError(t, client.Start(ctx, &pauseFlag, func() {}))
+
+	// Wait for connection
+	time.Sleep(200 * time.Millisecond)
+
+	require.NoError(t, rawPublish(ctx, brokerURL, "picolet/test-host/pause", "true", true))
+
+	require.Eventually(t, pauseFlag.Load, 3*time.Second, 50*time.Millisecond, "pause flag should become true")
+
+	require.NoError(t, rawPublish(ctx, brokerURL, "picolet/test-host/pause", "false", true))
+
+	require.Eventually(t, func() bool {
+		return !pauseFlag.Load()
+	}, 3*time.Second, 50*time.Millisecond, "pause flag should become false")
+}
+
+func TestTriggerSubscription(t *testing.T) {
+	t.Parallel()
+	brokerURL := startTestBroker(t)
+
+	cfg := mqtt.Config{BrokerURL: brokerURL, TopicPrefix: "picolet"}
+	client := mqtt.NewClient(cfg, "test-host")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var triggered atomic.Int32
+	var pauseFlag atomic.Bool
+	require.NoError(t, client.Start(ctx, &pauseFlag, func() { triggered.Add(1) }))
+
+	time.Sleep(200 * time.Millisecond)
+
+	require.NoError(t, rawPublish(ctx, brokerURL, "picolet/trigger", "", false))
+
+	require.Eventually(t, func() bool {
+		return triggered.Load() > 0
+	}, 3*time.Second, 50*time.Millisecond, "trigger callback should be called")
+}
+
+//nolint:funlen // setup-heavy integration test: publisher + subscriber + assertions
+func TestPublishStatus(t *testing.T) {
+	t.Parallel()
+	brokerURL := startTestBroker(t)
+
+	cfg := mqtt.Config{BrokerURL: brokerURL, TopicPrefix: "picolet"}
+	client := mqtt.NewClient(cfg, "test-host")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var pauseFlag atomic.Bool
+	require.NoError(t, client.Start(ctx, &pauseFlag, func() {}))
+
+	time.Sleep(300 * time.Millisecond)
+
+	now := time.Now().Truncate(time.Second)
+	status := mqtt.Status{
+		LastReconciliation:           now,
+		LastSuccessfulReconciliation: now,
+		AppliedSHA:                   "abc123",
+		FailedCount:                  2,
+		Paused:                       false,
+	}
+	require.NoError(t, client.PublishStatus(ctx, status))
+
+	// Subscribe from a second client and collect retained messages.
+	var mu sync.Mutex
+	received := make(map[string]string)
+
+	// Use a second subscriber to capture retained messages.
+	u, err := url.Parse(brokerURL)
+	require.NoError(t, err)
+	conn, err := net.DialTimeout("tcp", u.Host, 5*time.Second)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	sub := pahopkg.NewClient(pahopkg.ClientConfig{
+		Conn: conn,
+		OnPublishReceived: []func(pahopkg.PublishReceived) (bool, error){
+			func(pr pahopkg.PublishReceived) (bool, error) {
+				mu.Lock()
+				received[pr.Packet.Topic] = string(pr.Packet.Payload)
+				mu.Unlock()
+				return true, nil
+			},
+		},
+	})
+	_, err = sub.Connect(ctx, &pahopkg.Connect{
+		ClientID:   "test-sub",
+		CleanStart: true,
+		KeepAlive:  10,
+	})
+	require.NoError(t, err)
+
+	_, err = sub.Subscribe(ctx, &pahopkg.Subscribe{
+		Subscriptions: []pahopkg.SubscribeOptions{
+			{Topic: "picolet/test-host/status/#", QoS: 1},
+		},
+	})
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return received["picolet/test-host/status/applied_sha"] == "abc123"
+	}, 3*time.Second, 50*time.Millisecond, "applied_sha should be published")
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, "2", received["picolet/test-host/status/failed_count"])
+	assert.Equal(t, "running", received["picolet/test-host/status/state"])
+}
+
+func TestTriggerFunction(t *testing.T) {
+	t.Parallel()
+	brokerURL := startTestBroker(t)
+
+	cfg := mqtt.Config{BrokerURL: brokerURL, TopicPrefix: "picolet"}
+	subClient := mqtt.NewClient(cfg, "trigger-test-host")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var triggered atomic.Int32
+	var pauseFlag atomic.Bool
+	require.NoError(t, subClient.Start(ctx, &pauseFlag, func() { triggered.Add(1) }))
+
+	time.Sleep(200 * time.Millisecond)
+
+	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer triggerCancel()
+	require.NoError(t, mqtt.Trigger(triggerCtx, cfg))
+
+	require.Eventually(t, func() bool {
+		return triggered.Load() > 0
+	}, 3*time.Second, 50*time.Millisecond, "trigger message should be received")
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/schjan/picolet/pkg/gitpoll"
 	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
+	"github.com/schjan/picolet/pkg/mqtt"
 	"github.com/schjan/picolet/pkg/orphan"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
@@ -22,6 +23,13 @@ import (
 	"github.com/schjan/picolet/pkg/state"
 	"github.com/schjan/picolet/pkg/validator"
 )
+
+// MQTTClient provides MQTT-based pause, trigger, and status publishing.
+type MQTTClient interface {
+	Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn func()) error
+	PublishStatus(ctx context.Context, status mqtt.Status) error
+	Close(ctx context.Context)
+}
 
 const (
 	defaultRepoPath = "/var/lib/picolet/repo"
@@ -45,8 +53,10 @@ type Agent struct {
 	statePath string
 	lockPath  string
 
-	webhookCh chan struct{}
-	ready     atomic.Bool
+	webhookCh  chan struct{}
+	ready      atomic.Bool
+	paused     atomic.Bool // set by MQTT pause subscription
+	mqttClient MQTTClient  // nil when MQTT not configured
 }
 
 // Option configures the Agent.
@@ -87,6 +97,11 @@ func WithLockPath(path string) Option {
 	return func(a *Agent) { a.lockPath = path }
 }
 
+// WithMQTT sets the MQTTClient for pause/trigger/status publishing.
+func WithMQTT(c MQTTClient) Option {
+	return func(a *Agent) { a.mqttClient = c }
+}
+
 // New creates a new Agent.
 func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 	a := &Agent{
@@ -102,10 +117,19 @@ func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 	return a
 }
 
-//nolint:cyclop // sequential startup steps + select loop; splitting reduces readability
+//nolint:cyclop,funlen // sequential startup steps + select loop; splitting reduces readability
 func (a *Agent) Run(ctx context.Context) error {
 	// Start HTTP server (metrics, health, webhook)
 	go a.serveHTTP(ctx)
+
+	// Start MQTT client if configured
+	if a.mqttClient != nil {
+		if err := a.mqttClient.Start(ctx, &a.paused, a.triggerReconcile); err != nil {
+			return fmt.Errorf("starting MQTT client: %w", err)
+		}
+		// Use WithoutCancel so Close() can publish offline state even during shutdown.
+		defer a.mqttClient.Close(context.WithoutCancel(ctx))
+	}
 
 	// Check for stale lock (unclean shutdown)
 	if _, err := os.Stat(a.lockPath); err == nil {
@@ -172,6 +196,9 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return fmt.Errorf("loading state: %w", err)
 	}
 
+	// Publish MQTT status at the end of every tick (success, failure, noop, or paused).
+	defer a.publishMQTTStatus(ctx, st)
+
 	// Seed managed-files metrics from state on every tick
 	metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
 	setFilesManagedMetric(countCategoriesFromState(st.ManagedFiles))
@@ -179,7 +206,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		metrics.AppliedGitSHA.WithLabelValues(st.AppliedSHA).Set(1)
 	}
 
-	// 1. Health enforcement (always)
+	// 1. Health enforcement (always — units must stay healthy even when paused)
 	hr, err := healthChecker.Enforce(ctx, st)
 	if err != nil {
 		slog.Error("health enforcement error", "error", err)
@@ -196,6 +223,13 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		for _, u := range hr.Skipped {
 			metrics.HealthEnforcementTotal.WithLabelValues(u, "skip_cooldown").Inc()
 		}
+	}
+
+	// 1b. Pause check — health ran, skip reconciliation when paused via MQTT
+	if a.paused.Load() {
+		slog.Debug("reconciliation paused via MQTT")
+		metrics.ReconciliationTotal.WithLabelValues("paused").Inc()
+		return nil
 	}
 
 	// 2. Git poll
@@ -248,7 +282,6 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	}
 
 	metrics.ReconciliationTotal.WithLabelValues("success").Inc()
-	metrics.LastSuccessfulReconciliation.SetToCurrentTime()
 	slog.Info("reconciliation complete", "sha", pollResult.HeadSHA, "result", "success", "duration", elapsed.Round(time.Millisecond))
 	return nil
 }
@@ -427,7 +460,9 @@ func (a *Agent) updateState(headSHA string, st *state.State, changeset *reconcil
 func markAppliedWithMetrics(st *state.State, headSHA string) {
 	prevSHA := st.AppliedSHA
 	st.MarkApplied(headSHA)
+	st.LastSuccessfulReconciliationAt = time.Now()
 	metrics.FailedSHAConsecutiveCount.Set(0)
+	metrics.LastSuccessfulReconciliation.SetToCurrentTime()
 	// Set new SHA before deleting old: a scrape during the gap sees both (harmless
 	// for an info metric) rather than zero.
 	metrics.AppliedGitSHA.WithLabelValues(headSHA).Set(1)
@@ -491,6 +526,26 @@ func (a *Agent) triggerReconcile() {
 	case a.webhookCh <- struct{}{}:
 	default:
 		// channel full — reconciliation already pending
+	}
+}
+
+func (a *Agent) publishMQTTStatus(ctx context.Context, st *state.State) {
+	if a.mqttClient == nil || st == nil {
+		return
+	}
+	lastRecon := st.AppliedAt
+	if st.FailedAt.After(lastRecon) {
+		lastRecon = st.FailedAt
+	}
+	status := mqtt.Status{
+		LastReconciliation:           lastRecon,
+		LastSuccessfulReconciliation: st.LastSuccessfulReconciliationAt,
+		AppliedSHA:                   st.AppliedSHA,
+		FailedCount:                  st.FailedCount,
+		Paused:                       a.paused.Load(),
+	}
+	if err := a.mqttClient.PublishStatus(ctx, status); err != nil {
+		slog.Warn("mqtt status publish failed", "error", err)
 	}
 }
 

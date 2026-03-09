@@ -19,6 +19,7 @@ import (
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/metrics"
+	mqttpkg "github.com/schjan/picolet/pkg/mqtt"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
@@ -203,6 +204,22 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 		agent.WithFileWriter(applier.NewAtomicFileWriter()),
 	}
 
+	if cfg.MQTT != nil {
+		mqttCfg := mqttpkg.Config{
+			BrokerURL:   cfg.MQTT.BrokerURL,
+			Username:    cfg.MQTT.Username,
+			TopicPrefix: cfg.MQTT.TopicPrefix,
+		}
+		if cfg.MQTT.PasswordPath != "" {
+			data, err := os.ReadFile(cfg.MQTT.PasswordPath)
+			if err != nil {
+				return fmt.Errorf("reading MQTT password: %w", err)
+			}
+			mqttCfg.Password = strings.TrimSpace(string(data))
+		}
+		opts = append(opts, agent.WithMQTT(mqttpkg.NewClient(mqttCfg, cfg.Hostname)))
+	}
+
 	a := agent.New(cfg, opts...)
 	return a.Run(ctx)
 }
@@ -296,10 +313,30 @@ func runResolve(repoDir, host string) error {
 	return nil
 }
 
+//nolint:cyclop,funlen // MQTT path + webhook path with optional secret; splitting reduces readability
 func runTrigger(_ context.Context, configPath, urlOverride string) error {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
 		return err
+	}
+
+	// Prefer MQTT when configured and no explicit webhook URL override.
+	if cfg.MQTT != nil && urlOverride == "" {
+		mqttCfg := mqttpkg.Config{
+			BrokerURL:   cfg.MQTT.BrokerURL,
+			Username:    cfg.MQTT.Username,
+			TopicPrefix: cfg.MQTT.TopicPrefix,
+		}
+		if cfg.MQTT.PasswordPath != "" {
+			data, err := os.ReadFile(cfg.MQTT.PasswordPath)
+			if err != nil {
+				return fmt.Errorf("reading MQTT password: %w", err)
+			}
+			mqttCfg.Password = strings.TrimSpace(string(data))
+		}
+		triggerCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return mqttpkg.Trigger(triggerCtx, mqttCfg) //nolint:contextcheck // intentional detached context — trigger must not inherit signal cancellation
 	}
 
 	webhookURL := urlOverride

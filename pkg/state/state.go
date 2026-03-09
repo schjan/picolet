@@ -26,6 +26,8 @@ type State struct {
 	FailedSHA    string                 `json:"failed_sha"`
 	FailedCount  int                    `json:"failed_count"`
 	FailedAt     time.Time              `json:"failed_at"`
+
+	LastSuccessfulReconciliationAt time.Time `json:"last_successful_reconciliation_at,omitzero"`
 }
 
 // NewState returns a zero State with initialized maps, suitable for first-run or testing.
