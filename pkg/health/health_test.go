@@ -58,6 +58,8 @@ func TestEnforceRestartsUnhealthy(t *testing.T) {
 	result, err := c.Enforce(context.Background(), st)
 	require.NoError(t, err)
 	assert.Len(t, result.Unhealthy, 1)
+	assert.Equal(t, []string{"foo.service"}, result.Restarted)
+	assert.Empty(t, result.Skipped)
 }
 
 func TestEnforceSkipsSecretsAndManifests(t *testing.T) {
@@ -120,10 +122,14 @@ func TestEnforceRestartCooldown(t *testing.T) {
 	result1, err := c.Enforce(context.Background(), st)
 	require.NoError(t, err)
 	assert.Len(t, result1.Unhealthy, 1)
+	assert.Equal(t, []string{"foo.service"}, result1.Restarted)
+	assert.Empty(t, result1.Skipped)
 
 	// Second enforce immediately: cooldown prevents restart
 	result2, err := c.Enforce(context.Background(), st)
 	require.NoError(t, err)
 	assert.Len(t, result2.Unhealthy, 1)
 	assert.Empty(t, result2.Errors)
+	assert.Empty(t, result2.Restarted)
+	assert.Equal(t, []string{"foo.service"}, result2.Skipped)
 }

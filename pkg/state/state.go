@@ -66,7 +66,7 @@ func (s *Store) Load() (*State, error) {
 	}
 	var st State
 	if err := json.Unmarshal(data, &st); err != nil {
-		slog.Warn("corrupt or incompatible state file, starting fresh", "path", s.path, "error", err)
+		slog.Warn("state file unreadable (corrupt or schema change), starting fresh", "path", s.path, "error", err)
 		return NewState(), nil
 	}
 	if st.ManagedFiles == nil {

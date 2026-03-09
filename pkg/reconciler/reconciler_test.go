@@ -162,28 +162,3 @@ func TestDiffServiceNamePropagated(t *testing.T) {
 	require.Equal(t, 1, cs.Summary[ActionCreate])
 	assert.Equal(t, "app.service", cs.Changes[0].ServiceName)
 }
-
-func TestCategoryFromPath(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		path string
-		want string
-	}{
-		{"secret:foo", "secret"},
-		{"/etc/containers/systemd/foo.container", "container"},
-		{"/etc/containers/systemd/foo.network", "network"},
-		{"/etc/containers/systemd/foo.volume", "volume"},
-		{"/etc/containers/systemd/foo.kube", "kube"},
-		{"/etc/systemd/system/foo.socket", "systemd"},
-		{"/var/lib/picolet/manifests/app/deploy.yml", "manifest"},
-		{"/home/runner/.local/share/picolet/manifests/app/deploy.yml", "manifest"},
-		{"/some/other/path", "unknown"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tt.want, categoryFromPath(tt.path))
-		})
-	}
-}

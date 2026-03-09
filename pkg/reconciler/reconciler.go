@@ -3,7 +3,6 @@ package reconciler
 import (
 	"crypto/sha256"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/schjan/picolet/pkg/resolver"
@@ -118,28 +117,7 @@ func SecretNameFromPath(destPath string) string {
 	return destPath
 }
 
-// Categories is the fixed set of known file categories used for metric labels.
-var Categories = []string{"container", "network", "volume", "kube", "systemd", "manifest", "secret"}
-
-// categoryFromPath guesses the category from a managed file's dest path.
-func categoryFromPath(destPath string) string {
-	if strings.HasPrefix(destPath, "secret:") {
-		return "secret"
-	}
-	switch filepath.Ext(destPath) {
-	case ".container":
-		return "container"
-	case ".network":
-		return "network"
-	case ".volume":
-		return "volume"
-	case ".kube":
-		return "kube"
-	case ".socket", ".service", ".timer":
-		return "systemd"
-	}
-	if strings.Contains(destPath, "/picolet/manifests/") {
-		return "manifest"
-	}
-	return "unknown"
+// Categories returns the fixed set of known file categories used for metric labels.
+func Categories() []string {
+	return []string{"container", "network", "volume", "kube", "systemd", "manifest", "secret"}
 }

@@ -32,13 +32,6 @@ var (
 		},
 	)
 
-	DriftDetectedTotal = prometheus.NewCounter(
-		prometheus.CounterOpts{
-			Name: "picolet_drift_detected_total",
-			Help: "Total number of drift detections.",
-		},
-	)
-
 	RollbackTotal = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "picolet_rollback_total",
@@ -70,17 +63,10 @@ var (
 		[]string{"sha"},
 	)
 
-	SelfUpdatePending = prometheus.NewGauge(
+	ManagedFilesTotal = prometheus.NewGauge(
 		prometheus.GaugeOpts{
-			Name: "picolet_self_update_pending",
-			Help: "1 when picolet.container changed but not yet restarted.",
-		},
-	)
-
-	ManagedUnitsTotal = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "picolet_managed_units_total",
-			Help: "Total number of managed units.",
+			Name: "picolet_managed_files_total",
+			Help: "Total number of managed files.",
 		},
 	)
 
@@ -134,13 +120,11 @@ func Register() {
 			ReconciliationTotal,
 			ReconciliationDuration,
 			LastSuccessfulReconciliation,
-			DriftDetectedTotal,
 			RollbackTotal,
 			HealthCheckTotal,
 			HealthEnforcementTotal,
 			AppliedGitSHA,
-			SelfUpdatePending,
-			ManagedUnitsTotal,
+			ManagedFilesTotal,
 			GitPollTotal,
 			FilesAppliedTotal,
 			FilesManagedTotal,

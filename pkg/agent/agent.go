@@ -173,9 +173,12 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	}
 
 	// Seed managed-files metrics from state on every tick
-	metrics.ManagedUnitsTotal.Set(float64(len(st.ManagedFiles)))
+	metrics.ManagedFilesTotal.Set(float64(len(st.ManagedFiles)))
 	metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
 	setFilesManagedMetric(countCategoriesFromState(st.ManagedFiles))
+	if st.AppliedSHA != "" {
+		metrics.AppliedGitSHA.WithLabelValues(st.AppliedSHA).Set(1)
+	}
 
 	// 1. Health enforcement (always)
 	hr, err := healthChecker.Enforce(ctx, st)
@@ -187,12 +190,14 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		}
 		for _, u := range hr.Unhealthy {
 			metrics.HealthCheckTotal.WithLabelValues(u, "unhealthy").Inc()
+		}
+		for _, u := range hr.Restarted {
 			metrics.HealthEnforcementTotal.WithLabelValues(u, "restart").Inc()
-			metrics.DriftDetectedTotal.Inc()
+		}
+		for _, u := range hr.Skipped {
+			metrics.HealthEnforcementTotal.WithLabelValues(u, "skip_cooldown").Inc()
 		}
 	}
-
-	metrics.SelfUpdatePending.Set(0)
 
 	// 2. Git poll
 	pollResult, err := poller.Poll(ctx, st.AppliedSHA)
@@ -236,6 +241,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 			st.FailedCount = 1
 		}
 		st.FailedAt = time.Now()
+		metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
 		if saveErr := store.Save(st); saveErr != nil {
 			slog.Error("saving failed state", "error", saveErr)
 		}
@@ -310,7 +316,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 
 	if !changeset.HasChanges() {
 		slog.Info("no changes to apply", "sha", headSHA)
-		st.MarkApplied(headSHA)
+		markAppliedWithMetrics(st, headSHA)
 		if err := store.Save(st); err != nil {
 			return nil, fmt.Errorf("saving state: %w", err)
 		}
@@ -344,7 +350,6 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 
 	if applyResult.NeedsSelfRestart && !a.dryRun {
 		slog.Info("picolet.container changed, self-update pending")
-		metrics.SelfUpdatePending.Set(1)
 	}
 
 	return &ReconcileResult{
@@ -405,8 +410,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 }
 
 func (a *Agent) updateState(headSHA string, st *state.State, changeset *reconciler.Changeset) {
-	prevSHA := st.AppliedSHA
-	st.MarkApplied(headSHA)
+	markAppliedWithMetrics(st, headSHA)
 	st.ManagedFiles = make(map[string]state.ManagedFile)
 	st.ServiceNames = make(map[string]string)
 	for _, change := range changeset.Changes {
@@ -419,7 +423,14 @@ func (a *Agent) updateState(headSHA string, st *state.State, changeset *reconcil
 		}
 	}
 
-	metrics.ManagedUnitsTotal.Set(float64(len(st.ManagedFiles)))
+	metrics.ManagedFilesTotal.Set(float64(len(st.ManagedFiles)))
+}
+
+// markAppliedWithMetrics records a successful SHA application in both state and metrics.
+func markAppliedWithMetrics(st *state.State, headSHA string) {
+	prevSHA := st.AppliedSHA
+	st.MarkApplied(headSHA)
+	metrics.FailedSHAConsecutiveCount.Set(0)
 	// Set new SHA before deleting old: a scrape during the gap sees both (harmless
 	// for an info metric) rather than zero.
 	metrics.AppliedGitSHA.WithLabelValues(headSHA).Set(1)
@@ -432,13 +443,13 @@ func (a *Agent) updateState(headSHA string, st *state.State, changeset *reconcil
 // Because the label set is fixed, each call is a pure Set — no Reset() needed,
 // so a concurrent Prometheus scrape never sees zero or partial values.
 func setFilesManagedMetric(counts map[string]float64) {
-	for _, cat := range reconciler.Categories {
+	for _, cat := range reconciler.Categories() {
 		metrics.FilesManagedTotal.WithLabelValues(cat).Set(counts[cat])
 	}
 }
 
 func countCategoriesFromState(managed map[string]state.ManagedFile) map[string]float64 {
-	counts := make(map[string]float64, len(reconciler.Categories))
+	counts := make(map[string]float64, len(reconciler.Categories()))
 	for _, mf := range managed {
 		counts[mf.Category]++
 	}
@@ -459,6 +470,10 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	st, err := store.Load()
 	if err != nil {
 		slog.Warn("loading state for orphan scan failed", "error", err)
+		return
+	}
+	if len(st.ManagedFiles) == 0 {
+		slog.Info("orphan scan skipped: no managed files in state")
 		return
 	}
 	scanner := orphan.New(a.writer, a.podman, quadletDir, systemdDir, dataDir)

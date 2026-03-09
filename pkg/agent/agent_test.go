@@ -177,9 +177,9 @@ func TestAgentDryRun(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
 	sys, pod, fw := newBareMocks(t)
-	// Dry-run: health checks happen, but no writes/restarts
+	// Dry-run: health checks happen, but no writes/restarts.
+	// No WriteFile expectation set — strict mock will fail if WriteFile is called.
 	setupNoopMocks(sys, pod)
-	written := make(map[string][]byte)
 
 	cfg := &agentcfg.Config{
 		Hostname:     "test-host",
@@ -210,8 +210,7 @@ func TestAgentDryRun(t *testing.T) {
 	<-ctx.Done()
 	require.NoError(t, <-errCh)
 
-	// In dry-run, no files should be written
-	assert.Empty(t, written, "dry-run should not write files")
+	// Strict mock (no WriteFile expectation) guards against unexpected writes
 }
 
 func TestAgentSkipsFailedSHA(t *testing.T) {
@@ -222,9 +221,9 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 	statePath := filepath.Join(stateDir, "state.json")
 
 	sys, pod, fw := newBareMocks(t)
-	// Skipped SHA: health checks only, no writes expected
+	// Skipped SHA: health checks only, no writes expected.
+	// No WriteFile expectation — strict mock will fail if WriteFile is called.
 	setupNoopMocks(sys, pod)
-	written := make(map[string][]byte)
 
 	cfg := &agentcfg.Config{
 		Hostname:     "test-host",
@@ -267,8 +266,7 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 	<-ctx.Done()
 	require.NoError(t, <-errCh)
 
-	// Should NOT have written any files since SHA is permanently failed
-	assert.Empty(t, written, "should not write files for permanently failed SHA")
+	// Strict mock (no WriteFile expectation) guards against unexpected writes
 }
 
 func TestAgentRetriesFailedSHA(t *testing.T) {
