@@ -176,6 +176,23 @@ func jsonLogging(ctx context.Context, cmd *cli.Command) (context.Context, error)
 	return ctx, nil
 }
 
+// mqttConfigFrom converts an agent MQTT config to a pkg/mqtt Config, reading the password file if set.
+func mqttConfigFrom(cfg *agentcfg.MQTTConfig) (mqttpkg.Config, error) {
+	c := mqttpkg.Config{
+		BrokerURL:   cfg.BrokerURL,
+		Username:    cfg.Username,
+		TopicPrefix: cfg.TopicPrefix,
+	}
+	if cfg.PasswordPath != "" {
+		data, err := os.ReadFile(cfg.PasswordPath)
+		if err != nil {
+			return mqttpkg.Config{}, fmt.Errorf("reading MQTT password: %w", err)
+		}
+		c.Password = strings.TrimSpace(string(data))
+	}
+	return c, nil
+}
+
 func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
@@ -205,17 +222,9 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 	}
 
 	if cfg.MQTT != nil {
-		mqttCfg := mqttpkg.Config{
-			BrokerURL:   cfg.MQTT.BrokerURL,
-			Username:    cfg.MQTT.Username,
-			TopicPrefix: cfg.MQTT.TopicPrefix,
-		}
-		if cfg.MQTT.PasswordPath != "" {
-			data, err := os.ReadFile(cfg.MQTT.PasswordPath)
-			if err != nil {
-				return fmt.Errorf("reading MQTT password: %w", err)
-			}
-			mqttCfg.Password = strings.TrimSpace(string(data))
+		mqttCfg, err := mqttConfigFrom(cfg.MQTT)
+		if err != nil {
+			return err
 		}
 		opts = append(opts, agent.WithMQTT(mqttpkg.NewClient(mqttCfg, cfg.Hostname)))
 	}
@@ -313,7 +322,7 @@ func runResolve(repoDir, host string) error {
 	return nil
 }
 
-//nolint:cyclop,funlen // MQTT path + webhook path with optional secret; splitting reduces readability
+//nolint:cyclop // MQTT path + webhook path with optional secret; splitting reduces readability
 func runTrigger(_ context.Context, configPath, urlOverride string) error {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
@@ -322,17 +331,9 @@ func runTrigger(_ context.Context, configPath, urlOverride string) error {
 
 	// Prefer MQTT when configured and no explicit webhook URL override.
 	if cfg.MQTT != nil && urlOverride == "" {
-		mqttCfg := mqttpkg.Config{
-			BrokerURL:   cfg.MQTT.BrokerURL,
-			Username:    cfg.MQTT.Username,
-			TopicPrefix: cfg.MQTT.TopicPrefix,
-		}
-		if cfg.MQTT.PasswordPath != "" {
-			data, err := os.ReadFile(cfg.MQTT.PasswordPath)
-			if err != nil {
-				return fmt.Errorf("reading MQTT password: %w", err)
-			}
-			mqttCfg.Password = strings.TrimSpace(string(data))
+		mqttCfg, err := mqttConfigFrom(cfg.MQTT)
+		if err != nil {
+			return err
 		}
 		triggerCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

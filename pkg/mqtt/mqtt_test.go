@@ -214,6 +214,7 @@ func startTCPProxy(t *testing.T, brokerURL string) (string, func()) {
 
 	var mu sync.Mutex
 	var conns []net.Conn
+	var wg sync.WaitGroup
 
 	go func() {
 		for {
@@ -229,19 +230,20 @@ func startTCPProxy(t *testing.T, brokerURL string) (string, func()) {
 			mu.Lock()
 			conns = append(conns, clientConn, brokerConn)
 			mu.Unlock()
-			go func() { _, _ = io.Copy(brokerConn, clientConn) }()
-			go func() { _, _ = io.Copy(clientConn, brokerConn) }()
+			wg.Go(func() { _, _ = io.Copy(brokerConn, clientConn) })
+			wg.Go(func() { _, _ = io.Copy(clientConn, brokerConn) })
 		}
 	}()
 
 	killAll := func() {
 		mu.Lock()
-		defer mu.Unlock()
 		for _, c := range conns {
 			_ = c.Close()
 		}
 		conns = nil
 		_ = listener.Close() // prevent reconnection through proxy
+		mu.Unlock()
+		wg.Wait() // ensure all io.Copy goroutines have exited
 	}
 	t.Cleanup(killAll)
 

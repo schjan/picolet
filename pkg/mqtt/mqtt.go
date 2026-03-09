@@ -38,6 +38,12 @@ type Client struct {
 	cfg      Config
 	hostname string
 	conn     *autopaho.ConnectionManager
+
+	// Precomputed topic strings (immutable after construction).
+	pauseTopic   string
+	triggerTopic string
+	stateTopic   string
+	statusPrefix string // base for all status subtopics
 }
 
 // NewClient creates a new MQTT Client. Sets TopicPrefix default to "picolet" if empty.
@@ -45,7 +51,15 @@ func NewClient(cfg Config, hostname string) *Client {
 	if cfg.TopicPrefix == "" {
 		cfg.TopicPrefix = "picolet"
 	}
-	return &Client{cfg: cfg, hostname: hostname}
+	prefix := cfg.TopicPrefix
+	return &Client{
+		cfg:          cfg,
+		hostname:     hostname,
+		pauseTopic:   prefix + "/" + hostname + "/pause",
+		triggerTopic: prefix + "/trigger",
+		stateTopic:   prefix + "/" + hostname + "/status/state",
+		statusPrefix: prefix + "/" + hostname + "/status",
+	}
 }
 
 // Start connects to the MQTT broker and subscribes to pause and trigger topics.
@@ -57,11 +71,6 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 	if err != nil {
 		return fmt.Errorf("parsing broker URL: %w", err)
 	}
-
-	prefix := c.cfg.TopicPrefix
-	pauseTopic := prefix + "/" + c.hostname + "/pause"
-	triggerTopic := prefix + "/trigger"
-	stateTopic := prefix + "/" + c.hostname + "/status/state"
 
 	cliCfg := autopaho.ClientConfig{
 		ServerUrls: []*url.URL{brokerURL},
@@ -75,7 +84,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 		ConnectPassword: []byte(c.cfg.Password),
 
 		WillMessage: &paho.WillMessage{
-			Topic:   stateTopic,
+			Topic:   c.stateTopic,
 			Payload: []byte("offline"),
 			QoS:     1,
 			Retain:  true,
@@ -88,8 +97,8 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 			// Re-subscribe on every (re)connect.
 			if _, subErr := cm.Subscribe(ctx, &paho.Subscribe{
 				Subscriptions: []paho.SubscribeOptions{
-					{Topic: pauseTopic, QoS: 1},
-					{Topic: triggerTopic, QoS: 1},
+					{Topic: c.pauseTopic, QoS: 1},
+					{Topic: c.triggerTopic, QoS: 1},
 				},
 			}); subErr != nil {
 				slog.Error("mqtt subscribe failed", "error", subErr)
@@ -97,7 +106,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 
 			// Publish initial running state.
 			if _, pubErr := cm.Publish(ctx, &paho.Publish{
-				Topic: stateTopic, QoS: 1, Retain: true,
+				Topic: c.stateTopic, QoS: 1, Retain: true,
 				Payload: []byte("running"),
 			}); pubErr != nil {
 				slog.Warn("mqtt publish state=running failed", "error", pubErr)
@@ -114,7 +123,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 			OnPublishReceived: []func(paho.PublishReceived) (bool, error){
 				func(pr paho.PublishReceived) (bool, error) {
 					switch pr.Packet.Topic {
-					case pauseTopic:
+					case c.pauseTopic:
 						val := string(pr.Packet.Payload) == "true"
 						pauseFlag.Store(val)
 						if val {
@@ -123,7 +132,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 							metrics.AgentPaused.Set(0)
 						}
 						slog.Info("mqtt pause state changed", "paused", val)
-					case triggerTopic:
+					case c.triggerTopic:
 						slog.Info("mqtt trigger received")
 						triggerFn()
 					}
@@ -143,19 +152,17 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 
 // PublishStatus publishes the current agent status to retained MQTT topics.
 func (c *Client) PublishStatus(ctx context.Context, status Status) error {
-	prefix := c.cfg.TopicPrefix + "/" + c.hostname + "/status"
-
 	state := "running"
 	if status.Paused {
 		state = "paused"
 	}
 
 	topics := map[string]string{
-		prefix + "/state":                          state,
-		prefix + "/applied_sha":                    status.AppliedSHA,
-		prefix + "/failed_count":                   strconv.Itoa(status.FailedCount),
-		prefix + "/last_reconciliation":            formatTimestamp(status.LastReconciliation),
-		prefix + "/last_successful_reconciliation": formatTimestamp(status.LastSuccessfulReconciliation),
+		c.statusPrefix + "/state":                          state,
+		c.statusPrefix + "/applied_sha":                    status.AppliedSHA,
+		c.statusPrefix + "/failed_count":                   strconv.Itoa(status.FailedCount),
+		c.statusPrefix + "/last_reconciliation":            formatTimestamp(status.LastReconciliation),
+		c.statusPrefix + "/last_successful_reconciliation": formatTimestamp(status.LastSuccessfulReconciliation),
 	}
 
 	for topic, payload := range topics {
@@ -174,10 +181,9 @@ func (c *Client) Close(ctx context.Context) {
 	if c.conn == nil {
 		return
 	}
-	stateTopic := c.cfg.TopicPrefix + "/" + c.hostname + "/status/state"
 	// Best-effort offline publish before clean disconnect.
 	if _, err := c.conn.Publish(ctx, &paho.Publish{
-		Topic: stateTopic, QoS: 1, Retain: true,
+		Topic: c.stateTopic, QoS: 1, Retain: true,
 		Payload: []byte("offline"),
 	}); err != nil {
 		slog.Warn("mqtt publish state=offline failed", "error", err)
