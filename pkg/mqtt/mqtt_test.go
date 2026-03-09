@@ -29,9 +29,7 @@ func init() {
 
 func startTestBroker(t *testing.T) string {
 	t.Helper()
-	server := mqttserver.New(&mqttserver.Options{
-		Logger: nil,
-	})
+	server := mqttserver.New(nil)
 	require.NoError(t, server.AddHook(new(auth.AllowHook), nil))
 
 	tcp := listeners.NewTCP(listeners.Config{ID: "test-" + t.Name(), Address: "127.0.0.1:0"})

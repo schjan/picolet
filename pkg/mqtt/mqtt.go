@@ -124,14 +124,10 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 				func(pr paho.PublishReceived) (bool, error) {
 					switch pr.Packet.Topic {
 					case c.pauseTopic:
-						val := string(pr.Packet.Payload) == "true"
-						pauseFlag.Store(val)
-						if val {
-							metrics.AgentPaused.Set(1)
-						} else {
-							metrics.AgentPaused.Set(0)
-						}
-						slog.Info("mqtt pause state changed", "paused", val)
+						paused := string(pr.Packet.Payload) == "true"
+						pauseFlag.Store(paused)
+						metrics.AgentPaused.Set(boolToFloat64(paused))
+						slog.Info("mqtt pause state changed", "paused", paused)
 					case c.triggerTopic:
 						slog.Info("mqtt trigger received")
 						triggerFn()
@@ -246,4 +242,11 @@ func formatTimestamp(t time.Time) string {
 		return "0"
 	}
 	return strconv.FormatInt(t.Unix(), 10)
+}
+
+func boolToFloat64(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
 }
