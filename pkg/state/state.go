@@ -5,26 +5,33 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
 )
 
+// ManagedFile tracks a picolet-owned file's content hash and category.
+type ManagedFile struct {
+	Hash     string `json:"hash"`
+	Category string `json:"category"`
+}
+
 // State represents the persisted reconciliation state.
 type State struct {
-	AppliedSHA   string            `json:"applied_sha"`
-	AppliedAt    time.Time         `json:"applied_at"`
-	ManagedFiles map[string]string `json:"managed_files"` // destPath → "sha256:..."
-	ServiceNames map[string]string `json:"service_names"` // destPath → "foo.service" for quadlets
-	FailedSHA    string            `json:"failed_sha"`
-	FailedCount  int               `json:"failed_count"`
-	FailedAt     time.Time         `json:"failed_at"`
+	AppliedSHA   string                 `json:"applied_sha"`
+	AppliedAt    time.Time              `json:"applied_at"`
+	ManagedFiles map[string]ManagedFile `json:"managed_files"` // destPath → {hash, category}
+	ServiceNames map[string]string      `json:"service_names"` // destPath → "foo.service" for quadlets
+	FailedSHA    string                 `json:"failed_sha"`
+	FailedCount  int                    `json:"failed_count"`
+	FailedAt     time.Time              `json:"failed_at"`
 }
 
 // NewState returns a zero State with initialized maps, suitable for first-run or testing.
 func NewState() *State {
 	return &State{
-		ManagedFiles: make(map[string]string),
+		ManagedFiles: make(map[string]ManagedFile),
 		ServiceNames: make(map[string]string),
 	}
 }
@@ -59,10 +66,11 @@ func (s *Store) Load() (*State, error) {
 	}
 	var st State
 	if err := json.Unmarshal(data, &st); err != nil {
-		return nil, fmt.Errorf("parsing state %s: %w", s.path, err)
+		slog.Warn("state file unreadable (corrupt or schema change), starting fresh", "path", s.path, "error", err)
+		return NewState(), nil
 	}
 	if st.ManagedFiles == nil {
-		st.ManagedFiles = make(map[string]string)
+		st.ManagedFiles = make(map[string]ManagedFile)
 	}
 	if st.ServiceNames == nil {
 		st.ServiceNames = make(map[string]string)

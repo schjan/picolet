@@ -21,10 +21,10 @@ func TestEnforceAllHealthy(t *testing.T) {
 
 	c := New(sys)
 	st := &state.State{
-		ManagedFiles: map[string]string{
-			"/etc/containers/systemd/foo.container": "sha256:abc",
-			"/etc/containers/systemd/bar.network":   "sha256:def",
-			"secret:my_secret":                      "sha256:ghi",
+		ManagedFiles: map[string]state.ManagedFile{
+			"/etc/containers/systemd/foo.container": {Hash: "sha256:abc", Category: "container"},
+			"/etc/containers/systemd/bar.network":   {Hash: "sha256:def", Category: "network"},
+			"secret:my_secret":                      {Hash: "sha256:ghi", Category: "secret"},
 		},
 		ServiceNames: map[string]string{
 			"/etc/containers/systemd/foo.container": "foo.service",
@@ -47,8 +47,8 @@ func TestEnforceRestartsUnhealthy(t *testing.T) {
 
 	c := New(sys)
 	st := &state.State{
-		ManagedFiles: map[string]string{
-			"/etc/containers/systemd/foo.container": "sha256:abc",
+		ManagedFiles: map[string]state.ManagedFile{
+			"/etc/containers/systemd/foo.container": {Hash: "sha256:abc", Category: "container"},
 		},
 		ServiceNames: map[string]string{
 			"/etc/containers/systemd/foo.container": "foo.service",
@@ -58,6 +58,8 @@ func TestEnforceRestartsUnhealthy(t *testing.T) {
 	result, err := c.Enforce(context.Background(), st)
 	require.NoError(t, err)
 	assert.Len(t, result.Unhealthy, 1)
+	assert.Equal(t, []string{"foo.service"}, result.Restarted)
+	assert.Empty(t, result.Skipped)
 }
 
 func TestEnforceSkipsSecretsAndManifests(t *testing.T) {
@@ -67,8 +69,8 @@ func TestEnforceSkipsSecretsAndManifests(t *testing.T) {
 	c := New(sys)
 
 	st := state.NewState()
-	st.ManagedFiles["secret:my_secret"] = "sha256:abc"
-	st.ManagedFiles["/var/lib/picolet/manifests/app/deployment.yml"] = "sha256:def"
+	st.ManagedFiles["secret:my_secret"] = state.ManagedFile{Hash: "sha256:abc", Category: "secret"}
+	st.ManagedFiles["/var/lib/picolet/manifests/app/deployment.yml"] = state.ManagedFile{Hash: "sha256:def", Category: "manifest"}
 	// no quadlet units → ServiceNames stays empty
 
 	result, err := c.Enforce(context.Background(), st)
@@ -84,8 +86,8 @@ func TestEnforceHandlesCheckError(t *testing.T) {
 
 	c := New(sys)
 	st := &state.State{
-		ManagedFiles: map[string]string{
-			"/etc/containers/systemd/foo.container": "sha256:abc",
+		ManagedFiles: map[string]state.ManagedFile{
+			"/etc/containers/systemd/foo.container": {Hash: "sha256:abc", Category: "container"},
 		},
 		ServiceNames: map[string]string{
 			"/etc/containers/systemd/foo.container": "foo.service",
@@ -108,8 +110,8 @@ func TestEnforceRestartCooldown(t *testing.T) {
 	c := New(sys)
 
 	st := &state.State{
-		ManagedFiles: map[string]string{
-			"/etc/containers/systemd/foo.container": "sha256:abc",
+		ManagedFiles: map[string]state.ManagedFile{
+			"/etc/containers/systemd/foo.container": {Hash: "sha256:abc", Category: "container"},
 		},
 		ServiceNames: map[string]string{
 			"/etc/containers/systemd/foo.container": "foo.service",
@@ -120,10 +122,14 @@ func TestEnforceRestartCooldown(t *testing.T) {
 	result1, err := c.Enforce(context.Background(), st)
 	require.NoError(t, err)
 	assert.Len(t, result1.Unhealthy, 1)
+	assert.Equal(t, []string{"foo.service"}, result1.Restarted)
+	assert.Empty(t, result1.Skipped)
 
 	// Second enforce immediately: cooldown prevents restart
 	result2, err := c.Enforce(context.Background(), st)
 	require.NoError(t, err)
 	assert.Len(t, result2.Unhealthy, 1)
 	assert.Empty(t, result2.Errors)
+	assert.Empty(t, result2.Restarted)
+	assert.Equal(t, []string{"foo.service"}, result2.Skipped)
 }

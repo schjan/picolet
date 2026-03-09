@@ -15,6 +15,8 @@ const restartCooldown = 5 * time.Minute
 type CheckResult struct {
 	Healthy   []string
 	Unhealthy []string
+	Restarted []string
+	Skipped   []string
 	Errors    []error
 }
 
@@ -61,9 +63,13 @@ func (c *Checker) Enforce(ctx context.Context, st *state.State) (*CheckResult, e
 		slog.Warn("unit not active, restarting", "unit", unit)
 		result.Unhealthy = append(result.Unhealthy, unit)
 
-		if last, ok := c.lastRestart[unit]; ok && time.Since(last) < restartCooldown {
-			slog.Debug("skipping restart, cooldown active", "unit", unit, "last_restart", last)
-			continue
+		if last, ok := c.lastRestart[unit]; ok {
+			elapsed := time.Since(last)
+			if elapsed < restartCooldown {
+				slog.Info("skipping restart, cooldown active", "unit", unit, "cooldown_remaining", (restartCooldown - elapsed).Round(time.Second))
+				result.Skipped = append(result.Skipped, unit)
+				continue
+			}
 		}
 
 		if err := c.systemd.RestartUnit(ctx, unit); err != nil {
@@ -72,6 +78,7 @@ func (c *Checker) Enforce(ctx context.Context, st *state.State) (*CheckResult, e
 			continue
 		}
 		c.lastRestart[unit] = time.Now()
+		result.Restarted = append(result.Restarted, unit)
 	}
 
 	return result, nil

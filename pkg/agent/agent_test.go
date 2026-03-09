@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -177,9 +178,9 @@ func TestAgentDryRun(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
 	sys, pod, fw := newBareMocks(t)
-	// Dry-run: health checks happen, but no writes/restarts
+	// Dry-run: health checks happen, but no writes/restarts.
+	// No WriteFile expectation set — strict mock will fail if WriteFile is called.
 	setupNoopMocks(sys, pod)
-	written := make(map[string][]byte)
 
 	cfg := &agentcfg.Config{
 		Hostname:     "test-host",
@@ -210,8 +211,7 @@ func TestAgentDryRun(t *testing.T) {
 	<-ctx.Done()
 	require.NoError(t, <-errCh)
 
-	// In dry-run, no files should be written
-	assert.Empty(t, written, "dry-run should not write files")
+	// Strict mock (no WriteFile expectation) guards against unexpected writes
 }
 
 func TestAgentSkipsFailedSHA(t *testing.T) {
@@ -222,9 +222,9 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 	statePath := filepath.Join(stateDir, "state.json")
 
 	sys, pod, fw := newBareMocks(t)
-	// Skipped SHA: health checks only, no writes expected
+	// Skipped SHA: health checks only, no writes expected.
+	// No WriteFile expectation — strict mock will fail if WriteFile is called.
 	setupNoopMocks(sys, pod)
-	written := make(map[string][]byte)
 
 	cfg := &agentcfg.Config{
 		Hostname:     "test-host",
@@ -267,8 +267,7 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 	<-ctx.Done()
 	require.NoError(t, <-errCh)
 
-	// Should NOT have written any files since SHA is permanently failed
-	assert.Empty(t, written, "should not write files for permanently failed SHA")
+	// Strict mock (no WriteFile expectation) guards against unexpected writes
 }
 
 func TestAgentRetriesFailedSHA(t *testing.T) {
@@ -526,6 +525,76 @@ func TestWebhookOnHTTPServer(t *testing.T) {
 	}
 }
 
+func TestHealthEndpoint_ReturnsUnavailableBeforeFirstTick(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{
+		Hostname: "test",
+		RepoURL:  "https://example.com/repo.git",
+	}
+	a := New(cfg)
+
+	srv := httptest.NewServer(a.newMux())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/health") //nolint:noctx // test helper
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
+func TestHealthEndpoint_ReturnsOKAfterSuccessfulTick(t *testing.T) {
+	t.Parallel()
+	bareDir := initTestRepo(t)
+	repoDir := filepath.Join(t.TempDir(), "clone")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+
+	metrics.Register()
+
+	sys, pod, fw := newBareMocks(t)
+	setupApplyMocks(sys, pod, fw)
+
+	cfg := &agentcfg.Config{
+		Hostname:     "test-host",
+		RepoURL:      bareDir,
+		RepoBranch:   "master",
+		PollInterval: time.Hour,
+		MetricsPort:  0,
+		SecretsDir:   t.TempDir(),
+	}
+
+	a := New(cfg,
+		WithSystemd(sys),
+		WithPodman(pod),
+		WithFileWriter(fw),
+		WithRepoPath(repoDir),
+		WithStatePath(statePath),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- a.Run(ctx)
+	}()
+
+	srv := httptest.NewServer(a.newMux())
+	defer srv.Close()
+
+	// Wait until agent becomes ready
+	require.Eventually(t, func() bool {
+		resp, err := http.Get(srv.URL + "/health") //nolint:noctx // test helper
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, 10*time.Second, 50*time.Millisecond, "/health should return 200 after first tick")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 func pushToTestRepo(t *testing.T, bareDir string, files map[string]string) {
 	t.Helper()
 	workDir := filepath.Join(t.TempDir(), "push-work")
@@ -662,4 +731,62 @@ Image=hello-world:latest
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+func TestScanOrphansAfterSchemaMigration(t *testing.T) {
+	t.Parallel()
+
+	// Simulate a schema migration: state file exists but has empty ManagedFiles.
+	// scanOrphans must NOT skip the scan — picolet-owned files from the previous
+	// run would remain as permanent orphans.
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	store := state.NewStore(statePath)
+	require.NoError(t, store.Save(state.NewState()))
+
+	metrics.Register()
+
+	sys, pod, fw := newBareMocks(t)
+	// Strict expectation (no .Maybe()): if scanOrphans skips the scan
+	// (e.g. guard on empty ManagedFiles), ListManagedSecrets is never called
+	// and mockery fails the test during cleanup.
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
+	// System dirs don't exist in test env → file scans are no-ops, but
+	// DaemonReload won't be called (no files removed).
+	_ = sys
+	_ = fw
+
+	cfg := &agentcfg.Config{
+		Hostname: "test-host",
+		RepoURL:  "https://example.com/repo.git",
+	}
+
+	a := New(cfg,
+		WithSystemd(sys),
+		WithPodman(pod),
+		WithFileWriter(fw),
+		WithStatePath(statePath),
+	)
+
+	a.scanOrphans(context.Background(), store)
+}
+
+func TestSetFilesManagedMetric(t *testing.T) {
+	t.Parallel()
+	metrics.Register()
+
+	counts := map[string]float64{
+		"container": 3,
+		"network":   1,
+		"volume":    0,
+		"kube":      2,
+		"systemd":   0,
+		"manifest":  0,
+		"secret":    5,
+	}
+	setFilesManagedMetric(counts)
+
+	for _, cat := range reconciler.Categories() {
+		got := testutil.ToFloat64(metrics.FilesManagedTotal.WithLabelValues(cat))
+		assert.InDelta(t, counts[cat], got, 0.001, "category %s", cat)
+	}
 }

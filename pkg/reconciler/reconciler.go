@@ -3,7 +3,6 @@ package reconciler
 import (
 	"crypto/sha256"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/schjan/picolet/pkg/resolver"
@@ -58,13 +57,13 @@ func Diff(
 	}
 
 	// Files in state but not in desired → delete
-	for destPath := range currentState.ManagedFiles {
+	for destPath, mf := range currentState.ManagedFiles {
 		if !seen[destPath] {
 			cs.addChange(Change{
 				DestPath:    destPath,
-				Category:    categoryFromPath(destPath),
+				Category:    mf.Category,
 				Action:      ActionDelete,
-				OldHash:     currentState.ManagedFiles[destPath],
+				OldHash:     mf.Hash,
 				ServiceName: currentState.ServiceNames[destPath], // "" for non-quadlets
 			})
 		}
@@ -76,12 +75,12 @@ func Diff(
 // classifyFile determines the action for a single desired file.
 func classifyFile(f resolver.ResolvedFile, currentState *state.State) Change {
 	newHash := hash(f.Content)
-	oldHash, managed := currentState.ManagedFiles[f.DestPath]
+	mf, managed := currentState.ManagedFiles[f.DestPath]
 
 	c := Change{
 		DestPath:    f.DestPath,
 		Category:    f.Category,
-		OldHash:     oldHash,
+		OldHash:     mf.Hash,
 		NewHash:     newHash,
 		ServiceName: f.ServiceName,
 	}
@@ -90,7 +89,7 @@ func classifyFile(f resolver.ResolvedFile, currentState *state.State) Change {
 	case !managed:
 		c.Action = ActionCreate
 		c.NewContent = f.Content
-	case oldHash == newHash:
+	case mf.Hash == newHash:
 		c.Action = ActionNoop
 	default:
 		c.Action = ActionUpdate
@@ -118,25 +117,9 @@ func SecretNameFromPath(destPath string) string {
 	return destPath
 }
 
-// categoryFromPath guesses the category from a managed file's dest path.
-func categoryFromPath(destPath string) string {
-	if strings.HasPrefix(destPath, "secret:") {
-		return "secret"
-	}
-	switch filepath.Ext(destPath) {
-	case ".container":
-		return "container"
-	case ".network":
-		return "network"
-	case ".volume":
-		return "volume"
-	case ".kube":
-		return "kube"
-	case ".socket", ".service", ".timer":
-		return "systemd"
-	}
-	if strings.Contains(destPath, "/picolet/manifests/") {
-		return "manifest"
-	}
-	return "unknown"
+var categories = []string{"container", "network", "volume", "kube", "systemd", "manifest", "secret"}
+
+// Categories returns the fixed set of known file categories used for metric labels.
+func Categories() []string {
+	return categories
 }

@@ -13,6 +13,7 @@ import (
 	mocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/orphan"
 	"github.com/schjan/picolet/pkg/resolver"
+	"github.com/schjan/picolet/pkg/state"
 )
 
 func TestScanOwnedDir_RemovesOrphans(t *testing.T) {
@@ -33,11 +34,12 @@ func TestScanOwnedDir_RemovesOrphans(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
 	s := orphan.New(fw, pod, quadletDir, t.TempDir(), t.TempDir())
-	removed, err := s.Scan(context.Background(), map[string]string{
-		managedPath: "sha256:abc",
+	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{
+		managedPath: {Hash: "sha256:abc", Category: "container"},
 	})
 	require.NoError(t, err)
-	assert.True(t, removed)
+	assert.Equal(t, 1, result.FilesRemoved)
+	assert.Equal(t, 0, result.SecretsRemoved)
 }
 
 func TestScanOwnedDir_DirNotExist(t *testing.T) {
@@ -48,10 +50,11 @@ func TestScanOwnedDir_DirNotExist(t *testing.T) {
 
 	nonExistent := filepath.Join(t.TempDir(), "does-not-exist")
 	s := orphan.New(fw, pod, nonExistent, t.TempDir(), t.TempDir())
-	// Should return nil — non-existent dir means no orphans
-	removed, err := s.Scan(context.Background(), map[string]string{})
+	// Should return zero — non-existent dir means no orphans
+	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{})
 	require.NoError(t, err)
-	assert.False(t, removed)
+	assert.Equal(t, 0, result.FilesRemoved)
+	assert.Equal(t, 0, result.SecretsRemoved)
 }
 
 func TestScanMarkedDir_RemovesOrphans(t *testing.T) {
@@ -69,9 +72,9 @@ func TestScanMarkedDir_RemovesOrphans(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
 	s := orphan.New(fw, pod, t.TempDir(), systemdDir, t.TempDir())
-	removed, err := s.Scan(context.Background(), map[string]string{})
+	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{})
 	require.NoError(t, err)
-	assert.True(t, removed)
+	assert.Equal(t, 1, result.FilesRemoved)
 }
 
 func TestScanMarkedDir_IgnoresUnmarkedFiles(t *testing.T) {
@@ -91,9 +94,9 @@ func TestScanMarkedDir_IgnoresUnmarkedFiles(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
 	s := orphan.New(fw, pod, t.TempDir(), systemdDir, t.TempDir())
-	removed, err := s.Scan(context.Background(), map[string]string{})
+	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{})
 	require.NoError(t, err)
-	assert.False(t, removed)
+	assert.Equal(t, 0, result.FilesRemoved)
 }
 
 func TestScanMarkedDir_KeepsManagedFiles(t *testing.T) {
@@ -110,11 +113,11 @@ func TestScanMarkedDir_KeepsManagedFiles(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
 	s := orphan.New(fw, pod, t.TempDir(), systemdDir, t.TempDir())
-	removed, err := s.Scan(context.Background(), map[string]string{
-		managedPath: "sha256:abc",
+	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{
+		managedPath: {Hash: "sha256:abc", Category: "systemd"},
 	})
 	require.NoError(t, err)
-	assert.False(t, removed)
+	assert.Equal(t, 0, result.FilesRemoved)
 }
 
 func TestScanSecrets_RemovesOrphans(t *testing.T) {
@@ -126,11 +129,11 @@ func TestScanSecrets_RemovesOrphans(t *testing.T) {
 	pod.EXPECT().SecretRemove(mock.Anything, "orphan").Return(nil)
 
 	s := orphan.New(fw, pod, t.TempDir(), t.TempDir(), t.TempDir())
-	removed, err := s.Scan(context.Background(), map[string]string{
-		"secret:kept": "sha256:abc",
+	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{
+		"secret:kept": {Hash: "sha256:abc", Category: "secret"},
 	})
 	require.NoError(t, err)
-	assert.True(t, removed)
+	assert.Equal(t, 1, result.SecretsRemoved)
 }
 
 func TestScanSecrets_KeepsAllManaged(t *testing.T) {
@@ -141,10 +144,32 @@ func TestScanSecrets_KeepsAllManaged(t *testing.T) {
 	// No SecretRemove calls expected
 
 	s := orphan.New(fw, pod, t.TempDir(), t.TempDir(), t.TempDir())
-	removed, err := s.Scan(context.Background(), map[string]string{
-		"secret:db-pass": "sha256:abc",
-		"secret:api-key": "sha256:def",
+	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{
+		"secret:db-pass": {Hash: "sha256:abc", Category: "secret"},
+		"secret:api-key": {Hash: "sha256:def", Category: "secret"},
 	})
 	require.NoError(t, err)
-	assert.False(t, removed)
+	assert.Equal(t, 0, result.SecretsRemoved)
+}
+
+func TestScan_CountsFilesAndSecretsSeparately(t *testing.T) {
+	t.Parallel()
+	quadletDir := t.TempDir()
+
+	// Write 2 orphan files
+	require.NoError(t, os.WriteFile(filepath.Join(quadletDir, "a.container"), []byte("[Container]"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(quadletDir, "b.container"), []byte("[Container]"), 0o600))
+
+	fw := mocks.NewMockFileWriter(t)
+	fw.EXPECT().Remove(mock.Anything).Return(nil).Times(2)
+
+	pod := mocks.NewMockPodmanClient(t)
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return([]string{"orphan-secret"}, nil)
+	pod.EXPECT().SecretRemove(mock.Anything, "orphan-secret").Return(nil)
+
+	s := orphan.New(fw, pod, quadletDir, t.TempDir(), t.TempDir())
+	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{})
+	require.NoError(t, err)
+	assert.Equal(t, 2, result.FilesRemoved)
+	assert.Equal(t, 1, result.SecretsRemoved)
 }

@@ -85,7 +85,7 @@ func TestIntegrationReconcilePipeline(t *testing.T) {
 	fullState := state.NewState()
 	for _, c := range cs.Changes {
 		if c.Action != reconciler.ActionDelete {
-			fullState.ManagedFiles[c.DestPath] = c.NewHash
+			fullState.ManagedFiles[c.DestPath] = state.ManagedFile{Hash: c.NewHash, Category: c.Category}
 			if c.ServiceName != "" {
 				fullState.ServiceNames[c.DestPath] = c.ServiceName
 			}

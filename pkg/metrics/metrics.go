@@ -21,7 +21,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "picolet_reconciliation_duration_seconds",
 			Help:    "Duration of reconciliation cycles.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60},
 		},
 	)
 
@@ -29,13 +29,6 @@ var (
 		prometheus.GaugeOpts{
 			Name: "picolet_last_successful_reconciliation_timestamp",
 			Help: "Unix timestamp of the last successful reconciliation.",
-		},
-	)
-
-	DriftDetectedTotal = prometheus.NewCounter(
-		prometheus.CounterOpts{
-			Name: "picolet_drift_detected_total",
-			Help: "Total number of drift detections.",
 		},
 	)
 
@@ -70,18 +63,43 @@ var (
 		[]string{"sha"},
 	)
 
-	SelfUpdatePending = prometheus.NewGauge(
+	GitPollTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "picolet_git_poll_total",
+			Help: "Total git poll attempts by result.",
+		},
+		[]string{"result"},
+	)
+
+	FilesAppliedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "picolet_files_applied_total",
+			Help: "Total files applied by action and category.",
+		},
+		[]string{"action", "category"},
+	)
+
+	FilesManagedTotal = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "picolet_self_update_pending",
-			Help: "1 when picolet.container changed but not yet restarted.",
+			Name: "picolet_files_managed_total",
+			Help: "Current number of managed files by category.",
+		},
+		[]string{"category"},
+	)
+
+	FailedSHAConsecutiveCount = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "picolet_failed_sha_consecutive_count",
+			Help: "Consecutive reconciliation failures for the current SHA.",
 		},
 	)
 
-	ManagedUnitsTotal = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "picolet_managed_units_total",
-			Help: "Total number of managed units.",
+	OrphansRemovedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "picolet_orphans_removed_total",
+			Help: "Orphaned files/secrets removed at startup by type.",
 		},
+		[]string{"type"},
 	)
 )
 
@@ -95,13 +113,15 @@ func Register() {
 			ReconciliationTotal,
 			ReconciliationDuration,
 			LastSuccessfulReconciliation,
-			DriftDetectedTotal,
 			RollbackTotal,
 			HealthCheckTotal,
 			HealthEnforcementTotal,
 			AppliedGitSHA,
-			SelfUpdatePending,
-			ManagedUnitsTotal,
+			GitPollTotal,
+			FilesAppliedTotal,
+			FilesManagedTotal,
+			FailedSHAConsecutiveCount,
+			OrphansRemovedTotal,
 		)
 	})
 }
