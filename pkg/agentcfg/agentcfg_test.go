@@ -54,7 +54,7 @@ repo_url: https://github.com/example/fleet.git
 				Hostname:     "rpi5-1",
 				RepoURL:      "https://github.com/example/fleet.git",
 				RepoBranch:   "main",
-				PollInterval: 60 * time.Second,
+				PollInterval: 5 * time.Minute,
 				MetricsPort:  9417,
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",

@@ -173,7 +173,6 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	}
 
 	// Seed managed-files metrics from state on every tick
-	metrics.ManagedFilesTotal.Set(float64(len(st.ManagedFiles)))
 	metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
 	setFilesManagedMetric(countCategoriesFromState(st.ManagedFiles))
 	if st.AppliedSHA != "" {
@@ -208,7 +207,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 
 	if !pollResult.Changed {
 		metrics.GitPollTotal.WithLabelValues("noop").Inc()
-		slog.Info("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
+		slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
 		return nil
 	}
@@ -422,8 +421,6 @@ func (a *Agent) updateState(headSHA string, st *state.State, changeset *reconcil
 			st.ServiceNames[change.DestPath] = change.ServiceName
 		}
 	}
-
-	metrics.ManagedFilesTotal.Set(float64(len(st.ManagedFiles)))
 }
 
 // markAppliedWithMetrics records a successful SHA application in both state and metrics.
@@ -470,10 +467,6 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	st, err := store.Load()
 	if err != nil {
 		slog.Warn("loading state for orphan scan failed", "error", err)
-		return
-	}
-	if len(st.ManagedFiles) == 0 {
-		slog.Info("orphan scan skipped: no managed files in state")
 		return
 	}
 	scanner := orphan.New(a.writer, a.podman, quadletDir, systemdDir, dataDir)

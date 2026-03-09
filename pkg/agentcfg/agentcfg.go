@@ -45,7 +45,7 @@ func (c *Config) setDefaults() {
 		c.RepoBranch = "main"
 	}
 	if c.PollInterval == 0 {
-		c.PollInterval = 60 * time.Second
+		c.PollInterval = 5 * time.Minute
 	}
 	if c.MetricsPort == 0 {
 		c.MetricsPort = 9417

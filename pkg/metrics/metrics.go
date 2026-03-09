@@ -63,13 +63,6 @@ var (
 		[]string{"sha"},
 	)
 
-	ManagedFilesTotal = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "picolet_managed_files_total",
-			Help: "Total number of managed files.",
-		},
-	)
-
 	GitPollTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "picolet_git_poll_total",
@@ -124,7 +117,6 @@ func Register() {
 			HealthCheckTotal,
 			HealthEnforcementTotal,
 			AppliedGitSHA,
-			ManagedFilesTotal,
 			GitPollTotal,
 			FilesAppliedTotal,
 			FilesManagedTotal,

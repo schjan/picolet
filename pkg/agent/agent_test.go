@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -730,4 +731,62 @@ Image=hello-world:latest
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+func TestScanOrphansAfterSchemaMigration(t *testing.T) {
+	t.Parallel()
+
+	// Simulate a schema migration: state file exists but has empty ManagedFiles.
+	// scanOrphans must NOT skip the scan — picolet-owned files from the previous
+	// run would remain as permanent orphans.
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	store := state.NewStore(statePath)
+	require.NoError(t, store.Save(state.NewState()))
+
+	metrics.Register()
+
+	sys, pod, fw := newBareMocks(t)
+	// Strict expectation (no .Maybe()): if scanOrphans skips the scan
+	// (e.g. guard on empty ManagedFiles), ListManagedSecrets is never called
+	// and mockery fails the test during cleanup.
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
+	// System dirs don't exist in test env → file scans are no-ops, but
+	// DaemonReload won't be called (no files removed).
+	_ = sys
+	_ = fw
+
+	cfg := &agentcfg.Config{
+		Hostname: "test-host",
+		RepoURL:  "https://example.com/repo.git",
+	}
+
+	a := New(cfg,
+		WithSystemd(sys),
+		WithPodman(pod),
+		WithFileWriter(fw),
+		WithStatePath(statePath),
+	)
+
+	a.scanOrphans(context.Background(), store)
+}
+
+func TestSetFilesManagedMetric(t *testing.T) {
+	t.Parallel()
+	metrics.Register()
+
+	counts := map[string]float64{
+		"container": 3,
+		"network":   1,
+		"volume":    0,
+		"kube":      2,
+		"systemd":   0,
+		"manifest":  0,
+		"secret":    5,
+	}
+	setFilesManagedMetric(counts)
+
+	for _, cat := range reconciler.Categories() {
+		got := testutil.ToFloat64(metrics.FilesManagedTotal.WithLabelValues(cat))
+		assert.InDelta(t, counts[cat], got, 0.001, "category %s", cat)
+	}
 }

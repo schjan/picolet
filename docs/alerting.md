@@ -10,7 +10,6 @@
 | `picolet_git_poll_total` | Counter | `result` (changed/noop/error) | Total git poll attempts |
 | `picolet_files_applied_total` | Counter | `action`, `category` | Files applied per action (create/update/delete) and category |
 | `picolet_files_managed_total` | Gauge | `category` | Current managed files by category |
-| `picolet_managed_files_total` | Gauge | — | Total number of managed files |
 | `picolet_failed_sha_consecutive_count` | Gauge | — | Consecutive failures for current SHA (gates at 3) |
 | `picolet_rollback_total` | Counter | — | Total rollbacks performed |
 | `picolet_health_check_total` | Counter | `unit`, `result` | Health checks by unit and result |
