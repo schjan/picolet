@@ -6,7 +6,7 @@ require (
 	github.com/containers/podman/v5 v5.8.0
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/go-git/go-git/v5 v5.17.0
-	github.com/godbus/dbus/v5 v5.1.1-0.20241109141217-c266b19b28e9
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/prometheus/client_golang v1.23.2
 	github.com/sebdah/goldie/v2 v2.8.0
 	github.com/stretchr/testify v1.11.1
