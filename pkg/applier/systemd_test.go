@@ -8,6 +8,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNewUserSystemdConnectionContext_NoRuntimeDir(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	_, err := newUserSystemdConnectionContext(context.Background())
+	require.ErrorContains(t, err, "XDG_RUNTIME_DIR not set")
+}
+
+func TestNewUserSystemdConnectionContext_SocketPath(t *testing.T) {
+	// Can't connect to a real socket in unit tests; verify dial fails
+	// with socket-not-found, NOT with XDG_RUNTIME_DIR error.
+	t.Setenv("XDG_RUNTIME_DIR", "/nonexistent-runtime-dir")
+	_, err := newUserSystemdConnectionContext(context.Background())
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "XDG_RUNTIME_DIR not set")
+}
+
 func TestWaitJobDone(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

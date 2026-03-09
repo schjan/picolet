@@ -3,9 +3,13 @@ package applier
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 
 	"github.com/coreos/go-systemd/v22/dbus"
+	godbus "github.com/godbus/dbus/v5"
 )
 
 // systemd job result strings as documented in go-systemd dbus/methods.go:97-102.
@@ -21,14 +25,15 @@ type DBusSystemdManager struct {
 }
 
 // NewDBusSystemdManager creates a new SystemdManager backed by D-Bus.
-// When rootless is true, it connects to the session bus (for rootless Podman/systemd --user).
+// When rootless is true, it connects directly to the user systemd private socket,
+// bypassing the D-Bus session bus to avoid EXTERNAL auth failures in user namespaces.
 func NewDBusSystemdManager(ctx context.Context, rootless bool) (*DBusSystemdManager, error) {
 	var conn *dbus.Conn
 	var err error
 	busType := "system"
 	if rootless {
-		conn, err = dbus.NewUserConnectionContext(ctx)
-		busType = "session"
+		conn, err = newUserSystemdConnectionContext(ctx)
+		busType = "user-systemd"
 	} else {
 		conn, err = dbus.NewSystemConnectionContext(ctx)
 	}
@@ -36,6 +41,30 @@ func NewDBusSystemdManager(ctx context.Context, rootless bool) (*DBusSystemdMana
 		return nil, fmt.Errorf("connecting to %s D-Bus: %w", busType, err)
 	}
 	return &DBusSystemdManager{conn: conn}, nil
+}
+
+// newUserSystemdConnectionContext connects directly to the user systemd instance via
+// its private socket, bypassing the D-Bus session bus. Required for rootless containers
+// where D-Bus EXTERNAL auth fails due to user namespace UID remapping.
+func newUserSystemdConnectionContext(ctx context.Context) (*dbus.Conn, error) {
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if runtimeDir == "" {
+		return nil, fmt.Errorf("XDG_RUNTIME_DIR not set")
+	}
+	socketPath := filepath.Join(runtimeDir, "systemd", "private")
+
+	return dbus.NewConnection(func() (*godbus.Conn, error) {
+		conn, err := godbus.Dial("unix:path="+socketPath, godbus.WithContext(ctx))
+		if err != nil {
+			return nil, err
+		}
+		methods := []godbus.Auth{godbus.AuthExternal(strconv.Itoa(os.Getuid()))}
+		if err = conn.Auth(methods); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		return conn, nil
+	})
 }
 
 // Close closes the D-Bus connection.
