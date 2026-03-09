@@ -62,7 +62,7 @@ func (c *Checker) Enforce(ctx context.Context, st *state.State) (*CheckResult, e
 		result.Unhealthy = append(result.Unhealthy, unit)
 
 		if last, ok := c.lastRestart[unit]; ok && time.Since(last) < restartCooldown {
-			slog.Debug("skipping restart, cooldown active", "unit", unit, "last_restart", last)
+			slog.Warn("skipping restart, cooldown active", "unit", unit, "cooldown_remaining", (restartCooldown - time.Since(last)).Round(time.Second))
 			continue
 		}
 

@@ -1,6 +1,7 @@
 package state
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -27,8 +28,8 @@ func TestSaveAndLoad(t *testing.T) {
 	want := &State{
 		AppliedSHA: "abc123",
 		AppliedAt:  now,
-		ManagedFiles: map[string]string{
-			"/etc/containers/systemd/foo.container": "sha256:deadbeef",
+		ManagedFiles: map[string]ManagedFile{
+			"/etc/containers/systemd/foo.container": {Hash: "sha256:deadbeef", Category: "container"},
 		},
 	}
 
@@ -40,7 +41,7 @@ func TestSaveAndLoad(t *testing.T) {
 	assert.Equal(t, want.AppliedSHA, got.AppliedSHA)
 	assert.True(t, got.AppliedAt.Equal(want.AppliedAt))
 	require.Len(t, got.ManagedFiles, 1)
-	assert.Equal(t, "sha256:deadbeef", got.ManagedFiles["/etc/containers/systemd/foo.container"])
+	assert.Equal(t, ManagedFile{Hash: "sha256:deadbeef", Category: "container"}, got.ManagedFiles["/etc/containers/systemd/foo.container"])
 }
 
 func TestSaveCreatesDirectory(t *testing.T) {
@@ -48,7 +49,7 @@ func TestSaveCreatesDirectory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "subdir", "state.json")
 	store := NewStore(path)
 
-	st := &State{AppliedSHA: "test", ManagedFiles: make(map[string]string)}
+	st := &State{AppliedSHA: "test", ManagedFiles: make(map[string]ManagedFile)}
 	require.NoError(t, store.Save(st))
 
 	got, err := store.Load()
@@ -67,7 +68,7 @@ func TestSaveRoundtripWithFailedSHA(t *testing.T) {
 		FailedSHA:    "def",
 		FailedCount:  2,
 		FailedAt:     failedAt,
-		ManagedFiles: make(map[string]string),
+		ManagedFiles: make(map[string]ManagedFile),
 	}
 	require.NoError(t, store.Save(st))
 
@@ -76,4 +77,33 @@ func TestSaveRoundtripWithFailedSHA(t *testing.T) {
 	assert.Equal(t, "def", got.FailedSHA)
 	assert.Equal(t, 2, got.FailedCount)
 	assert.True(t, got.FailedAt.Equal(failedAt))
+}
+
+func TestLoad_CorruptJSON_ReturnsFreshState(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "state.json")
+	require.NoError(t, os.WriteFile(path, []byte("not valid json{{{"), 0o600))
+
+	store := NewStore(path)
+	st, err := store.Load()
+	require.NoError(t, err)
+	assert.Empty(t, st.AppliedSHA)
+	assert.NotNil(t, st.ManagedFiles)
+	assert.Empty(t, st.ManagedFiles)
+}
+
+func TestLoad_OldSchemaFormat_ReturnsFreshState(t *testing.T) {
+	t.Parallel()
+	// Old schema: ManagedFiles was map[string]string
+	oldJSON := `{"applied_sha":"abc","managed_files":{"/etc/foo":"sha256:deadbeef"}}`
+	path := filepath.Join(t.TempDir(), "state.json")
+	require.NoError(t, os.WriteFile(path, []byte(oldJSON), 0o600))
+
+	store := NewStore(path)
+	st, err := store.Load()
+	require.NoError(t, err)
+	// Old format should cause unmarshal error → fresh state
+	assert.Empty(t, st.AppliedSHA)
+	assert.NotNil(t, st.ManagedFiles)
+	assert.Empty(t, st.ManagedFiles)
 }

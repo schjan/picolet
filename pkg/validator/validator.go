@@ -55,6 +55,7 @@ func ValidateAll(ctx context.Context, r *resolver.Resolver, cfg *config.Config) 
 }
 
 func validateFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo, rootless bool) error {
+	slog.Debug("validating file", "path", f.DestPath, "category", f.Category)
 	switch f.Category {
 	case "network", "volume", "container", "kube":
 		if f.ParsedUnit == nil {

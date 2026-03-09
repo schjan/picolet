@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 
 	"github.com/schjan/picolet/pkg/applier"
+	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/resolver"
+	"github.com/schjan/picolet/pkg/state"
 )
 
 // Scanner detects and removes files that were deployed by picolet but are no longer
@@ -35,31 +37,41 @@ func New(writer applier.FileWriter, podman applier.PodmanClient, quadletDir, sys
 	}
 }
 
+// ScanResult contains counts of resources removed during an orphan scan.
+type ScanResult struct {
+	FilesRemoved   int
+	SecretsRemoved int
+}
+
 // Scan removes any file or secret that was placed by picolet but is absent from managedFiles.
 // Individual deletion errors are logged and do not abort the scan.
 // Directory-scan errors are returned because they indicate a systemic problem.
-// Returns true if any resource was successfully removed.
-func (s *Scanner) Scan(ctx context.Context, managedFiles map[string]string) (bool, error) {
+func (s *Scanner) Scan(ctx context.Context, managedFiles map[string]state.ManagedFile) (ScanResult, error) {
+	var result ScanResult
 	r1, err := s.scanOwnedDir(s.quadletDir, managedFiles)
+	result.FilesRemoved += r1
 	if err != nil {
-		return r1, err
+		return result, err
 	}
 	r2, err := s.scanOwnedDir(filepath.Join(s.dataDir, "manifests"), managedFiles)
+	result.FilesRemoved += r2
 	if err != nil {
-		return r1 || r2, err
+		return result, err
 	}
 	r3, err := s.scanMarkedDir(s.systemdDir, managedFiles)
+	result.FilesRemoved += r3
 	if err != nil {
-		return r1 || r2 || r3, err
+		return result, err
 	}
 	r4, err := s.scanSecrets(ctx, managedFiles)
-	return r1 || r2 || r3 || r4, err
+	result.SecretsRemoved += r4
+	return result, err
 }
 
 // scanOwnedDir removes any file in a picolet-owned directory that is absent from managedFiles.
 // Uses WalkDir so nested manifest subdirectories are covered.
-func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]string) (bool, error) {
-	var removed bool
+func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]state.ManagedFile) (int, error) {
+	var removed int
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -75,7 +87,7 @@ func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]string) (bool
 		}
 		if _, managed := managedFiles[path]; !managed {
 			if s.removeOrphan(path) {
-				removed = true
+				removed++
 			}
 		}
 		return nil
@@ -85,15 +97,15 @@ func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]string) (bool
 
 // scanMarkedDir scans a shared directory (systemd) and removes only files that carry
 // the picolet marker and are absent from managedFiles. Non-picolet files are untouched.
-func (s *Scanner) scanMarkedDir(dir string, managedFiles map[string]string) (bool, error) {
+func (s *Scanner) scanMarkedDir(dir string, managedFiles map[string]state.ManagedFile) (int, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return false, nil
+			return 0, nil
 		}
-		return false, fmt.Errorf("reading systemd dir %s: %w", dir, err)
+		return 0, fmt.Errorf("reading systemd dir %s: %w", dir, err)
 	}
-	var removed bool
+	var removed int
 	for _, entry := range entries {
 		if !entry.Type().IsRegular() {
 			continue
@@ -104,7 +116,7 @@ func (s *Scanner) scanMarkedDir(dir string, managedFiles map[string]string) (boo
 		}
 		if _, managed := managedFiles[path]; !managed {
 			if s.removeOrphan(path) {
-				removed = true
+				removed++
 			}
 		}
 	}
@@ -113,19 +125,20 @@ func (s *Scanner) scanMarkedDir(dir string, managedFiles map[string]string) (boo
 
 // scanSecrets removes Podman secrets that carry the managed-by=picolet label but are
 // absent from managedFiles.
-func (s *Scanner) scanSecrets(ctx context.Context, managedFiles map[string]string) (bool, error) {
+func (s *Scanner) scanSecrets(ctx context.Context, managedFiles map[string]state.ManagedFile) (int, error) {
 	names, err := s.podman.ListManagedSecrets(ctx)
 	if err != nil {
-		return false, fmt.Errorf("listing managed secrets: %w", err)
+		return 0, fmt.Errorf("listing managed secrets: %w", err)
 	}
-	var removed bool
+	var removed int
 	for _, name := range names {
 		if _, managed := managedFiles["secret:"+name]; !managed {
 			slog.Warn("orphaned secret detected, removing", "name", name)
 			if err := s.podman.SecretRemove(ctx, name); err != nil {
 				slog.Error("removing orphaned secret failed", "name", name, "error", err)
 			} else {
-				removed = true
+				metrics.OrphansRemovedTotal.WithLabelValues("secret").Inc()
+				removed++
 			}
 		}
 	}
@@ -138,6 +151,7 @@ func (s *Scanner) removeOrphan(path string) bool {
 		slog.Error("removing orphaned file failed", "path", path, "error", err)
 		return false
 	}
+	metrics.OrphansRemovedTotal.WithLabelValues("file").Inc()
 	return true
 }
 

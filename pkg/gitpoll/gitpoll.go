@@ -76,6 +76,7 @@ func (p *Poller) Init(ctx context.Context) error {
 // Poll fetches from remote and returns the current HEAD SHA. Changed is true
 // if HEAD differs from previousSHA.
 func (p *Poller) Poll(ctx context.Context, previousSHA string) (*PollResult, error) {
+	slog.Debug("polling git repository", "url", p.repoURL, "branch", p.branch)
 	if err := p.fetch(ctx); err != nil {
 		return nil, err
 	}
@@ -85,6 +86,7 @@ func (p *Poller) Poll(ctx context.Context, previousSHA string) (*PollResult, err
 		return nil, err
 	}
 
+	slog.Debug("git fetch complete", "sha", head, "changed", head != previousSHA)
 	return &PollResult{
 		HeadSHA: head,
 		Changed: head != previousSHA,

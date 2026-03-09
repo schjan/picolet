@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/schjan/picolet/pkg/agentcfg"
@@ -45,6 +46,7 @@ type Agent struct {
 	lockPath  string
 
 	webhookCh chan struct{}
+	ready     atomic.Bool
 }
 
 // Option configures the Agent.
@@ -133,6 +135,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	// Run first tick immediately
 	if err := a.tick(ctx, poller, store, healthChecker); err != nil {
 		slog.Error("initial reconciliation failed", "error", err)
+	} else {
+		a.ready.Store(true)
 	}
 
 	ticker := time.NewTicker(a.cfg.PollInterval)
@@ -146,11 +150,15 @@ func (a *Agent) Run(ctx context.Context) error {
 		case <-ticker.C:
 			if err := a.tick(ctx, poller, store, healthChecker); err != nil {
 				slog.Error("reconciliation tick failed", "error", err)
+			} else if !a.ready.Load() {
+				a.ready.Store(true)
 			}
 		case <-a.webhookCh:
 			slog.Info("webhook-triggered reconciliation")
 			if err := a.tick(ctx, poller, store, healthChecker); err != nil {
 				slog.Error("webhook-triggered reconciliation failed", "error", err)
+			} else if !a.ready.Load() {
+				a.ready.Store(true)
 			}
 			ticker.Reset(a.cfg.PollInterval)
 		}
@@ -163,6 +171,11 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if err != nil {
 		return fmt.Errorf("loading state: %w", err)
 	}
+
+	// Seed managed-files metrics from state on every tick
+	metrics.ManagedUnitsTotal.Set(float64(len(st.ManagedFiles)))
+	metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
+	setFilesManagedMetric(countCategoriesFromState(st.ManagedFiles))
 
 	// 1. Health enforcement (always)
 	hr, err := healthChecker.Enforce(ctx, st)
@@ -184,22 +197,22 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	// 2. Git poll
 	pollResult, err := poller.Poll(ctx, st.AppliedSHA)
 	if err != nil {
+		metrics.GitPollTotal.WithLabelValues("error").Inc()
 		return fmt.Errorf("polling git: %w", err)
 	}
 
 	if !pollResult.Changed {
-		slog.Debug("no git changes", "sha", pollResult.HeadSHA)
+		metrics.GitPollTotal.WithLabelValues("noop").Inc()
+		slog.Info("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
 		return nil
 	}
+	metrics.GitPollTotal.WithLabelValues("changed").Inc()
 
 	// Skip only after >= 3 consecutive failures on the same SHA
 	const maxRetries = 3
 	if pollResult.HeadSHA == st.FailedSHA && st.FailedCount >= maxRetries {
-		slog.Warn("skipping permanently failed SHA",
-			"sha", pollResult.HeadSHA,
-			"failures", st.FailedCount,
-		)
+		slog.Warn("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "failed_sha_gate", "failures", st.FailedCount)
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
 		return nil
 	}
@@ -208,11 +221,11 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 
 	start := time.Now()
 	_, err = a.ReconcileOnce(ctx, pollResult.HeadSHA, st, store)
-	duration := time.Since(start).Seconds()
-	metrics.ReconciliationDuration.Observe(duration)
+	elapsed := time.Since(start)
+	metrics.ReconciliationDuration.Observe(elapsed.Seconds())
 
 	if err != nil {
-		slog.Error("reconciliation failed", "sha", pollResult.HeadSHA, "error", err)
+		slog.Error("reconciliation failed", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
 		metrics.ReconciliationTotal.WithLabelValues("failure").Inc()
 
 		// Track failure count for the same SHA
@@ -231,10 +244,12 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 
 	metrics.ReconciliationTotal.WithLabelValues("success").Inc()
 	metrics.LastSuccessfulReconciliation.SetToCurrentTime()
+	slog.Info("reconciliation complete", "sha", pollResult.HeadSHA, "result", "success", "duration", elapsed.Round(time.Millisecond))
 	return nil
 }
 
 func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, error) {
+	slog.Debug("loading fleet config", "repo", a.repoPath)
 	repoFS := os.DirFS(a.repoPath)
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
@@ -255,6 +270,8 @@ func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, error) {
 		return string(data), nil
 	}
 
+	slog.Debug("resolving host", "hostname", a.cfg.Hostname)
+	loadStart := time.Now()
 	r, err := resolver.New(resolver.Config{
 		FS:           repoFS,
 		Config:       cfg,
@@ -268,6 +285,7 @@ func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolving host %s: %w", a.cfg.Hostname, err)
 	}
+	slog.Debug("host resolved", "hostname", a.cfg.Hostname, "files", len(resolved.Files), "duration", time.Since(loadStart).Round(time.Millisecond))
 	return resolved.Files, nil
 }
 
@@ -306,6 +324,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	)
 
 	if err := validator.ValidateFiles(files, a.cfg.Rootless); err != nil {
+		slog.Warn("validation failed", "error", err)
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -359,8 +378,17 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 
 		if rbErr := rollbackMgr.Restore(rollbackCtx, snap); rbErr != nil {
 			slog.Error("rollback failed", "error", rbErr)
+		} else {
+			slog.Warn("rollback complete", "sha", headSHA)
 		}
 		return nil, fmt.Errorf("apply: %w", err)
+	}
+
+	for _, change := range changeset.Changes {
+		if change.Action == reconciler.ActionNoop {
+			continue
+		}
+		metrics.FilesAppliedTotal.WithLabelValues(string(change.Action), change.Category).Inc()
 	}
 
 	slog.Info("apply complete",
@@ -377,22 +405,44 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 }
 
 func (a *Agent) updateState(headSHA string, st *state.State, changeset *reconciler.Changeset) {
+	prevSHA := st.AppliedSHA
 	st.MarkApplied(headSHA)
-	st.ManagedFiles = make(map[string]string)
+	st.ManagedFiles = make(map[string]state.ManagedFile)
 	st.ServiceNames = make(map[string]string)
 	for _, change := range changeset.Changes {
 		if change.Action == reconciler.ActionDelete {
 			continue
 		}
-		st.ManagedFiles[change.DestPath] = change.NewHash
+		st.ManagedFiles[change.DestPath] = state.ManagedFile{Hash: change.NewHash, Category: change.Category}
 		if change.ServiceName != "" {
 			st.ServiceNames[change.DestPath] = change.ServiceName
 		}
 	}
 
 	metrics.ManagedUnitsTotal.Set(float64(len(st.ManagedFiles)))
-	metrics.AppliedGitSHA.Reset()
+	// Set new SHA before deleting old: a scrape during the gap sees both (harmless
+	// for an info metric) rather than zero.
 	metrics.AppliedGitSHA.WithLabelValues(headSHA).Set(1)
+	if prevSHA != "" && prevSHA != headSHA {
+		metrics.AppliedGitSHA.DeleteLabelValues(prevSHA)
+	}
+}
+
+// setFilesManagedMetric overwrites FilesManagedTotal for every known category.
+// Because the label set is fixed, each call is a pure Set — no Reset() needed,
+// so a concurrent Prometheus scrape never sees zero or partial values.
+func setFilesManagedMetric(counts map[string]float64) {
+	for _, cat := range reconciler.Categories {
+		metrics.FilesManagedTotal.WithLabelValues(cat).Set(counts[cat])
+	}
+}
+
+func countCategoriesFromState(managed map[string]state.ManagedFile) map[string]float64 {
+	counts := make(map[string]float64, len(reconciler.Categories))
+	for _, mf := range managed {
+		counts[mf.Category]++
+	}
+	return counts
 }
 
 // scanOrphans detects and removes files/secrets placed by a previous picolet run that
@@ -412,11 +462,14 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 		return
 	}
 	scanner := orphan.New(a.writer, a.podman, quadletDir, systemdDir, dataDir)
-	removed, err := scanner.Scan(ctx, st.ManagedFiles)
+	result, err := scanner.Scan(ctx, st.ManagedFiles)
 	if err != nil {
 		slog.Warn("orphan scan error", "error", err)
 	}
-	if removed {
+	if result.FilesRemoved > 0 || result.SecretsRemoved > 0 {
+		slog.Info("orphan scan complete", "removed_files", result.FilesRemoved, "removed_secrets", result.SecretsRemoved)
+	}
+	if result.FilesRemoved > 0 {
 		if err := a.systemd.DaemonReload(ctx); err != nil {
 			slog.Warn("daemon-reload after orphan cleanup failed", "error", err)
 		}
@@ -436,6 +489,11 @@ func (a *Agent) newMux() *http.ServeMux {
 	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if !a.ready.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"starting"}`))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})

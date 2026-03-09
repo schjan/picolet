@@ -38,8 +38,8 @@ func TestDiffNoopWhenUnchanged(t *testing.T) {
 		{DestPath: "/etc/containers/systemd/foo.container", Content: content, Category: "container", ServiceName: "foo.service"},
 	}
 	st := &state.State{
-		ManagedFiles: map[string]string{
-			"/etc/containers/systemd/foo.container": h,
+		ManagedFiles: map[string]state.ManagedFile{
+			"/etc/containers/systemd/foo.container": {Hash: h, Category: "container"},
 		},
 		ServiceNames: make(map[string]string),
 	}
@@ -57,8 +57,8 @@ func TestDiffUpdateChangedContent(t *testing.T) {
 		{DestPath: "/etc/containers/systemd/foo.container", Content: "image=foo:v2", Category: "container"},
 	}
 	st := &state.State{
-		ManagedFiles: map[string]string{
-			"/etc/containers/systemd/foo.container": "sha256:oldolddead",
+		ManagedFiles: map[string]state.ManagedFile{
+			"/etc/containers/systemd/foo.container": {Hash: "sha256:oldolddead", Category: "container"},
 		},
 		ServiceNames: make(map[string]string),
 	}
@@ -74,8 +74,8 @@ func TestDiffDeleteRemovedFiles(t *testing.T) {
 
 	desired := []resolver.ResolvedFile{}
 	st := &state.State{
-		ManagedFiles: map[string]string{
-			"/etc/containers/systemd/old.container": "sha256:abc",
+		ManagedFiles: map[string]state.ManagedFile{
+			"/etc/containers/systemd/old.container": {Hash: "sha256:abc", Category: "container"},
 		},
 		ServiceNames: map[string]string{
 			"/etc/containers/systemd/old.container": "old.service",
@@ -102,10 +102,10 @@ func TestDiffMixedOperations(t *testing.T) {
 		{DestPath: "/etc/containers/systemd/update.kube", Content: "updated", Category: "kube"},
 	}
 	st := &state.State{
-		ManagedFiles: map[string]string{
-			"/etc/containers/systemd/keep.network":     keepHash,
-			"/etc/containers/systemd/update.kube":      "sha256:old",
-			"/etc/containers/systemd/remove.container": "sha256:gone",
+		ManagedFiles: map[string]state.ManagedFile{
+			"/etc/containers/systemd/keep.network":     {Hash: keepHash, Category: "network"},
+			"/etc/containers/systemd/update.kube":      {Hash: "sha256:old", Category: "kube"},
+			"/etc/containers/systemd/remove.container": {Hash: "sha256:gone", Category: "container"},
 		},
 		ServiceNames: make(map[string]string),
 	}
@@ -130,8 +130,8 @@ func TestDiffSecretUpdate(t *testing.T) {
 
 	// Same content → noop
 	stSame := &state.State{
-		ManagedFiles: map[string]string{
-			"secret:my_secret": sameHash,
+		ManagedFiles: map[string]state.ManagedFile{
+			"secret:my_secret": {Hash: sameHash, Category: "secret"},
 		},
 		ServiceNames: make(map[string]string),
 	}
@@ -140,8 +140,8 @@ func TestDiffSecretUpdate(t *testing.T) {
 
 	// Different content hash → update
 	stOld := &state.State{
-		ManagedFiles: map[string]string{
-			"secret:my_secret": "sha256:old",
+		ManagedFiles: map[string]state.ManagedFile{
+			"secret:my_secret": {Hash: "sha256:old", Category: "secret"},
 		},
 		ServiceNames: make(map[string]string),
 	}

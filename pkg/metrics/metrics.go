@@ -21,7 +21,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "picolet_reconciliation_duration_seconds",
 			Help:    "Duration of reconciliation cycles.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60},
 		},
 	)
 
@@ -83,6 +83,45 @@ var (
 			Help: "Total number of managed units.",
 		},
 	)
+
+	GitPollTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "picolet_git_poll_total",
+			Help: "Total git poll attempts by result.",
+		},
+		[]string{"result"},
+	)
+
+	FilesAppliedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "picolet_files_applied_total",
+			Help: "Total files applied by action and category.",
+		},
+		[]string{"action", "category"},
+	)
+
+	FilesManagedTotal = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "picolet_files_managed_total",
+			Help: "Current number of managed files by category.",
+		},
+		[]string{"category"},
+	)
+
+	FailedSHAConsecutiveCount = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "picolet_failed_sha_consecutive_count",
+			Help: "Consecutive reconciliation failures for the current SHA.",
+		},
+	)
+
+	OrphansRemovedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "picolet_orphans_removed_total",
+			Help: "Orphaned files/secrets removed at startup by type.",
+		},
+		[]string{"type"},
+	)
 )
 
 var registerOnce sync.Once
@@ -102,6 +141,11 @@ func Register() {
 			AppliedGitSHA,
 			SelfUpdatePending,
 			ManagedUnitsTotal,
+			GitPollTotal,
+			FilesAppliedTotal,
+			FilesManagedTotal,
+			FailedSHAConsecutiveCount,
+			OrphansRemovedTotal,
 		)
 	})
 }

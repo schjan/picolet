@@ -526,6 +526,76 @@ func TestWebhookOnHTTPServer(t *testing.T) {
 	}
 }
 
+func TestHealthEndpoint_ReturnsUnavailableBeforeFirstTick(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{
+		Hostname: "test",
+		RepoURL:  "https://example.com/repo.git",
+	}
+	a := New(cfg)
+
+	srv := httptest.NewServer(a.newMux())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/health") //nolint:noctx // test helper
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
+func TestHealthEndpoint_ReturnsOKAfterSuccessfulTick(t *testing.T) {
+	t.Parallel()
+	bareDir := initTestRepo(t)
+	repoDir := filepath.Join(t.TempDir(), "clone")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+
+	metrics.Register()
+
+	sys, pod, fw := newBareMocks(t)
+	setupApplyMocks(sys, pod, fw)
+
+	cfg := &agentcfg.Config{
+		Hostname:     "test-host",
+		RepoURL:      bareDir,
+		RepoBranch:   "master",
+		PollInterval: time.Hour,
+		MetricsPort:  0,
+		SecretsDir:   t.TempDir(),
+	}
+
+	a := New(cfg,
+		WithSystemd(sys),
+		WithPodman(pod),
+		WithFileWriter(fw),
+		WithRepoPath(repoDir),
+		WithStatePath(statePath),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- a.Run(ctx)
+	}()
+
+	srv := httptest.NewServer(a.newMux())
+	defer srv.Close()
+
+	// Wait until agent becomes ready
+	require.Eventually(t, func() bool {
+		resp, err := http.Get(srv.URL + "/health") //nolint:noctx // test helper
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, 10*time.Second, 50*time.Millisecond, "/health should return 200 after first tick")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 func pushToTestRepo(t *testing.T, bareDir string, files map[string]string) {
 	t.Helper()
 	workDir := filepath.Join(t.TempDir(), "push-work")

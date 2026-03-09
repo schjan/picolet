@@ -248,9 +248,9 @@ func TestE2EPipeline(t *testing.T) {
 
 		// 5. Run the orphan scanner
 		scanner := orphan.New(applier.NewAtomicFileWriter(), podman, quadletDir, systemdDir, dataDir)
-		removed, err := scanner.Scan(ctx, st.ManagedFiles)
+		scanResult, err := scanner.Scan(ctx, st.ManagedFiles)
 		require.NoError(t, err)
-		assert.True(t, removed, "scanner should report removals")
+		assert.True(t, scanResult.FilesRemoved > 0 || scanResult.SecretsRemoved > 0, "scanner should report removals")
 
 		// 6. Call DaemonReload (mirrors what agent.scanOrphans does after removals)
 		require.NoError(t, systemd.DaemonReload(ctx))
@@ -382,8 +382,8 @@ func TestE2EPipeline(t *testing.T) {
 	t.Run("update_secret", func(t *testing.T) {
 		st, err := store.Load()
 		require.NoError(t, err)
-		oldHash := st.ManagedFiles["secret:e2e_secret"]
-		require.NotEmpty(t, oldHash, "secret should be in managed files")
+		oldMF := st.ManagedFiles["secret:e2e_secret"]
+		require.NotEmpty(t, oldMF.Hash, "secret should be in managed files")
 
 		// Secrets are read from secretsDir, NOT from git — change the local file
 		require.NoError(t, os.WriteFile(
@@ -403,7 +403,7 @@ func TestE2EPipeline(t *testing.T) {
 		t.Run("state_hash_changed", func(t *testing.T) {
 			st, err := store.Load()
 			require.NoError(t, err)
-			assert.NotEqual(t, oldHash, st.ManagedFiles["secret:e2e_secret"],
+			assert.NotEqual(t, oldMF.Hash, st.ManagedFiles["secret:e2e_secret"].Hash,
 				"secret hash should be updated after content change")
 			assert.Equal(t, "update-secret-sha", st.AppliedSHA)
 		})
