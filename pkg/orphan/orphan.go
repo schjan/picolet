@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 
 	"github.com/schjan/picolet/pkg/applier"
-	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
 )
@@ -137,7 +136,6 @@ func (s *Scanner) scanSecrets(ctx context.Context, managedFiles map[string]state
 			if err := s.podman.SecretRemove(ctx, name); err != nil {
 				slog.Error("removing orphaned secret failed", "name", name, "error", err)
 			} else {
-				metrics.OrphansRemovedTotal.WithLabelValues("secret").Inc()
 				removed++
 			}
 		}
@@ -151,7 +149,6 @@ func (s *Scanner) removeOrphan(path string) bool {
 		slog.Error("removing orphaned file failed", "path", path, "error", err)
 		return false
 	}
-	metrics.OrphansRemovedTotal.WithLabelValues("file").Inc()
 	return true
 }
 

@@ -468,6 +468,8 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	}
 	if result.FilesRemoved > 0 || result.SecretsRemoved > 0 {
 		slog.Info("orphan scan complete", "removed_files", result.FilesRemoved, "removed_secrets", result.SecretsRemoved)
+		metrics.OrphansRemovedTotal.WithLabelValues("file").Add(float64(result.FilesRemoved))
+		metrics.OrphansRemovedTotal.WithLabelValues("secret").Add(float64(result.SecretsRemoved))
 	}
 	if result.FilesRemoved > 0 {
 		if err := a.systemd.DaemonReload(ctx); err != nil {

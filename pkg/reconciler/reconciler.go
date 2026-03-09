@@ -62,7 +62,7 @@ func Diff(
 		if !seen[destPath] {
 			cs.addChange(Change{
 				DestPath:    destPath,
-				Category:    categoryFromPath(destPath),
+				Category:    mf.Category,
 				Action:      ActionDelete,
 				OldHash:     mf.Hash,
 				ServiceName: currentState.ServiceNames[destPath], // "" for non-quadlets
