@@ -854,6 +854,20 @@ pi_types:
 	return sb.String()
 }
 
+// TestE2ESystemdPrivateSocket verifies that NewDBusSystemdManager connects to the user
+// systemd instance via its private socket when rootless=true, and that a real method
+// call succeeds over that connection.
+func TestE2ESystemdPrivateSocket(t *testing.T) {
+	t.Parallel()
+
+	m, err := applier.NewDBusSystemdManager(t.Context(), true)
+	require.NoError(t, err, "should connect to user systemd private socket")
+	defer m.Close()
+
+	err = m.DaemonReload(t.Context())
+	require.NoError(t, err, "DaemonReload should succeed over the private socket connection")
+}
+
 // TestE2EResolverRootlessPaths verifies rootless path resolution produces correct paths.
 func TestE2EResolverRootlessPaths(t *testing.T) {
 	t.Parallel()

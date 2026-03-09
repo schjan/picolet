@@ -23,10 +23,9 @@ Volume=%h/.config/containers/systemd:/etc/containers/systemd
 # systemd user units
 Volume=%h/.config/systemd/user:/etc/systemd/system
 
-# Session D-Bus socket — %t expands to XDG_RUNTIME_DIR on the host
-Volume=%t/bus:/run/dbus/session_bus_socket
-# Tell go-systemd where to find the session bus inside the container
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/session_bus_socket
+# systemd user private socket — bypasses D-Bus session bus entirely
+Volume=%t/systemd/private:%t/systemd/private
+Environment=XDG_RUNTIME_DIR=%t
 
 # Podman socket (rootless — lives under XDG_RUNTIME_DIR)
 Volume=%t/podman/podman.sock:/run/podman/podman.sock

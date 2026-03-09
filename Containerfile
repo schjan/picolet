@@ -18,7 +18,10 @@ RUN --mount=type=cache,target=/go/pkg/mod/ \
     -tags "remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper" \
     -ldflags="-X main.version=${VERSION} -s -w" -o /picolet ./cmd/picolet
 
-FROM gcr.io/distroless/static-debian13:nonroot
+# Use the root variant (not :nonroot): picolet runs as UID 0 inside both rootless and rootful
+# containers. In rootless Podman, UID 0 maps to the host user via user namespace — no real root
+# privilege. The :nonroot default would be immediately overridden anyway and adds no benefit.
+FROM gcr.io/distroless/static-debian13
 COPY --from=builder /picolet /picolet
 ENTRYPOINT ["/picolet"]
 CMD ["run"]
