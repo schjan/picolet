@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -23,13 +25,26 @@ import (
 	"github.com/schjan/picolet/pkg/mqtt"
 )
 
+// tWriter adapts testing.T to io.Writer so slog output lands in test logs.
+type tWriter struct{ t *testing.T }
+
+func (w tWriter) Write(p []byte) (int, error) {
+	w.t.Log(strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}
+
+func testLogger(t *testing.T) *slog.Logger {
+	t.Helper()
+	return slog.New(slog.NewTextHandler(tWriter{t}, nil))
+}
+
 func init() {
 	metrics.Register()
 }
 
 func startTestBroker(t *testing.T) string {
 	t.Helper()
-	server := mqttserver.New(nil)
+	server := mqttserver.New(&mqttserver.Options{Logger: testLogger(t)})
 	require.NoError(t, server.AddHook(new(auth.AllowHook), nil))
 
 	tcp := listeners.NewTCP(listeners.Config{ID: "test-" + t.Name(), Address: "127.0.0.1:0"})
