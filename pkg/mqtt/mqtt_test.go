@@ -3,8 +3,10 @@ package mqtt_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -197,6 +199,135 @@ func TestPublishStatus(t *testing.T) {
 	defer mu.Unlock()
 	assert.Equal(t, "2", received["picolet/test-host/status/failed_count"])
 	assert.Equal(t, "running", received["picolet/test-host/status/state"])
+}
+
+// startTCPProxy creates a bidirectional TCP proxy in front of the broker.
+// Returns the proxy address and a kill function that closes all proxied connections
+// and the listener (preventing reconnection), simulating a network loss.
+func startTCPProxy(t *testing.T, brokerURL string) (string, func()) {
+	t.Helper()
+	u, err := url.Parse(brokerURL)
+	require.NoError(t, err)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	var mu sync.Mutex
+	var conns []net.Conn
+
+	go func() {
+		for {
+			clientConn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			brokerConn, dialErr := net.DialTimeout("tcp", u.Host, 5*time.Second)
+			if dialErr != nil {
+				_ = clientConn.Close()
+				continue
+			}
+			mu.Lock()
+			conns = append(conns, clientConn, brokerConn)
+			mu.Unlock()
+			go func() { _, _ = io.Copy(brokerConn, clientConn) }()
+			go func() { _, _ = io.Copy(clientConn, brokerConn) }()
+		}
+	}()
+
+	killAll := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+		conns = nil
+		_ = listener.Close() // prevent reconnection through proxy
+	}
+	t.Cleanup(killAll)
+
+	return listener.Addr().String(), killAll
+}
+
+//nolint:funlen // LWT test requires proxy setup + two clients + assertions
+func TestLWT(t *testing.T) {
+	t.Parallel()
+	brokerURL := startTestBroker(t)
+	proxyAddr, killProxy := startTCPProxy(t, brokerURL)
+
+	cfg := mqtt.Config{BrokerURL: "tcp://" + proxyAddr, TopicPrefix: "picolet"}
+	client := mqtt.NewClient(cfg, "lwt-host")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var pauseFlag atomic.Bool
+	require.NoError(t, client.Start(ctx, &pauseFlag, func() {}))
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Subscribe directly to the broker (not through proxy) to watch state topic.
+	var mu sync.Mutex
+	var states []string
+
+	u, err := url.Parse(brokerURL)
+	require.NoError(t, err)
+	conn, err := net.DialTimeout("tcp", u.Host, 5*time.Second)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	sub := pahopkg.NewClient(pahopkg.ClientConfig{
+		Conn: conn,
+		OnPublishReceived: []func(pahopkg.PublishReceived) (bool, error){
+			func(pr pahopkg.PublishReceived) (bool, error) {
+				if pr.Packet.Topic == "picolet/lwt-host/status/state" {
+					mu.Lock()
+					states = append(states, string(pr.Packet.Payload))
+					mu.Unlock()
+				}
+				return true, nil
+			},
+		},
+	})
+	_, err = sub.Connect(ctx, &pahopkg.Connect{
+		ClientID:   "test-lwt-sub",
+		CleanStart: true,
+		KeepAlive:  30,
+	})
+	require.NoError(t, err)
+
+	_, err = sub.Subscribe(ctx, &pahopkg.Subscribe{
+		Subscriptions: []pahopkg.SubscribeOptions{
+			{Topic: "picolet/lwt-host/status/state", QoS: 1},
+		},
+	})
+	require.NoError(t, err)
+
+	// Verify we receive "running" from the OnConnectionUp callback.
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Contains(states, "running")
+	}, 3*time.Second, 50*time.Millisecond, "should receive state=running")
+
+	// Kill the proxy — simulates network loss / SIGKILL.
+	// The broker sees a TCP drop without DISCONNECT → fires LWT (state=offline).
+	killProxy()
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		// LWT "offline" must appear after "running".
+		seenRunning := false
+		for _, s := range states {
+			if s == "running" {
+				seenRunning = true
+			}
+			if seenRunning && s == "offline" {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 50*time.Millisecond, "broker should publish LWT state=offline after forced disconnect")
 }
 
 func TestTriggerFunction(t *testing.T) {
