@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 
 	"github.com/coreos/go-systemd/v22/dbus"
 	godbus "github.com/godbus/dbus/v5"
@@ -51,15 +50,20 @@ func newUserSystemdConnectionContext(ctx context.Context) (*dbus.Conn, error) {
 	if runtimeDir == "" {
 		return nil, fmt.Errorf("XDG_RUNTIME_DIR not set")
 	}
-	socketPath := filepath.Join(runtimeDir, "systemd", "private")
+	// Pre-compute outside the closure: dbus.NewConnection calls it twice
+	// (once for sysconn, once for sigconn).
+	socketPath := "unix:path=" + filepath.Join(runtimeDir, "systemd", "private")
 
 	return dbus.NewConnection(func() (*godbus.Conn, error) {
-		conn, err := godbus.Dial("unix:path="+socketPath, godbus.WithContext(ctx))
+		conn, err := godbus.Dial(socketPath, godbus.WithContext(ctx))
 		if err != nil {
 			return nil, err
 		}
-		methods := []godbus.Auth{godbus.AuthExternal(strconv.Itoa(os.Getuid()))}
-		if err = conn.Auth(methods); err != nil {
+		// Empty string: server uses SO_PEERCRED for identity (correct for user-namespace
+		// containers where os.Getuid()=0 but host SO_PEERCRED UID differs). godbus v5
+		// discards the resp from AuthExternal.FirstData() regardless, so this is also
+		// the more explicit form of "authenticate via socket credentials only."
+		if err = conn.Auth([]godbus.Auth{godbus.AuthExternal("")}); err != nil {
 			conn.Close()
 			return nil, err
 		}
