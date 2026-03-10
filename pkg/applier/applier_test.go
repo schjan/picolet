@@ -157,8 +157,8 @@ func TestApplySelfRestart(t *testing.T) {
 
 func TestApplyConfigFileCreate(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
-	pod := mocks.NewMockPodmanClient(t)
+	sys := NewMockSystemdManager(t)
+	pod := NewMockPodmanClient(t)
 	pod.EXPECT().VolumeInspectMountpoint(mock.Anything, "data").Return("/var/lib/containers/storage/volumes/data/_data", nil)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
@@ -184,10 +184,10 @@ func TestApplyConfigFileCreate(t *testing.T) {
 
 func TestApplyConfigFileWithRestartService(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
+	sys := NewMockSystemdManager(t)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 	sys.EXPECT().RestartUnit(mock.Anything, "mosquitto.service").Return(nil)
-	pod := mocks.NewMockPodmanClient(t)
+	pod := NewMockPodmanClient(t)
 	pod.EXPECT().VolumeInspectMountpoint(mock.Anything, "mosquitto-config").Return("/var/lib/containers/storage/volumes/mosquitto-config/_data", nil)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
@@ -213,10 +213,10 @@ func TestApplyConfigFileWithRestartService(t *testing.T) {
 
 func TestApplyConfigFileDelete(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
+	sys := NewMockSystemdManager(t)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 	sys.EXPECT().RestartUnit(mock.Anything, "mosquitto.service").Return(nil)
-	pod := mocks.NewMockPodmanClient(t)
+	pod := NewMockPodmanClient(t)
 	pod.EXPECT().VolumeInspectMountpoint(mock.Anything, "data").Return("/var/lib/containers/storage/volumes/data/_data", nil)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
@@ -242,8 +242,8 @@ func TestApplyConfigFileDelete(t *testing.T) {
 
 func TestApplyConfigFileSameCommitAsVolume(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
-	pod := mocks.NewMockPodmanClient(t)
+	sys := NewMockSystemdManager(t)
+	pod := NewMockPodmanClient(t)
 	fw := newMemFileWriter()
 
 	// Bootstrap: DaemonReload + RestartUnit for the volume (ensures ExecStart re-runs
