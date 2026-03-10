@@ -117,7 +117,19 @@ func SecretNameFromPath(destPath string) string {
 	return destPath
 }
 
-var categories = []string{"container", "network", "volume", "kube", "systemd", "manifest", "secret"}
+// VolumeFileFromPath extracts the volume name and relative path from a
+// "volumefile:<volume>:<relpath>" dest path. Uses strings.Cut which splits
+// on the first colon only — rel paths containing colons are preserved correctly.
+func VolumeFileFromPath(destPath string) (volume, relPath string, ok bool) {
+	suffix, found := strings.CutPrefix(destPath, "volumefile:")
+	if !found {
+		return "", "", false
+	}
+	volume, relPath, ok = strings.Cut(suffix, ":")
+	return
+}
+
+var categories = []string{"configfile", "container", "network", "volume", "kube", "systemd", "manifest", "secret"}
 
 // Categories returns the fixed set of known file categories used for metric labels.
 func Categories() []string {

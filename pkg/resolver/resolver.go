@@ -103,7 +103,7 @@ func ResolveDirs(rootless bool) (quadletDir, systemdDir, dataDir string, err err
 
 // ResolveHost computes the complete desired state for a given hostname.
 //
-//nolint:cyclop // sequential resolution of file categories; splitting would obscure the flow
+//nolint:cyclop,funlen // sequential resolution of file categories; splitting would obscure the flow
 func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 	host, ok := r.cfg.Hosts[hostname]
 	if !ok {
@@ -149,6 +149,14 @@ func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 
 	for _, path := range fileSet.Manifests {
 		f, err := r.resolveManifest(registry, tmplData, path)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, *f)
+	}
+
+	for _, spec := range fileSet.ConfigFiles {
+		f, err := r.resolveConfigFile(registry, tmplData, spec)
 		if err != nil {
 			return nil, err
 		}
@@ -245,6 +253,27 @@ func (r *Resolver) resolveManifest(registry *template.Template, tmplData *Templa
 		DestPath: destPath,
 		Content:  content,
 		Category: "manifest",
+	}, nil
+}
+
+func (r *Resolver) resolveConfigFile(registry *template.Template, tmplData *TemplateData, spec config.ConfigFileSpec) (*ResolvedFile, error) {
+	slog.Debug("resolving config file", "src", spec.Src, "volume", spec.Volume, "path", spec.Path)
+	content, err := r.renderOrRead(registry, tmplData, spec.Src)
+	if err != nil {
+		return nil, fmt.Errorf("resolving config file %s: %w", spec.Src, err)
+	}
+
+	var serviceName string
+	if spec.RestartService != "" {
+		serviceName = spec.RestartService + ".service"
+	}
+
+	return &ResolvedFile{
+		SrcPath:     spec.Src,
+		DestPath:    "volumefile:" + spec.Volume + ":" + spec.Path,
+		Content:     content,
+		Category:    "configfile",
+		ServiceName: serviceName,
 	}, nil
 }
 

@@ -149,6 +149,55 @@ func TestDiffSecretUpdate(t *testing.T) {
 	assert.Equal(t, 1, csUpdate.Summary[ActionUpdate], "changed secret content should produce update")
 }
 
+func TestVolumeFileFromPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		destPath    string
+		wantVolume  string
+		wantRelPath string
+		wantOk      bool
+	}{
+		{
+			name:        "valid volumefile path",
+			destPath:    "volumefile:data:app.conf",
+			wantVolume:  "data",
+			wantRelPath: "app.conf",
+			wantOk:      true,
+		},
+		{
+			name:        "rel path with colons preserved",
+			destPath:    "volumefile:vol:sub:dir:file.conf",
+			wantVolume:  "vol",
+			wantRelPath: "sub:dir:file.conf",
+			wantOk:      true,
+		},
+		{
+			name:     "non-volumefile path",
+			destPath: "secret:foo",
+			wantOk:   false,
+		},
+		{
+			name:     "empty string",
+			destPath: "",
+			wantOk:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			volume, relPath, ok := VolumeFileFromPath(tt.destPath)
+			assert.Equal(t, tt.wantOk, ok)
+			if tt.wantOk {
+				assert.Equal(t, tt.wantVolume, volume)
+				assert.Equal(t, tt.wantRelPath, relPath)
+			}
+		})
+	}
+}
+
 func TestDiffServiceNamePropagated(t *testing.T) {
 	t.Parallel()
 

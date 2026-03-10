@@ -15,6 +15,11 @@ pi_types:
       - manifests/app/deployment.yml.tmpl
     secrets:
       - secrets/app_secret.yml.tmpl
+    config_files:
+      - src: configfiles/app.conf.tmpl
+        volume: data
+        path: app.conf
+        restart_service: app-stack
   worker:
     containers:
       - quadlets/containers/exporter.container

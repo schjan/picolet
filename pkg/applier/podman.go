@@ -12,6 +12,7 @@ import (
 	"github.com/containers/podman/v5/pkg/bindings/containers"
 	"github.com/containers/podman/v5/pkg/bindings/pods"
 	"github.com/containers/podman/v5/pkg/bindings/secrets"
+	"github.com/containers/podman/v5/pkg/bindings/volumes"
 )
 
 // secretLabelKey and secretLabelValue are the Podman label applied to all picolet-managed secrets.
@@ -123,4 +124,14 @@ func (c *SocketPodmanClient) GetPodState(_ context.Context, pod string) (string,
 		return "", fmt.Errorf("inspecting pod %s: %w", pod, err)
 	}
 	return report.State, nil
+}
+
+//nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
+func (c *SocketPodmanClient) VolumeInspectMountpoint(_ context.Context, name string) (string, error) {
+	slog.Debug("inspecting volume mountpoint", "volume", name)
+	report, err := volumes.Inspect(c.connCtx, name, nil)
+	if err != nil {
+		return "", fmt.Errorf("inspecting volume %s: %w", name, err)
+	}
+	return report.Mountpoint, nil
 }

@@ -40,6 +40,8 @@ type PodmanClient interface {
 	ContainerRemove(ctx context.Context, nameOrID string, force bool) error
 	RunHealthcheck(ctx context.Context, container string) (bool, error)
 	GetPodState(ctx context.Context, pod string) (string, error)
+	// VolumeInspectMountpoint returns the host filesystem mountpoint for the named volume.
+	VolumeInspectMountpoint(ctx context.Context, name string) (string, error)
 }
 
 // FileWriter writes files atomically.
@@ -63,14 +65,15 @@ const selfContainerFile = "picolet.container"
 
 // categoryOrder defines the apply phase ordering.
 var categoryOrder = map[string]int{
-	"network":   0,
-	"volume":    1,
-	"secret":    2,
-	"systemd":   3,
-	"manifest":  4,
-	"container": 5,
-	"kube":      6,
-	"unknown":   7,
+	"network":    0,
+	"volume":     1,
+	"configfile": 2,
+	"secret":     3,
+	"systemd":    4,
+	"manifest":   5,
+	"container":  6,
+	"kube":       7,
+	"unknown":    8,
 }
 
 // Applier applies a changeset to the system.
@@ -143,7 +146,16 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		if change.Category == "secret" {
 			continue
 		}
-		// All non-secret file changes (including deletes) require a daemon-reload.
+		if change.Category == "configfile" {
+			// Config files are not systemd units — no daemon-reload needed.
+			// If restart_service is set, schedule a restart for create, update, AND delete
+			// (removing a config means the service must reload its configuration).
+			if change.ServiceName != "" {
+				changedUnits[change.ServiceName] = true
+			}
+			continue
+		}
+		// All non-secret, non-configfile file changes require a daemon-reload.
 		needsReload = true
 		if change.Action == reconciler.ActionDelete {
 			// Deleted units must NOT be restarted — the unit no longer exists after
@@ -231,7 +243,9 @@ func (a *Applier) applyCreateOrUpdate(ctx context.Context, change reconciler.Cha
 		replace := change.Action == reconciler.ActionUpdate
 		return a.podman.SecretCreate(ctx, name, []byte(change.NewContent), replace)
 	}
-
+	if change.Category == "configfile" {
+		return a.applyConfigFile(ctx, change)
+	}
 	// Regular file: ensure directory exists, write atomically.
 	dir := filepath.Dir(change.DestPath)
 	if err := a.writer.MkdirAll(dir); err != nil {
@@ -245,5 +259,47 @@ func (a *Applier) applyDelete(ctx context.Context, change reconciler.Change) err
 		name := reconciler.SecretNameFromPath(change.DestPath)
 		return a.podman.SecretRemove(ctx, name)
 	}
+	if change.Category == "configfile" {
+		return a.deleteConfigFile(ctx, change)
+	}
 	return a.writer.Remove(change.DestPath)
+}
+
+// configFileMountPath resolves the real host path for a config file in a named volume.
+func (a *Applier) configFileMountPath(ctx context.Context, volName, relPath string) (string, error) {
+	mountpoint, err := a.podman.VolumeInspectMountpoint(ctx, volName)
+	if err != nil {
+		return "", fmt.Errorf("inspecting volume %s: %w", volName, err)
+	}
+	return filepath.Join(mountpoint, relPath), nil
+}
+
+func (a *Applier) applyConfigFile(ctx context.Context, change reconciler.Change) error {
+	volName, relPath, _ := reconciler.VolumeFileFromPath(change.DestPath)
+	slog.Info("writing config file to volume",
+		"volume", volName,
+		"path", relPath,
+		"action", change.Action,
+	)
+	fullPath, err := a.configFileMountPath(ctx, volName, relPath)
+	if err != nil {
+		return err
+	}
+	if err := a.writer.MkdirAll(filepath.Dir(fullPath)); err != nil {
+		return fmt.Errorf("mkdir for config file %s: %w", fullPath, err)
+	}
+	return a.writer.WriteFile(fullPath, []byte(change.NewContent))
+}
+
+func (a *Applier) deleteConfigFile(ctx context.Context, change reconciler.Change) error {
+	volName, relPath, _ := reconciler.VolumeFileFromPath(change.DestPath)
+	slog.Info("removing config file from volume",
+		"volume", volName,
+		"path", relPath,
+	)
+	fullPath, err := a.configFileMountPath(ctx, volName, relPath)
+	if err != nil {
+		return err
+	}
+	return a.writer.Remove(fullPath)
 }

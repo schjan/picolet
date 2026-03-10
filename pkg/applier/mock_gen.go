@@ -801,6 +801,72 @@ func (_c *MockPodmanClient_SecretRemove_Call) RunAndReturn(run func(ctx context.
 	return _c
 }
 
+// VolumeInspectMountpoint provides a mock function for the type MockPodmanClient
+func (_mock *MockPodmanClient) VolumeInspectMountpoint(ctx context.Context, name string) (string, error) {
+	ret := _mock.Called(ctx, name)
+
+	if len(ret) == 0 {
+		panic("no return value specified for VolumeInspectMountpoint")
+	}
+
+	var r0 string
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) (string, error)); ok {
+		return returnFunc(ctx, name)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) string); ok {
+		r0 = returnFunc(ctx, name)
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, string) error); ok {
+		r1 = returnFunc(ctx, name)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockPodmanClient_VolumeInspectMountpoint_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'VolumeInspectMountpoint'
+type MockPodmanClient_VolumeInspectMountpoint_Call struct {
+	*mock.Call
+}
+
+// VolumeInspectMountpoint is a helper method to define mock.On call
+//   - ctx context.Context
+//   - name string
+func (_e *MockPodmanClient_Expecter) VolumeInspectMountpoint(ctx interface{}, name interface{}) *MockPodmanClient_VolumeInspectMountpoint_Call {
+	return &MockPodmanClient_VolumeInspectMountpoint_Call{Call: _e.mock.On("VolumeInspectMountpoint", ctx, name)}
+}
+
+func (_c *MockPodmanClient_VolumeInspectMountpoint_Call) Run(run func(ctx context.Context, name string)) *MockPodmanClient_VolumeInspectMountpoint_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockPodmanClient_VolumeInspectMountpoint_Call) Return(s string, err error) *MockPodmanClient_VolumeInspectMountpoint_Call {
+	_c.Call.Return(s, err)
+	return _c
+}
+
+func (_c *MockPodmanClient_VolumeInspectMountpoint_Call) RunAndReturn(run func(ctx context.Context, name string) (string, error)) *MockPodmanClient_VolumeInspectMountpoint_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // NewMockFileWriter creates a new instance of MockFileWriter. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
 // The first argument is typically a *testing.T value.
 func NewMockFileWriter(t interface {

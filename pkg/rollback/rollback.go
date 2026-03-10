@@ -44,6 +44,11 @@ func (m *Manager) Create(cs *reconciler.Changeset, diskReader DiskReader) (*Snap
 		if strings.HasPrefix(change.DestPath, "secret:") {
 			continue
 		}
+		// Skip configfiles — volumefile: is a logical path, not a filesystem path.
+		// Configfile rollback is not supported in V1.
+		if strings.HasPrefix(change.DestPath, "volumefile:") {
+			continue
+		}
 
 		switch change.Action {
 		case reconciler.ActionCreate:

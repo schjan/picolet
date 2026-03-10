@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"log/slog"
 	"slices"
 )
@@ -12,26 +13,38 @@ type Assignments struct {
 	Features map[string]AssignmentGroup `yaml:"features"`
 }
 
+// ConfigFileSpec describes a single file to render into a named Podman volume.
+//
+//nolint:revive // name is intentionally descriptive; "FileSpec" would be ambiguous in this package
+type ConfigFileSpec struct {
+	Src            string `yaml:"src"`
+	Volume         string `yaml:"volume"`
+	Path           string `yaml:"path"`
+	RestartService string `yaml:"restart_service,omitempty"`
+}
+
 // AssignmentGroup is a collection of file paths grouped by type.
 type AssignmentGroup struct {
-	Networks   []string `yaml:"networks"`
-	Systemd    []string `yaml:"systemd"`
-	Volumes    []string `yaml:"volumes"`
-	Containers []string `yaml:"containers"`
-	Kube       []string `yaml:"kube"`
-	Manifests  []string `yaml:"manifests"`
-	Secrets    []string `yaml:"secrets"`
+	Networks    []string         `yaml:"networks"`
+	Systemd     []string         `yaml:"systemd"`
+	Volumes     []string         `yaml:"volumes"`
+	Containers  []string         `yaml:"containers"`
+	Kube        []string         `yaml:"kube"`
+	Manifests   []string         `yaml:"manifests"`
+	Secrets     []string         `yaml:"secrets"`
+	ConfigFiles []ConfigFileSpec `yaml:"config_files"`
 }
 
 // ResolvedFileSet is the merged set of all files assigned to a host.
 type ResolvedFileSet struct {
-	Networks   []string
-	Systemd    []string
-	Volumes    []string
-	Containers []string
-	Kube       []string
-	Manifests  []string
-	Secrets    []string
+	Networks    []string
+	Systemd     []string
+	Volumes     []string
+	Containers  []string
+	Kube        []string
+	Manifests   []string
+	Secrets     []string
+	ConfigFiles []ConfigFileSpec
 }
 
 // Resolve computes the complete file set for a host by merging
@@ -63,6 +76,16 @@ func (r *ResolvedFileSet) deduplicate() {
 	r.Kube = sortedUnique(r.Kube)
 	r.Manifests = sortedUnique(r.Manifests)
 	r.Secrets = sortedUnique(r.Secrets)
+	slices.SortFunc(r.ConfigFiles, func(a, b ConfigFileSpec) int {
+		return cmp.Or(
+			cmp.Compare(a.Src, b.Src),
+			cmp.Compare(a.Volume, b.Volume),
+			cmp.Compare(a.Path, b.Path),
+		)
+	})
+	r.ConfigFiles = slices.CompactFunc(r.ConfigFiles, func(a, b ConfigFileSpec) bool {
+		return a.Src == b.Src && a.Volume == b.Volume && a.Path == b.Path
+	})
 }
 
 // sortedUnique returns a sorted copy with duplicates removed.
@@ -78,4 +101,5 @@ func (r *ResolvedFileSet) merge(g AssignmentGroup) {
 	r.Kube = append(r.Kube, g.Kube...)
 	r.Manifests = append(r.Manifests, g.Manifests...)
 	r.Secrets = append(r.Secrets, g.Secrets...)
+	r.ConfigFiles = append(r.ConfigFiles, g.ConfigFiles...)
 }

@@ -239,6 +239,85 @@ func TestRootlessPaths(t *testing.T) {
 	assert.Equal(t, filepath.Join(home, ".local", "share", "picolet", "manifests", "app", "deployment.yml"), manifest.DestPath)
 }
 
+//nolint:funlen // in-memory filesystem construction with sub-test
+func TestResolveConfigFile(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte(`
+images: {}
+ports: {}
+`)},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base: {}
+pi_types:
+  server:
+    config_files:
+      - src: configfiles/mosquitto.conf.tmpl
+        volume: mosquitto-config
+        path: mosquitto.conf
+        restart_service: mosquitto
+features: {}
+`)},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: test-host
+external_hostname: test-host.ts.net
+pi_type: server
+features: []
+`)},
+		"configfiles/mosquitto.conf.tmpl": &fstest.MapFile{Data: []byte(`# host={{ .Host.Hostname }}`)},
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost("test-host")
+	require.NoError(t, err)
+	require.Len(t, resolved.Files, 1)
+
+	f := resolved.Files[0]
+	assert.Equal(t, "configfile", f.Category)
+	assert.Equal(t, "volumefile:mosquitto-config:mosquitto.conf", f.DestPath)
+	assert.Equal(t, "# host=test-host", f.Content)
+	assert.Equal(t, "mosquitto.service", f.ServiceName)
+	assert.Nil(t, f.ParsedUnit, "configfiles should not have a parsed unit")
+
+	t.Run("no restart_service yields empty ServiceName", func(t *testing.T) {
+		t.Parallel()
+		fsys2 := fstest.MapFS{
+			"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}")},
+			"assignments.yml": &fstest.MapFile{Data: []byte(`
+base: {}
+pi_types:
+  server:
+    config_files:
+      - src: configfiles/mosquitto.conf.tmpl
+        volume: mosquitto-config
+        path: mosquitto.conf
+features: {}
+`)},
+			"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: test-host
+external_hostname: test-host.ts.net
+pi_type: server
+features: []
+`)},
+			"configfiles/mosquitto.conf.tmpl": &fstest.MapFile{Data: []byte(`static content`)},
+		}
+		cfg2, err := config.LoadAll(fsys2)
+		require.NoError(t, err)
+		r2, err := New(Config{FS: fsys2, Config: cfg2})
+		require.NoError(t, err)
+		resolved2, err := r2.ResolveHost("test-host")
+		require.NoError(t, err)
+		require.Len(t, resolved2.Files, 1)
+		assert.Empty(t, resolved2.Files[0].ServiceName)
+	})
+}
+
 func TestSecretPathTraversal(t *testing.T) {
 	t.Parallel()
 	secretsDir := t.TempDir()
