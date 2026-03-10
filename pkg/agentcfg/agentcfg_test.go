@@ -42,6 +42,7 @@ webhook_secret_path: /etc/picolet/webhook-secret
 				SecretsDir:        "/run/secrets",
 				PodmanSocket:      "/run/podman/podman.sock",
 				WebhookSecretPath: "/etc/picolet/webhook-secret",
+				SystemdUser:       new(false),
 			},
 		},
 		{
@@ -58,6 +59,65 @@ repo_url: https://github.com/example/fleet.git
 				MetricsPort:  9417,
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
+				SystemdUser:  new(false),
+			},
+		},
+		{
+			name: "systemd_user explicit true overrides rootless false",
+			content: `
+hostname: rpi5-1
+repo_url: https://github.com/example/fleet.git
+rootless: false
+systemd_user: true
+`,
+			want: Config{ //nolint:gosec // test fixture, not real credentials
+				Hostname:     "rpi5-1",
+				RepoURL:      "https://github.com/example/fleet.git",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				SystemdUser:  new(true),
+			},
+		},
+		{
+			name: "systemd_user explicit false overrides rootless true",
+			content: `
+hostname: rpi5-1
+repo_url: https://github.com/example/fleet.git
+rootless: true
+systemd_user: false
+`,
+			want: Config{ //nolint:gosec // test fixture, not real credentials
+				Hostname:     "rpi5-1",
+				RepoURL:      "https://github.com/example/fleet.git",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				Rootless:     true,
+				SystemdUser:  new(false),
+			},
+		},
+		{
+			name: "systemd_user defaults to rootless when unset",
+			content: `
+hostname: rpi5-1
+repo_url: https://github.com/example/fleet.git
+rootless: true
+`,
+			want: Config{ //nolint:gosec // test fixture, not real credentials
+				Hostname:     "rpi5-1",
+				RepoURL:      "https://github.com/example/fleet.git",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				Rootless:     true,
+				SystemdUser:  new(true),
 			},
 		},
 		{

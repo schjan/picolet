@@ -97,7 +97,7 @@ mkdir -p ~/.config/picolet/secrets
 cat > ~/.config/picolet/config.yml << EOF
 hostname: "my-pi"
 repo_url: "https://github.com/yourorg/fleet.git"
-rootless: true
+systemd_user: true
 git_token_path: "/etc/picolet/secrets/git_token"
 EOF
 echo "ghp_yourtoken" > ~/.config/picolet/secrets/git_token
