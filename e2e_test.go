@@ -550,8 +550,8 @@ func TestE2EPipeline(t *testing.T) {
 
 		// Phase 3: confirm recovery — RestartUnit was called by Enforce; poll until active
 		require.Eventually(t, func() bool {
-			active, _ := systemd.IsActive(ctx, "extra.service")
-			return active
+			status, _ := systemd.GetUnitStatus(ctx, "extra.service")
+			return status.ActiveState == "active"
 		}, 60*time.Second, 2*time.Second,
 			"extra.service should recover after health enforcement")
 
