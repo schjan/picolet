@@ -17,7 +17,7 @@ builds:
       - btrfs_noversion
       - exclude_graphdriver_devicemapper
     ldflags:
-      - -s -w -X github.com/schjan/picolet/pkg/version.Version={{.Version}} -X github.com/schjan/picolet/pkg/version.GitSHA={{.FullCommit}}
+      - -s -w -X github.com/schjan/picolet/pkg/version.Version={{.Version}} -X github.com/schjan/picolet/pkg/version.GitSHA={{.ShortCommit}}
 
 archives:
   - formats:
