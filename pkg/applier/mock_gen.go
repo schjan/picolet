@@ -2,12 +2,11 @@
 // github.com/vektra/mockery
 // template: testify
 
-package mocks
+package applier
 
 import (
 	"context"
 
-	"github.com/schjan/picolet/pkg/applier"
 	mock "github.com/stretchr/testify/mock"
 )
 
@@ -90,22 +89,22 @@ func (_c *MockSystemdManager_DaemonReload_Call) RunAndReturn(run func(ctx contex
 }
 
 // GetUnitStatus provides a mock function for the type MockSystemdManager
-func (_mock *MockSystemdManager) GetUnitStatus(ctx context.Context, name string) (applier.UnitStatus, error) {
+func (_mock *MockSystemdManager) GetUnitStatus(ctx context.Context, name string) (UnitStatus, error) {
 	ret := _mock.Called(ctx, name)
 
 	if len(ret) == 0 {
 		panic("no return value specified for GetUnitStatus")
 	}
 
-	var r0 applier.UnitStatus
+	var r0 UnitStatus
 	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, string) (applier.UnitStatus, error)); ok {
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) (UnitStatus, error)); ok {
 		return returnFunc(ctx, name)
 	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, string) applier.UnitStatus); ok {
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) UnitStatus); ok {
 		r0 = returnFunc(ctx, name)
 	} else {
-		r0 = ret.Get(0).(applier.UnitStatus)
+		r0 = ret.Get(0).(UnitStatus)
 	}
 	if returnFunc, ok := ret.Get(1).(func(context.Context, string) error); ok {
 		r1 = returnFunc(ctx, name)
@@ -145,12 +144,12 @@ func (_c *MockSystemdManager_GetUnitStatus_Call) Run(run func(ctx context.Contex
 	return _c
 }
 
-func (_c *MockSystemdManager_GetUnitStatus_Call) Return(unitStatus applier.UnitStatus, err error) *MockSystemdManager_GetUnitStatus_Call {
+func (_c *MockSystemdManager_GetUnitStatus_Call) Return(unitStatus UnitStatus, err error) *MockSystemdManager_GetUnitStatus_Call {
 	_c.Call.Return(unitStatus, err)
 	return _c
 }
 
-func (_c *MockSystemdManager_GetUnitStatus_Call) RunAndReturn(run func(ctx context.Context, name string) (applier.UnitStatus, error)) *MockSystemdManager_GetUnitStatus_Call {
+func (_c *MockSystemdManager_GetUnitStatus_Call) RunAndReturn(run func(ctx context.Context, name string) (UnitStatus, error)) *MockSystemdManager_GetUnitStatus_Call {
 	_c.Call.Return(run)
 	return _c
 }

@@ -20,7 +20,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	agentmocks "github.com/schjan/picolet/mocks/agent"
-	mocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/metrics"
@@ -88,14 +87,14 @@ func writeTestFile(t *testing.T, root, path, content string) {
 	require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
 }
 
-func newBareMocks(t *testing.T) (*mocks.MockSystemdManager, *mocks.MockPodmanClient, *mocks.MockFileWriter) {
+func newBareMocks(t *testing.T) (*applier.MockSystemdManager, *applier.MockPodmanClient, *applier.MockFileWriter) {
 	t.Helper()
-	return mocks.NewMockSystemdManager(t), mocks.NewMockPodmanClient(t), mocks.NewMockFileWriter(t)
+	return applier.NewMockSystemdManager(t), applier.NewMockPodmanClient(t), applier.NewMockFileWriter(t)
 }
 
 // setupApplyMocks configures mocks for a test that expects a successful apply
 // (health check + write files + daemon-reload + restart units).
-func setupApplyMocks(sys *mocks.MockSystemdManager, pod *mocks.MockPodmanClient, fw *mocks.MockFileWriter) map[string][]byte {
+func setupApplyMocks(sys *applier.MockSystemdManager, pod *applier.MockPodmanClient, fw *applier.MockFileWriter) map[string][]byte {
 	// Orphan scan at startup calls ListManagedSecrets
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
 	// Health check
@@ -119,7 +118,7 @@ func setupApplyMocks(sys *mocks.MockSystemdManager, pod *mocks.MockPodmanClient,
 
 // setupNoopMocks configures mocks for a test that should NOT write any files.
 // Only health checks are expected.
-func setupNoopMocks(sys *mocks.MockSystemdManager, pod *mocks.MockPodmanClient) {
+func setupNoopMocks(sys *applier.MockSystemdManager, pod *applier.MockPodmanClient) {
 	sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
 		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
 	// Orphan scan at startup calls ListManagedSecrets (not in dry-run)
