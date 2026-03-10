@@ -127,6 +127,18 @@ func (c *SocketPodmanClient) GetPodState(_ context.Context, pod string) (string,
 }
 
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
+func (c *SocketPodmanClient) VolumeRemove(_ context.Context, name string) error {
+	if err := volumes.Remove(c.connCtx, name, nil); err != nil {
+		code, _ := bindings.CheckResponseCode(err)
+		if code == http.StatusNotFound {
+			return nil // already gone
+		}
+		return fmt.Errorf("removing volume %s: %w", name, err)
+	}
+	return nil
+}
+
+//nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
 func (c *SocketPodmanClient) VolumeInspectMountpoint(_ context.Context, name string) (string, error) {
 	slog.Debug("inspecting volume mountpoint", "volume", name)
 	report, err := volumes.Inspect(c.connCtx, name, nil)

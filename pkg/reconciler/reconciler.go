@@ -120,12 +120,16 @@ func SecretNameFromPath(destPath string) string {
 // VolumeFileFromPath extracts the volume name and relative path from a
 // "volumefile:<volume>:<relpath>" dest path. Uses strings.Cut which splits
 // on the first colon only — rel paths containing colons are preserved correctly.
+// Returns ok=false if either component is empty.
 func VolumeFileFromPath(destPath string) (volume, relPath string, ok bool) {
 	suffix, found := strings.CutPrefix(destPath, "volumefile:")
 	if !found {
 		return "", "", false
 	}
 	volume, relPath, ok = strings.Cut(suffix, ":")
+	if !ok || volume == "" || relPath == "" {
+		return "", "", false
+	}
 	return
 }
 

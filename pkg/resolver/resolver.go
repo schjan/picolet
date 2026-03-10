@@ -258,6 +258,12 @@ func (r *Resolver) resolveManifest(registry *template.Template, tmplData *Templa
 
 func (r *Resolver) resolveConfigFile(registry *template.Template, tmplData *TemplateData, spec config.ConfigFileSpec) (*ResolvedFile, error) {
 	slog.Debug("resolving config file", "src", spec.Src, "volume", spec.Volume, "path", spec.Path)
+	if spec.Volume == "" || strings.Contains(spec.Volume, ":") {
+		return nil, fmt.Errorf("config file %s: invalid volume name %q", spec.Src, spec.Volume)
+	}
+	if !filepath.IsLocal(spec.Path) {
+		return nil, fmt.Errorf("config file %s: invalid path %q (must be a clean relative path)", spec.Src, spec.Path)
+	}
 	content, err := r.renderOrRead(registry, tmplData, spec.Src)
 	if err != nil {
 		return nil, fmt.Errorf("resolving config file %s: %w", spec.Src, err)

@@ -854,6 +854,162 @@ pi_types:
 	return sb.String()
 }
 
+// TestE2EConfigFile exercises the configfile category end-to-end:
+//  1. Volume + configfile co-deployed in a single commit (bootstrap scenario).
+//  2. Configfile content verified at the volume mountpoint.
+//  3. Second reconcile is a no-op (idempotency via volumefile: state key).
+//  4. Path traversal in spec.Path is rejected at resolve time.
+//
+//nolint:funlen,tparallel // sequential sub-tests; splitting would obscure the flow
+func TestE2EConfigFile(t *testing.T) {
+	t.Parallel()
+
+	socketPath := podmanSocketPath(t)
+
+	// Copy example-fleet to a temp dir so we can modify assignments.yml without
+	// affecting other parallel tests that read the same testdata directory.
+	fleetDir := t.TempDir()
+	require.NoError(t, os.CopyFS(fleetDir, os.DirFS(testdataDir)))
+
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	lockPath := filepath.Join(t.TempDir(), "reconciliation.lock")
+	secretsDir := t.TempDir()
+
+	podman, err := applier.NewSocketPodmanClient(context.Background(), socketPath)
+	require.NoError(t, err)
+
+	systemd, err := applier.NewDBusSystemdManager(t.Context(), true)
+	require.NoError(t, err)
+
+	// Pre-cleanup: remove stale data volume from a previous interrupted run.
+	preCtx, preCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	_ = podman.VolumeRemove(preCtx, "data")
+	preCancel()
+
+	t.Cleanup(func() {
+		st, loadErr := state.NewStore(statePath).Load()
+		if loadErr == nil {
+			for destPath := range st.ManagedFiles {
+				if !strings.HasPrefix(destPath, "/") {
+					continue // skip volumefile: and secret: logical paths
+				}
+				_ = os.Remove(destPath)
+			}
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = systemd.DaemonReload(cleanupCtx)
+		_ = podman.VolumeRemove(cleanupCtx, "data")
+		systemd.Close()
+	})
+
+	// Give e2e-host (pi_type: e2e) a volume + configfile in the same commit.
+	// This is the bootstrap scenario: volume unit must be started before the
+	// configfile phase calls VolumeInspectMountpoint.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(fleetDir, "assignments.yml"),
+		[]byte(`base:
+  networks:
+    - quadlets/networks/internal.network
+pi_types:
+  e2e:
+    volumes:
+      - quadlets/volumes/data.volume
+    config_files:
+      - src: configfiles/app.conf.tmpl
+        volume: data
+        path: app.conf
+features: {}
+`), 0o644))
+
+	agentCfg := &agentcfg.Config{
+		Hostname:     "e2e-host",
+		Rootless:     true,
+		PollInterval: time.Minute,
+		SecretsDir:   secretsDir,
+	}
+	a := agent.New(agentCfg,
+		agent.WithRepoPath(fleetDir),
+		agent.WithFileWriter(applier.NewAtomicFileWriter()),
+		agent.WithPodman(podman),
+		agent.WithSystemd(systemd),
+		agent.WithLockPath(lockPath),
+		agent.WithStatePath(statePath),
+	)
+	store := state.NewStore(statePath)
+
+	t.Run("co_deploy_volume_and_configfile", func(t *testing.T) {
+		// Critical bootstrap scenario: volume + configfile in the same changeset.
+		// Without the pre-phase DaemonReload + StartUnit the first apply would fail
+		// (VolumeInspectMountpoint called before the volume unit is started), and
+		// after 3 failures the SHA would be permanently blocked by the failure gate.
+		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+		defer cancel()
+
+		result, err := a.ReconcileOnce(ctx, "configfile-v1", state.NewState(), store)
+		require.NoError(t, err, "co-deploy of volume + configfile must succeed on first attempt")
+		assert.True(t, result.HasChanges)
+		require.NotNil(t, result.ApplyResult)
+		assert.Empty(t, result.ApplyResult.Errors, "apply must complete with no errors")
+		assert.GreaterOrEqual(t, result.Summary[reconciler.ActionCreate], 2,
+			"at least the volume and the configfile should be created")
+	})
+
+	t.Run("configfile_written_to_volume", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+		defer cancel()
+
+		mountpoint, err := podman.VolumeInspectMountpoint(ctx, "data")
+		require.NoError(t, err, "Podman volume 'data' should exist after co-deploy")
+
+		confData, err := os.ReadFile(filepath.Join(mountpoint, "app.conf"))
+		require.NoError(t, err, "app.conf should be written inside the volume mountpoint")
+		// configfiles/app.conf.tmpl renders "# Config for <hostname>\nhost=<external_hostname>"
+		assert.Contains(t, string(confData), "e2e-host", "rendered content should include the hostname")
+	})
+
+	t.Run("idempotent", func(t *testing.T) {
+		// Second reconcile with the same SHA must be a complete no-op.
+		// This verifies that "volumefile:data:app.conf" is correctly hashed in state
+		// and that no spurious update is triggered.
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+
+		st, err := store.Load()
+		require.NoError(t, err)
+		result, err := a.ReconcileOnce(ctx, "configfile-v1", st, store)
+		require.NoError(t, err)
+		assert.False(t, result.HasChanges, "second reconcile with same SHA must be a no-op")
+	})
+
+	t.Run("path_traversal_rejected", func(t *testing.T) {
+		// A configfile spec with a traversal path must be rejected at resolve time
+		// with a clear error — it must never reach the apply phase.
+		badFleetDir := t.TempDir()
+		require.NoError(t, os.CopyFS(badFleetDir, os.DirFS(testdataDir)))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(badFleetDir, "assignments.yml"),
+			[]byte(`base: {}
+pi_types:
+  e2e:
+    config_files:
+      - src: configfiles/app.conf.tmpl
+        volume: data
+        path: ../../etc/hosts
+features: {}
+`), 0o644))
+
+		badFS := os.DirFS(badFleetDir)
+		cfg, err := config.LoadAll(badFS)
+		require.NoError(t, err)
+		r, err := resolver.New(resolver.Config{FS: badFS, Config: cfg})
+		require.NoError(t, err)
+		_, err = r.ResolveHost("e2e-host")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid path", "traversal path must be rejected with a clear error")
+	})
+}
+
 // TestE2ESystemdPrivateSocket verifies that NewDBusSystemdManager connects to the user
 // systemd instance via its private socket when rootless=true, and that a real method
 // call succeeds over that connection.

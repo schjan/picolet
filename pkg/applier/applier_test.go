@@ -240,6 +240,46 @@ func TestApplyConfigFileDelete(t *testing.T) {
 	assert.Contains(t, result.RestartedUnits, "mosquitto.service")
 }
 
+func TestApplyConfigFileSameCommitAsVolume(t *testing.T) {
+	t.Parallel()
+	sys := mocks.NewMockSystemdManager(t)
+	pod := mocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+
+	// Bootstrap: DaemonReload + StartUnit for the volume unit fires first.
+	// Final restartUnits: another DaemonReload + RestartUnit for the volume service.
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Times(2)
+	sys.EXPECT().StartUnit(mock.Anything, "data-volume.service").Return(nil).Once()
+	sys.EXPECT().RestartUnit(mock.Anything, "data-volume.service").Return(nil).Once()
+	pod.EXPECT().VolumeInspectMountpoint(mock.Anything, "data").Return("/var/lib/containers/storage/volumes/data/_data", nil)
+
+	a := New(sys, pod, fw, false)
+	cs := &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{
+				DestPath:    "/etc/containers/systemd/picolet/data.volume",
+				Category:    "volume",
+				Action:      reconciler.ActionCreate,
+				NewContent:  "[Volume]",
+				ServiceName: "data-volume.service",
+			},
+			{
+				DestPath:   "volumefile:data:app.conf",
+				Category:   "configfile",
+				Action:     reconciler.ActionCreate,
+				NewContent: "key=value",
+			},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionCreate: 2},
+	}
+
+	result, err := a.Apply(context.Background(), cs)
+	require.NoError(t, err)
+	assert.Equal(t, 2, result.Applied)
+	assert.Contains(t, fw.written, "/etc/containers/systemd/picolet/data.volume")
+	assert.Contains(t, fw.written, "/var/lib/containers/storage/volumes/data/_data/app.conf")
+}
+
 func TestApplySecretReplace(t *testing.T) {
 	t.Parallel()
 	sys := NewMockSystemdManager(t)

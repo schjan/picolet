@@ -68,6 +68,11 @@ func validateFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInf
 		return validateSystemdUnit(f.DestPath, f.Content)
 	case "secret":
 		return validateSecret(f.DestPath, f.Content)
+	case "configfile":
+		if len(strings.TrimSpace(f.Content)) == 0 {
+			return fmt.Errorf("%s: empty configfile content", f.DestPath)
+		}
+		return nil
 	default:
 		slog.Warn("unknown file category, skipping validation", "category", f.Category, "path", f.SrcPath)
 		return nil

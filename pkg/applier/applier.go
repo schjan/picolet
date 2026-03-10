@@ -12,6 +12,11 @@ import (
 	"github.com/schjan/picolet/pkg/reconciler"
 )
 
+// volumePhaseMax is the highest categoryOrder value belonging to the pre-phase
+// (network + volume). Changes at or below this value are applied before the
+// configfile phase so that volume units can be daemon-reloaded and started.
+const volumePhaseMax = 1 // categoryOrder["volume"]
+
 // SystemdManager controls systemd units via D-Bus.
 type SystemdManager interface {
 	DaemonReload(ctx context.Context) error
@@ -42,6 +47,8 @@ type PodmanClient interface {
 	GetPodState(ctx context.Context, pod string) (string, error)
 	// VolumeInspectMountpoint returns the host filesystem mountpoint for the named volume.
 	VolumeInspectMountpoint(ctx context.Context, name string) (string, error)
+	// VolumeRemove removes a named Podman volume. It is a no-op if the volume does not exist.
+	VolumeRemove(ctx context.Context, name string) error
 }
 
 // FileWriter writes files atomically.
@@ -95,6 +102,11 @@ func New(systemd SystemdManager, podman PodmanClient, writer FileWriter, dryRun 
 }
 
 // Apply applies the changeset in phased order.
+//
+// Changes are split into a pre-phase (network + volume) and a main phase
+// (configfile onward). When configfile changes are present alongside volume
+// changes, a DaemonReload + StartUnit is performed after the pre-phase so that
+// the Podman volume exists and VolumeInspectMountpoint succeeds.
 func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyResult, error) {
 	result := &ApplyResult{}
 	sorted := slices.Clone(cs.Changes)
@@ -102,14 +114,79 @@ func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyRe
 		return cmp.Compare(categoryOrder[x.Category], categoryOrder[y.Category])
 	})
 
-	changedUnits, needsReload, err := a.applyPhase(ctx, sorted, result)
+	split := splitPhase(sorted)
+	prePhase, mainPhase := sorted[:split], sorted[split:]
+
+	preChangedUnits, preNeedsReload, err := a.applyPhase(ctx, prePhase, result)
+	if err != nil {
+		return result, err
+	}
+
+	if !a.dryRun {
+		// Bootstrap volume units only when configfiles are also being applied in
+		// this changeset. This avoids an extra DaemonReload when no configfiles exist.
+		hasConfigfiles := slices.ContainsFunc(mainPhase, func(c reconciler.Change) bool {
+			return c.Category == "configfile" && c.Action != reconciler.ActionNoop
+		})
+		if hasConfigfiles {
+			if err := a.maybeBootstrapVolumes(ctx, prePhase, preNeedsReload); err != nil {
+				return result, err
+			}
+		}
+	}
+
+	mainChangedUnits, mainNeedsReload, err := a.applyPhase(ctx, mainPhase, result)
 	if err != nil {
 		return result, err
 	}
 	if a.dryRun {
 		return result, nil
 	}
-	return result, a.restartUnits(ctx, changedUnits, needsReload, result)
+	for u := range preChangedUnits {
+		mainChangedUnits[u] = true
+	}
+	return result, a.restartUnits(ctx, mainChangedUnits, preNeedsReload || mainNeedsReload, result)
+}
+
+// splitPhase returns the index of the first change in the main phase (configfile
+// and beyond). The input must already be sorted by categoryOrder.
+func splitPhase(sorted []reconciler.Change) int {
+	for i, c := range sorted {
+		if categoryOrder[c.Category] > volumePhaseMax {
+			return i
+		}
+	}
+	return len(sorted)
+}
+
+// maybeBootstrapVolumes performs a DaemonReload and starts new/updated volume
+// units when the pre-phase wrote volume files. This ensures the Podman volume
+// exists and VolumeInspectMountpoint succeeds before the configfile phase runs.
+func (a *Applier) maybeBootstrapVolumes(ctx context.Context, prePhase []reconciler.Change, preNeedsReload bool) error {
+	if !preNeedsReload {
+		return nil
+	}
+	hasNewVolumes := slices.ContainsFunc(prePhase, func(c reconciler.Change) bool {
+		return c.Category == "volume" && c.Action != reconciler.ActionDelete
+	})
+	if !hasNewVolumes {
+		return nil
+	}
+	slog.Info("bootstrapping volume units before configfile phase")
+	if err := a.systemd.DaemonReload(ctx); err != nil {
+		return fmt.Errorf("daemon-reload (volume bootstrap): %w", err)
+	}
+	for _, c := range prePhase {
+		if c.Category != "volume" || c.Action == reconciler.ActionDelete || c.ServiceName == "" {
+			continue
+		}
+		slog.Info("starting volume unit (bootstrap)", "unit", c.ServiceName)
+		if err := a.systemd.StartUnit(ctx, c.ServiceName); err != nil {
+			// Log but don't fail — the volume may already be running (update case).
+			slog.Warn("starting volume unit failed, continuing", "unit", c.ServiceName, "error", err)
+		}
+	}
+	return nil
 }
 
 //nolint:cyclop // multiple early-continues are clearer than restructuring
@@ -182,6 +259,8 @@ func unitNameForDelete(change reconciler.Change) string {
 		return change.ServiceName // from state.ServiceNames; "" if unknown
 	case "systemd":
 		return filepath.Base(change.DestPath) // e.g. "foo.service"
+	case "configfile":
+		return "" // config files are not systemd units; restart_service is handled separately
 	default:
 		return ""
 	}
@@ -267,6 +346,9 @@ func (a *Applier) applyDelete(ctx context.Context, change reconciler.Change) err
 
 // configFileMountPath resolves the real host path for a config file in a named volume.
 func (a *Applier) configFileMountPath(ctx context.Context, volName, relPath string) (string, error) {
+	if !filepath.IsLocal(relPath) {
+		return "", fmt.Errorf("config file path %q escapes volume mountpoint", relPath)
+	}
 	mountpoint, err := a.podman.VolumeInspectMountpoint(ctx, volName)
 	if err != nil {
 		return "", fmt.Errorf("inspecting volume %s: %w", volName, err)
@@ -275,7 +357,10 @@ func (a *Applier) configFileMountPath(ctx context.Context, volName, relPath stri
 }
 
 func (a *Applier) applyConfigFile(ctx context.Context, change reconciler.Change) error {
-	volName, relPath, _ := reconciler.VolumeFileFromPath(change.DestPath)
+	volName, relPath, ok := reconciler.VolumeFileFromPath(change.DestPath)
+	if !ok {
+		return fmt.Errorf("malformed configfile dest path: %q", change.DestPath)
+	}
 	slog.Info("writing config file to volume",
 		"volume", volName,
 		"path", relPath,
@@ -292,7 +377,10 @@ func (a *Applier) applyConfigFile(ctx context.Context, change reconciler.Change)
 }
 
 func (a *Applier) deleteConfigFile(ctx context.Context, change reconciler.Change) error {
-	volName, relPath, _ := reconciler.VolumeFileFromPath(change.DestPath)
+	volName, relPath, ok := reconciler.VolumeFileFromPath(change.DestPath)
+	if !ok {
+		return fmt.Errorf("malformed configfile dest path: %q", change.DestPath)
+	}
 	slog.Info("removing config file from volume",
 		"volume", volName,
 		"path", relPath,

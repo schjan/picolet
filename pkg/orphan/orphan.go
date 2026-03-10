@@ -45,6 +45,11 @@ type ScanResult struct {
 // Scan removes any file or secret that was placed by picolet but is absent from managedFiles.
 // Individual deletion errors are logged and do not abort the scan.
 // Directory-scan errors are returned because they indicate a systemic problem.
+//
+// V1 limitation: config files written inside named Podman volumes use logical
+// "volumefile:<vol>:<path>" keys in managedFiles and are never scanned here.
+// If the state file is lost or corrupted, those files will not be cleaned up.
+// Follow-up: orphan detection for configfiles requires resolving volume mountpoints at scan time.
 func (s *Scanner) Scan(ctx context.Context, managedFiles map[string]state.ManagedFile) (ScanResult, error) {
 	var result ScanResult
 	r1, err := s.scanOwnedDir(s.quadletDir, managedFiles)

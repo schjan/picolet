@@ -69,33 +69,42 @@ func TestIntegrationReconcilePipeline(t *testing.T) {
 
 	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
-	hostname := "node-1" // worker + app-a: exercises multi-feature assignment merging
-	resolved, err := r.ResolveHost(hostname)
-	require.NoError(t, err)
 
-	// First deploy: all creates
-	emptyState := state.NewState()
-	cs := reconciler.Diff(resolved.Files, emptyState)
-	assert.True(t, cs.HasChanges())
-	assert.Equal(t, len(resolved.Files), cs.Summary[reconciler.ActionCreate])
-	assert.Equal(t, 0, cs.Summary[reconciler.ActionUpdate])
-	assert.Equal(t, 0, cs.Summary[reconciler.ActionDelete])
-
-	// Build full state from changeset (simulating post-apply)
-	fullState := state.NewState()
-	for _, c := range cs.Changes {
-		if c.Action != reconciler.ActionDelete {
-			fullState.ManagedFiles[c.DestPath] = state.ManagedFile{Hash: c.NewHash, Category: c.Category}
-			if c.ServiceName != "" {
-				fullState.ServiceNames[c.DestPath] = c.ServiceName
-			}
-		}
+	hosts := []string{
+		"node-1", // worker + app-a: exercises multi-feature assignment merging
+		"node-2", // controller: exercises configfile + volume co-deployment
 	}
+	for _, hostname := range hosts {
+		t.Run(hostname, func(t *testing.T) {
+			t.Parallel()
+			resolved, err := r.ResolveHost(hostname)
+			require.NoError(t, err)
 
-	// Idempotent: all noops
-	cs2 := reconciler.Diff(resolved.Files, fullState)
-	assert.False(t, cs2.HasChanges())
-	assert.Equal(t, len(resolved.Files), cs2.Summary[reconciler.ActionNoop])
+			// First deploy: all creates
+			emptyState := state.NewState()
+			cs := reconciler.Diff(resolved.Files, emptyState)
+			assert.True(t, cs.HasChanges())
+			assert.Equal(t, len(resolved.Files), cs.Summary[reconciler.ActionCreate])
+			assert.Equal(t, 0, cs.Summary[reconciler.ActionUpdate])
+			assert.Equal(t, 0, cs.Summary[reconciler.ActionDelete])
+
+			// Build full state from changeset (simulating post-apply)
+			fullState := state.NewState()
+			for _, c := range cs.Changes {
+				if c.Action != reconciler.ActionDelete {
+					fullState.ManagedFiles[c.DestPath] = state.ManagedFile{Hash: c.NewHash, Category: c.Category}
+					if c.ServiceName != "" {
+						fullState.ServiceNames[c.DestPath] = c.ServiceName
+					}
+				}
+			}
+
+			// Idempotent: all noops
+			cs2 := reconciler.Diff(resolved.Files, fullState)
+			assert.False(t, cs2.HasChanges())
+			assert.Equal(t, len(resolved.Files), cs2.Summary[reconciler.ActionNoop])
+		})
+	}
 }
 
 func TestIntegrationMultiHostConsistency(t *testing.T) {

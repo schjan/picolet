@@ -76,7 +76,7 @@ func (r *ResolvedFileSet) deduplicate() {
 	r.Kube = sortedUnique(r.Kube)
 	r.Manifests = sortedUnique(r.Manifests)
 	r.Secrets = sortedUnique(r.Secrets)
-	slices.SortFunc(r.ConfigFiles, func(a, b ConfigFileSpec) int {
+	slices.SortStableFunc(r.ConfigFiles, func(a, b ConfigFileSpec) int {
 		return cmp.Or(
 			cmp.Compare(a.Src, b.Src),
 			cmp.Compare(a.Volume, b.Volume),

@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+//nolint:funlen // multiple sub-tests with setup; splitting would obscure the test intent
 func TestDeduplicateConfigFiles(t *testing.T) {
 	t.Parallel()
 
@@ -30,6 +31,8 @@ func TestDeduplicateConfigFiles(t *testing.T) {
 
 		result := assignments.Resolve(&HostConfig{PiType: "controller"})
 		require.Len(t, result.ConfigFiles, 1, "duplicate src+volume+path should be deduplicated to one entry")
+		// SortStableFunc preserves insertion order (base before pi_type); CompactFunc keeps first.
+		assert.Equal(t, "service-a", result.ConfigFiles[0].RestartService, "base entry should be retained (stable sort preserves insertion order)")
 	})
 
 	t.Run("identical specs across base and feature deduplicate", func(t *testing.T) {

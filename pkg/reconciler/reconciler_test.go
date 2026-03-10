@@ -149,6 +149,7 @@ func TestDiffSecretUpdate(t *testing.T) {
 	assert.Equal(t, 1, csUpdate.Summary[ActionUpdate], "changed secret content should produce update")
 }
 
+//nolint:funlen // table-driven test with many cases
 func TestVolumeFileFromPath(t *testing.T) {
 	t.Parallel()
 
@@ -181,6 +182,21 @@ func TestVolumeFileFromPath(t *testing.T) {
 		{
 			name:     "empty string",
 			destPath: "",
+			wantOk:   false,
+		},
+		{
+			name:     "empty volume component",
+			destPath: "volumefile::rel/path",
+			wantOk:   false,
+		},
+		{
+			name:     "empty relpath component",
+			destPath: "volumefile:data:",
+			wantOk:   false,
+		},
+		{
+			name:     "no colon after prefix",
+			destPath: "volumefile:nocolon",
 			wantOk:   false,
 		},
 	}
