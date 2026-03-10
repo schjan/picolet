@@ -230,6 +230,8 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 			return err
 		}
 		opts = append(opts, agent.WithMQTT(mqttClient))
+	} else {
+		slog.Info("mqtt disabled")
 	}
 
 	a := agent.New(cfg, opts...)
