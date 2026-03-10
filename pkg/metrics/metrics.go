@@ -101,6 +101,16 @@ var (
 		},
 		[]string{"type"},
 	)
+
+	MQTTConnected = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "picolet_mqtt_connected",
+		Help: "1 if the agent has an active MQTT broker connection, 0 otherwise.",
+	})
+
+	AgentPaused = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "picolet_agent_paused",
+		Help: "1 if the agent is paused via MQTT, 0 otherwise.",
+	})
 )
 
 var registerOnce sync.Once
@@ -122,6 +132,8 @@ func Register() {
 			FilesManagedTotal,
 			FailedSHAConsecutiveCount,
 			OrphansRemovedTotal,
+			MQTTConnected,
+			AgentPaused,
 		)
 	})
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/metrics"
+	mqttpkg "github.com/schjan/picolet/pkg/mqtt"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
@@ -175,6 +176,23 @@ func jsonLogging(ctx context.Context, cmd *cli.Command) (context.Context, error)
 	return ctx, nil
 }
 
+// mqttConfigFrom converts an agent MQTT config to a pkg/mqtt Config, reading the password file if set.
+func mqttConfigFrom(cfg *agentcfg.MQTTConfig) (mqttpkg.Config, error) {
+	c := mqttpkg.Config{
+		BrokerURL:   cfg.BrokerURL,
+		Username:    cfg.Username,
+		TopicPrefix: cfg.TopicPrefix,
+	}
+	if cfg.PasswordPath != "" {
+		data, err := os.ReadFile(cfg.PasswordPath)
+		if err != nil {
+			return mqttpkg.Config{}, fmt.Errorf("reading MQTT password: %w", err)
+		}
+		c.Password = strings.TrimSpace(string(data))
+	}
+	return c, nil
+}
+
 func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
@@ -201,6 +219,18 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 		agent.WithSystemd(systemd),
 		agent.WithPodman(podman),
 		agent.WithFileWriter(applier.NewAtomicFileWriter()),
+	}
+
+	if cfg.MQTT != nil {
+		mqttCfg, err := mqttConfigFrom(cfg.MQTT)
+		if err != nil {
+			return err
+		}
+		mqttClient, err := mqttpkg.NewClient(mqttCfg, cfg.Hostname)
+		if err != nil {
+			return err
+		}
+		opts = append(opts, agent.WithMQTT(mqttClient))
 	}
 
 	a := agent.New(cfg, opts...)
@@ -296,10 +326,22 @@ func runResolve(repoDir, host string) error {
 	return nil
 }
 
+//nolint:cyclop // MQTT path + webhook path with optional secret; splitting reduces readability
 func runTrigger(_ context.Context, configPath, urlOverride string) error {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
 		return err
+	}
+
+	// Prefer MQTT when configured and no explicit webhook URL override.
+	if cfg.MQTT != nil && urlOverride == "" {
+		mqttCfg, err := mqttConfigFrom(cfg.MQTT)
+		if err != nil {
+			return err
+		}
+		triggerCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return mqttpkg.Trigger(triggerCtx, mqttCfg) //nolint:contextcheck // intentional detached context — trigger must not inherit signal cancellation
 	}
 
 	webhookURL := urlOverride

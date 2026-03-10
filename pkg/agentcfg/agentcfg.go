@@ -9,6 +9,14 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
+// MQTTConfig holds MQTT broker connection settings.
+type MQTTConfig struct {
+	BrokerURL    string `yaml:"broker_url"` // required: tcp://host:1883 or ssl://host:8883
+	Username     string `yaml:"username"`
+	PasswordPath string `yaml:"password_path"` // file path to password, not inline
+	TopicPrefix  string `yaml:"topic_prefix"`  // default: "picolet"
+}
+
 // Config holds the agent runtime configuration from /etc/picolet/config.yml.
 type Config struct {
 	Hostname          string        `yaml:"hostname"`
@@ -21,6 +29,7 @@ type Config struct {
 	Rootless          bool          `yaml:"rootless"`
 	PodmanSocket      string        `yaml:"podman_socket"`
 	WebhookSecretPath string        `yaml:"webhook_secret_path"`
+	MQTT              *MQTTConfig   `yaml:"mqtt"`
 }
 
 // Load reads and parses the agent config from disk.
@@ -56,6 +65,9 @@ func (c *Config) setDefaults() {
 	if c.PodmanSocket == "" {
 		c.PodmanSocket = "/run/podman/podman.sock"
 	}
+	if c.MQTT != nil && c.MQTT.TopicPrefix == "" {
+		c.MQTT.TopicPrefix = "picolet"
+	}
 }
 
 // Validate checks that required fields are set.
@@ -65,6 +77,12 @@ func (c *Config) Validate() error {
 	}
 	if c.RepoURL == "" {
 		return errors.New("repo_url is required")
+	}
+	if c.MQTT != nil && c.MQTT.BrokerURL == "" {
+		return errors.New("mqtt.broker_url is required when mqtt is configured")
+	}
+	if c.MQTT != nil && c.MQTT.PasswordPath != "" && c.MQTT.Username == "" {
+		return errors.New("mqtt.username is required when mqtt.password_path is set")
 	}
 	return nil
 }

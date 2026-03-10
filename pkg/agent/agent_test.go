@@ -19,9 +19,11 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	agentmocks "github.com/schjan/picolet/mocks/agent"
 	mocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/metrics"
+	"github.com/schjan/picolet/pkg/mqtt"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/state"
 )
@@ -768,6 +770,127 @@ func TestScanOrphansAfterSchemaMigration(t *testing.T) {
 	)
 
 	a.scanOrphans(context.Background(), store)
+}
+
+func TestAgentPauseSkipsReconciliation(t *testing.T) {
+	t.Parallel()
+	bareDir := initTestRepo(t)
+	repoDir := filepath.Join(t.TempDir(), "clone")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+
+	metrics.Register()
+
+	sys, pod, fw := newBareMocks(t)
+	// Health checks still run when paused; no writes expected.
+	setupNoopMocks(sys, pod)
+
+	mqttMock := agentmocks.NewMockMQTTClient(t)
+	mqttMock.EXPECT().Start(mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	mqttMock.EXPECT().PublishStatus(mock.Anything, mock.Anything).Return(nil).Maybe()
+	mqttMock.EXPECT().Close(mock.Anything).Maybe()
+
+	cfg := &agentcfg.Config{
+		Hostname:     "test-host",
+		RepoURL:      bareDir,
+		RepoBranch:   "master",
+		PollInterval: time.Second,
+		MetricsPort:  0,
+		SecretsDir:   t.TempDir(),
+	}
+
+	a := New(cfg,
+		WithSystemd(sys),
+		WithPodman(pod),
+		WithFileWriter(fw),
+		WithRepoPath(repoDir),
+		WithStatePath(statePath),
+		WithMQTT(mqttMock),
+	)
+	// Pause before running — strict mock (no WriteFile expectation) will fail if writes occur.
+	a.paused.Store(true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- a.Run(ctx)
+	}()
+
+	<-ctx.Done()
+	require.NoError(t, <-errCh)
+
+	// No file writes should have occurred (strict mock guards this).
+}
+
+//nolint:funlen // setup-heavy integration test: mocks + git repo + status capture
+func TestAgentMQTTStatusPublished(t *testing.T) {
+	t.Parallel()
+	bareDir := initTestRepo(t)
+	repoDir := filepath.Join(t.TempDir(), "clone")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+
+	metrics.Register()
+
+	sys, pod, fw := newBareMocks(t)
+	setupApplyMocks(sys, pod, fw)
+
+	var capturedStatus mqtt.Status
+	var statusCaptured sync.Once
+	statusCh := make(chan struct{})
+
+	mqttMock := agentmocks.NewMockMQTTClient(t)
+	mqttMock.EXPECT().Start(mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	mqttMock.EXPECT().PublishStatus(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, s mqtt.Status) error {
+		if s.AppliedSHA != "" {
+			statusCaptured.Do(func() {
+				capturedStatus = s
+				close(statusCh)
+			})
+		}
+		return nil
+	}).Maybe()
+	mqttMock.EXPECT().Close(mock.Anything).Maybe()
+
+	cfg := &agentcfg.Config{
+		Hostname:     "test-host",
+		RepoURL:      bareDir,
+		RepoBranch:   "master",
+		PollInterval: time.Hour, // prevent second tick
+		MetricsPort:  0,
+		SecretsDir:   t.TempDir(),
+	}
+
+	a := New(cfg,
+		WithSystemd(sys),
+		WithPodman(pod),
+		WithFileWriter(fw),
+		WithRepoPath(repoDir),
+		WithStatePath(statePath),
+		WithMQTT(mqttMock),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- a.Run(ctx)
+	}()
+
+	select {
+	case <-statusCh:
+		// got a status with applied SHA
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for MQTT status publish with applied SHA")
+	}
+
+	cancel()
+	require.NoError(t, <-errCh)
+
+	assert.NotEmpty(t, capturedStatus.AppliedSHA, "AppliedSHA should be set after successful reconciliation")
+	assert.False(t, capturedStatus.LastSuccessfulReconciliation.IsZero(), "LastSuccessfulReconciliation should be non-zero")
+	assert.False(t, capturedStatus.Paused, "should not be paused")
 }
 
 func TestSetFilesManagedMetric(t *testing.T) {
