@@ -3,9 +3,12 @@
 package picolet_test
 
 import (
+	"archive/tar"
+	"bytes"
 	"cmp"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +18,7 @@ import (
 
 	"github.com/containers/podman/v5/pkg/bindings"
 	"github.com/containers/podman/v5/pkg/bindings/containers"
+	"github.com/containers/podman/v5/pkg/bindings/volumes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -905,7 +909,7 @@ func TestE2EConfigFile(t *testing.T) {
 
 	// Give e2e-host (pi_type: e2e) a volume + configfile in the same commit.
 	// This is the bootstrap scenario: volume unit must be started before the
-	// configfile phase calls VolumeInspectMountpoint.
+	// configfile phase calls VolumeImportFiles.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(fleetDir, "assignments.yml"),
 		[]byte(`base:
@@ -940,8 +944,8 @@ features: {}
 
 	t.Run("co_deploy_volume_and_configfile", func(t *testing.T) {
 		// Critical bootstrap scenario: volume + configfile in the same changeset.
-		// Without the pre-phase DaemonReload + StartUnit the first apply would fail
-		// (VolumeInspectMountpoint called before the volume unit is started), and
+		// Without the bootstrap DaemonReload + RestartUnit the first apply would fail
+		// (VolumeImportFiles called before the volume unit is started), and
 		// after 3 failures the SHA would be permanently blocked by the failure gate.
 		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
@@ -956,16 +960,32 @@ features: {}
 	})
 
 	t.Run("configfile_written_to_volume", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-		defer cancel()
+		// Verify configfile content by exporting the volume as a tar archive
+		// and extracting app.conf — no host filesystem access needed.
+		connCtx, err := bindings.NewConnection(t.Context(), "unix:"+socketPath)
+		require.NoError(t, err)
 
-		mountpoint, err := podman.VolumeInspectMountpoint(ctx, "data")
-		require.NoError(t, err, "Podman volume 'data' should exist after co-deploy")
+		var buf bytes.Buffer
+		require.NoError(t, volumes.Export(connCtx, "data", &buf),
+			"Podman volume 'data' should be exportable after co-deploy")
 
-		confData, err := os.ReadFile(filepath.Join(mountpoint, "app.conf"))
-		require.NoError(t, err, "app.conf should be written inside the volume mountpoint")
-		// configfiles/app.conf.tmpl renders "# Config for <hostname>\nhost=<external_hostname>"
-		assert.Contains(t, string(confData), "e2e-host", "rendered content should include the hostname")
+		tr := tar.NewReader(&buf)
+		var found bool
+		for {
+			hdr, err := tr.Next()
+			if err != nil {
+				break
+			}
+			if hdr.Name == "app.conf" {
+				data, readErr := io.ReadAll(tr)
+				require.NoError(t, readErr)
+				assert.Contains(t, string(data), "e2e-host",
+					"rendered content should include the hostname")
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "app.conf should exist in the exported volume tar")
 	})
 
 	t.Run("idempotent", func(t *testing.T) {

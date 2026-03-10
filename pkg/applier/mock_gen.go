@@ -801,45 +801,37 @@ func (_c *MockPodmanClient_SecretRemove_Call) RunAndReturn(run func(ctx context.
 	return _c
 }
 
-// VolumeInspectMountpoint provides a mock function for the type MockPodmanClient
-func (_mock *MockPodmanClient) VolumeInspectMountpoint(ctx context.Context, name string) (string, error) {
-	ret := _mock.Called(ctx, name)
+// VolumeImportFiles provides a mock function for the type MockPodmanClient
+func (_mock *MockPodmanClient) VolumeImportFiles(ctx context.Context, volumeName string, files map[string][]byte) error {
+	ret := _mock.Called(ctx, volumeName, files)
 
 	if len(ret) == 0 {
-		panic("no return value specified for VolumeInspectMountpoint")
+		panic("no return value specified for VolumeImportFiles")
 	}
 
-	var r0 string
-	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, string) (string, error)); ok {
-		return returnFunc(ctx, name)
-	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, string) string); ok {
-		r0 = returnFunc(ctx, name)
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, map[string][]byte) error); ok {
+		r0 = returnFunc(ctx, volumeName, files)
 	} else {
-		r0 = ret.Get(0).(string)
+		r0 = ret.Error(0)
 	}
-	if returnFunc, ok := ret.Get(1).(func(context.Context, string) error); ok {
-		r1 = returnFunc(ctx, name)
-	} else {
-		r1 = ret.Error(1)
-	}
-	return r0, r1
+	return r0
 }
 
-// MockPodmanClient_VolumeInspectMountpoint_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'VolumeInspectMountpoint'
-type MockPodmanClient_VolumeInspectMountpoint_Call struct {
+// MockPodmanClient_VolumeImportFiles_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'VolumeImportFiles'
+type MockPodmanClient_VolumeImportFiles_Call struct {
 	*mock.Call
 }
 
-// VolumeInspectMountpoint is a helper method to define mock.On call
+// VolumeImportFiles is a helper method to define mock.On call
 //   - ctx context.Context
-//   - name string
-func (_e *MockPodmanClient_Expecter) VolumeInspectMountpoint(ctx interface{}, name interface{}) *MockPodmanClient_VolumeInspectMountpoint_Call {
-	return &MockPodmanClient_VolumeInspectMountpoint_Call{Call: _e.mock.On("VolumeInspectMountpoint", ctx, name)}
+//   - volumeName string
+//   - files map[string][]byte
+func (_e *MockPodmanClient_Expecter) VolumeImportFiles(ctx interface{}, volumeName interface{}, files interface{}) *MockPodmanClient_VolumeImportFiles_Call {
+	return &MockPodmanClient_VolumeImportFiles_Call{Call: _e.mock.On("VolumeImportFiles", ctx, volumeName, files)}
 }
 
-func (_c *MockPodmanClient_VolumeInspectMountpoint_Call) Run(run func(ctx context.Context, name string)) *MockPodmanClient_VolumeInspectMountpoint_Call {
+func (_c *MockPodmanClient_VolumeImportFiles_Call) Run(run func(ctx context.Context, volumeName string, files map[string][]byte)) *MockPodmanClient_VolumeImportFiles_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
@@ -849,20 +841,25 @@ func (_c *MockPodmanClient_VolumeInspectMountpoint_Call) Run(run func(ctx contex
 		if args[1] != nil {
 			arg1 = args[1].(string)
 		}
+		var arg2 map[string][]byte
+		if args[2] != nil {
+			arg2 = args[2].(map[string][]byte)
+		}
 		run(
 			arg0,
 			arg1,
+			arg2,
 		)
 	})
 	return _c
 }
 
-func (_c *MockPodmanClient_VolumeInspectMountpoint_Call) Return(s string, err error) *MockPodmanClient_VolumeInspectMountpoint_Call {
-	_c.Call.Return(s, err)
+func (_c *MockPodmanClient_VolumeImportFiles_Call) Return(err error) *MockPodmanClient_VolumeImportFiles_Call {
+	_c.Call.Return(err)
 	return _c
 }
 
-func (_c *MockPodmanClient_VolumeInspectMountpoint_Call) RunAndReturn(run func(ctx context.Context, name string) (string, error)) *MockPodmanClient_VolumeInspectMountpoint_Call {
+func (_c *MockPodmanClient_VolumeImportFiles_Call) RunAndReturn(run func(ctx context.Context, volumeName string, files map[string][]byte) error) *MockPodmanClient_VolumeImportFiles_Call {
 	_c.Call.Return(run)
 	return _c
 }

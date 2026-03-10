@@ -1,11 +1,14 @@
 package applier
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 
 	"github.com/containers/podman/v5/libpod/define"
 	"github.com/containers/podman/v5/pkg/bindings"
@@ -138,12 +141,31 @@ func (c *SocketPodmanClient) VolumeRemove(_ context.Context, name string) error 
 	return nil
 }
 
+// VolumeImportFiles imports files into a named Podman volume as a tar archive
+// via the Podman API socket. Requires Podman 4.x+.
+//
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
-func (c *SocketPodmanClient) VolumeInspectMountpoint(_ context.Context, name string) (string, error) {
-	slog.Debug("inspecting volume mountpoint", "volume", name)
-	report, err := volumes.Inspect(c.connCtx, name, nil)
-	if err != nil {
-		return "", fmt.Errorf("inspecting volume %s: %w", name, err)
+func (c *SocketPodmanClient) VolumeImportFiles(_ context.Context, volumeName string, files map[string][]byte) error {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, path := range slices.Sorted(maps.Keys(files)) {
+		content := files[path]
+		if err := tw.WriteHeader(&tar.Header{Name: path, Mode: 0o644, Size: int64(len(content))}); err != nil {
+			return fmt.Errorf("writing tar header for %s: %w", path, err)
+		}
+		if _, err := tw.Write(content); err != nil {
+			return fmt.Errorf("writing tar content for %s: %w", path, err)
+		}
 	}
-	return report.Mountpoint, nil
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("closing tar archive: %w", err)
+	}
+	if err := volumes.Import(c.connCtx, volumeName, &buf); err != nil {
+		code, _ := bindings.CheckResponseCode(err)
+		if code == http.StatusNotFound {
+			return fmt.Errorf("volume %s does not exist: %w", volumeName, err)
+		}
+		return fmt.Errorf("importing files to volume %s: %w", volumeName, err)
+	}
+	return nil
 }

@@ -159,7 +159,9 @@ func TestApplyConfigFileCreate(t *testing.T) {
 	t.Parallel()
 	sys := NewMockSystemdManager(t)
 	pod := NewMockPodmanClient(t)
-	pod.EXPECT().VolumeInspectMountpoint(mock.Anything, "data").Return("/var/lib/containers/storage/volumes/data/_data", nil)
+	pod.EXPECT().VolumeImportFiles(mock.Anything, "data", map[string][]byte{
+		"app.conf": []byte("key=value"),
+	}).Return(nil)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -178,8 +180,6 @@ func TestApplyConfigFileCreate(t *testing.T) {
 	result, err := a.Apply(context.Background(), cs)
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.Applied)
-	assert.Contains(t, fw.written, "/var/lib/containers/storage/volumes/data/_data/app.conf")
-	assert.Equal(t, []byte("key=value"), fw.written["/var/lib/containers/storage/volumes/data/_data/app.conf"])
 }
 
 func TestApplyConfigFileWithRestartService(t *testing.T) {
@@ -188,7 +188,9 @@ func TestApplyConfigFileWithRestartService(t *testing.T) {
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 	sys.EXPECT().RestartUnit(mock.Anything, "mosquitto.service").Return(nil)
 	pod := NewMockPodmanClient(t)
-	pod.EXPECT().VolumeInspectMountpoint(mock.Anything, "mosquitto-config").Return("/var/lib/containers/storage/volumes/mosquitto-config/_data", nil)
+	pod.EXPECT().VolumeImportFiles(mock.Anything, "mosquitto-config", map[string][]byte{
+		"mosquitto.conf": []byte("listener 1883"),
+	}).Return(nil)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -217,7 +219,7 @@ func TestApplyConfigFileDelete(t *testing.T) {
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 	sys.EXPECT().RestartUnit(mock.Anything, "mosquitto.service").Return(nil)
 	pod := NewMockPodmanClient(t)
-	pod.EXPECT().VolumeInspectMountpoint(mock.Anything, "data").Return("/var/lib/containers/storage/volumes/data/_data", nil)
+	// No VolumeImportFiles call expected for deletes — stale file stays in volume.
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -236,7 +238,8 @@ func TestApplyConfigFileDelete(t *testing.T) {
 	result, err := a.Apply(context.Background(), cs)
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.Applied)
-	assert.Equal(t, []string{"/var/lib/containers/storage/volumes/data/_data/app.conf"}, fw.removed)
+	// Delete only logs a warning — no file removal from volume via API.
+	assert.Empty(t, fw.removed)
 	assert.Contains(t, result.RestartedUnits, "mosquitto.service")
 }
 
@@ -246,12 +249,14 @@ func TestApplyConfigFileSameCommitAsVolume(t *testing.T) {
 	pod := NewMockPodmanClient(t)
 	fw := newMemFileWriter()
 
-	// Bootstrap: DaemonReload + RestartUnit for the volume (ensures ExecStart re-runs
-	// even if service is already active with RemainAfterExit=yes).
+	// Bootstrap: DaemonReload + RestartUnit for the volume (ensures volume exists
+	// before VolumeImportFiles).
 	// Final restartUnits: another DaemonReload + RestartUnit for the volume service.
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Times(2)
 	sys.EXPECT().RestartUnit(mock.Anything, "data-volume.service").Return(nil).Times(2)
-	pod.EXPECT().VolumeInspectMountpoint(mock.Anything, "data").Return("/var/lib/containers/storage/volumes/data/_data", nil)
+	pod.EXPECT().VolumeImportFiles(mock.Anything, "data", map[string][]byte{
+		"app.conf": []byte("key=value"),
+	}).Return(nil)
 
 	a := New(sys, pod, fw, false)
 	cs := &reconciler.Changeset{
@@ -277,7 +282,6 @@ func TestApplyConfigFileSameCommitAsVolume(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.Applied)
 	assert.Contains(t, fw.written, "/etc/containers/systemd/picolet/data.volume")
-	assert.Contains(t, fw.written, "/var/lib/containers/storage/volumes/data/_data/app.conf")
 }
 
 func TestApplySecretReplace(t *testing.T) {
