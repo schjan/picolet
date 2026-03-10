@@ -70,8 +70,7 @@ repo_url: https://github.com/example/fleet.git
 rootless: false
 systemd_user: true
 `,
-			//nolint:gosec // G101: test fixture, not real credentials
-			want: Config{
+			want: Config{ //nolint:gosec // test fixture, not real credentials
 				Hostname:     "rpi5-1",
 				RepoURL:      "https://github.com/example/fleet.git",
 				RepoBranch:   "main",
@@ -90,8 +89,7 @@ repo_url: https://github.com/example/fleet.git
 rootless: true
 systemd_user: false
 `,
-			//nolint:gosec // G101: test fixture, not real credentials
-			want: Config{
+			want: Config{ //nolint:gosec // test fixture, not real credentials
 				Hostname:     "rpi5-1",
 				RepoURL:      "https://github.com/example/fleet.git",
 				RepoBranch:   "main",
@@ -110,8 +108,7 @@ hostname: rpi5-1
 repo_url: https://github.com/example/fleet.git
 rootless: true
 `,
-			//nolint:gosec // G101: test fixture, not real credentials
-			want: Config{
+			want: Config{ //nolint:gosec // test fixture, not real credentials
 				Hostname:     "rpi5-1",
 				RepoURL:      "https://github.com/example/fleet.git",
 				RepoBranch:   "main",

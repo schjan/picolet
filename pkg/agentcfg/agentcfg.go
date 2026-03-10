@@ -70,8 +70,7 @@ func (c *Config) setDefaults() {
 		c.MQTT.TopicPrefix = "picolet"
 	}
 	if c.SystemdUser == nil {
-		v := c.Rootless
-		c.SystemdUser = &v
+		c.SystemdUser = new(c.Rootless)
 	}
 }
 
