@@ -220,16 +220,21 @@ func TestPublishStatus(t *testing.T) {
 	assert.Equal(t, strconv.FormatInt(now.Unix(), 10), received["picolet/test-host/status/last_successful_reconciliation"])
 }
 
-// startTCPProxy creates a bidirectional TCP proxy in front of the broker.
-// Returns the proxy address and a kill function that closes all proxied connections
-// and the listener (preventing reconnection), simulating a network loss.
-func startTCPProxy(t *testing.T, brokerURL string) (string, func()) {
+// newTCPProxy creates a bidirectional TCP proxy in front of the broker.
+// When closeListener is true, the kill function also closes the listener
+// (preventing reconnection) — suitable for LWT tests. When false, only
+// active connections are dropped and the listener stays open for autopaho
+// to reconnect through.
+func newTCPProxy(t *testing.T, brokerURL string, closeListener bool) (string, func()) {
 	t.Helper()
 	u, err := url.Parse(brokerURL)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
+	if !closeListener {
+		t.Cleanup(func() { _ = listener.Close() })
+	}
 
 	var mu sync.Mutex
 	var conns []net.Conn
@@ -254,19 +259,26 @@ func startTCPProxy(t *testing.T, brokerURL string) (string, func()) {
 		}
 	}()
 
-	killAll := func() {
+	kill := func() {
 		mu.Lock()
 		for _, c := range conns {
 			_ = c.Close()
 		}
 		conns = nil
-		_ = listener.Close() // prevent reconnection through proxy
+		if closeListener {
+			_ = listener.Close()
+		}
 		mu.Unlock()
 		wg.Wait() // ensure all io.Copy goroutines have exited
 	}
-	t.Cleanup(killAll)
+	t.Cleanup(kill)
 
-	return listener.Addr().String(), killAll
+	return listener.Addr().String(), kill
+}
+
+func startTCPProxy(t *testing.T, brokerURL string) (string, func()) {
+	t.Helper()
+	return newTCPProxy(t, brokerURL, true)
 }
 
 //nolint:funlen // LWT test requires proxy setup + two clients + assertions
@@ -352,50 +364,9 @@ func TestLWT(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond, "broker should publish LWT state=offline after forced disconnect")
 }
 
-// startRestartableTCPProxy creates a bidirectional TCP proxy that supports
-// dropping all connections without closing the listener. Unlike startTCPProxy,
-// autopaho can reconnect through the proxy after a kill.
 func startRestartableTCPProxy(t *testing.T, brokerURL string) (string, func()) {
 	t.Helper()
-	u, err := url.Parse(brokerURL)
-	require.NoError(t, err)
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = listener.Close() })
-
-	var mu sync.Mutex
-	var conns []net.Conn
-
-	go func() {
-		for {
-			clientConn, acceptErr := listener.Accept()
-			if acceptErr != nil {
-				return
-			}
-			brokerConn, dialErr := net.DialTimeout("tcp", u.Host, 5*time.Second)
-			if dialErr != nil {
-				_ = clientConn.Close()
-				continue
-			}
-			mu.Lock()
-			conns = append(conns, clientConn, brokerConn)
-			mu.Unlock()
-			go func() { _, _ = io.Copy(brokerConn, clientConn) }()
-			go func() { _, _ = io.Copy(clientConn, brokerConn) }()
-		}
-	}()
-
-	killConns := func() {
-		mu.Lock()
-		for _, c := range conns {
-			_ = c.Close()
-		}
-		conns = nil
-		mu.Unlock()
-	}
-
-	return listener.Addr().String(), killConns
+	return newTCPProxy(t, brokerURL, false)
 }
 
 //nolint:funlen // setup-heavy reconnect test: proxy + publisher + subscriber + assertions

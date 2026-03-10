@@ -48,7 +48,7 @@ type Client struct {
 	stateTopic   string
 	statusPrefix string // base for all status subtopics
 
-	lastStatus atomic.Pointer[Status] // last published status, replayed on reconnect
+	lastStatus atomic.Pointer[Status] // last attempted status, replayed on reconnect
 }
 
 // NewClient creates a new MQTT Client. Sets TopicPrefix default to "picolet" if empty.
@@ -115,7 +115,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 			// Republish last known full status if available (reconnect after drop),
 			// otherwise publish state only (first connect, no tick completed yet).
 			if prev := c.lastStatus.Load(); prev != nil {
-				if pubErr := c.PublishStatus(ctx, *prev); pubErr != nil {
+				if pubErr := c.publishStatusTopics(ctx, *prev); pubErr != nil {
 					slog.Warn("mqtt republish status on reconnect failed", "error", pubErr)
 				}
 			} else {
@@ -181,12 +181,20 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 	return nil
 }
 
-// PublishStatus publishes the current agent status to retained MQTT topics.
+// PublishStatus caches the status for reconnect replay and publishes it
+// to retained MQTT topics.
 func (c *Client) PublishStatus(ctx context.Context, status Status) error {
 	// Cache unconditionally so OnConnectionUp can replay on reconnect.
 	statusCopy := status
 	c.lastStatus.Store(&statusCopy)
 
+	return c.publishStatusTopics(ctx, status)
+}
+
+// publishStatusTopics publishes the status to retained MQTT topics without
+// updating the cache. Used directly by OnConnectionUp to replay the cached
+// status without a redundant re-store.
+func (c *Client) publishStatusTopics(ctx context.Context, status Status) error {
 	state := "running"
 	if status.Paused {
 		state = "paused"
