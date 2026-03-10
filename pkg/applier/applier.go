@@ -18,8 +18,16 @@ type SystemdManager interface {
 	StartUnit(ctx context.Context, name string) error
 	StopUnit(ctx context.Context, name string) error
 	RestartUnit(ctx context.Context, name string) error
-	GetUnitState(ctx context.Context, name string) (string, error)
-	IsActive(ctx context.Context, name string) (bool, error)
+	GetUnitStatus(ctx context.Context, name string) (UnitStatus, error)
+}
+
+// UnitStatus holds the runtime status of a systemd unit from a single D-Bus call.
+// Result is intentionally omitted: it is on org.freedesktop.systemd1.Service, not
+// the Unit interface, and is not accessible for all unit types (.network, .volume, .kube).
+// SubState provides sufficient signal: "auto-restart" vs "failed" vs "running" vs "exited".
+type UnitStatus struct {
+	ActiveState string // "active", "failed", "inactive", "activating", ...
+	SubState    string // "running", "exited", "auto-restart", "dead", "waiting", ...
 }
 
 // PodmanClient interacts with the Podman API.

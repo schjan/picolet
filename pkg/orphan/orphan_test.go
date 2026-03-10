@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	mocks "github.com/schjan/picolet/mocks/applier"
+	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/orphan"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
@@ -28,9 +28,9 @@ func TestScanOwnedDir_RemovesOrphans(t *testing.T) {
 	managedPath := filepath.Join(quadletDir, "current.container")
 	require.NoError(t, os.WriteFile(managedPath, []byte("[Container]"), 0o600))
 
-	fw := mocks.NewMockFileWriter(t)
+	fw := applier.NewMockFileWriter(t)
 	fw.EXPECT().Remove(orphanPath).Return(nil)
-	pod := mocks.NewMockPodmanClient(t)
+	pod := applier.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
 	s := orphan.New(fw, pod, quadletDir, t.TempDir(), t.TempDir())
@@ -44,8 +44,8 @@ func TestScanOwnedDir_RemovesOrphans(t *testing.T) {
 
 func TestScanOwnedDir_DirNotExist(t *testing.T) {
 	t.Parallel()
-	fw := mocks.NewMockFileWriter(t)
-	pod := mocks.NewMockPodmanClient(t)
+	fw := applier.NewMockFileWriter(t)
+	pod := applier.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
 	nonExistent := filepath.Join(t.TempDir(), "does-not-exist")
@@ -66,9 +66,9 @@ func TestScanMarkedDir_RemovesOrphans(t *testing.T) {
 	content := resolver.PicoletMarker + "\n[Service]\nExecStart=/bin/true\n"
 	require.NoError(t, os.WriteFile(orphanPath, []byte(content), 0o600))
 
-	fw := mocks.NewMockFileWriter(t)
+	fw := applier.NewMockFileWriter(t)
 	fw.EXPECT().Remove(orphanPath).Return(nil)
-	pod := mocks.NewMockPodmanClient(t)
+	pod := applier.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
 	s := orphan.New(fw, pod, t.TempDir(), systemdDir, t.TempDir())
@@ -88,9 +88,9 @@ func TestScanMarkedDir_IgnoresUnmarkedFiles(t *testing.T) {
 		0o600,
 	))
 
-	fw := mocks.NewMockFileWriter(t)
+	fw := applier.NewMockFileWriter(t)
 	// No Remove calls expected
-	pod := mocks.NewMockPodmanClient(t)
+	pod := applier.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
 	s := orphan.New(fw, pod, t.TempDir(), systemdDir, t.TempDir())
@@ -107,9 +107,9 @@ func TestScanMarkedDir_KeepsManagedFiles(t *testing.T) {
 	content := resolver.PicoletMarker + "\n[Service]\nExecStart=/bin/true\n"
 	require.NoError(t, os.WriteFile(managedPath, []byte(content), 0o600))
 
-	fw := mocks.NewMockFileWriter(t)
+	fw := applier.NewMockFileWriter(t)
 	// No Remove calls expected — file is in managedFiles
-	pod := mocks.NewMockPodmanClient(t)
+	pod := applier.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
 	s := orphan.New(fw, pod, t.TempDir(), systemdDir, t.TempDir())
@@ -122,8 +122,8 @@ func TestScanMarkedDir_KeepsManagedFiles(t *testing.T) {
 
 func TestScanSecrets_RemovesOrphans(t *testing.T) {
 	t.Parallel()
-	fw := mocks.NewMockFileWriter(t)
-	pod := mocks.NewMockPodmanClient(t)
+	fw := applier.NewMockFileWriter(t)
+	pod := applier.NewMockPodmanClient(t)
 	// "kept" is in state, "orphan" is not
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return([]string{"kept", "orphan"}, nil)
 	pod.EXPECT().SecretRemove(mock.Anything, "orphan").Return(nil)
@@ -138,8 +138,8 @@ func TestScanSecrets_RemovesOrphans(t *testing.T) {
 
 func TestScanSecrets_KeepsAllManaged(t *testing.T) {
 	t.Parallel()
-	fw := mocks.NewMockFileWriter(t)
-	pod := mocks.NewMockPodmanClient(t)
+	fw := applier.NewMockFileWriter(t)
+	pod := applier.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return([]string{"db-pass", "api-key"}, nil)
 	// No SecretRemove calls expected
 
@@ -160,10 +160,10 @@ func TestScan_CountsFilesAndSecretsSeparately(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(quadletDir, "a.container"), []byte("[Container]"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(quadletDir, "b.container"), []byte("[Container]"), 0o600))
 
-	fw := mocks.NewMockFileWriter(t)
+	fw := applier.NewMockFileWriter(t)
 	fw.EXPECT().Remove(mock.Anything).Return(nil).Times(2)
 
-	pod := mocks.NewMockPodmanClient(t)
+	pod := applier.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return([]string{"orphan-secret"}, nil)
 	pod.EXPECT().SecretRemove(mock.Anything, "orphan-secret").Return(nil)
 

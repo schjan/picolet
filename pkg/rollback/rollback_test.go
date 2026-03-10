@@ -11,18 +11,18 @@ import (
 	mock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	mocks "github.com/schjan/picolet/mocks/applier"
+	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/reconciler"
 )
 
 func TestCreateAndRestore(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
+	sys := applier.NewMockSystemdManager(t)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 
 	written := make(map[string][]byte)
 	removed := []string{}
-	fw := mocks.NewMockFileWriter(t)
+	fw := applier.NewMockFileWriter(t)
 	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).RunAndReturn(func(path string, content []byte) error {
 		written[path] = content
 		return nil
@@ -81,9 +81,9 @@ func TestSnapshotWithRealFilesystem(t *testing.T) {
 	existingPath := filepath.Join(dir, "existing.conf")
 	require.NoError(t, os.WriteFile(existingPath, []byte("existing"), 0o600))
 
-	sys := mocks.NewMockSystemdManager(t)
+	sys := applier.NewMockSystemdManager(t)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
-	fw := mocks.NewMockFileWriter(t)
+	fw := applier.NewMockFileWriter(t)
 	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(nil)
 	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
 	fw.EXPECT().Remove(mock.Anything).Return(nil).Maybe()
@@ -108,8 +108,8 @@ func TestSnapshotWithRealFilesystem(t *testing.T) {
 
 func TestCreateSkipsNoop(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
-	fw := mocks.NewMockFileWriter(t)
+	sys := applier.NewMockSystemdManager(t)
+	fw := applier.NewMockFileWriter(t)
 	// No expectations — noop should not trigger any calls
 	mgr := New(fw, sys)
 

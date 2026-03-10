@@ -5,20 +5,19 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	mock "github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	mocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/reconciler"
 )
 
 func TestApplyPhaseOrdering(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
+	sys := NewMockSystemdManager(t)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
 
-	pod := mocks.NewMockPodmanClient(t)
+	pod := NewMockPodmanClient(t)
 	pod.EXPECT().SecretCreate(mock.Anything, "my_secret", []byte("token=abc"), false).Return(nil)
 
 	fw := newMemFileWriter()
@@ -49,8 +48,8 @@ func TestApplyPhaseOrdering(t *testing.T) {
 
 func TestApplyDryRun(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
-	pod := mocks.NewMockPodmanClient(t)
+	sys := NewMockSystemdManager(t)
+	pod := NewMockPodmanClient(t)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, true)
 
@@ -70,8 +69,8 @@ func TestApplyDryRun(t *testing.T) {
 
 func TestApplyNoop(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
-	pod := mocks.NewMockPodmanClient(t)
+	sys := NewMockSystemdManager(t)
+	pod := NewMockPodmanClient(t)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -89,11 +88,11 @@ func TestApplyNoop(t *testing.T) {
 
 func TestApplyDelete(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
+	sys := NewMockSystemdManager(t)
 	sys.EXPECT().StopUnit(mock.Anything, "old.service").Return(nil)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 	// RestartUnit must NOT be called for deletes — the unit is gone after daemon-reload
-	pod := mocks.NewMockPodmanClient(t)
+	pod := NewMockPodmanClient(t)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -113,8 +112,8 @@ func TestApplyDelete(t *testing.T) {
 
 func TestApplyDeleteSecret(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
-	pod := mocks.NewMockPodmanClient(t)
+	sys := NewMockSystemdManager(t)
+	pod := NewMockPodmanClient(t)
 	pod.EXPECT().SecretRemove(mock.Anything, "old_secret").Return(nil)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
@@ -135,11 +134,11 @@ func TestApplyDeleteSecret(t *testing.T) {
 
 func TestApplySelfRestart(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
+	sys := NewMockSystemdManager(t)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 	// goroutine fires asynchronously after Apply() returns; may or may not complete before test cleanup
 	sys.EXPECT().RestartUnit(mock.Anything, "picolet.service").Return(nil).Maybe()
-	pod := mocks.NewMockPodmanClient(t)
+	pod := NewMockPodmanClient(t)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -158,8 +157,8 @@ func TestApplySelfRestart(t *testing.T) {
 
 func TestApplySecretReplace(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
-	pod := mocks.NewMockPodmanClient(t)
+	sys := NewMockSystemdManager(t)
+	pod := NewMockPodmanClient(t)
 	// ActionUpdate → replace=true
 	pod.EXPECT().SecretCreate(mock.Anything, "cfg", []byte("new-data"), true).Return(nil)
 	fw := newMemFileWriter()

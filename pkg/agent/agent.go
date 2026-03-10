@@ -219,18 +219,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if err != nil {
 		slog.Error("health enforcement error", "error", err)
 	} else {
-		for _, u := range hr.Healthy {
-			metrics.HealthCheckTotal.WithLabelValues(u, "healthy").Inc()
-		}
-		for _, u := range hr.Unhealthy {
-			metrics.HealthCheckTotal.WithLabelValues(u, "unhealthy").Inc()
-		}
-		for _, u := range hr.Restarted {
-			metrics.HealthEnforcementTotal.WithLabelValues(u, "restart").Inc()
-		}
-		for _, u := range hr.Skipped {
-			metrics.HealthEnforcementTotal.WithLabelValues(u, "skip_cooldown").Inc()
-		}
+		recordHealthMetrics(hr)
 	}
 
 	// 1b. Pause check — health ran, skip reconciliation when paused via MQTT
@@ -430,10 +419,13 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	}
 
 	for _, change := range changeset.Changes {
-		if change.Action == reconciler.ActionNoop {
-			continue
+		if change.Action != reconciler.ActionNoop {
+			metrics.FilesAppliedTotal.WithLabelValues(string(change.Action), change.Category).Inc()
 		}
-		metrics.FilesAppliedTotal.WithLabelValues(string(change.Action), change.Category).Inc()
+		// Remove health metrics for units leaving management.
+		if change.Action == reconciler.ActionDelete && change.ServiceName != "" {
+			metrics.UnitHealth.Delete(change.ServiceName)
+		}
 	}
 
 	slog.Info("apply complete",
@@ -485,6 +477,27 @@ func markAppliedWithMetrics(st *state.State, headSHA string) {
 func setFilesManagedMetric(counts map[string]float64) {
 	for _, cat := range reconciler.Categories() {
 		metrics.FilesManagedTotal.WithLabelValues(cat).Set(counts[cat])
+	}
+}
+
+func recordHealthMetrics(hr *health.CheckResult) {
+	for _, u := range hr.Healthy {
+		metrics.HealthCheckTotal.WithLabelValues(u, "healthy").Inc()
+	}
+	for _, u := range hr.Unhealthy {
+		metrics.HealthCheckTotal.WithLabelValues(u, "unhealthy").Inc()
+	}
+	for _, u := range hr.Inactive {
+		metrics.HealthCheckTotal.WithLabelValues(u, "inactive").Inc()
+	}
+	for _, u := range hr.Restarted {
+		metrics.HealthEnforcementTotal.WithLabelValues(u, "restart").Inc()
+	}
+	for _, u := range hr.Skipped {
+		metrics.HealthEnforcementTotal.WithLabelValues(u, "skip_cooldown").Inc()
+	}
+	for unit, s := range hr.Statuses {
+		metrics.UnitHealth.Set(unit, s.ActiveState, s.SubState)
 	}
 }
 

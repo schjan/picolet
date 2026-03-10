@@ -145,6 +145,7 @@ func Register() {
 			MQTTConnected,
 			AgentPaused,
 			BuildInfo,
+			UnitHealth,
 		)
 		BuildInfo.WithLabelValues(version.Version, version.GitSHA).Set(1)
 	})
