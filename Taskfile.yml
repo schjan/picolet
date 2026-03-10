@@ -4,7 +4,9 @@ vars:
   BINARY: picolet
   VERSION:
     sh: git describe --tags --always --dirty 2>/dev/null || echo "dev"
-  LDFLAGS: -ldflags "-X main.version={{.VERSION}} -s -w"
+  GIT_SHA:
+    sh: git rev-parse --short=12 HEAD 2>/dev/null || echo "unknown"
+  LDFLAGS: -ldflags "-X github.com/schjan/picolet/pkg/version.Version={{.VERSION}} -X github.com/schjan/picolet/pkg/version.GitSHA={{.GIT_SHA}} -s -w"
   BUILD_TAGS: remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper
 
 tasks:

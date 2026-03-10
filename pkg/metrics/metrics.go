@@ -6,6 +6,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/schjan/picolet/pkg/version"
 )
 
 var (
@@ -111,6 +113,14 @@ var (
 		Name: "picolet_agent_paused",
 		Help: "1 if the agent is paused via MQTT, 0 otherwise.",
 	})
+
+	BuildInfo = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "picolet_build_info",
+			Help: "Picolet build information (always 1).",
+		},
+		[]string{"version", "git_sha"},
+	)
 )
 
 var registerOnce sync.Once
@@ -134,7 +144,9 @@ func Register() {
 			OrphansRemovedTotal,
 			MQTTConnected,
 			AgentPaused,
+			BuildInfo,
 		)
+		BuildInfo.WithLabelValues(version.Version, version.GitSHA).Set(1)
 	})
 }
 
