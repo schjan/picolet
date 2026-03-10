@@ -270,15 +270,24 @@ func newTCPProxy(t *testing.T, brokerURL string, closeListener bool) (string, fu
 		// test proceeds without blocking on goroutine drain.
 	}
 
+	var once sync.Once
 	cleanup := func() {
-		killConns()
-		if closeListener {
-			_ = listener.Close()
-		}
-		wg.Wait() // safe at test teardown: context is cancelled, no new reconnects
+		once.Do(func() {
+			killConns()
+			if closeListener {
+				_ = listener.Close()
+			}
+			wg.Wait() // safe at test teardown: context is cancelled, no new reconnects
+		})
 	}
 	t.Cleanup(cleanup)
 
+	// For closeListener=true (LWT tests): return the full cleanup so the caller's
+	// kill() also closes the listener, preventing autopaho from reconnecting after
+	// the simulated drop (restoring the pre-refactor behaviour).
+	if closeListener {
+		return listener.Addr().String(), cleanup
+	}
 	return listener.Addr().String(), killConns
 }
 
