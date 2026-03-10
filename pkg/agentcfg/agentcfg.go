@@ -27,6 +27,7 @@ type Config struct {
 	MetricsPort       int           `yaml:"metrics_port"`
 	SecretsDir        string        `yaml:"secrets_dir"`
 	Rootless          bool          `yaml:"rootless"`
+	SystemdUser       *bool         `yaml:"systemd_user"`
 	PodmanSocket      string        `yaml:"podman_socket"`
 	WebhookSecretPath string        `yaml:"webhook_secret_path"`
 	MQTT              *MQTTConfig   `yaml:"mqtt"`
@@ -68,6 +69,19 @@ func (c *Config) setDefaults() {
 	if c.MQTT != nil && c.MQTT.TopicPrefix == "" {
 		c.MQTT.TopicPrefix = "picolet"
 	}
+	if c.SystemdUser == nil {
+		v := c.Rootless
+		c.SystemdUser = &v
+	}
+}
+
+// UseSystemdUser reports whether the agent should connect to the user systemd instance.
+// Defaults to Rootless when systemd_user is not set explicitly in config.
+func (c *Config) UseSystemdUser() bool {
+	if c.SystemdUser == nil {
+		return c.Rootless
+	}
+	return *c.SystemdUser
 }
 
 // Validate checks that required fields are set.

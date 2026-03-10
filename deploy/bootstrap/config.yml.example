@@ -13,10 +13,16 @@ poll_interval: "60s"
 metrics_port: 9417
 secrets_dir: "/etc/picolet/secrets"
 
-# Rootless mode: use session D-Bus instead of system D-Bus.
-# Set to true when running picolet as a rootless Podman container.
-# Default: false (rootful)
+# Rootless mode: compute file paths relative to $HOME (~/.config/..., ~/.local/share/...).
+# Use when running picolet directly on the host without a container.
+# Default: false (rootful paths: /etc/..., /var/lib/...)
 rootless: false
+
+# Connect to the user systemd instance (private socket) instead of system D-Bus.
+# Required when picolet manages a rootless Podman host — regardless of whether
+# picolet itself runs in a container or directly.
+# Default: inherits from rootless
+# systemd_user: true
 
 # Podman API socket path (inside the container).
 # Default: /run/podman/podman.sock (correct for both modes — volume mounts handle it)

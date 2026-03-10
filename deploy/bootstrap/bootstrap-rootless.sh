@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bootstrap-rootless.sh — one-time rootless setup. Run as your normal user (NOT root).
-# Prerequisite: ~/.config/picolet/config.yml must exist with rootless: true
+# Prerequisite: ~/.config/picolet/config.yml must exist with systemd_user: true
 set -euo pipefail
 
 PICOLET_IMAGE="${PICOLET_IMAGE:-ghcr.io/schjan/picolet:v0.1.0}"
@@ -28,11 +28,11 @@ Volume=${CONFIG_DIR}:/etc/picolet:ro
 Volume=${DATA_DIR}:/var/lib/picolet
 Volume=${QUADLET_DIR}:/etc/containers/systemd
 Volume=${HOME}/.config/systemd/user:/etc/systemd/system
-Volume=${XDG_RUNTIME_DIR}/bus:/run/dbus/session_bus_socket
+Volume=${XDG_RUNTIME_DIR}/systemd/private:${XDG_RUNTIME_DIR}/systemd/private
 Volume=${XDG_RUNTIME_DIR}/podman/podman.sock:/run/podman/podman.sock
 Network=host
 Environment=PICOLET_CONFIG=/etc/picolet/config.yml
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/session_bus_socket
+Environment=XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}
 Restart=always
 RestartSec=10s
 StopTimeout=30

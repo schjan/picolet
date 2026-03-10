@@ -202,7 +202,7 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 	metrics.Register()
 
 	// Connect to systemd D-Bus
-	systemd, err := applier.NewDBusSystemdManager(ctx, cfg.Rootless)
+	systemd, err := applier.NewDBusSystemdManager(ctx, cfg.UseSystemdUser())
 	if err != nil {
 		return fmt.Errorf("connecting to systemd: %w", err)
 	}
