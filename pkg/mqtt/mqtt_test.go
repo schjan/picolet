@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -65,6 +66,7 @@ func rawPublish(ctx context.Context, brokerURL, topic, payload string, retain bo
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
+	defer conn.Close()
 
 	c := pahopkg.NewClient(pahopkg.ClientConfig{Conn: conn})
 	if _, err = c.Connect(ctx, &pahopkg.Connect{
@@ -72,7 +74,6 @@ func rawPublish(ctx context.Context, brokerURL, topic, payload string, retain bo
 		CleanStart: true,
 		KeepAlive:  10,
 	}); err != nil {
-		_ = conn.Close()
 		return fmt.Errorf("connect: %w", err)
 	}
 
@@ -95,7 +96,8 @@ func TestPauseSubscription(t *testing.T) {
 	brokerURL := startTestBroker(t)
 
 	cfg := mqtt.Config{BrokerURL: brokerURL, TopicPrefix: "picolet"}
-	client := mqtt.NewClient(cfg, "test-host")
+	client, err := mqtt.NewClient(cfg, "test-host")
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -103,8 +105,7 @@ func TestPauseSubscription(t *testing.T) {
 	var pauseFlag atomic.Bool
 	require.NoError(t, client.Start(ctx, &pauseFlag, func() {}))
 
-	// Wait for connection
-	time.Sleep(200 * time.Millisecond)
+	require.NoError(t, client.AwaitConnection(ctx))
 
 	require.NoError(t, rawPublish(ctx, brokerURL, "picolet/test-host/pause", "true", true))
 
@@ -122,7 +123,8 @@ func TestTriggerSubscription(t *testing.T) {
 	brokerURL := startTestBroker(t)
 
 	cfg := mqtt.Config{BrokerURL: brokerURL, TopicPrefix: "picolet"}
-	client := mqtt.NewClient(cfg, "test-host")
+	client, err := mqtt.NewClient(cfg, "test-host")
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -131,7 +133,7 @@ func TestTriggerSubscription(t *testing.T) {
 	var pauseFlag atomic.Bool
 	require.NoError(t, client.Start(ctx, &pauseFlag, func() { triggered.Add(1) }))
 
-	time.Sleep(200 * time.Millisecond)
+	require.NoError(t, client.AwaitConnection(ctx))
 
 	require.NoError(t, rawPublish(ctx, brokerURL, "picolet/trigger", "", false))
 
@@ -146,7 +148,8 @@ func TestPublishStatus(t *testing.T) {
 	brokerURL := startTestBroker(t)
 
 	cfg := mqtt.Config{BrokerURL: brokerURL, TopicPrefix: "picolet"}
-	client := mqtt.NewClient(cfg, "test-host")
+	client, err := mqtt.NewClient(cfg, "test-host")
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -154,7 +157,7 @@ func TestPublishStatus(t *testing.T) {
 	var pauseFlag atomic.Bool
 	require.NoError(t, client.Start(ctx, &pauseFlag, func() {}))
 
-	time.Sleep(300 * time.Millisecond)
+	require.NoError(t, client.AwaitConnection(ctx))
 
 	now := time.Now().Truncate(time.Second)
 	status := mqtt.Status{
@@ -205,13 +208,16 @@ func TestPublishStatus(t *testing.T) {
 	require.Eventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return received["picolet/test-host/status/applied_sha"] == "abc123"
-	}, 3*time.Second, 50*time.Millisecond, "applied_sha should be published")
+		return len(received) >= 5
+	}, 3*time.Second, 50*time.Millisecond, "all 5 status topics should be published")
 
 	mu.Lock()
 	defer mu.Unlock()
+	assert.Equal(t, "abc123", received["picolet/test-host/status/applied_sha"])
 	assert.Equal(t, "2", received["picolet/test-host/status/failed_count"])
 	assert.Equal(t, "running", received["picolet/test-host/status/state"])
+	assert.Equal(t, strconv.FormatInt(now.Unix(), 10), received["picolet/test-host/status/last_reconciliation"])
+	assert.Equal(t, strconv.FormatInt(now.Unix(), 10), received["picolet/test-host/status/last_successful_reconciliation"])
 }
 
 // startTCPProxy creates a bidirectional TCP proxy in front of the broker.
@@ -270,7 +276,8 @@ func TestLWT(t *testing.T) {
 	proxyAddr, killProxy := startTCPProxy(t, brokerURL)
 
 	cfg := mqtt.Config{BrokerURL: "tcp://" + proxyAddr, TopicPrefix: "picolet"}
-	client := mqtt.NewClient(cfg, "lwt-host")
+	client, err := mqtt.NewClient(cfg, "lwt-host")
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -278,7 +285,7 @@ func TestLWT(t *testing.T) {
 	var pauseFlag atomic.Bool
 	require.NoError(t, client.Start(ctx, &pauseFlag, func() {}))
 
-	time.Sleep(300 * time.Millisecond)
+	require.NoError(t, client.AwaitConnection(ctx))
 
 	// Subscribe directly to the broker (not through proxy) to watch state topic.
 	var mu sync.Mutex
@@ -350,7 +357,8 @@ func TestTriggerFunction(t *testing.T) {
 	brokerURL := startTestBroker(t)
 
 	cfg := mqtt.Config{BrokerURL: brokerURL, TopicPrefix: "picolet"}
-	subClient := mqtt.NewClient(cfg, "trigger-test-host")
+	subClient, err := mqtt.NewClient(cfg, "trigger-test-host")
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -359,7 +367,7 @@ func TestTriggerFunction(t *testing.T) {
 	var pauseFlag atomic.Bool
 	require.NoError(t, subClient.Start(ctx, &pauseFlag, func() { triggered.Add(1) }))
 
-	time.Sleep(200 * time.Millisecond)
+	require.NoError(t, subClient.AwaitConnection(ctx))
 
 	triggerCtx, triggerCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer triggerCancel()

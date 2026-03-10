@@ -128,7 +128,12 @@ func (a *Agent) Run(ctx context.Context) error {
 			return fmt.Errorf("starting MQTT client: %w", err)
 		}
 		// Use WithoutCancel so Close() can publish offline state even during shutdown.
-		defer a.mqttClient.Close(context.WithoutCancel(ctx))
+		// Timeout prevents hanging if the broker is unreachable at shutdown.
+		defer func() {
+			closeCtx, closeCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer closeCancel()
+			a.mqttClient.Close(closeCtx)
+		}()
 	}
 
 	// Check for stale lock (unclean shutdown)

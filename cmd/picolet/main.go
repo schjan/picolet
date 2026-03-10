@@ -226,7 +226,11 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 		if err != nil {
 			return err
 		}
-		opts = append(opts, agent.WithMQTT(mqttpkg.NewClient(mqttCfg, cfg.Hostname)))
+		mqttClient, err := mqttpkg.NewClient(mqttCfg, cfg.Hostname)
+		if err != nil {
+			return err
+		}
+		opts = append(opts, agent.WithMQTT(mqttClient))
 	}
 
 	a := agent.New(cfg, opts...)

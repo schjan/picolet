@@ -81,5 +81,8 @@ func (c *Config) Validate() error {
 	if c.MQTT != nil && c.MQTT.BrokerURL == "" {
 		return errors.New("mqtt.broker_url is required when mqtt is configured")
 	}
+	if c.MQTT != nil && c.MQTT.PasswordPath != "" && c.MQTT.Username == "" {
+		return errors.New("mqtt.username is required when mqtt.password_path is set")
+	}
 	return nil
 }
