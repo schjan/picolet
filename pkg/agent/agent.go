@@ -54,10 +54,11 @@ type Agent struct {
 	statePath string
 	lockPath  string
 
-	webhookCh  chan struct{}
-	ready      atomic.Bool
-	paused     atomic.Bool // set by MQTT pause subscription
-	mqttClient MQTTClient  // nil when MQTT not configured
+	webhookCh          chan struct{}
+	ready              atomic.Bool
+	paused             atomic.Bool // set by MQTT pause subscription
+	seededSuccessfulAt atomic.Bool // guards one-time gauge seed from persisted state
+	mqttClient         MQTTClient  // nil when MQTT not configured
 }
 
 // Option configures the Agent.
@@ -213,6 +214,12 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if st.AppliedSHA != "" {
 		metrics.AppliedGitSHA.WithLabelValues(st.AppliedSHA).Set(1)
 	}
+	// Seed once from persisted state (not every tick — prevents backward jumps when
+	// noop timestamps are in-memory only and store.Load() returns the older persisted value).
+	if !a.seededSuccessfulAt.Load() && !st.LastSuccessfulReconciliationAt.IsZero() {
+		a.seededSuccessfulAt.Store(true)
+		metrics.LastSuccessfulReconciliation.Set(float64(st.LastSuccessfulReconciliationAt.Unix()))
+	}
 
 	// 1. Health enforcement (always — units must stay healthy even when paused)
 	hr, err := healthChecker.Enforce(ctx, st)
@@ -240,6 +247,14 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		metrics.GitPollTotal.WithLabelValues("noop").Inc()
 		slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
+		// A noop is a successful reconciliation — the agent confirmed the
+		// desired state matches. Update the timestamp so dashboards and MQTT
+		// reflect "last time we verified everything is OK", not just "last
+		// time files changed". Only update in-memory (the defer publishes
+		// MQTT, Prometheus is scraped); no state save needed for noops.
+		now := time.Now()
+		st.LastSuccessfulReconciliationAt = now
+		metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
 		return nil
 	}
 	metrics.GitPollTotal.WithLabelValues("changed").Inc()
@@ -563,6 +578,8 @@ func (a *Agent) publishMQTTStatus(ctx context.Context, st *state.State, tickTime
 	}
 	if err := a.mqttClient.PublishStatus(ctx, status); err != nil {
 		slog.Warn("mqtt status publish failed", "error", err)
+	} else {
+		slog.Debug("mqtt status published", "sha", status.AppliedSHA, "paused", status.Paused)
 	}
 }
 

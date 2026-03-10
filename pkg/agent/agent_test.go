@@ -893,6 +893,68 @@ func TestAgentMQTTStatusPublished(t *testing.T) {
 	assert.False(t, capturedStatus.Paused, "should not be paused")
 }
 
+func TestLastSuccessfulReconciliationSeededFromState(t *testing.T) {
+	t.Parallel()
+	bareDir := initTestRepo(t)
+	repoDir := filepath.Join(t.TempDir(), "clone")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+
+	metrics.Register()
+
+	// Pre-seed state with a known LastSuccessfulReconciliationAt timestamp.
+	seededTime := time.Now().Add(-1 * time.Hour).Truncate(time.Second)
+	st := state.NewState()
+	st.AppliedSHA = "abc123"
+	st.LastSuccessfulReconciliationAt = seededTime
+	store := state.NewStore(statePath)
+	require.NoError(t, store.Save(st))
+
+	sys, pod, fw := newBareMocks(t)
+	setupApplyMocks(sys, pod, fw)
+
+	cfg := &agentcfg.Config{
+		Hostname:     "test-host",
+		RepoURL:      bareDir,
+		RepoBranch:   "master",
+		PollInterval: time.Hour,
+		MetricsPort:  0,
+		SecretsDir:   t.TempDir(),
+	}
+
+	a := New(cfg,
+		WithSystemd(sys),
+		WithPodman(pod),
+		WithFileWriter(fw),
+		WithRepoPath(repoDir),
+		WithStatePath(statePath),
+	)
+	// Pause BEFORE running — tick() seeds from state then returns early at the pause
+	// check, without entering the reconciliation or noop paths.
+	a.paused.Store(true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- a.Run(ctx)
+	}()
+
+	// Wait for the first tick to complete (agent becomes ready).
+	require.Eventually(t, func() bool { return a.ready.Load() }, 5*time.Second, 50*time.Millisecond)
+
+	// The gauge should have been seeded from the pre-existing state at the start of tick(),
+	// even though a reconciliation may have updated it afterwards. The important thing is
+	// that it's not zero — confirming the seeding path works.
+	got := testutil.ToFloat64(metrics.LastSuccessfulReconciliation)
+	assert.Greater(t, got, float64(0), "LastSuccessfulReconciliation should not be zero after tick with pre-seeded state")
+	assert.GreaterOrEqual(t, got, float64(seededTime.Unix()),
+		"LastSuccessfulReconciliation should be at least the seeded timestamp")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 func TestSetFilesManagedMetric(t *testing.T) {
 	t.Parallel()
 	metrics.Register()

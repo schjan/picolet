@@ -220,16 +220,21 @@ func TestPublishStatus(t *testing.T) {
 	assert.Equal(t, strconv.FormatInt(now.Unix(), 10), received["picolet/test-host/status/last_successful_reconciliation"])
 }
 
-// startTCPProxy creates a bidirectional TCP proxy in front of the broker.
-// Returns the proxy address and a kill function that closes all proxied connections
-// and the listener (preventing reconnection), simulating a network loss.
-func startTCPProxy(t *testing.T, brokerURL string) (string, func()) {
+// newTCPProxy creates a bidirectional TCP proxy in front of the broker.
+// When closeListener is true, the kill function also closes the listener
+// (preventing reconnection) — suitable for LWT tests. When false, only
+// active connections are dropped and the listener stays open for autopaho
+// to reconnect through.
+func newTCPProxy(t *testing.T, brokerURL string, closeListener bool) (string, func()) {
 	t.Helper()
 	u, err := url.Parse(brokerURL)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
+	if !closeListener {
+		t.Cleanup(func() { _ = listener.Close() })
+	}
 
 	var mu sync.Mutex
 	var conns []net.Conn
@@ -254,19 +259,41 @@ func startTCPProxy(t *testing.T, brokerURL string) (string, func()) {
 		}
 	}()
 
-	killAll := func() {
+	killConns := func() {
 		mu.Lock()
 		for _, c := range conns {
 			_ = c.Close()
 		}
 		conns = nil
-		_ = listener.Close() // prevent reconnection through proxy
 		mu.Unlock()
-		wg.Wait() // ensure all io.Copy goroutines have exited
+		// No wg.Wait() — connections are closed so io.Copy returns quickly;
+		// test proceeds without blocking on goroutine drain.
 	}
-	t.Cleanup(killAll)
 
-	return listener.Addr().String(), killAll
+	var once sync.Once
+	cleanup := func() {
+		once.Do(func() {
+			killConns()
+			if closeListener {
+				_ = listener.Close()
+			}
+			wg.Wait() // safe at test teardown: context is cancelled, no new reconnects
+		})
+	}
+	t.Cleanup(cleanup)
+
+	// For closeListener=true (LWT tests): return the full cleanup so the caller's
+	// kill() also closes the listener, preventing autopaho from reconnecting after
+	// the simulated drop (restoring the pre-refactor behaviour).
+	if closeListener {
+		return listener.Addr().String(), cleanup
+	}
+	return listener.Addr().String(), killConns
+}
+
+func startTCPProxy(t *testing.T, brokerURL string) (string, func()) {
+	t.Helper()
+	return newTCPProxy(t, brokerURL, true)
 }
 
 //nolint:funlen // LWT test requires proxy setup + two clients + assertions
@@ -350,6 +377,115 @@ func TestLWT(t *testing.T) {
 		}
 		return false
 	}, 5*time.Second, 50*time.Millisecond, "broker should publish LWT state=offline after forced disconnect")
+}
+
+func startRestartableTCPProxy(t *testing.T, brokerURL string) (string, func()) {
+	t.Helper()
+	return newTCPProxy(t, brokerURL, false)
+}
+
+//nolint:funlen // setup-heavy reconnect test: proxy + publisher + subscriber + assertions
+func TestReconnectRepublishesStatus(t *testing.T) {
+	t.Parallel()
+	brokerURL := startTestBroker(t)
+	proxyAddr, killConns := startRestartableTCPProxy(t, brokerURL)
+
+	cfg := mqtt.Config{BrokerURL: "tcp://" + proxyAddr, TopicPrefix: "picolet"}
+	client, err := mqtt.NewClient(cfg, "reconnect-host")
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var pauseFlag atomic.Bool
+	require.NoError(t, client.Start(ctx, &pauseFlag, func() {}))
+	require.NoError(t, client.AwaitConnection(ctx))
+
+	// Publish a known status.
+	now := time.Now().Truncate(time.Second)
+	status := mqtt.Status{
+		LastReconciliation:           now,
+		LastSuccessfulReconciliation: now,
+		AppliedSHA:                   "deadbeef",
+		FailedCount:                  1,
+		Paused:                       false,
+	}
+	require.NoError(t, client.PublishStatus(ctx, status))
+
+	// Verify initial publish landed by subscribing directly to the broker.
+	verifyRetainedStatus := func(label string) {
+		t.Helper()
+		var mu sync.Mutex
+		received := make(map[string]string)
+
+		u, parseErr := url.Parse(brokerURL)
+		require.NoError(t, parseErr)
+		conn, dialErr := net.DialTimeout("tcp", u.Host, 5*time.Second)
+		require.NoError(t, dialErr)
+		defer conn.Close()
+
+		sub := pahopkg.NewClient(pahopkg.ClientConfig{
+			Conn: conn,
+			OnPublishReceived: []func(pahopkg.PublishReceived) (bool, error){
+				func(pr pahopkg.PublishReceived) (bool, error) {
+					mu.Lock()
+					received[pr.Packet.Topic] = string(pr.Packet.Payload)
+					mu.Unlock()
+					return true, nil
+				},
+			},
+		})
+		_, connErr := sub.Connect(ctx, &pahopkg.Connect{
+			ClientID:   fmt.Sprintf("test-verify-%s-%d", label, time.Now().UnixNano()),
+			CleanStart: true,
+			KeepAlive:  10,
+		})
+		require.NoError(t, connErr)
+
+		_, subErr := sub.Subscribe(ctx, &pahopkg.Subscribe{
+			Subscriptions: []pahopkg.SubscribeOptions{
+				{Topic: "picolet/reconnect-host/status/#", QoS: 1},
+			},
+		})
+		require.NoError(t, subErr)
+
+		require.Eventually(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			// Poll until all 5 topics are present AND applied_sha has the expected value.
+			// This handles the race where the subscriber connects while "poisoned" is the
+			// retained value: we keep polling until the republish overwrites it.
+			return len(received) >= 5 &&
+				received["picolet/reconnect-host/status/applied_sha"] == "deadbeef"
+		}, 5*time.Second, 50*time.Millisecond, "%s: all 5 status topics with correct values", label)
+
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Equal(t, "deadbeef", received["picolet/reconnect-host/status/applied_sha"], "%s: applied_sha", label)
+		assert.Equal(t, "1", received["picolet/reconnect-host/status/failed_count"], "%s: failed_count", label)
+		assert.Equal(t, "running", received["picolet/reconnect-host/status/state"], "%s: state", label)
+		assert.Equal(t, strconv.FormatInt(now.Unix(), 10), received["picolet/reconnect-host/status/last_reconciliation"], "%s: last_reconciliation", label)
+		assert.Equal(t, strconv.FormatInt(now.Unix(), 10), received["picolet/reconnect-host/status/last_successful_reconciliation"], "%s: last_successful_reconciliation", label)
+	}
+
+	verifyRetainedStatus("before-reconnect")
+
+	// Poison one retained topic directly on the broker (bypassing proxy) to prove
+	// republish is needed. After reconnect, if applied_sha == "deadbeef" again,
+	// OnConnectionUp provably republished — the broker's retained "poisoned" was overwritten.
+	// rawPublish uses QoS 1, so PUBACK guarantees the broker stored it before killConns.
+	require.NoError(t, rawPublish(ctx, brokerURL, "picolet/reconnect-host/status/applied_sha", "poisoned", true))
+
+	killConns()
+
+	require.Eventually(t, func() bool {
+		return client.AwaitConnection(ctx) == nil
+	}, 10*time.Second, 100*time.Millisecond, "client should reconnect after kill")
+
+	// No time.Sleep needed — verifyRetainedStatus now polls for the correct value,
+	// handling the race where the subscriber briefly sees the "poisoned" retained message
+	// before the republish arrives.
+	verifyRetainedStatus("after-reconnect")
 }
 
 func TestTriggerFunction(t *testing.T) {
