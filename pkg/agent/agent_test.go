@@ -928,6 +928,9 @@ func TestLastSuccessfulReconciliationSeededFromState(t *testing.T) {
 		WithRepoPath(repoDir),
 		WithStatePath(statePath),
 	)
+	// Pause BEFORE running — tick() seeds from state then returns early at the pause
+	// check, without entering the reconciliation or noop paths.
+	a.paused.Store(true)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

@@ -115,7 +115,9 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 			// Republish last known full status if available (reconnect after drop),
 			// otherwise publish state only (first connect, no tick completed yet).
 			if prev := c.lastStatus.Load(); prev != nil {
-				if pubErr := c.publishStatusTopics(ctx, *prev); pubErr != nil {
+				status := *prev
+				status.Paused = pauseFlag.Load() // always reflect live pause state on reconnect
+				if pubErr := c.publishStatusTopics(ctx, status); pubErr != nil {
 					slog.Warn("mqtt republish status on reconnect failed", "error", pubErr)
 				}
 			} else {

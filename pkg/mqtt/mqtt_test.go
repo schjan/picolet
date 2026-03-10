@@ -259,21 +259,49 @@ func newTCPProxy(t *testing.T, brokerURL string, closeListener bool) (string, fu
 		}
 	}()
 
-	kill := func() {
+	killConns := func() {
 		mu.Lock()
 		for _, c := range conns {
 			_ = c.Close()
 		}
 		conns = nil
+		mu.Unlock()
+		// No wg.Wait() — connections are closed so io.Copy returns quickly;
+		// test proceeds without blocking on goroutine drain.
+	}
+
+	cleanup := func() {
+		killConns()
 		if closeListener {
 			_ = listener.Close()
 		}
-		mu.Unlock()
-		wg.Wait() // ensure all io.Copy goroutines have exited
+		wg.Wait() // safe at test teardown: context is cancelled, no new reconnects
 	}
-	t.Cleanup(kill)
+	t.Cleanup(cleanup)
 
-	return listener.Addr().String(), kill
+	return listener.Addr().String(), killConns
+}
+
+// poisonRetained overwrites a retained MQTT topic directly on the broker (bypassing any proxy).
+// Used to ensure the client must actively republish to restore correct retained values.
+func poisonRetained(ctx context.Context, t *testing.T, brokerURL, topic, payload string) {
+	t.Helper()
+	u, err := url.Parse(brokerURL)
+	require.NoError(t, err)
+	conn, err := net.DialTimeout("tcp", u.Host, 5*time.Second)
+	require.NoError(t, err)
+	defer conn.Close()
+	c := pahopkg.NewClient(pahopkg.ClientConfig{Conn: conn})
+	_, err = c.Connect(ctx, &pahopkg.Connect{
+		ClientID:   fmt.Sprintf("poison-%d", time.Now().UnixNano()),
+		CleanStart: true,
+		KeepAlive:  10,
+	})
+	require.NoError(t, err)
+	_, err = c.Publish(ctx, &pahopkg.Publish{
+		Topic: topic, QoS: 1, Retain: true, Payload: []byte(payload),
+	})
+	require.NoError(t, err)
 }
 
 func startTCPProxy(t *testing.T, brokerURL string) (string, func()) {
@@ -437,8 +465,12 @@ func TestReconnectRepublishesStatus(t *testing.T) {
 		require.Eventually(t, func() bool {
 			mu.Lock()
 			defer mu.Unlock()
-			return len(received) >= 5
-		}, 5*time.Second, 50*time.Millisecond, "%s: all 5 status topics should be present", label)
+			// Poll until all 5 topics are present AND applied_sha has the expected value.
+			// This handles the race where the subscriber connects while "poisoned" is the
+			// retained value: we keep polling until the republish overwrites it.
+			return len(received) >= 5 &&
+				received["picolet/reconnect-host/status/applied_sha"] == "deadbeef"
+		}, 5*time.Second, 50*time.Millisecond, "%s: all 5 status topics with correct values", label)
 
 		mu.Lock()
 		defer mu.Unlock()
@@ -451,18 +483,21 @@ func TestReconnectRepublishesStatus(t *testing.T) {
 
 	verifyRetainedStatus("before-reconnect")
 
-	// Drop all TCP connections — autopaho will reconnect through the proxy.
+	// Poison one retained topic directly on the broker (bypassing proxy) to prove
+	// republish is needed. After reconnect, if applied_sha == "deadbeef" again,
+	// OnConnectionUp provably republished — the broker's retained "poisoned" was overwritten.
+	// poisonRetained waits for PUBACK (QoS 1), so the broker has stored it before killConns.
+	poisonRetained(ctx, t, brokerURL, "picolet/reconnect-host/status/applied_sha", "poisoned")
+
 	killConns()
 
-	// Wait for autopaho to reconnect.
 	require.Eventually(t, func() bool {
 		return client.AwaitConnection(ctx) == nil
 	}, 10*time.Second, 100*time.Millisecond, "client should reconnect after kill")
 
-	// Small delay for the OnConnectionUp republish to complete.
-	time.Sleep(500 * time.Millisecond)
-
-	// Verify retained status was republished on reconnect.
+	// No time.Sleep needed — verifyRetainedStatus now polls for the correct value,
+	// handling the race where the subscriber briefly sees the "poisoned" retained message
+	// before the republish arrives.
 	verifyRetainedStatus("after-reconnect")
 }
 

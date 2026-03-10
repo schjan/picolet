@@ -54,10 +54,11 @@ type Agent struct {
 	statePath string
 	lockPath  string
 
-	webhookCh  chan struct{}
-	ready      atomic.Bool
-	paused     atomic.Bool // set by MQTT pause subscription
-	mqttClient MQTTClient  // nil when MQTT not configured
+	webhookCh          chan struct{}
+	ready              atomic.Bool
+	paused             atomic.Bool // set by MQTT pause subscription
+	seededSuccessfulAt atomic.Bool // guards one-time gauge seed from persisted state
+	mqttClient         MQTTClient  // nil when MQTT not configured
 }
 
 // Option configures the Agent.
@@ -213,7 +214,10 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if st.AppliedSHA != "" {
 		metrics.AppliedGitSHA.WithLabelValues(st.AppliedSHA).Set(1)
 	}
-	if !st.LastSuccessfulReconciliationAt.IsZero() {
+	// Seed once from persisted state (not every tick — prevents backward jumps when
+	// noop timestamps are in-memory only and store.Load() returns the older persisted value).
+	if !a.seededSuccessfulAt.Load() && !st.LastSuccessfulReconciliationAt.IsZero() {
+		a.seededSuccessfulAt.Store(true)
 		metrics.LastSuccessfulReconciliation.Set(float64(st.LastSuccessfulReconciliationAt.Unix()))
 	}
 
