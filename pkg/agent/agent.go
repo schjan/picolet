@@ -213,6 +213,9 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if st.AppliedSHA != "" {
 		metrics.AppliedGitSHA.WithLabelValues(st.AppliedSHA).Set(1)
 	}
+	if !st.LastSuccessfulReconciliationAt.IsZero() {
+		metrics.LastSuccessfulReconciliation.Set(float64(st.LastSuccessfulReconciliationAt.Unix()))
+	}
 
 	// 1. Health enforcement (always — units must stay healthy even when paused)
 	hr, err := healthChecker.Enforce(ctx, st)
@@ -563,6 +566,8 @@ func (a *Agent) publishMQTTStatus(ctx context.Context, st *state.State, tickTime
 	}
 	if err := a.mqttClient.PublishStatus(ctx, status); err != nil {
 		slog.Warn("mqtt status publish failed", "error", err)
+	} else {
+		slog.Debug("mqtt status published", "sha", status.AppliedSHA, "paused", status.Paused)
 	}
 }
 

@@ -47,6 +47,8 @@ type Client struct {
 	triggerTopic string
 	stateTopic   string
 	statusPrefix string // base for all status subtopics
+
+	lastStatus atomic.Pointer[Status] // last published status, replayed on reconnect
 }
 
 // NewClient creates a new MQTT Client. Sets TopicPrefix default to "picolet" if empty.
@@ -71,7 +73,7 @@ func NewClient(cfg Config, hostname string) (*Client, error) {
 // Start connects to the MQTT broker and subscribes to pause and trigger topics.
 // pauseFlag is set to true/false by the pause topic; triggerFn is called on trigger messages.
 //
-//nolint:funlen // MQTT setup is inherently verbose; autopaho config is a value struct
+//nolint:funlen,cyclop // MQTT setup is inherently verbose; autopaho config is a value struct
 func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn func()) error {
 	brokerURL, err := url.Parse(c.cfg.BrokerURL)
 	if err != nil {
@@ -110,16 +112,23 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 				slog.Error("mqtt subscribe failed", "error", subErr)
 			}
 
-			// Publish current state (may be "paused" after a reconnect).
-			initialState := "running"
-			if pauseFlag.Load() {
-				initialState = "paused"
-			}
-			if _, pubErr := cm.Publish(ctx, &paho.Publish{
-				Topic: c.stateTopic, QoS: 1, Retain: true,
-				Payload: []byte(initialState),
-			}); pubErr != nil {
-				slog.Warn("mqtt publish state failed", "state", initialState, "error", pubErr)
+			// Republish last known full status if available (reconnect after drop),
+			// otherwise publish state only (first connect, no tick completed yet).
+			if prev := c.lastStatus.Load(); prev != nil {
+				if pubErr := c.PublishStatus(ctx, *prev); pubErr != nil {
+					slog.Warn("mqtt republish status on reconnect failed", "error", pubErr)
+				}
+			} else {
+				initialState := "running"
+				if pauseFlag.Load() {
+					initialState = "paused"
+				}
+				if _, pubErr := cm.Publish(ctx, &paho.Publish{
+					Topic: c.stateTopic, QoS: 1, Retain: true,
+					Payload: []byte(initialState),
+				}); pubErr != nil {
+					slog.Warn("mqtt publish state failed", "state", initialState, "error", pubErr)
+				}
 			}
 		},
 
@@ -174,6 +183,10 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 
 // PublishStatus publishes the current agent status to retained MQTT topics.
 func (c *Client) PublishStatus(ctx context.Context, status Status) error {
+	// Cache unconditionally so OnConnectionUp can replay on reconnect.
+	statusCopy := status
+	c.lastStatus.Store(&statusCopy)
+
 	state := "running"
 	if status.Paused {
 		state = "paused"
