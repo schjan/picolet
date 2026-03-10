@@ -58,14 +58,13 @@ func NewClient(cfg Config, hostname string) (*Client, error) {
 	if cfg.TopicPrefix == "" {
 		cfg.TopicPrefix = "picolet"
 	}
-	prefix := cfg.TopicPrefix
 	return &Client{
 		cfg:          cfg,
 		hostname:     hostname,
-		pauseTopic:   prefix + "/" + hostname + "/pause",
-		triggerTopic: prefix + "/trigger",
-		stateTopic:   prefix + "/" + hostname + "/status/state",
-		statusPrefix: prefix + "/" + hostname + "/status",
+		pauseTopic:   cfg.TopicPrefix + "/" + hostname + "/pause",
+		triggerTopic: cfg.TopicPrefix + "/trigger",
+		stateTopic:   cfg.TopicPrefix + "/" + hostname + "/status/state",
+		statusPrefix: cfg.TopicPrefix + "/" + hostname + "/status",
 	}, nil
 }
 
@@ -251,16 +250,15 @@ func Trigger(ctx context.Context, cfg Config) error {
 	if _, err := c.Connect(ctx, cp); err != nil {
 		return fmt.Errorf("MQTT connect: %w", err)
 	}
+	defer func() { _ = c.Disconnect(&paho.Disconnect{}) }()
 
 	if _, err := c.Publish(ctx, &paho.Publish{
 		Topic: prefix + "/trigger",
 		QoS:   1,
 	}); err != nil {
-		_ = c.Disconnect(&paho.Disconnect{})
 		return fmt.Errorf("MQTT publish: %w", err)
 	}
 
-	_ = c.Disconnect(&paho.Disconnect{})
 	slog.Info("MQTT trigger published (best-effort, no delivery confirmation)")
 	return nil
 }
