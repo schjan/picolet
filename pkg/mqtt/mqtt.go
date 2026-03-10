@@ -123,6 +123,12 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 			}
 		},
 
+		OnConnectionDown: func() bool {
+			slog.Warn("mqtt connection lost, reconnecting", "broker", c.cfg.BrokerURL)
+			metrics.MQTTConnected.Set(0)
+			return true
+		},
+
 		OnConnectError: func(connectErr error) {
 			slog.Warn("mqtt connection error", "error", connectErr)
 			metrics.MQTTConnected.Set(0)
@@ -130,6 +136,16 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 
 		ClientConfig: paho.ClientConfig{
 			ClientID: "picolet-" + c.hostname,
+			OnClientError: func(clientErr error) {
+				slog.Error("mqtt client error", "error", clientErr)
+			},
+			OnServerDisconnect: func(d *paho.Disconnect) {
+				if d.Properties != nil {
+					slog.Warn("mqtt server disconnect", "reason", d.Properties.ReasonString, "code", d.ReasonCode)
+				} else {
+					slog.Warn("mqtt server disconnect", "code", d.ReasonCode)
+				}
+			},
 			OnPublishReceived: []func(paho.PublishReceived) (bool, error){
 				func(pr paho.PublishReceived) (bool, error) {
 					switch pr.Packet.Topic {
