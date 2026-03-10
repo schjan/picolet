@@ -107,6 +107,8 @@ func TestEnforceInactiveSkipped(t *testing.T) {
 	assert.Empty(t, result.Unhealthy)
 	assert.Empty(t, result.Restarted)
 	assert.Empty(t, result.Errors)
+	assert.Contains(t, result.Statuses, "foo.service")
+	assert.Equal(t, applier.UnitStatus{ActiveState: "inactive", SubState: "dead"}, result.Statuses["foo.service"])
 }
 
 func TestEnforceSkipsSecretsAndManifests(t *testing.T) {

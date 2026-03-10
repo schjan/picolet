@@ -138,8 +138,12 @@ func (m *DBusSystemdManager) GetUnitStatus(ctx context.Context, name string) (Un
 	if err != nil {
 		return UnitStatus{}, fmt.Errorf("getting status of %s: %w", name, err)
 	}
+	activeState := stringProp(props, "ActiveState")
+	if activeState == "" {
+		return UnitStatus{}, fmt.Errorf("ActiveState not a string for %s", name)
+	}
 	return UnitStatus{
-		ActiveState: stringProp(props, "ActiveState"),
+		ActiveState: activeState,
 		SubState:    stringProp(props, "SubState"),
 	}, nil
 }

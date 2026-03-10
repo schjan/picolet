@@ -405,7 +405,6 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	}, nil
 }
 
-//nolint:cyclop // sequential apply+rollback steps; splitting reduces readability
 func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset) (*applier.ApplyResult, error) {
 	rollbackMgr := rollback.New(a.writer, a.systemd)
 	snap, err := rollbackMgr.Create(changeset, os.ReadFile)
@@ -437,13 +436,10 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	}
 
 	for _, change := range changeset.Changes {
-		if change.Action == reconciler.ActionNoop {
-			continue
+		if change.Action != reconciler.ActionNoop {
+			metrics.FilesAppliedTotal.WithLabelValues(string(change.Action), change.Category).Inc()
 		}
-		metrics.FilesAppliedTotal.WithLabelValues(string(change.Action), change.Category).Inc()
-	}
-	// Remove health metrics for units leaving management.
-	for _, change := range changeset.Changes {
+		// Remove health metrics for units leaving management.
 		if change.Action == reconciler.ActionDelete && change.ServiceName != "" {
 			metrics.UnitHealth.Delete(change.ServiceName)
 		}

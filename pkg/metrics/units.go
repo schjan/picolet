@@ -63,7 +63,7 @@ func (c *UnitHealthCollector) Collect(ch chan<- prometheus.Metric) {
 		case "failed":
 			activeVal = 0
 		default:
-			// "inactive", "deactivating", "reloading": expected/transitional.
+			// "inactive", "deactivating", "reloading", "maintenance": expected/transitional.
 			// Absent from metrics — prevents false alerts for timer/oneshot services.
 			continue
 		}
