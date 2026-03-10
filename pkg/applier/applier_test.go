@@ -8,18 +8,54 @@ import (
 	mock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	mocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/reconciler"
 )
 
+// testSystemdManager is a minimal mock for SystemdManager defined in-package to
+// avoid the circular import that arises when importing mocks/applier (which imports
+// pkg/applier for UnitStatus).
+type testSystemdManager struct {
+	mock.Mock
+}
+
+func newTestSystemd(t *testing.T) *testSystemdManager {
+	t.Helper()
+	s := &testSystemdManager{}
+	s.Test(t)
+	t.Cleanup(func() { s.AssertExpectations(t) })
+	return s
+}
+
+func (m *testSystemdManager) DaemonReload(ctx context.Context) error {
+	return m.Called(ctx).Error(0)
+}
+
+func (m *testSystemdManager) StartUnit(ctx context.Context, name string) error {
+	return m.Called(ctx, name).Error(0)
+}
+
+func (m *testSystemdManager) StopUnit(ctx context.Context, name string) error {
+	return m.Called(ctx, name).Error(0)
+}
+
+func (m *testSystemdManager) RestartUnit(ctx context.Context, name string) error {
+	return m.Called(ctx, name).Error(0)
+}
+
+func (m *testSystemdManager) GetUnitStatus(ctx context.Context, name string) (UnitStatus, error) {
+	args := m.Called(ctx, name)
+	us, _ := args.Get(0).(UnitStatus)
+	return us, args.Error(1)
+}
+
 func TestApplyPhaseOrdering(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
-	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
-	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
+	sys := newTestSystemd(t)
+	sys.On("DaemonReload", mock.Anything).Return(nil)
+	sys.On("RestartUnit", mock.Anything, mock.Anything).Return(nil).Maybe()
 
-	pod := mocks.NewMockPodmanClient(t)
-	pod.EXPECT().SecretCreate(mock.Anything, "my_secret", []byte("token=abc"), false).Return(nil)
+	pod := newMockPodman(t)
+	pod.On("SecretCreate", mock.Anything, "my_secret", []byte("token=abc"), false).Return(nil)
 
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
@@ -49,8 +85,8 @@ func TestApplyPhaseOrdering(t *testing.T) {
 
 func TestApplyDryRun(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
-	pod := mocks.NewMockPodmanClient(t)
+	sys := newTestSystemd(t)
+	pod := newMockPodman(t)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, true)
 
@@ -70,8 +106,8 @@ func TestApplyDryRun(t *testing.T) {
 
 func TestApplyNoop(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
-	pod := mocks.NewMockPodmanClient(t)
+	sys := newTestSystemd(t)
+	pod := newMockPodman(t)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -89,11 +125,11 @@ func TestApplyNoop(t *testing.T) {
 
 func TestApplyDelete(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
-	sys.EXPECT().StopUnit(mock.Anything, "old.service").Return(nil)
-	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys := newTestSystemd(t)
+	sys.On("StopUnit", mock.Anything, "old.service").Return(nil)
+	sys.On("DaemonReload", mock.Anything).Return(nil)
 	// RestartUnit must NOT be called for deletes — the unit is gone after daemon-reload
-	pod := mocks.NewMockPodmanClient(t)
+	pod := newMockPodman(t)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -113,9 +149,9 @@ func TestApplyDelete(t *testing.T) {
 
 func TestApplyDeleteSecret(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
-	pod := mocks.NewMockPodmanClient(t)
-	pod.EXPECT().SecretRemove(mock.Anything, "old_secret").Return(nil)
+	sys := newTestSystemd(t)
+	pod := newMockPodman(t)
+	pod.On("SecretRemove", mock.Anything, "old_secret").Return(nil)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -135,11 +171,11 @@ func TestApplyDeleteSecret(t *testing.T) {
 
 func TestApplySelfRestart(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
-	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys := newTestSystemd(t)
+	sys.On("DaemonReload", mock.Anything).Return(nil)
 	// goroutine fires asynchronously after Apply() returns; may or may not complete before test cleanup
-	sys.EXPECT().RestartUnit(mock.Anything, "picolet.service").Return(nil).Maybe()
-	pod := mocks.NewMockPodmanClient(t)
+	sys.On("RestartUnit", mock.Anything, "picolet.service").Return(nil).Maybe()
+	pod := newMockPodman(t)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -158,10 +194,10 @@ func TestApplySelfRestart(t *testing.T) {
 
 func TestApplySecretReplace(t *testing.T) {
 	t.Parallel()
-	sys := mocks.NewMockSystemdManager(t)
-	pod := mocks.NewMockPodmanClient(t)
+	sys := newTestSystemd(t)
+	pod := newMockPodman(t)
 	// ActionUpdate → replace=true
-	pod.EXPECT().SecretCreate(mock.Anything, "cfg", []byte("new-data"), true).Return(nil)
+	pod.On("SecretCreate", mock.Anything, "cfg", []byte("new-data"), true).Return(nil)
 	fw := newMemFileWriter()
 	a := New(sys, pod, fw, false)
 
@@ -175,4 +211,50 @@ func TestApplySecretReplace(t *testing.T) {
 	result, err := a.Apply(context.Background(), cs)
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.Applied)
+}
+
+// mockPodman is a minimal PodmanClient mock for applier tests.
+type mockPodman struct {
+	mock.Mock
+}
+
+func newMockPodman(t *testing.T) *mockPodman {
+	t.Helper()
+	p := &mockPodman{}
+	p.Test(t)
+	t.Cleanup(func() { p.AssertExpectations(t) })
+	return p
+}
+
+func (m *mockPodman) SecretExists(ctx context.Context, name string) (bool, error) {
+	args := m.Called(ctx, name)
+	return args.Bool(0), args.Error(1)
+}
+
+func (m *mockPodman) SecretCreate(ctx context.Context, name string, data []byte, replace bool) error {
+	return m.Called(ctx, name, data, replace).Error(0)
+}
+
+func (m *mockPodman) SecretRemove(ctx context.Context, name string) error {
+	return m.Called(ctx, name).Error(0)
+}
+
+func (m *mockPodman) ListManagedSecrets(ctx context.Context) ([]string, error) {
+	args := m.Called(ctx)
+	ss, _ := args.Get(0).([]string)
+	return ss, args.Error(1)
+}
+
+func (m *mockPodman) ContainerRemove(ctx context.Context, nameOrID string, force bool) error {
+	return m.Called(ctx, nameOrID, force).Error(0)
+}
+
+func (m *mockPodman) RunHealthcheck(ctx context.Context, container string) (bool, error) {
+	args := m.Called(ctx, container)
+	return args.Bool(0), args.Error(1)
+}
+
+func (m *mockPodman) GetPodState(ctx context.Context, pod string) (string, error) {
+	args := m.Called(ctx, pod)
+	return args.String(0), args.Error(1)
 }

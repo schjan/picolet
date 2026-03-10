@@ -133,22 +133,18 @@ func waitJobResult(ctx context.Context, ch <-chan string, verb, unit string, acc
 	}
 }
 
-func (m *DBusSystemdManager) GetUnitState(ctx context.Context, name string) (string, error) {
+func (m *DBusSystemdManager) GetUnitStatus(ctx context.Context, name string) (UnitStatus, error) {
 	props, err := m.conn.GetUnitPropertiesContext(ctx, name)
 	if err != nil {
-		return "", fmt.Errorf("getting state of %s: %w", name, err)
+		return UnitStatus{}, fmt.Errorf("getting status of %s: %w", name, err)
 	}
-	state, ok := props["ActiveState"].(string)
-	if !ok {
-		return "", fmt.Errorf("ActiveState not a string for %s", name)
-	}
-	return state, nil
+	return UnitStatus{
+		ActiveState: stringProp(props, "ActiveState"),
+		SubState:    stringProp(props, "SubState"),
+	}, nil
 }
 
-func (m *DBusSystemdManager) IsActive(ctx context.Context, name string) (bool, error) {
-	state, err := m.GetUnitState(ctx, name)
-	if err != nil {
-		return false, err
-	}
-	return state == "active" || state == "activating", nil
+func stringProp(props map[string]any, key string) string {
+	s, _ := props[key].(string)
+	return s
 }

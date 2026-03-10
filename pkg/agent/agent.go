@@ -225,11 +225,17 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		for _, u := range hr.Unhealthy {
 			metrics.HealthCheckTotal.WithLabelValues(u, "unhealthy").Inc()
 		}
+		for _, u := range hr.Inactive {
+			metrics.HealthCheckTotal.WithLabelValues(u, "inactive").Inc()
+		}
 		for _, u := range hr.Restarted {
 			metrics.HealthEnforcementTotal.WithLabelValues(u, "restart").Inc()
 		}
 		for _, u := range hr.Skipped {
 			metrics.HealthEnforcementTotal.WithLabelValues(u, "skip_cooldown").Inc()
+		}
+		for unit, s := range hr.Statuses {
+			metrics.UnitHealth.Set(unit, s.ActiveState, s.SubState)
 		}
 	}
 
@@ -399,6 +405,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	}, nil
 }
 
+//nolint:cyclop // sequential apply+rollback steps; splitting reduces readability
 func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset) (*applier.ApplyResult, error) {
 	rollbackMgr := rollback.New(a.writer, a.systemd)
 	snap, err := rollbackMgr.Create(changeset, os.ReadFile)
@@ -434,6 +441,12 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 			continue
 		}
 		metrics.FilesAppliedTotal.WithLabelValues(string(change.Action), change.Category).Inc()
+	}
+	// Remove health metrics for units leaving management.
+	for _, change := range changeset.Changes {
+		if change.Action == reconciler.ActionDelete && change.ServiceName != "" {
+			metrics.UnitHealth.Delete(change.ServiceName)
+		}
 	}
 
 	slog.Info("apply complete",
