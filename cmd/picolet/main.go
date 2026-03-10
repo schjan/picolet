@@ -24,16 +24,15 @@ import (
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
 	"github.com/schjan/picolet/pkg/validator"
+	"github.com/schjan/picolet/pkg/version"
 )
-
-var version = "dev"
 
 //nolint:funlen // declarative CLI registration; splitting reduces readability
 func main() {
 	app := &cli.Command{
 		Name:    "picolet",
 		Usage:   "GitOps agent for Podman Quadlets",
-		Version: version,
+		Version: version.Version,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "repo-dir",

@@ -22,6 +22,7 @@ import (
 	"github.com/schjan/picolet/pkg/rollback"
 	"github.com/schjan/picolet/pkg/state"
 	"github.com/schjan/picolet/pkg/validator"
+	"github.com/schjan/picolet/pkg/version"
 )
 
 // MQTTClient provides MQTT-based pause, trigger, and status publishing.
@@ -159,6 +160,8 @@ func (a *Agent) Run(ctx context.Context) error {
 		"hostname", a.cfg.Hostname,
 		"poll_interval", a.cfg.PollInterval,
 		"dry_run", a.dryRun,
+		"version", version.Version,
+		"git_sha", version.GitSHA,
 	)
 
 	// Run first tick immediately
