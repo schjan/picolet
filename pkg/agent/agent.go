@@ -243,6 +243,14 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		metrics.GitPollTotal.WithLabelValues("noop").Inc()
 		slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
+		// A noop is a successful reconciliation — the agent confirmed the
+		// desired state matches. Update the timestamp so dashboards and MQTT
+		// reflect "last time we verified everything is OK", not just "last
+		// time files changed". Only update in-memory (the defer publishes
+		// MQTT, Prometheus is scraped); no state save needed for noops.
+		now := time.Now()
+		st.LastSuccessfulReconciliationAt = now
+		metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
 		return nil
 	}
 	metrics.GitPollTotal.WithLabelValues("changed").Inc()
