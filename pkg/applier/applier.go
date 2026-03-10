@@ -159,11 +159,9 @@ func splitPhase(sorted []reconciler.Change) int {
 	return len(sorted)
 }
 
-// maybeBootstrapVolumes performs a DaemonReload and starts new/updated volume
+// maybeBootstrapVolumes performs a DaemonReload and restarts new/updated volume
 // units when the pre-phase wrote volume files. This ensures the Podman volume
 // exists and VolumeInspectMountpoint succeeds before the configfile phase runs.
-//
-//nolint:cyclop // sequential guard clauses + per-volume loop; extraction would obscure the flow
 func (a *Applier) maybeBootstrapVolumes(ctx context.Context, prePhase []reconciler.Change, preNeedsReload bool) error {
 	if !preNeedsReload {
 		return nil
@@ -182,42 +180,17 @@ func (a *Applier) maybeBootstrapVolumes(ctx context.Context, prePhase []reconcil
 		if c.Category != "volume" || c.Action == reconciler.ActionDelete || c.ServiceName == "" {
 			continue
 		}
-		slog.Info("starting volume unit (bootstrap)", "unit", c.ServiceName)
-		if err := a.systemd.StartUnit(ctx, c.ServiceName); err != nil {
-			// Log but don't fail — the volume may already be running (update case).
-			slog.Warn("starting volume unit failed, continuing", "unit", c.ServiceName, "error", err)
-			continue
-		}
-		// StartUnit is asynchronous: the Podman volume create command runs inside the
-		// service and may not finish before VolumeInspectMountpoint is called.
-		// Poll until active (create completed) or failed.
-		if err := waitUnitActive(ctx, a.systemd, c.ServiceName); err != nil {
-			return fmt.Errorf("volume unit %s not ready after start: %w", c.ServiceName, err)
+		// RestartUnit rather than StartUnit: if the service is already active
+		// (RemainAfterExit=yes from a previous run) but the Podman volume was
+		// deleted externally, StartUnit is a no-op. RestartUnit always re-runs
+		// ExecStart. For oneshot services the D-Bus job "done" is only sent after
+		// ExecStart completes, so the volume is guaranteed to exist on return.
+		slog.Info("restarting volume unit (bootstrap)", "unit", c.ServiceName)
+		if err := a.systemd.RestartUnit(ctx, c.ServiceName); err != nil {
+			return fmt.Errorf("restarting volume unit %s: %w", c.ServiceName, err)
 		}
 	}
 	return nil
-}
-
-// waitUnitActive polls systemd until the unit reaches "active" state or context deadline.
-// Returns an error if the unit enters "failed" state or the context is cancelled.
-func waitUnitActive(ctx context.Context, sys SystemdManager, unit string) error {
-	for {
-		state, err := sys.GetUnitState(ctx, unit)
-		if err != nil {
-			return fmt.Errorf("getting state for %s: %w", unit, err)
-		}
-		switch state {
-		case "active":
-			return nil
-		case "failed":
-			return fmt.Errorf("volume unit %s failed", unit)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
 }
 
 //nolint:cyclop // multiple early-continues are clearer than restructuring

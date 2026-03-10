@@ -246,12 +246,11 @@ func TestApplyConfigFileSameCommitAsVolume(t *testing.T) {
 	pod := mocks.NewMockPodmanClient(t)
 	fw := newMemFileWriter()
 
-	// Bootstrap: DaemonReload + StartUnit + GetUnitState (wait active) for the volume.
+	// Bootstrap: DaemonReload + RestartUnit for the volume (ensures ExecStart re-runs
+	// even if service is already active with RemainAfterExit=yes).
 	// Final restartUnits: another DaemonReload + RestartUnit for the volume service.
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Times(2)
-	sys.EXPECT().StartUnit(mock.Anything, "data-volume.service").Return(nil).Once()
-	sys.EXPECT().GetUnitState(mock.Anything, "data-volume.service").Return("active", nil).Once()
-	sys.EXPECT().RestartUnit(mock.Anything, "data-volume.service").Return(nil).Once()
+	sys.EXPECT().RestartUnit(mock.Anything, "data-volume.service").Return(nil).Times(2)
 	pod.EXPECT().VolumeInspectMountpoint(mock.Anything, "data").Return("/var/lib/containers/storage/volumes/data/_data", nil)
 
 	a := New(sys, pod, fw, false)
