@@ -130,7 +130,7 @@ func VolumeFileFromPath(destPath string) (volume, relPath string, ok bool) {
 	if !ok || volume == "" || relPath == "" {
 		return "", "", false
 	}
-	return
+	return volume, relPath, true
 }
 
 var categories = []string{"configfile", "container", "network", "volume", "kube", "systemd", "manifest", "secret"}
