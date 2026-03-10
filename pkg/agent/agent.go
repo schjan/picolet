@@ -202,8 +202,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	}
 
 	// Publish MQTT status at the end of every tick (success, failure, noop, or paused).
-	tickStart := time.Now()
-	defer func() { a.publishMQTTStatus(ctx, st, tickStart) }()
+	defer func() { a.publishMQTTStatus(ctx, st, time.Now()) }()
 
 	// Seed managed-files metrics from state on every tick
 	metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
