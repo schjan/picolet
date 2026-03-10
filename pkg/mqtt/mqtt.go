@@ -140,7 +140,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 						slog.Info("mqtt pause state changed", "paused", paused)
 					case c.triggerTopic:
 						slog.Info("mqtt trigger received")
-						go triggerFn()
+						triggerFn()
 					}
 					return true, nil
 				},

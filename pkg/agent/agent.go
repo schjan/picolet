@@ -202,7 +202,8 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	}
 
 	// Publish MQTT status at the end of every tick (success, failure, noop, or paused).
-	defer a.publishMQTTStatus(ctx, st)
+	tickStart := time.Now()
+	defer func() { a.publishMQTTStatus(ctx, st, tickStart) }()
 
 	// Seed managed-files metrics from state on every tick
 	metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
@@ -465,7 +466,7 @@ func (a *Agent) updateState(headSHA string, st *state.State, changeset *reconcil
 func markAppliedWithMetrics(st *state.State, headSHA string) {
 	prevSHA := st.AppliedSHA
 	st.MarkApplied(headSHA)
-	st.LastSuccessfulReconciliationAt = time.Now()
+	st.LastSuccessfulReconciliationAt = st.AppliedAt
 	metrics.FailedSHAConsecutiveCount.Set(0)
 	metrics.LastSuccessfulReconciliation.SetToCurrentTime()
 	// Set new SHA before deleting old: a scrape during the gap sees both (harmless
@@ -534,16 +535,12 @@ func (a *Agent) triggerReconcile() {
 	}
 }
 
-func (a *Agent) publishMQTTStatus(ctx context.Context, st *state.State) {
+func (a *Agent) publishMQTTStatus(ctx context.Context, st *state.State, tickTime time.Time) {
 	if a.mqttClient == nil || st == nil {
 		return
 	}
-	lastRecon := st.AppliedAt
-	if st.FailedAt.After(lastRecon) {
-		lastRecon = st.FailedAt
-	}
 	status := mqtt.Status{
-		LastReconciliation:           lastRecon,
+		LastReconciliation:           tickTime,
 		LastSuccessfulReconciliation: st.LastSuccessfulReconciliationAt,
 		AppliedSHA:                   st.AppliedSHA,
 		FailedCount:                  st.FailedCount,
