@@ -211,9 +211,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	// Seed managed-files metrics from state on every tick
 	metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
 	setFilesManagedMetric(countCategoriesFromState(st.ManagedFiles))
-	if st.AppliedSHA != "" {
-		metrics.SetAppliedSHA(st.AppliedSHA)
-	}
+	metrics.SetAppliedSHA(st.AppliedSHA)
 	// Seed once from persisted state (not every tick — prevents backward jumps when
 	// noop timestamps are in-memory only and store.Load() returns the older persisted value).
 	if !a.seededSuccessfulAt.Load() && !st.LastSuccessfulReconciliationAt.IsZero() {

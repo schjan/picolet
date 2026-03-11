@@ -435,15 +435,19 @@ func runTrigger(_ context.Context, configPath, urlOverride string) error {
 	}
 }
 
-// stateStoreFromConfig returns a state store using the config's DataDir or the default path.
-func stateStoreFromConfig(cfg *agentcfg.Config) *state.Store {
-	statePath := agent.DefaultStatePath
+// stateStoreFromConfig returns a state store using the config's DataDir or a rootless-aware default.
+func stateStoreFromConfig(cfg *agentcfg.Config) (*state.Store, error) {
 	if cfg.DataDir != "" {
-		statePath = filepath.Join(cfg.DataDir, "state.json")
+		return state.NewStore(filepath.Join(cfg.DataDir, "state.json")), nil
 	}
-	return state.NewStore(statePath)
+	_, _, dataDir, err := resolver.ResolveDirs(cfg.Rootless)
+	if err != nil {
+		return nil, fmt.Errorf("resolving data directory: %w", err)
+	}
+	return state.NewStore(filepath.Join(dataDir, "state.json")), nil
 }
 
+//nolint:cyclop // sequential error handling, not complex control flow
 func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
@@ -455,7 +459,10 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		return err
 	}
 
-	store := stateStoreFromConfig(cfg)
+	store, err := stateStoreFromConfig(cfg)
+	if err != nil {
+		return err
+	}
 	st, err := store.Load()
 	if err != nil {
 		return fmt.Errorf("loading state: %w", err)
@@ -510,7 +517,10 @@ func runDown(ctx context.Context, configPath string) error {
 		return err
 	}
 
-	store := stateStoreFromConfig(cfg)
+	store, err := stateStoreFromConfig(cfg)
+	if err != nil {
+		return err
+	}
 	st, err := store.Load()
 	if err != nil {
 		return fmt.Errorf("loading state: %w", err)

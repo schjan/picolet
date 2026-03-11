@@ -30,7 +30,7 @@ type Config struct {
 	SystemdUser       *bool         `yaml:"systemd_user"`
 	PodmanSocket      string        `yaml:"podman_socket"`
 	WebhookSecretPath string        `yaml:"webhook_secret_path"`
-	DataDir           string        `yaml:"data_dir"` // base dir for repo/state/lock (default: /var/lib/picolet)
+	DataDir           string        `yaml:"data_dir"` // optional override for state file directory; used by apply/down commands
 	MQTT              *MQTTConfig   `yaml:"mqtt"`
 }
 
