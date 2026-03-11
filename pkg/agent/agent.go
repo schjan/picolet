@@ -212,7 +212,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
 	setFilesManagedMetric(countCategoriesFromState(st.ManagedFiles))
 	if st.AppliedSHA != "" {
-		metrics.AppliedGitSHA.WithLabelValues(st.AppliedSHA).Set(1)
+		metrics.SetAppliedSHA(st.AppliedSHA)
 	}
 	// Seed once from persisted state (not every tick — prevents backward jumps when
 	// noop timestamps are in-memory only and store.Load() returns the older persisted value).
@@ -286,7 +286,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 			st.FailedCount = 1
 		}
 		st.FailedAt = time.Now()
-		metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
+		metrics.RecordFailedSHA(st.FailedCount)
 		if saveErr := store.Save(st); saveErr != nil {
 			slog.Error("saving failed state", "error", saveErr)
 		}
@@ -298,16 +298,18 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	return nil
 }
 
-func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, error) {
-	slog.Debug("loading fleet config", "repo", a.repoPath)
-	repoFS := os.DirFS(a.repoPath)
+// LoadAndResolve loads fleet config from repoPath and resolves the desired state for the given host.
+// It is the shared implementation behind Agent.loadAndResolve and CLI subcommands (apply, dry-run).
+func LoadAndResolve(repoPath, hostname, secretsDir string, rootless bool) ([]resolver.ResolvedFile, error) {
+	slog.Debug("loading fleet config", "repo", repoPath)
+	repoFS := os.DirFS(repoPath)
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
 
 	secretReader := func(path string) (string, error) {
-		secretRoot, err := os.OpenRoot(a.cfg.SecretsDir)
+		secretRoot, err := os.OpenRoot(secretsDir)
 		if err != nil {
 			return "", fmt.Errorf("opening secrets dir: %w", err)
 		}
@@ -320,23 +322,27 @@ func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, error) {
 		return string(data), nil
 	}
 
-	slog.Debug("resolving host", "hostname", a.cfg.Hostname)
+	slog.Debug("resolving host", "hostname", hostname)
 	loadStart := time.Now()
 	r, err := resolver.New(resolver.Config{
 		FS:           repoFS,
 		Config:       cfg,
 		SecretReader: secretReader,
-		Rootless:     a.cfg.Rootless,
+		Rootless:     rootless,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating resolver: %w", err)
 	}
-	resolved, err := r.ResolveHost(a.cfg.Hostname)
+	resolved, err := r.ResolveHost(hostname)
 	if err != nil {
-		return nil, fmt.Errorf("resolving host %s: %w", a.cfg.Hostname, err)
+		return nil, fmt.Errorf("resolving host %s: %w", hostname, err)
 	}
-	slog.Debug("host resolved", "hostname", a.cfg.Hostname, "files", len(resolved.Files), "duration", time.Since(loadStart).Round(time.Millisecond))
+	slog.Debug("host resolved", "hostname", hostname, "files", len(resolved.Files), "duration", time.Since(loadStart).Round(time.Millisecond))
 	return resolved.Files, nil
+}
+
+func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, error) {
+	return LoadAndResolve(a.repoPath, a.cfg.Hostname, a.cfg.SecretsDir, a.cfg.Rootless)
 }
 
 // ReconcileResult contains the outcome of a single reconciliation cycle.
@@ -386,7 +392,8 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		slog.Warn("non-fatal apply error", "error", e)
 	}
 
-	a.updateState(headSHA, st, changeset)
+	markAppliedWithMetrics(st, headSHA)
+	UpdateState(st, changeset)
 
 	if err := store.Save(st); err != nil {
 		return nil, fmt.Errorf("saving state: %w", err)
@@ -456,8 +463,10 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	return result, nil
 }
 
-func (a *Agent) updateState(headSHA string, st *state.State, changeset *reconciler.Changeset) {
-	markAppliedWithMetrics(st, headSHA)
+// UpdateState rebuilds ManagedFiles and ServiceNames from the changeset.
+// It does NOT call MarkApplied or touch timestamps/metrics — callers must handle that
+// (the agent uses markAppliedWithMetrics; CLI commands call st.MarkApplied directly).
+func UpdateState(st *state.State, changeset *reconciler.Changeset) {
 	st.ManagedFiles = make(map[string]state.ManagedFile)
 	st.ServiceNames = make(map[string]string)
 	for _, change := range changeset.Changes {
@@ -473,17 +482,8 @@ func (a *Agent) updateState(headSHA string, st *state.State, changeset *reconcil
 
 // markAppliedWithMetrics records a successful SHA application in both state and metrics.
 func markAppliedWithMetrics(st *state.State, headSHA string) {
-	prevSHA := st.AppliedSHA
 	st.MarkApplied(headSHA)
-	st.LastSuccessfulReconciliationAt = st.AppliedAt
-	metrics.FailedSHAConsecutiveCount.Set(0)
-	metrics.LastSuccessfulReconciliation.SetToCurrentTime()
-	// Set new SHA before deleting old: a scrape during the gap sees both (harmless
-	// for an info metric) rather than zero.
-	metrics.AppliedGitSHA.WithLabelValues(headSHA).Set(1)
-	if prevSHA != "" && prevSHA != headSHA {
-		metrics.AppliedGitSHA.DeleteLabelValues(prevSHA)
-	}
+	metrics.RecordAppliedSHA(headSHA)
 }
 
 // setFilesManagedMetric overwrites FilesManagedTotal for every known category.

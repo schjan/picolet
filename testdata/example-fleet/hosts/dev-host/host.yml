@@ -1,0 +1,4 @@
+hostname: dev-host
+external_hostname: dev-host.local
+pi_type: dev
+features: []

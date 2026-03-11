@@ -23,6 +23,11 @@ pi_types:
       - quadlets/containers/simple.container.tmpl
     secrets:
       - secrets/e2e_secret.txt
+  dev:
+    containers:
+      - quadlets/containers/simple.container.tmpl
+    secrets:
+      - secrets/e2e_secret.txt
 features:
   app-a:
     containers:

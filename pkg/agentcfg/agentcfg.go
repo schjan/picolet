@@ -30,6 +30,7 @@ type Config struct {
 	SystemdUser       *bool         `yaml:"systemd_user"`
 	PodmanSocket      string        `yaml:"podman_socket"`
 	WebhookSecretPath string        `yaml:"webhook_secret_path"`
+	DataDir           string        `yaml:"data_dir"` // base dir for repo/state/lock (default: /var/lib/picolet)
 	MQTT              *MQTTConfig   `yaml:"mqtt"`
 }
 
@@ -87,9 +88,6 @@ func (c *Config) UseSystemdUser() bool {
 func (c *Config) Validate() error {
 	if c.Hostname == "" {
 		return errors.New("hostname is required")
-	}
-	if c.RepoURL == "" {
-		return errors.New("repo_url is required")
 	}
 	if c.MQTT != nil && c.MQTT.BrokerURL == "" {
 		return errors.New("mqtt.broker_url is required when mqtt is configured")

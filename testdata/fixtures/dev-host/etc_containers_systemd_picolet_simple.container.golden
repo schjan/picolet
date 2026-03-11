@@ -1,0 +1,11 @@
+[Container]
+Image=docker.io/library/alpine:3.23
+ContainerName=picolet-e2e-test
+Network=internal.network
+Secret=e2e_secret
+Label=hostname=dev-host
+Label=external=dev-host.local
+Exec=sleep infinity
+
+[Install]
+WantedBy=default.target

@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -150,6 +152,49 @@ func main() {
 					return runDryRun(ctx, cmd.String("repo-dir"), cmd.String("host"))
 				},
 			},
+			{
+				Name:  "apply",
+				Usage: "one-shot reconciliation from local fleet files",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:     "host",
+						Usage:    "hostname to apply",
+						Required: true,
+					},
+					&cli.StringFlag{
+						Name:    "config",
+						Value:   "/etc/picolet/config.yml",
+						Usage:   "agent config file",
+						Sources: cli.EnvVars("PICOLET_CONFIG"),
+					},
+					&cli.StringFlag{
+						Name:    "repo-dir",
+						Value:   ".",
+						Usage:   "path to repository root",
+						Sources: cli.EnvVars("PICOLET_REPO_DIR"),
+					},
+				},
+				Before: jsonLogging,
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return runApply(ctx, cmd.String("config"), cmd.String("repo-dir"), cmd.String("host"))
+				},
+			},
+			{
+				Name:  "down",
+				Usage: "remove all managed resources",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:    "config",
+						Value:   "/etc/picolet/config.yml",
+						Usage:   "agent config file",
+						Sources: cli.EnvVars("PICOLET_CONFIG"),
+					},
+				},
+				Before: jsonLogging,
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return runDown(ctx, cmd.String("config"))
+				},
+			},
 		},
 	}
 
@@ -196,6 +241,9 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
 		return err
+	}
+	if cfg.RepoURL == "" {
+		return errors.New("repo_url is required for the run command")
 	}
 
 	metrics.Register()
@@ -385,6 +433,112 @@ func runTrigger(_ context.Context, configPath, urlOverride string) error {
 	default:
 		return fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
+}
+
+// stateStoreFromConfig returns a state store using the config's DataDir or the default path.
+func stateStoreFromConfig(cfg *agentcfg.Config) *state.Store {
+	statePath := agent.DefaultStatePath
+	if cfg.DataDir != "" {
+		statePath = filepath.Join(cfg.DataDir, "state.json")
+	}
+	return state.NewStore(statePath)
+}
+
+func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
+	cfg, err := agentcfg.Load(configPath)
+	if err != nil {
+		return err
+	}
+
+	files, err := agent.LoadAndResolve(repoDir, hostname, cfg.SecretsDir, cfg.Rootless)
+	if err != nil {
+		return err
+	}
+
+	store := stateStoreFromConfig(cfg)
+	st, err := store.Load()
+	if err != nil {
+		return fmt.Errorf("loading state: %w", err)
+	}
+
+	changeset := reconciler.Diff(files, st)
+	if !changeset.HasChanges() {
+		slog.Info("no changes to apply")
+		return nil
+	}
+
+	if err := validator.ValidateFiles(files, cfg.Rootless); err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	slog.Info("applying changes",
+		"create", changeset.Summary[reconciler.ActionCreate],
+		"update", changeset.Summary[reconciler.ActionUpdate],
+		"delete", changeset.Summary[reconciler.ActionDelete],
+	)
+
+	systemd, err := applier.NewDBusSystemdManager(ctx, cfg.UseSystemdUser())
+	if err != nil {
+		return fmt.Errorf("connecting to systemd: %w", err)
+	}
+	defer systemd.Close()
+
+	podman, err := applier.NewSocketPodmanClient(ctx, cfg.PodmanSocket)
+	if err != nil {
+		return fmt.Errorf("connecting to podman: %w", err)
+	}
+
+	app := applier.New(systemd, podman, applier.NewAtomicFileWriter(), false)
+	result, err := app.Apply(ctx, changeset)
+	if err != nil {
+		return fmt.Errorf("apply failed: %w", err)
+	}
+	for _, e := range result.Errors {
+		slog.Warn("non-fatal apply error", "error", e)
+	}
+
+	slog.Info("apply complete", "applied", result.Applied, "restarted", result.RestartedUnits)
+
+	st.MarkApplied(fmt.Sprintf("local-%d", time.Now().Unix()))
+	agent.UpdateState(st, changeset)
+	return store.Save(st)
+}
+
+func runDown(ctx context.Context, configPath string) error {
+	cfg, err := agentcfg.Load(configPath)
+	if err != nil {
+		return err
+	}
+
+	store := stateStoreFromConfig(cfg)
+	st, err := store.Load()
+	if err != nil {
+		return fmt.Errorf("loading state: %w", err)
+	}
+	if len(st.ManagedFiles) == 0 {
+		slog.Info("nothing to tear down")
+		return nil
+	}
+
+	systemd, err := applier.NewDBusSystemdManager(ctx, cfg.UseSystemdUser())
+	if err != nil {
+		return fmt.Errorf("connecting to systemd: %w", err)
+	}
+	defer systemd.Close()
+
+	podman, err := applier.NewSocketPodmanClient(ctx, cfg.PodmanSocket)
+	if err != nil {
+		return fmt.Errorf("connecting to podman: %w", err)
+	}
+
+	changeset := reconciler.Diff(nil, st)
+	app := applier.New(systemd, podman, applier.NewAtomicFileWriter(), false)
+	if _, err = app.Apply(ctx, changeset); err != nil {
+		return fmt.Errorf("teardown failed: %w", err)
+	}
+
+	slog.Info("down complete", "deleted", changeset.Summary[reconciler.ActionDelete])
+	return store.Save(state.NewState())
 }
 
 func runHealthcheck(_ context.Context, configPath string) error {

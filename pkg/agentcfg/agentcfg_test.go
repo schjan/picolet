@@ -126,9 +126,17 @@ rootless: true
 			wantErr: "hostname is required",
 		},
 		{
-			name:    "missing repo_url",
+			name:    "minimal config without repo_url",
 			content: "hostname: rpi5-1\n",
-			wantErr: "repo_url is required",
+			want: Config{ //nolint:gosec // test fixture, not real credentials
+				Hostname:     "rpi5-1",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				SystemdUser:  new(false),
+			},
 		},
 	}
 
