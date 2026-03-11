@@ -955,6 +955,39 @@ func TestLastSuccessfulReconciliationSeededFromState(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+func TestLoadAndResolveWithSubDir(t *testing.T) {
+	t.Parallel()
+
+	// Create a repo where fleet files live in a subdirectory.
+	repoDir := t.TempDir()
+	subDir := "fleet/config"
+
+	writeTestFile(t, repoDir, filepath.Join(subDir, "fleet.yml"), `images:
+  traefik: "traefik:v3"
+ports:
+  app: 8080
+`)
+	writeTestFile(t, repoDir, filepath.Join(subDir, "assignments.yml"), `base:
+  networks:
+    - quadlets/networks/internal.network
+`)
+	writeTestFile(t, repoDir, filepath.Join(subDir, "hosts/test-host/host.yml"), `hostname: test-host
+external_hostname: test-host.local
+pi_type: server
+features: []
+`)
+	writeTestFile(t, repoDir, filepath.Join(subDir, "quadlets/networks/internal.network"), `[Network]
+Internal=true
+`)
+
+	// Resolve from the subdirectory path (simulates what Agent.loadAndResolve does with RepoSubDir).
+	fleetPath := filepath.Join(repoDir, subDir)
+	files, err := LoadAndResolve(fleetPath, "test-host", t.TempDir(), false)
+	require.NoError(t, err)
+	require.NotEmpty(t, files)
+	assert.Equal(t, "/etc/containers/systemd/picolet/internal.network", files[0].DestPath)
+}
+
 func TestSetFilesManagedMetric(t *testing.T) {
 	t.Parallel()
 	metrics.Register()

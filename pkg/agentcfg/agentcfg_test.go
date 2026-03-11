@@ -121,9 +121,46 @@ rootless: true
 			},
 		},
 		{
+			name: "repo_sub_dir and data_dir parsed",
+			content: `
+hostname: rpi5-1
+repo_url: https://github.com/example/fleet.git
+repo_sub_dir: fleet/config
+data_dir: /tmp/picolet-data
+`,
+			want: Config{ //nolint:gosec // test fixture, not real credentials
+				Hostname:     "rpi5-1",
+				RepoURL:      "https://github.com/example/fleet.git",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				RepoSubDir:   "fleet/config",
+				DataDir:      "/tmp/picolet-data",
+				SystemdUser:  new(false),
+			},
+		},
+		{
 			name:    "missing hostname",
 			content: "repo_url: https://example.com/repo.git\n",
 			wantErr: "hostname is required",
+		},
+		{
+			name: "repo_sub_dir rejects absolute path",
+			content: `
+hostname: rpi5-1
+repo_sub_dir: /etc/passwd
+`,
+			wantErr: "repo_sub_dir must be a relative path within the repo",
+		},
+		{
+			name: "repo_sub_dir rejects parent traversal",
+			content: `
+hostname: rpi5-1
+repo_sub_dir: "../../../etc"
+`,
+			wantErr: "repo_sub_dir must be a relative path within the repo",
 		},
 		{
 			name:    "minimal config without repo_url",

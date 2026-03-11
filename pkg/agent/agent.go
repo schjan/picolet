@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -340,7 +341,11 @@ func LoadAndResolve(repoPath, hostname, secretsDir string, rootless bool) ([]res
 }
 
 func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, error) {
-	return LoadAndResolve(a.repoPath, a.cfg.Hostname, a.cfg.SecretsDir, a.cfg.Rootless)
+	fleetPath := a.repoPath
+	if a.cfg.RepoSubDir != "" {
+		fleetPath = filepath.Join(a.repoPath, a.cfg.RepoSubDir)
+	}
+	return LoadAndResolve(fleetPath, a.cfg.Hostname, a.cfg.SecretsDir, a.cfg.Rootless)
 }
 
 // ReconcileResult contains the outcome of a single reconciliation cycle.
