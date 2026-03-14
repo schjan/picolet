@@ -3,7 +3,7 @@ module github.com/schjan/picolet
 go 1.26.1
 
 require (
-	github.com/containers/podman/v5 v5.8.0
+	github.com/containers/podman/v5 v5.8.1
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/eclipse/paho.golang v0.23.0
 	github.com/go-git/go-git/v5 v5.17.0
