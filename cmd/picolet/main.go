@@ -24,6 +24,7 @@ import (
 	mqttpkg "github.com/schjan/picolet/pkg/mqtt"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
+	"github.com/schjan/picolet/pkg/rollback"
 	"github.com/schjan/picolet/pkg/state"
 	"github.com/schjan/picolet/pkg/validator"
 	"github.com/schjan/picolet/pkg/version"
@@ -146,15 +147,20 @@ func main() {
 						Usage:   "path to repository root",
 						Sources: cli.EnvVars("PICOLET_REPO_DIR"),
 					},
+					&cli.StringFlag{
+						Name:    "config",
+						Usage:   "agent config file (enables secret resolution and config-aware state/paths)",
+						Sources: cli.EnvVars("PICOLET_CONFIG"),
+					},
 				},
 				Before: jsonLogging,
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return runDryRun(ctx, cmd.String("repo-dir"), cmd.String("host"))
+					return runDryRun(ctx, cmd.String("repo-dir"), cmd.String("host"), cmd.String("config"))
 				},
 			},
 			{
 				Name:  "apply",
-				Usage: "one-shot reconciliation from local fleet files",
+				Usage: "one-shot reconciliation from local fleet files (must not run concurrently with 'picolet run')",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:     "host",
@@ -181,7 +187,7 @@ func main() {
 			},
 			{
 				Name:  "down",
-				Usage: "remove all managed resources",
+				Usage: "remove all managed resources (must not run concurrently with 'picolet run')",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:    "config",
@@ -286,36 +292,74 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 	return a.Run(ctx)
 }
 
-func runDryRun(_ context.Context, repoDir, hostname string) error {
+// dryRunResolveWithConfig resolves files using agent config (secrets, RepoSubDir, rootless-aware state).
+func dryRunResolveWithConfig(repoDir, hostname, configPath string) ([]resolver.ResolvedFile, *state.Store, bool, error) {
+	cfg, err := agentcfg.Load(configPath)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	files, err := agent.LoadAndResolve(effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	store, err := stateStoreFromConfig(cfg)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	return files, store, cfg.Rootless, nil
+}
+
+// dryRunResolveBasic resolves files without agent config (no secrets, default state path).
+func dryRunResolveBasic(repoDir, hostname string) ([]resolver.ResolvedFile, *state.Store, error) {
 	repoFS := os.DirFS(repoDir)
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return nil, nil, fmt.Errorf("loading config: %w", err)
 	}
 
 	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
 	if err != nil {
-		return fmt.Errorf("creating resolver: %w", err)
+		return nil, nil, fmt.Errorf("creating resolver: %w", err)
 	}
 	resolved, err := r.ResolveHost(hostname)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return resolved.Files, state.NewStore(agent.DefaultStatePath), nil
+}
+
+func runDryRun(_ context.Context, repoDir, hostname, configPath string) error {
+	var (
+		files    []resolver.ResolvedFile
+		store    *state.Store
+		rootless bool
+		err      error
+	)
+
+	if configPath != "" {
+		files, store, rootless, err = dryRunResolveWithConfig(repoDir, hostname, configPath)
+	} else {
+		files, store, err = dryRunResolveBasic(repoDir, hostname)
+	}
 	if err != nil {
 		return err
 	}
 
-	// Validate this host only — fleet-wide validation belongs in CI
-	if err := validator.ValidateFiles(resolved.Files, false); err != nil {
+	if err := validator.ValidateFiles(files, rootless); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
-	// Diff against disk state (or empty state for fresh host)
-	store := state.NewStore(agent.DefaultStatePath)
 	st, err := store.Load()
 	if err != nil {
 		slog.Warn("could not load state, using empty state", "error", err)
 		st = state.NewState()
 	}
 
-	changeset := reconciler.Diff(resolved.Files, st)
+	changeset := reconciler.Diff(files, st)
 
 	if !changeset.HasChanges() {
 		slog.Info("no changes detected")
@@ -435,6 +479,14 @@ func runTrigger(_ context.Context, configPath, urlOverride string) error {
 	}
 }
 
+// effectiveRepoDir applies an optional subdirectory to the repo root.
+func effectiveRepoDir(repoDir, subDir string) string {
+	if subDir != "" {
+		return filepath.Join(repoDir, subDir)
+	}
+	return repoDir
+}
+
 // stateStoreFromConfig returns a state store using the config's DataDir or a rootless-aware default.
 func stateStoreFromConfig(cfg *agentcfg.Config) (*state.Store, error) {
 	if cfg.DataDir != "" {
@@ -447,14 +499,45 @@ func stateStoreFromConfig(cfg *agentcfg.Config) (*state.Store, error) {
 	return state.NewStore(filepath.Join(dataDir, "state.json")), nil
 }
 
-//nolint:cyclop // sequential error handling, not complex control flow
+// applyWithRollback snapshots the current state, applies changes, and rolls back on fatal error.
+func applyWithRollback(
+	ctx context.Context,
+	changeset *reconciler.Changeset,
+	systemd applier.SystemdManager,
+	podman applier.PodmanClient,
+) (*applier.ApplyResult, error) {
+	writer := applier.NewAtomicFileWriter()
+	rollbackMgr := rollback.New(writer, systemd)
+	snap, err := rollbackMgr.Create(changeset, os.ReadFile)
+	if err != nil {
+		return nil, fmt.Errorf("creating snapshot: %w", err)
+	}
+
+	app := applier.New(systemd, podman, writer, false)
+	result, err := app.Apply(ctx, changeset)
+	if err != nil {
+		slog.Error("apply failed, rolling back", "error", err)
+		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if rbErr := rollbackMgr.Restore(rollbackCtx, snap); rbErr != nil {
+			slog.Error("rollback failed", "error", rbErr)
+		}
+		return nil, fmt.Errorf("apply failed: %w", err)
+	}
+	for _, e := range result.Errors {
+		slog.Warn("non-fatal apply error", "error", e)
+	}
+
+	return result, nil
+}
+
 func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
 		return err
 	}
 
-	files, err := agent.LoadAndResolve(repoDir, hostname, cfg.SecretsDir, cfg.Rootless)
+	files, err := agent.LoadAndResolve(effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless)
 	if err != nil {
 		return err
 	}
@@ -495,13 +578,9 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		return fmt.Errorf("connecting to podman: %w", err)
 	}
 
-	app := applier.New(systemd, podman, applier.NewAtomicFileWriter(), false)
-	result, err := app.Apply(ctx, changeset)
+	result, err := applyWithRollback(ctx, changeset, systemd, podman)
 	if err != nil {
-		return fmt.Errorf("apply failed: %w", err)
-	}
-	for _, e := range result.Errors {
-		slog.Warn("non-fatal apply error", "error", e)
+		return err
 	}
 
 	slog.Info("apply complete", "applied", result.Applied, "restarted", result.RestartedUnits)
@@ -543,8 +622,15 @@ func runDown(ctx context.Context, configPath string) error {
 
 	changeset := reconciler.Diff(nil, st)
 	app := applier.New(systemd, podman, applier.NewAtomicFileWriter(), false)
-	if _, err = app.Apply(ctx, changeset); err != nil {
+	result, err := app.Apply(ctx, changeset)
+	if err != nil {
 		return fmt.Errorf("teardown failed: %w", err)
+	}
+	for _, e := range result.Errors {
+		slog.Warn("non-fatal teardown error", "error", e)
+	}
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("teardown incomplete: %d resource(s) not removed", len(result.Errors))
 	}
 
 	slog.Info("down complete", "deleted", changeset.Summary[reconciler.ActionDelete])

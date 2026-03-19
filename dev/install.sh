@@ -31,6 +31,6 @@ sed -e "s|REPO_ROOT_PLACEHOLDER|${REPO_ROOT}|g" \
 
 # Reload and start
 systemctl --user daemon-reload
-systemctl --user start picolet-dev.service
+systemctl --user restart picolet-dev.service
 
 echo "picolet-dev started. Use 'task dev:logs' to follow logs."
