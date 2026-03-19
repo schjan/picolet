@@ -255,7 +255,8 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 	store := state.NewStore(statePath)
 	st := state.NewState()
 	st.FailedSHA = head.Hash().String()
-	st.FailedCount = 3 // maxRetries reached → will be skipped
+	st.FailedCount = 3       // maxRetries reached → will be skipped
+	st.FailedAt = time.Now() // recent failure → gate is active
 	require.NoError(t, store.Save(st))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -270,6 +271,62 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 	require.NoError(t, <-errCh)
 
 	// Strict mock (no WriteFile expectation) guards against unexpected writes
+}
+
+func TestAgentRetriesExpiredFailedSHA(t *testing.T) {
+	t.Parallel()
+	bareDir := initTestRepo(t)
+	repoDir := filepath.Join(t.TempDir(), "clone")
+	stateDir := t.TempDir()
+	statePath := filepath.Join(stateDir, "state.json")
+
+	sys, pod, fw := newBareMocks(t)
+	written := setupApplyMocks(sys, pod, fw)
+
+	cfg := &agentcfg.Config{
+		Hostname:     "test-host",
+		RepoURL:      bareDir,
+		RepoBranch:   "master",
+		PollInterval: 100 * time.Millisecond,
+		MetricsPort:  0,
+		SecretsDir:   t.TempDir(),
+	}
+
+	a := New(cfg,
+		WithSystemd(sys),
+		WithPodman(pod),
+		WithFileWriter(fw),
+		WithRepoPath(repoDir),
+		WithStatePath(statePath),
+	)
+
+	// Pre-seed state: SHA failed 3+ times but over an hour ago → gate expired, should retry
+	cloneDir := filepath.Join(t.TempDir(), "tmp-clone")
+	clonedRepo, err := git.PlainClone(cloneDir, false, &git.CloneOptions{URL: bareDir})
+	require.NoError(t, err)
+	head, err := clonedRepo.Head()
+	require.NoError(t, err)
+
+	store := state.NewStore(statePath)
+	st := state.NewState()
+	st.FailedSHA = head.Hash().String()
+	st.FailedCount = 5                           // well past maxRetries
+	st.FailedAt = time.Now().Add(-2 * time.Hour) // expired: older than failedSHAExpiry (1h)
+	require.NoError(t, store.Save(st))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- a.Run(ctx)
+	}()
+
+	<-ctx.Done()
+	require.NoError(t, <-errCh)
+
+	// Gate expired → reconciliation should have proceeded and written files
+	assert.Contains(t, written, "/etc/containers/systemd/picolet/internal.network")
 }
 
 func TestAgentRetriesFailedSHA(t *testing.T) {

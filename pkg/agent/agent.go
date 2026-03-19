@@ -258,9 +258,11 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	}
 	metrics.GitPollTotal.WithLabelValues("changed").Inc()
 
-	// Skip only after >= 3 consecutive failures on the same SHA
+	// Skip only after >= 3 consecutive failures on the same SHA, with a 1-hour expiry
+	// so transient failures (e.g. D-Bus reconnection) don't permanently brick the agent.
 	const maxRetries = 3
-	if pollResult.HeadSHA == st.FailedSHA && st.FailedCount >= maxRetries {
+	const failedSHAExpiry = 1 * time.Hour
+	if pollResult.HeadSHA == st.FailedSHA && st.FailedCount >= maxRetries && time.Since(st.FailedAt) < failedSHAExpiry {
 		slog.Warn("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "failed_sha_gate", "failures", st.FailedCount)
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
 		return nil
