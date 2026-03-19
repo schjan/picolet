@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"go.yaml.in/yaml/v4"
@@ -30,6 +32,8 @@ type Config struct {
 	SystemdUser       *bool         `yaml:"systemd_user"`
 	PodmanSocket      string        `yaml:"podman_socket"`
 	WebhookSecretPath string        `yaml:"webhook_secret_path"`
+	RepoSubDir        string        `yaml:"repo_sub_dir"` // optional subdirectory within the repo to use as fleet root (monorepo support)
+	DataDir           string        `yaml:"data_dir"`     // optional override for state file directory; used by apply/down commands
 	MQTT              *MQTTConfig   `yaml:"mqtt"`
 }
 
@@ -88,8 +92,11 @@ func (c *Config) Validate() error {
 	if c.Hostname == "" {
 		return errors.New("hostname is required")
 	}
-	if c.RepoURL == "" {
-		return errors.New("repo_url is required")
+	if c.RepoSubDir != "" {
+		cleaned := filepath.Clean(c.RepoSubDir)
+		if filepath.IsAbs(cleaned) || strings.HasPrefix(cleaned, "..") {
+			return fmt.Errorf("repo_sub_dir must be a relative path within the repo: %q", c.RepoSubDir)
+		}
 	}
 	if c.MQTT != nil && c.MQTT.BrokerURL == "" {
 		return errors.New("mqtt.broker_url is required when mqtt is configured")

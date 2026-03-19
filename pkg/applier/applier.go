@@ -14,6 +14,7 @@ import (
 
 // SystemdManager controls systemd units via D-Bus.
 type SystemdManager interface {
+	Close()
 	DaemonReload(ctx context.Context) error
 	StartUnit(ctx context.Context, name string) error
 	StopUnit(ctx context.Context, name string) error

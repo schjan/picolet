@@ -1,0 +1,30 @@
+[Container]
+Image=picolet-dev.build
+ContainerName=picolet-dev
+
+# Podman socket (manage host containers)
+Volume=%t/podman/podman.sock:/run/podman/podman.sock
+
+# systemd user private socket — bypasses D-Bus session bus entirely
+# (see pkg/applier/systemd.go:newUserSystemdConnectionContext)
+Volume=%t/systemd/private:%t/systemd/private
+Environment=XDG_RUNTIME_DIR=%t
+
+# Quadlet output: user's container systemd directory
+Volume=%h/.config/containers/systemd:/etc/containers/systemd
+
+# systemd user units
+Volume=%h/.config/systemd/user:/etc/systemd/system
+
+# State persistence (state.json, repo clone)
+Volume=DEV_DATA_PLACEHOLDER/state:/var/lib/picolet
+
+# Mount repo for git polling via file:// protocol
+Volume=REPO_ROOT_PLACEHOLDER:/repo:ro
+
+# Config and secrets
+Volume=DEV_DATA_PLACEHOLDER/config.yml:/etc/picolet/config.yml:ro
+Volume=DEV_DATA_PLACEHOLDER/secrets:/etc/picolet/secrets:ro
+
+[Install]
+WantedBy=default.target

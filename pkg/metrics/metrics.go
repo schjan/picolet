@@ -57,14 +57,6 @@ var (
 		[]string{"unit", "action"},
 	)
 
-	AppliedGitSHA = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "picolet_applied_git_sha_info",
-			Help: "Currently applied git SHA (value=1).",
-		},
-		[]string{"sha"},
-	)
-
 	GitPollTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "picolet_git_poll_total",
@@ -136,7 +128,7 @@ func Register() {
 			RollbackTotal,
 			HealthCheckTotal,
 			HealthEnforcementTotal,
-			AppliedGitSHA,
+			appliedSHA,
 			GitPollTotal,
 			FilesAppliedTotal,
 			FilesManagedTotal,
@@ -154,4 +146,57 @@ func Register() {
 // Handler returns an http.Handler for the /metrics endpoint.
 func Handler() http.Handler {
 	return promhttp.Handler()
+}
+
+// appliedSHACollector implements prometheus.Collector for the applied git SHA info metric.
+// On each scrape it emits a single gauge with value=1 for the current SHA.
+// Stale label series are impossible — only the current SHA is ever emitted.
+type appliedSHACollector struct {
+	desc *prometheus.Desc
+	mu   sync.RWMutex
+	sha  string
+}
+
+var appliedSHA = &appliedSHACollector{
+	desc: prometheus.NewDesc(
+		"picolet_applied_git_sha_info",
+		"Currently applied git SHA (value=1).",
+		[]string{"sha"}, nil,
+	),
+}
+
+func (c *appliedSHACollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.desc
+}
+
+func (c *appliedSHACollector) Collect(ch chan<- prometheus.Metric) {
+	c.mu.RLock()
+	sha := c.sha
+	c.mu.RUnlock()
+	if sha == "" {
+		return
+	}
+	ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, 1, sha)
+}
+
+// SetAppliedSHA updates the currently applied git SHA exposed to Prometheus.
+// Use this for seeding from persisted state. For recording a successful apply,
+// use RecordAppliedSHA which also resets failure count and updates the timestamp.
+func SetAppliedSHA(sha string) {
+	appliedSHA.mu.Lock()
+	appliedSHA.sha = sha
+	appliedSHA.mu.Unlock()
+}
+
+// RecordAppliedSHA records a successful SHA application: sets the applied SHA,
+// resets the consecutive failure count, and updates the last successful timestamp.
+func RecordAppliedSHA(sha string) {
+	SetAppliedSHA(sha)
+	FailedSHAConsecutiveCount.Set(0)
+	LastSuccessfulReconciliation.SetToCurrentTime()
+}
+
+// RecordFailedSHA records a reconciliation failure for the given consecutive count.
+func RecordFailedSHA(consecutiveCount int) {
+	FailedSHAConsecutiveCount.Set(float64(consecutiveCount))
 }

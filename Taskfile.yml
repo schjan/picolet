@@ -8,6 +8,8 @@ vars:
     sh: git rev-parse --short=12 HEAD 2>/dev/null || echo "unknown"
   LDFLAGS: -ldflags "-X github.com/schjan/picolet/pkg/version.Version={{.VERSION}} -X github.com/schjan/picolet/pkg/version.GitSHA={{.GIT_SHA}} -s -w"
   BUILD_TAGS: remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper
+  DEV_DATA_DIR: "{{.ROOT_DIR}}/.picolet-dev"
+  DEV_FLEET_DIR: "{{.ROOT_DIR}}/.picolet-dev/fleet"
 
 tasks:
   build:
@@ -54,3 +56,62 @@ tasks:
     desc: Run go fix
     cmds:
       - go fix -tags "{{.BUILD_TAGS}}" ./...
+
+  dev:
+    desc: Run one-shot reconciliation from local fleet files (Linux only)
+    platforms: [linux]
+    cmds:
+      - mkdir -p {{.DEV_DATA_DIR}}
+      - test -d {{.DEV_FLEET_DIR}} || cp -r testdata/example-fleet {{.DEV_FLEET_DIR}}
+      - |
+        cat > {{.DEV_DATA_DIR}}/config.yml <<EOF
+        hostname: dev-host
+        rootless: true
+        data_dir: {{.DEV_DATA_DIR}}
+        secrets_dir: {{.DEV_FLEET_DIR}}/secrets
+        podman_socket: /run/user/$(id -u)/podman/podman.sock
+        EOF
+      - go run -tags "{{.BUILD_TAGS}}" {{.LDFLAGS}} ./cmd/picolet apply --host dev-host --repo-dir {{.DEV_FLEET_DIR}} --config {{.DEV_DATA_DIR}}/config.yml -v
+
+  dev:install:
+    desc: Build & deploy picolet as a rootless container (Linux only)
+    platforms: [linux]
+    cmds:
+      - bash dev/install.sh
+
+  dev:redeploy:
+    desc: Rebuild and restart picolet dev container (Linux only)
+    platforms: [linux]
+    cmds:
+      - systemctl --user stop picolet-dev.service 2>/dev/null || true
+      - podman rmi localhost/picolet-dev 2>/dev/null || true
+      - systemctl --user daemon-reload
+      - systemctl --user start picolet-dev.service
+
+  dev:teardown:
+    desc: Remove all dev resources and picolet container (Linux only)
+    platforms: [linux]
+    cmds:
+      # Tear down resources from `task dev` (go run workflow)
+      - go run -tags "{{.BUILD_TAGS}}" ./cmd/picolet down --config {{.DEV_DATA_DIR}}/config.yml 2>/dev/null || true
+      # Tear down managed resources from inside the container (correct sockets/paths)
+      - podman exec picolet-dev /picolet down --config /etc/picolet/config.yml 2>/dev/null || true
+      # Stop containerized picolet (from `task dev:install`)
+      - systemctl --user stop picolet-dev.service 2>/dev/null || true
+      # Remove managed workload units written by containerized picolet
+      - rm -rf ~/.config/containers/systemd/picolet
+      - rm -rf ~/.config/systemd/user/picolet-*
+      # Remove picolet-dev quadlet files
+      - rm -f ~/.config/containers/systemd/picolet-dev.build
+      - rm -f ~/.config/containers/systemd/picolet-dev.container
+      - systemctl --user daemon-reload
+      # Clean up containers and image
+      - podman rm -f picolet-dev 2>/dev/null || true
+      - podman rmi localhost/picolet-dev 2>/dev/null || true
+      - rm -rf {{.DEV_DATA_DIR}}
+
+  dev:logs:
+    desc: Follow picolet dev container logs (Linux only)
+    platforms: [linux]
+    cmds:
+      - journalctl --user -u picolet-dev.service -f

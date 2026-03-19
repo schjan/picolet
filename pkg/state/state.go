@@ -42,6 +42,7 @@ func NewState() *State {
 func (s *State) MarkApplied(headSHA string) {
 	s.AppliedSHA = headSHA
 	s.AppliedAt = time.Now()
+	s.LastSuccessfulReconciliationAt = s.AppliedAt
 	s.FailedSHA = ""
 	s.FailedCount = 0
 	s.FailedAt = time.Time{}
