@@ -10,7 +10,7 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
@@ -23,7 +23,7 @@ jobs:
         run: go test -tags "$BUILD_TAGS" ./... -race -count=1 -timeout 120s
 
   e2e:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
@@ -75,7 +75,7 @@ jobs:
         run: go test -tags "e2e,$BUILD_TAGS" -run TestE2E -race -count=1 -v -timeout 300s .
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v6
 
