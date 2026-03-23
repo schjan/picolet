@@ -277,17 +277,13 @@ func (r *Resolver) secretContent(registry *template.Template, tmplData *Template
 		return r.renderOrRead(registry, tmplData, srcPath)
 	}
 	// Static repo file — copy as-is without template rendering.
-	_, statErr := fs.Stat(r.fsys, srcPath)
-	if statErr == nil {
+	data, readErr := fs.ReadFile(r.fsys, srcPath)
+	if readErr == nil {
 		slog.Debug("reading static secret from repo", "path", srcPath)
-		data, err := fs.ReadFile(r.fsys, srcPath)
-		if err != nil {
-			return "", fmt.Errorf("reading static secret %s: %w", srcPath, err)
-		}
 		return string(data), nil
 	}
-	if !errors.Is(statErr, fs.ErrNotExist) {
-		return "", fmt.Errorf("checking static secret %s: %w", srcPath, statErr)
+	if !errors.Is(readErr, fs.ErrNotExist) {
+		return "", fmt.Errorf("reading static secret %s: %w", srcPath, readErr)
 	}
 	// Host-only secret (API keys, tokens) — read from SecretsDir.
 	if r.secretReader != nil {

@@ -280,12 +280,14 @@ features: []
 	return fsys, cfg
 }
 
-func findByDest(files []ResolvedFile, dest string) ResolvedFile {
+func findByDest(tb testing.TB, files []ResolvedFile, dest string) ResolvedFile {
+	tb.Helper()
 	for _, f := range files {
 		if f.DestPath == dest {
 			return f
 		}
 	}
+	tb.Fatalf("no file with DestPath %q found", dest)
 	return ResolvedFile{}
 }
 
@@ -298,7 +300,7 @@ func TestStaticRepoSecret(t *testing.T) {
 	resolved, err := r.ResolveHost("test-host")
 	require.NoError(t, err)
 
-	f := findByDest(resolved.Files, "secret:static_config")
+	f := findByDest(t, resolved.Files, "secret:static_config")
 	assert.Equal(t, "secret", f.Category)
 	assert.Contains(t, f.Content, `{{ $labels.job }}`, "static secret must not be template-rendered")
 }
@@ -312,7 +314,7 @@ func TestTemplateSecret(t *testing.T) {
 	resolved, err := r.ResolveHost("test-host")
 	require.NoError(t, err)
 
-	f := findByDest(resolved.Files, "secret:rendered")
+	f := findByDest(t, resolved.Files, "secret:rendered")
 	assert.Equal(t, "secret", f.Category)
 	assert.Contains(t, f.Content, "endpoint: https://test-host.ts.net:8080")
 }
@@ -332,7 +334,7 @@ func TestHostOnlySecretWithReader(t *testing.T) {
 	resolved, err := r.ResolveHost("test-host")
 	require.NoError(t, err)
 
-	f := findByDest(resolved.Files, "secret:host_only")
+	f := findByDest(t, resolved.Files, "secret:host_only")
 	assert.Equal(t, "secret", f.Category)
 	assert.Equal(t, "host-secret-data", f.Content)
 }
@@ -346,7 +348,7 @@ func TestHostOnlySecretPlaceholder(t *testing.T) {
 	resolved, err := r.ResolveHost("test-host")
 	require.NoError(t, err)
 
-	f := findByDest(resolved.Files, "secret:host_only")
+	f := findByDest(t, resolved.Files, "secret:host_only")
 	assert.Equal(t, "<secret>", f.Content)
 }
 
