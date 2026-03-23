@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -237,6 +238,116 @@ func TestRootlessPaths(t *testing.T) {
 
 	// Verify manifest goes to rootless data dir
 	assert.Equal(t, filepath.Join(home, ".local", "share", "picolet", "manifests", "app", "deployment.yml"), manifest.DestPath)
+}
+
+func newSecretTestFS(tb testing.TB) (fstest.MapFS, *config.Config) {
+	tb.Helper()
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte(`
+images:
+  app: "app:v1"
+ports:
+  app: 8080
+`)},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base:
+  secrets:
+    - secrets/static_config.yml
+    - secrets/rendered.yml.tmpl
+    - secrets/host_only.txt
+pi_types: {}
+features: {}
+`)},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: test-host
+external_hostname: test-host.ts.net
+pi_type: server
+features: []
+`)},
+		// Static repo secret — should be copied as-is
+		"secrets/static_config.yml": &fstest.MapFile{Data: []byte(`groups:
+  - alert: InstanceDown
+    annotations:
+      summary: "{{ $labels.job }} is down"
+`)},
+		// Template secret — should be rendered
+		"secrets/rendered.yml.tmpl": &fstest.MapFile{Data: []byte(`endpoint: https://{{ .Host.ExternalHostname }}:{{ index .Ports "app" }}
+`)},
+		// host_only.txt is NOT in the repo FS — should fall through to secretReader
+	}
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(tb, err)
+	return fsys, cfg
+}
+
+func findByDest(files []ResolvedFile, dest string) ResolvedFile {
+	for _, f := range files {
+		if f.DestPath == dest {
+			return f
+		}
+	}
+	return ResolvedFile{}
+}
+
+func TestStaticRepoSecret(t *testing.T) {
+	t.Parallel()
+	fsys, cfg := newSecretTestFS(t)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost("test-host")
+	require.NoError(t, err)
+
+	f := findByDest(resolved.Files, "secret:static_config")
+	assert.Equal(t, "secret", f.Category)
+	assert.Contains(t, f.Content, `{{ $labels.job }}`, "static secret must not be template-rendered")
+}
+
+func TestTemplateSecret(t *testing.T) {
+	t.Parallel()
+	fsys, cfg := newSecretTestFS(t)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost("test-host")
+	require.NoError(t, err)
+
+	f := findByDest(resolved.Files, "secret:rendered")
+	assert.Equal(t, "secret", f.Category)
+	assert.Contains(t, f.Content, "endpoint: https://test-host.ts.net:8080")
+}
+
+func TestHostOnlySecretWithReader(t *testing.T) {
+	t.Parallel()
+	fsys, cfg := newSecretTestFS(t)
+	reader := func(path string) (string, error) {
+		if path == "host_only.txt" {
+			return "host-secret-data", nil
+		}
+		return "", fmt.Errorf("unknown secret: %s", path)
+	}
+	r, err := New(Config{FS: fsys, Config: cfg, SecretReader: reader})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost("test-host")
+	require.NoError(t, err)
+
+	f := findByDest(resolved.Files, "secret:host_only")
+	assert.Equal(t, "secret", f.Category)
+	assert.Equal(t, "host-secret-data", f.Content)
+}
+
+func TestHostOnlySecretPlaceholder(t *testing.T) {
+	t.Parallel()
+	fsys, cfg := newSecretTestFS(t)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost("test-host")
+	require.NoError(t, err)
+
+	f := findByDest(resolved.Files, "secret:host_only")
+	assert.Equal(t, "<secret>", f.Content)
 }
 
 func TestSecretPathTraversal(t *testing.T) {
