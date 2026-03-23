@@ -30,11 +30,18 @@ type Status struct {
 
 // Config holds MQTT connection settings. Password is already resolved (read from file at wire-up).
 type Config struct {
-	BrokerURL   string // tcp://host:1883
-	Username    string
-	Password    string
-	TopicPrefix string // default: "picolet"
+	BrokerURL         string // tcp://host:1883
+	Username          string
+	Password          string
+	TopicPrefix       string        // default: "picolet"
+	ConnectRetryDelay time.Duration // default: 10s (autopaho default)
 }
+
+// onConnectionUpTimeout bounds subscribe/publish operations in the
+// OnConnectionUp callback. If the connection drops mid-callback, autopaho's
+// Publish internally calls awaitConnection which blocks the reconnection
+// goroutine. A bounded timeout lets us fail fast and retry on the next connect.
+const onConnectionUpTimeout = 3 * time.Second
 
 // Client manages a long-lived MQTT connection with auto-reconnect.
 type Client struct {
@@ -81,8 +88,9 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 	}
 
 	cliCfg := autopaho.ClientConfig{
-		ServerUrls: []*url.URL{brokerURL},
-		KeepAlive:  30,
+		ServerUrls:        []*url.URL{brokerURL},
+		KeepAlive:         30,
+		ConnectRetryDelay: c.cfg.ConnectRetryDelay, // 0 → autopaho default (10s)
 		// Start fresh on initial connect; retained messages still delivered by broker.
 		CleanStartOnInitialConnection: true,
 		// Session survives short WiFi drops (5 minutes).
@@ -102,8 +110,13 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 			slog.Info("mqtt connected", "broker", c.cfg.BrokerURL)
 			metrics.MQTTConnected.Set(1)
 
+			// Bound all subscribe/publish work so a mid-callback connection drop
+			// doesn't block the reconnection goroutine until the parent ctx expires.
+			upCtx, upCancel := context.WithTimeout(ctx, onConnectionUpTimeout)
+			defer upCancel()
+
 			// Re-subscribe on every (re)connect.
-			if _, subErr := cm.Subscribe(ctx, &paho.Subscribe{
+			if _, subErr := cm.Subscribe(upCtx, &paho.Subscribe{
 				Subscriptions: []paho.SubscribeOptions{
 					{Topic: c.pauseTopic, QoS: 1},
 					{Topic: c.triggerTopic, QoS: 1},
@@ -117,7 +130,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 			if prev := c.lastStatus.Load(); prev != nil {
 				status := *prev
 				status.Paused = pauseFlag.Load() // always reflect live pause state on reconnect
-				if pubErr := c.publishStatusTopics(ctx, status); pubErr != nil {
+				if pubErr := c.publishStatusTopics(upCtx, status); pubErr != nil {
 					slog.Warn("mqtt republish status on reconnect failed", "error", pubErr)
 				}
 			} else {
@@ -125,7 +138,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 				if pauseFlag.Load() {
 					initialState = "paused"
 				}
-				if _, pubErr := cm.Publish(ctx, &paho.Publish{
+				if _, pubErr := cm.Publish(upCtx, &paho.Publish{
 					Topic: c.stateTopic, QoS: 1, Retain: true,
 					Payload: []byte(initialState),
 				}); pubErr != nil {
