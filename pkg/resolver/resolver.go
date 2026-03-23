@@ -201,6 +201,16 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 		files = append(files, *f)
 	}
 
+	// Group aggregate secrets by name so that multiple layers can contribute
+	// different globs to the same Podman secret (additive merge).
+	for _, ag := range groupAggregateSecrets(fileSet.AggregateSecrets) {
+		f, err := r.resolveAggregateSecret(ag.Name, ag.Header, ag.Globs)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, *f)
+	}
+
 	return &ResolvedHost{
 		Hostname: hostname,
 		Files:    files,
@@ -393,6 +403,71 @@ func (r *Resolver) secretContent(registry *template.Template, tmplData *Template
 	}
 	slog.Warn("secret reader not configured, using placeholder", "file", srcPath)
 	return placeholderSecret, nil
+}
+
+// groupedAggregate holds the merged globs for a single aggregate secret name.
+type groupedAggregate struct {
+	Name   string
+	Header string
+	Globs  []string
+}
+
+// groupAggregateSecrets groups entries by name in first-seen order, collecting all globs.
+// The first non-empty header encountered for a name is used.
+func groupAggregateSecrets(entries []config.AggregateSecret) []groupedAggregate {
+	seen := make(map[string]int) // name → index in result
+	var result []groupedAggregate
+	for _, ag := range entries {
+		if i, ok := seen[ag.Name]; ok {
+			result[i].Globs = append(result[i].Globs, ag.Glob)
+			if result[i].Header == "" && ag.Header != "" {
+				result[i].Header = ag.Header
+			}
+		} else {
+			seen[ag.Name] = len(result)
+			result = append(result, groupedAggregate{
+				Name:   ag.Name,
+				Header: ag.Header,
+				Globs:  []string{ag.Glob},
+			})
+		}
+	}
+	return result
+}
+
+// resolveAggregateSecret globs files from the repo FS across all provided patterns and
+// concatenates them into a single secret. Files are read verbatim (no template rendering),
+// so Prometheus {{ }} expressions pass through. Returns an error if any glob matches no files.
+func (r *Resolver) resolveAggregateSecret(name, header string, globs []string) (*ResolvedFile, error) {
+	var allMatches []string
+	for _, pattern := range globs {
+		matches, err := fs.Glob(r.fsys, pattern)
+		if err != nil {
+			return nil, fmt.Errorf("resolving aggregate secret %q: invalid glob %q: %w", name, pattern, err)
+		}
+		if len(matches) == 0 {
+			return nil, fmt.Errorf("resolving aggregate secret %q: glob %q matched no files", name, pattern)
+		}
+		allMatches = append(allMatches, matches...)
+	}
+	slices.Sort(allMatches)
+
+	var buf bytes.Buffer
+	buf.WriteString(header)
+	for _, path := range allMatches {
+		data, err := fs.ReadFile(r.fsys, path)
+		if err != nil {
+			return nil, fmt.Errorf("resolving aggregate secret %q: reading %s: %w", name, path, err)
+		}
+		buf.Write(data)
+	}
+
+	return &ResolvedFile{
+		SrcPath:  strings.Join(globs, ","),
+		DestPath: "secret:" + name,
+		Content:  buf.String(),
+		Category: "secret",
+	}, nil
 }
 
 func (r *Resolver) renderOrRead(registry *template.Template, tmplData *TemplateData, path string) (string, error) {

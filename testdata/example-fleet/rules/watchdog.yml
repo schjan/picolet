@@ -1,0 +1,8 @@
+- name: watchdog
+  rules:
+    - alert: Watchdog
+      expr: vector(1)
+      labels:
+        severity: none
+      annotations:
+        summary: "Alertmanager is reachable"

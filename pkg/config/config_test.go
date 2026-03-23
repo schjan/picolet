@@ -139,6 +139,84 @@ func TestAssignmentsResolve(t *testing.T) {
 	}
 }
 
+func TestDeduplicateAggregateSecrets(t *testing.T) {
+	t.Parallel()
+
+	t.Run("identical name+glob collapses to one", func(t *testing.T) {
+		t.Parallel()
+		entries := []AggregateSecret{
+			{Name: "rules", Glob: "rules/*.yml", Header: "groups:\n"},
+			{Name: "rules", Glob: "rules/*.yml", Header: ""},
+		}
+		result := deduplicateAggregateSecrets(entries)
+		require.Len(t, result, 1)
+		assert.Equal(t, "rules", result[0].Name)
+		assert.Equal(t, "rules/*.yml", result[0].Glob)
+	})
+
+	t.Run("same name different glob keeps both", func(t *testing.T) {
+		t.Parallel()
+		entries := []AggregateSecret{
+			{Name: "rules", Glob: "rules/common/*.yml"},
+			{Name: "rules", Glob: "rules/monitoring/*.yml"},
+		}
+		result := deduplicateAggregateSecrets(entries)
+		require.Len(t, result, 2)
+		assert.Equal(t, "rules/common/*.yml", result[0].Glob)
+		assert.Equal(t, "rules/monitoring/*.yml", result[1].Glob)
+	})
+
+	t.Run("different names kept and sorted", func(t *testing.T) {
+		t.Parallel()
+		entries := []AggregateSecret{
+			{Name: "z-rules", Glob: "z/*.yml"},
+			{Name: "a-rules", Glob: "a/*.yml"},
+		}
+		result := deduplicateAggregateSecrets(entries)
+		require.Len(t, result, 2)
+		assert.Equal(t, "a-rules", result[0].Name)
+		assert.Equal(t, "z-rules", result[1].Name)
+	})
+
+	t.Run("empty input returns empty", func(t *testing.T) {
+		t.Parallel()
+		result := deduplicateAggregateSecrets(nil)
+		assert.Empty(t, result)
+	})
+}
+
+func TestAssignmentsResolveAggregateSecrets(t *testing.T) {
+	t.Parallel()
+	assignments := &Assignments{
+		Base: AssignmentGroup{
+			AggregateSecrets: []AggregateSecret{
+				{Name: "prometheus_rules", Glob: "rules/common/*.yml", Header: "groups:\n"},
+			},
+		},
+		PiTypes: map[string]AssignmentGroup{},
+		Features: map[string]AssignmentGroup{
+			"monitoring": {
+				AggregateSecrets: []AggregateSecret{
+					// Same name, different glob: should be preserved (additive merge)
+					{Name: "prometheus_rules", Glob: "rules/monitoring/*.yml"},
+					// Duplicate of the base entry: should be deduplicated
+					{Name: "prometheus_rules", Glob: "rules/common/*.yml"},
+				},
+			},
+		},
+	}
+
+	host := &HostConfig{PiType: "server", Features: []string{"monitoring"}}
+	result := assignments.Resolve(host)
+
+	// Two unique (name, glob) pairs survive dedup
+	require.Len(t, result.AggregateSecrets, 2)
+	assert.Equal(t, "prometheus_rules", result.AggregateSecrets[0].Name)
+	assert.Equal(t, "rules/common/*.yml", result.AggregateSecrets[0].Glob)
+	assert.Equal(t, "prometheus_rules", result.AggregateSecrets[1].Name)
+	assert.Equal(t, "rules/monitoring/*.yml", result.AggregateSecrets[1].Glob)
+}
+
 func TestLoadAllMissingFleet(t *testing.T) {
 	t.Parallel()
 	fsys := fstest.MapFS{}

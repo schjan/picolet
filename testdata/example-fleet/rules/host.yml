@@ -1,0 +1,9 @@
+- name: host
+  rules:
+    - alert: HostHighCPU
+      expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 90
+      for: 10m
+      labels:
+        severity: critical
+      annotations:
+        summary: "CPU usage >90% for 10min on {{ $labels.instance }}"

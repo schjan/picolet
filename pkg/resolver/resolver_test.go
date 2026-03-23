@@ -381,6 +381,192 @@ features: {}
 	assert.Contains(t, err.Error(), "reading static secret")
 }
 
+//nolint:funlen,cyclop // subtests cover multiple scenarios
+func TestResolveAggregateSecret(t *testing.T) {
+	t.Parallel()
+
+	t.Run("basic concatenation with header", func(t *testing.T) {
+		t.Parallel()
+		fsys := addBaseFiles(fstest.MapFS{
+			"rules/alert-cpu.yml": &fstest.MapFile{Data: []byte("- name: cpu\n  rules: []\n")},
+			"rules/alert-mem.yml": &fstest.MapFile{Data: []byte("- name: mem\n  rules: []\n")},
+		})
+		cfg, err := config.LoadAll(fsys)
+		require.NoError(t, err)
+		cfg.Assignments.Base.AggregateSecrets = []config.AggregateSecret{
+			{Name: "prometheus_rules", Glob: "rules/*.yml", Header: "groups:\n"},
+		}
+
+		r, err := New(Config{FS: fsys, Config: cfg})
+		require.NoError(t, err)
+		resolved, err := r.ResolveHost("test-host")
+		require.NoError(t, err)
+
+		var agg *ResolvedFile
+		for i := range resolved.Files {
+			if resolved.Files[i].DestPath == "secret:prometheus_rules" {
+				agg = &resolved.Files[i]
+				break
+			}
+		}
+		require.NotNil(t, agg, "expected aggregate secret in resolved files")
+		assert.Equal(t, "secret", agg.Category)
+		// Header is prepended, files sorted alphabetically
+		assert.Equal(t, "groups:\n- name: cpu\n  rules: []\n- name: mem\n  rules: []\n", agg.Content)
+	})
+
+	t.Run("no header produces bare concatenation", func(t *testing.T) {
+		t.Parallel()
+		fsys := addBaseFiles(fstest.MapFS{
+			"rules/a.yml": &fstest.MapFile{Data: []byte("a-content\n")},
+			"rules/b.yml": &fstest.MapFile{Data: []byte("b-content\n")},
+		})
+		cfg, err := config.LoadAll(fsys)
+		require.NoError(t, err)
+		cfg.Assignments.Base.AggregateSecrets = []config.AggregateSecret{
+			{Name: "myrules", Glob: "rules/*.yml"},
+		}
+
+		r, err := New(Config{FS: fsys, Config: cfg})
+		require.NoError(t, err)
+		resolved, err := r.ResolveHost("test-host")
+		require.NoError(t, err)
+
+		var agg *ResolvedFile
+		for i := range resolved.Files {
+			if resolved.Files[i].DestPath == "secret:myrules" {
+				agg = &resolved.Files[i]
+				break
+			}
+		}
+		require.NotNil(t, agg)
+		assert.Equal(t, "a-content\nb-content\n", agg.Content)
+	})
+
+	t.Run("glob matches no files returns error", func(t *testing.T) {
+		t.Parallel()
+		fsys := addBaseFiles(fstest.MapFS{})
+		cfg, err := config.LoadAll(fsys)
+		require.NoError(t, err)
+		cfg.Assignments.Base.AggregateSecrets = []config.AggregateSecret{
+			{Name: "missing", Glob: "nonexistent/*.yml"},
+		}
+
+		r, err := New(Config{FS: fsys, Config: cfg})
+		require.NoError(t, err)
+		_, err = r.ResolveHost("test-host")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "matched no files")
+	})
+
+	t.Run("files sorted by path regardless of FS order", func(t *testing.T) {
+		t.Parallel()
+		fsys := addBaseFiles(fstest.MapFS{
+			// z comes before a in insertion order but should be sorted after
+			"rules/z.yml": &fstest.MapFile{Data: []byte("z\n")},
+			"rules/a.yml": &fstest.MapFile{Data: []byte("a\n")},
+			"rules/m.yml": &fstest.MapFile{Data: []byte("m\n")},
+		})
+		cfg, err := config.LoadAll(fsys)
+		require.NoError(t, err)
+		cfg.Assignments.Base.AggregateSecrets = []config.AggregateSecret{
+			{Name: "sorted", Glob: "rules/*.yml"},
+		}
+
+		r, err := New(Config{FS: fsys, Config: cfg})
+		require.NoError(t, err)
+		resolved, err := r.ResolveHost("test-host")
+		require.NoError(t, err)
+
+		var agg *ResolvedFile
+		for i := range resolved.Files {
+			if resolved.Files[i].DestPath == "secret:sorted" {
+				agg = &resolved.Files[i]
+				break
+			}
+		}
+		require.NotNil(t, agg)
+		assert.Equal(t, "a\nm\nz\n", agg.Content)
+	})
+
+	t.Run("prometheus template expressions pass through unmodified", func(t *testing.T) {
+		t.Parallel()
+		fsys := addBaseFiles(fstest.MapFS{
+			"rules/prom.yml": &fstest.MapFile{Data: []byte("expr: rate(http_requests_total{job=\"api\"}[5m]) > {{ $value }}\n")},
+		})
+		cfg, err := config.LoadAll(fsys)
+		require.NoError(t, err)
+		cfg.Assignments.Base.AggregateSecrets = []config.AggregateSecret{
+			{Name: "prom_rules", Glob: "rules/*.yml"},
+		}
+
+		r, err := New(Config{FS: fsys, Config: cfg})
+		require.NoError(t, err)
+		resolved, err := r.ResolveHost("test-host")
+		require.NoError(t, err)
+
+		var agg *ResolvedFile
+		for i := range resolved.Files {
+			if resolved.Files[i].DestPath == "secret:prom_rules" {
+				agg = &resolved.Files[i]
+				break
+			}
+		}
+		require.NotNil(t, agg)
+		assert.Contains(t, agg.Content, "{{ $value }}")
+	})
+
+	t.Run("multiple globs for same name merged into one secret", func(t *testing.T) {
+		t.Parallel()
+		fsys := addBaseFiles(fstest.MapFS{
+			"rules/common/watchdog.yml": &fstest.MapFile{Data: []byte("- name: watchdog\n")},
+			"rules/monitoring/cpu.yml":  &fstest.MapFile{Data: []byte("- name: cpu\n")},
+		})
+		cfg, err := config.LoadAll(fsys)
+		require.NoError(t, err)
+		// Simulate base + feature both contributing to the same secret name
+		cfg.Assignments.Base.AggregateSecrets = []config.AggregateSecret{
+			{Name: "prometheus_rules", Glob: "rules/common/*.yml", Header: "groups:\n"},
+		}
+		cfg.Assignments.Features = map[string]config.AssignmentGroup{
+			"monitoring": {
+				AggregateSecrets: []config.AggregateSecret{
+					{Name: "prometheus_rules", Glob: "rules/monitoring/*.yml"},
+				},
+			},
+		}
+
+		host := cfg.Hosts["test-host"]
+		host.Features = []string{"monitoring"}
+
+		r, err := New(Config{FS: fsys, Config: cfg})
+		require.NoError(t, err)
+		resolved, err := r.ResolveHost("test-host")
+		require.NoError(t, err)
+
+		var secrets []ResolvedFile
+		for _, f := range resolved.Files {
+			if f.DestPath == "secret:prometheus_rules" {
+				secrets = append(secrets, f)
+			}
+		}
+		// Must produce exactly one secret, not two
+		require.Len(t, secrets, 1)
+		assert.Contains(t, secrets[0].Content, "groups:\n")
+		assert.Contains(t, secrets[0].Content, "- name: watchdog")
+		assert.Contains(t, secrets[0].Content, "- name: cpu")
+	})
+}
+
+// addBaseFiles adds the minimum fleet.yml, assignments.yml, and host.yml to a MapFS
+// so config.LoadAll succeeds. The caller can set cfg.Assignments fields after loading.
+func addBaseFiles(fsys fstest.MapFS) fstest.MapFS {
+	fsys["fleet.yml"] = &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")}
+	fsys["assignments.yml"] = &fstest.MapFile{Data: []byte("base: {}\npi_types: {}\nfeatures: {}\n")}
+	fsys["hosts/test-host/host.yml"] = &fstest.MapFile{Data: []byte("hostname: test-host\npi_type: server\n")}
+	return fsys
+}
+
 func TestSecretPathTraversal(t *testing.T) {
 	t.Parallel()
 	secretsDir := t.TempDir()
