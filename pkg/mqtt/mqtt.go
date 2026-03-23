@@ -90,7 +90,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 	cliCfg := autopaho.ClientConfig{
 		ServerUrls:        []*url.URL{brokerURL},
 		KeepAlive:         30,
-		ConnectRetryDelay: c.cfg.ConnectRetryDelay, // 0 → autopaho default (10s)
+		ConnectRetryDelay: c.cfg.ConnectRetryDelay,
 		// Start fresh on initial connect; retained messages still delivered by broker.
 		CleanStartOnInitialConnection: true,
 		// Session survives short WiFi drops (5 minutes).
@@ -110,8 +110,6 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 			slog.Info("mqtt connected", "broker", c.cfg.BrokerURL)
 			metrics.MQTTConnected.Set(1)
 
-			// Bound all subscribe/publish work so a mid-callback connection drop
-			// doesn't block the reconnection goroutine until the parent ctx expires.
 			upCtx, upCancel := context.WithTimeout(ctx, onConnectionUpTimeout)
 			defer upCancel()
 
