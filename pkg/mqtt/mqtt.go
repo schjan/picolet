@@ -213,21 +213,25 @@ func (c *Client) publishStatusTopics(ctx context.Context, status Status) error {
 		state = "paused"
 	}
 
-	topics := map[string]string{
-		c.stateTopic:                                       state,
-		c.statusPrefix + "/applied_sha":                    status.AppliedSHA,
-		c.statusPrefix + "/failed_count":                   strconv.Itoa(status.FailedCount),
-		c.statusPrefix + "/last_reconciliation":            formatTimestamp(status.LastReconciliation),
-		c.statusPrefix + "/last_successful_reconciliation": formatTimestamp(status.LastSuccessfulReconciliation),
+	// State first: on reconnect the LWT sets state=offline (retained), so we
+	// must overwrite it before the context expires. Deterministic slice order
+	// guarantees state is published even if later topics fail on timeout.
+	type topicPayload struct{ topic, payload string }
+	topics := []topicPayload{
+		{c.stateTopic, state},
+		{c.statusPrefix + "/applied_sha", status.AppliedSHA},
+		{c.statusPrefix + "/failed_count", strconv.Itoa(status.FailedCount)},
+		{c.statusPrefix + "/last_reconciliation", formatTimestamp(status.LastReconciliation)},
+		{c.statusPrefix + "/last_successful_reconciliation", formatTimestamp(status.LastSuccessfulReconciliation)},
 	}
 
 	var errs []error
-	for topic, payload := range topics {
+	for _, tp := range topics {
 		if _, err := c.conn.Publish(ctx, &paho.Publish{
-			Topic: topic, QoS: 1, Retain: true,
-			Payload: []byte(payload),
+			Topic: tp.topic, QoS: 1, Retain: true,
+			Payload: []byte(tp.payload),
 		}); err != nil {
-			slog.Warn("mqtt publish failed", "topic", topic, "error", err)
+			slog.Warn("mqtt publish failed", "topic", tp.topic, "error", err)
 			errs = append(errs, err)
 		}
 	}
