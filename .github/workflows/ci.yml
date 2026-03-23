@@ -75,7 +75,7 @@ jobs:
         run: go test -tags "e2e,$BUILD_TAGS" -run TestE2E -race -count=1 -v -timeout 300s .
 
   lint:
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v6
 
