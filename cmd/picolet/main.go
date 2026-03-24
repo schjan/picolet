@@ -22,6 +22,7 @@ import (
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/metrics"
 	mqttpkg "github.com/schjan/picolet/pkg/mqtt"
+	op "github.com/schjan/picolet/pkg/onepassword"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/rollback"
@@ -299,7 +300,15 @@ func dryRunResolveWithConfig(repoDir, hostname, configPath string) ([]resolver.R
 		return nil, nil, false, err
 	}
 
-	files, err := agent.LoadAndResolve(effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless)
+	var opReader resolver.OpSecretReader
+	if cfg.OnePassword != nil {
+		opReader, err = op.NewReaderFromTokenFile(context.Background(), cfg.OnePassword.TokenPath)
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("setting up 1password: %w", err)
+		}
+	}
+
+	files, err := agent.LoadAndResolve(effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -537,7 +546,15 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		return err
 	}
 
-	files, err := agent.LoadAndResolve(effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless)
+	var opReader resolver.OpSecretReader
+	if cfg.OnePassword != nil {
+		opReader, err = op.NewReaderFromTokenFile(ctx, cfg.OnePassword.TokenPath)
+		if err != nil {
+			return fmt.Errorf("setting up 1password: %w", err)
+		}
+	}
+
+	files, err := agent.LoadAndResolve(effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)
 	if err != nil {
 		return err
 	}

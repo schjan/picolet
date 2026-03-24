@@ -17,6 +17,7 @@ import (
 	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/mqtt"
+	op "github.com/schjan/picolet/pkg/onepassword"
 	"github.com/schjan/picolet/pkg/orphan"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
@@ -301,7 +302,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 
 // LoadAndResolve loads fleet config from repoPath and resolves the desired state for the given host.
 // It is the shared implementation behind Agent.loadAndResolve and CLI subcommands (apply, dry-run).
-func LoadAndResolve(repoPath, hostname, secretsDir string, rootless bool) ([]resolver.ResolvedFile, error) {
+func LoadAndResolve(repoPath, hostname, secretsDir string, rootless bool, opSecretReader resolver.OpSecretReader) ([]resolver.ResolvedFile, error) {
 	slog.Debug("loading fleet config", "repo", repoPath)
 	repoFS := os.DirFS(repoPath)
 	cfg, err := config.LoadAll(repoFS)
@@ -326,10 +327,11 @@ func LoadAndResolve(repoPath, hostname, secretsDir string, rootless bool) ([]res
 	slog.Debug("resolving host", "hostname", hostname)
 	loadStart := time.Now()
 	r, err := resolver.New(resolver.Config{
-		FS:           repoFS,
-		Config:       cfg,
-		SecretReader: secretReader,
-		Rootless:     rootless,
+		FS:             repoFS,
+		Config:         cfg,
+		SecretReader:   secretReader,
+		OpSecretReader: opSecretReader,
+		Rootless:       rootless,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating resolver: %w", err)
@@ -347,7 +349,17 @@ func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, error) {
 	if a.cfg.RepoSubDir != "" {
 		fleetPath = filepath.Join(a.repoPath, a.cfg.RepoSubDir)
 	}
-	return LoadAndResolve(fleetPath, a.cfg.Hostname, a.cfg.SecretsDir, a.cfg.Rootless)
+
+	var opReader resolver.OpSecretReader
+	if a.cfg.OnePassword != nil {
+		var err error
+		opReader, err = op.NewReaderFromTokenFile(context.Background(), a.cfg.OnePassword.TokenPath)
+		if err != nil {
+			return nil, fmt.Errorf("setting up 1password: %w", err)
+		}
+	}
+
+	return LoadAndResolve(fleetPath, a.cfg.Hostname, a.cfg.SecretsDir, a.cfg.Rootless, opReader)
 }
 
 // ReconcileResult contains the outcome of a single reconciliation cycle.
