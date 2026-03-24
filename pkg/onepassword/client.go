@@ -37,11 +37,6 @@ func (c *Client) Resolve(ctx context.Context, ref string) (string, error) {
 	return val, nil
 }
 
-// ValidateReference checks whether ref looks like a 1Password secret reference.
-func ValidateReference(ref string) bool {
-	return strings.HasPrefix(ref, "op://")
-}
-
 // NewReaderFromTokenFile reads a service account token from disk and returns
 // a secret reader closure. Returns (nil, nil) when tokenPath is empty.
 //
