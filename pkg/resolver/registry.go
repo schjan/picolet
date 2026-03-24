@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"slices"
 	"strings"
 	"text/template"
@@ -64,6 +65,7 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 			if opSecretReader == nil {
 				return "<op-secret>", nil
 			}
+			slog.Debug("resolving 1password secret", "ref", ref)
 			return opSecretReader(ctx, ref)
 		},
 		// renderTemplate uses a closure depth counter to prevent infinite recursion.

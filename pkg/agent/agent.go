@@ -157,6 +157,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("setting up 1password: %w", err)
 		}
+		slog.Info("1password client initialized", "token_path", a.cfg.OnePassword.TokenPath)
 	}
 
 	// Initialize git poller
@@ -169,6 +170,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	healthChecker := health.New(a.systemd)
 
 	a.scanOrphans(ctx, store)
+
+	metrics.FeatureInfo.WithLabelValues("mqtt").Set(boolToFloat(a.mqttClient != nil))
+	metrics.FeatureInfo.WithLabelValues("onepassword").Set(boolToFloat(a.opReader != nil))
 
 	slog.Info("agent started",
 		"hostname", a.cfg.Hostname,
@@ -638,4 +642,11 @@ func (a *Agent) serveHTTP(ctx context.Context) {
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		slog.Error("http server error", "error", err)
 	}
+}
+
+func boolToFloat(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
 }

@@ -113,6 +113,14 @@ var (
 		},
 		[]string{"version", "git_sha"},
 	)
+
+	FeatureInfo = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "picolet_feature_info",
+			Help: "Configured optional features (1=enabled, 0=disabled).",
+		},
+		[]string{"feature"},
+	)
 )
 
 var registerOnce sync.Once
@@ -137,6 +145,7 @@ func Register() {
 			MQTTConnected,
 			AgentPaused,
 			BuildInfo,
+			FeatureInfo,
 			UnitHealth,
 		)
 		BuildInfo.WithLabelValues(version.Version, version.GitSHA).Set(1)
