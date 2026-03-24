@@ -191,7 +191,7 @@ func TestRenderTemplateRecursion(t *testing.T) {
 		"a.tmpl": &fstest.MapFile{Data: []byte(`{{renderTemplate "b.tmpl" .}}`)},
 		"b.tmpl": &fstest.MapFile{Data: []byte(`{{renderTemplate "a.tmpl" .}}`)},
 	}
-	registry, err := BuildRegistry(fsys, nil)
+	registry, err := BuildRegistry(fsys, nil, nil)
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
@@ -397,4 +397,46 @@ func TestSecretPathTraversal(t *testing.T) {
 	// Path traversal should fail
 	_, err = secretRoot.ReadFile("../../etc/passwd")
 	require.Error(t, err)
+}
+
+func TestReadOpSecret(t *testing.T) {
+	t.Parallel()
+	fsys := fstest.MapFS{
+		"secret.tmpl": &fstest.MapFile{Data: []byte(`pw={{readOpSecret "op://vault/item/pw"}}`)},
+	}
+
+	t.Run("with reader", func(t *testing.T) {
+		t.Parallel()
+		reader := func(ref string) (string, error) {
+			if ref == "op://vault/item/pw" {
+				return "s3cret", nil
+			}
+			return "", fmt.Errorf("unknown ref: %s", ref)
+		}
+		registry, err := BuildRegistry(fsys, nil, reader)
+		require.NoError(t, err)
+		var buf bytes.Buffer
+		require.NoError(t, registry.ExecuteTemplate(&buf, "secret.tmpl", nil))
+		assert.Equal(t, "pw=s3cret", buf.String())
+	})
+
+	t.Run("nil reader returns placeholder", func(t *testing.T) {
+		t.Parallel()
+		registry, err := BuildRegistry(fsys, nil, nil)
+		require.NoError(t, err)
+		var buf bytes.Buffer
+		require.NoError(t, registry.ExecuteTemplate(&buf, "secret.tmpl", nil))
+		assert.Equal(t, "pw=<op-secret>", buf.String())
+	})
+
+	t.Run("reader error propagates", func(t *testing.T) {
+		t.Parallel()
+		reader := func(_ string) (string, error) { return "", fmt.Errorf("1password error") }
+		registry, err := BuildRegistry(fsys, nil, reader)
+		require.NoError(t, err)
+		var buf bytes.Buffer
+		err = registry.ExecuteTemplate(&buf, "secret.tmpl", nil)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "1password error")
+	})
 }

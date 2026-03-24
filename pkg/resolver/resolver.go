@@ -47,21 +47,23 @@ type ResolvedHost struct {
 
 // Config holds configuration for creating a Resolver.
 type Config struct {
-	FS           fs.FS
-	Config       *config.Config
-	SecretReader SecretReader
-	Rootless     bool
+	FS             fs.FS
+	Config         *config.Config
+	SecretReader   SecretReader
+	OpSecretReader OpSecretReader
+	Rootless       bool
 }
 
 // Resolver renders templates and resolves the desired state for hosts.
 type Resolver struct {
-	fsys         fs.FS
-	cfg          *config.Config
-	secretReader SecretReader
-	quadletDir   string
-	systemdDir   string
-	dataDir      string
-	rootless     bool
+	fsys           fs.FS
+	cfg            *config.Config
+	secretReader   SecretReader
+	opSecretReader OpSecretReader
+	quadletDir     string
+	systemdDir     string
+	dataDir        string
+	rootless       bool
 }
 
 // Rootless reports whether the resolver is configured for rootless mode.
@@ -76,13 +78,14 @@ func New(rc Config) (*Resolver, error) {
 		return nil, err
 	}
 	return &Resolver{
-		fsys:         rc.FS,
-		cfg:          rc.Config,
-		secretReader: rc.SecretReader,
-		quadletDir:   quadletDir,
-		systemdDir:   systemdDir,
-		dataDir:      dataDir,
-		rootless:     rc.Rootless,
+		fsys:           rc.FS,
+		cfg:            rc.Config,
+		secretReader:   rc.SecretReader,
+		opSecretReader: rc.OpSecretReader,
+		quadletDir:     quadletDir,
+		systemdDir:     systemdDir,
+		dataDir:        dataDir,
+		rootless:       rc.Rootless,
 	}, nil
 }
 
@@ -116,7 +119,7 @@ func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 		return nil, err
 	}
 
-	registry, err := BuildRegistry(r.fsys, r.secretReader)
+	registry, err := BuildRegistry(r.fsys, r.secretReader, r.opSecretReader)
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}
