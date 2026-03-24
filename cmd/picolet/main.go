@@ -293,6 +293,20 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 	return a.Run(ctx)
 }
 
+// opReaderFromConfig creates an OpSecretReader from agent config, or nil if 1Password is not configured.
+//
+//nolint:nilnil // nil reader signals "1Password not configured"; matches OpSecretReader convention
+func opReaderFromConfig(ctx context.Context, cfg *agentcfg.Config) (resolver.OpSecretReader, error) {
+	if cfg.OnePassword == nil {
+		return nil, nil
+	}
+	reader, err := op.NewReaderFromTokenFile(ctx, cfg.OnePassword.TokenPath)
+	if err != nil {
+		return nil, fmt.Errorf("setting up 1password: %w", err)
+	}
+	return reader, nil
+}
+
 // dryRunResolveWithConfig resolves files using agent config (secrets, RepoSubDir, rootless-aware state).
 func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath string) ([]resolver.ResolvedFile, *state.Store, bool, error) {
 	cfg, err := agentcfg.Load(configPath)
@@ -300,12 +314,9 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 		return nil, nil, false, err
 	}
 
-	var opReader resolver.OpSecretReader
-	if cfg.OnePassword != nil {
-		opReader, err = op.NewReaderFromTokenFile(ctx, cfg.OnePassword.TokenPath)
-		if err != nil {
-			return nil, nil, false, fmt.Errorf("setting up 1password: %w", err)
-		}
+	opReader, err := opReaderFromConfig(ctx, cfg)
+	if err != nil {
+		return nil, nil, false, err
 	}
 
 	files, err := agent.LoadAndResolve(ctx, effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)
@@ -547,12 +558,9 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		return err
 	}
 
-	var opReader resolver.OpSecretReader
-	if cfg.OnePassword != nil {
-		opReader, err = op.NewReaderFromTokenFile(ctx, cfg.OnePassword.TokenPath)
-		if err != nil {
-			return fmt.Errorf("setting up 1password: %w", err)
-		}
+	opReader, err := opReaderFromConfig(ctx, cfg)
+	if err != nil {
+		return err
 	}
 
 	files, err := agent.LoadAndResolve(ctx, effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)

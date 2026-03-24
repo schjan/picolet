@@ -56,6 +56,8 @@ type Agent struct {
 	statePath string
 	lockPath  string
 
+	opReader resolver.OpSecretReader // nil when 1Password not configured; initialized in Run
+
 	webhookCh          chan struct{}
 	ready              atomic.Bool
 	paused             atomic.Bool // set by MQTT pause subscription
@@ -145,6 +147,15 @@ func (a *Agent) Run(ctx context.Context) error {
 		slog.Warn("stale reconciliation lock found, will force full reconciliation")
 		if err := os.Remove(a.lockPath); err != nil {
 			slog.Warn("removing stale lock failed", "path", a.lockPath, "error", err)
+		}
+	}
+
+	// Initialize 1Password client (if configured)
+	if a.cfg.OnePassword != nil {
+		var err error
+		a.opReader, err = op.NewReaderFromTokenFile(ctx, a.cfg.OnePassword.TokenPath)
+		if err != nil {
+			return fmt.Errorf("setting up 1password: %w", err)
 		}
 	}
 
@@ -349,17 +360,7 @@ func (a *Agent) loadAndResolve(ctx context.Context) ([]resolver.ResolvedFile, er
 	if a.cfg.RepoSubDir != "" {
 		fleetPath = filepath.Join(a.repoPath, a.cfg.RepoSubDir)
 	}
-
-	var opReader resolver.OpSecretReader
-	if a.cfg.OnePassword != nil {
-		var err error
-		opReader, err = op.NewReaderFromTokenFile(ctx, a.cfg.OnePassword.TokenPath)
-		if err != nil {
-			return nil, fmt.Errorf("setting up 1password: %w", err)
-		}
-	}
-
-	return LoadAndResolve(ctx, fleetPath, a.cfg.Hostname, a.cfg.SecretsDir, a.cfg.Rootless, opReader)
+	return LoadAndResolve(ctx, fleetPath, a.cfg.Hostname, a.cfg.SecretsDir, a.cfg.Rootless, a.opReader)
 }
 
 // ReconcileResult contains the outcome of a single reconciliation cycle.
