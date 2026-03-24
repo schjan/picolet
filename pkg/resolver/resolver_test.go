@@ -303,7 +303,7 @@ func TestStaticRepoSecret(t *testing.T) {
 
 	f := findByDest(t, resolved.Files, "secret:static_config")
 	assert.Equal(t, "secret", f.Category)
-	assert.Equal(t, "groups:\n  - alert: InstanceDown\n    annotations:\n      summary: \"{{ $labels.job }} is down\"\n", f.Content,
+	assert.Equal(t, string(fsys["secrets/static_config.yml"].Data), f.Content,
 		"static secret must be copied verbatim without template rendering")
 }
 
@@ -356,29 +356,19 @@ func TestHostOnlySecretPlaceholder(t *testing.T) {
 
 func TestStaticRepoSecretReadError(t *testing.T) {
 	t.Parallel()
-	fsys := fstest.MapFS{
-		"fleet.yml": &fstest.MapFile{Data: []byte(`
-images:
-  app: "app:v1"
-ports:
-  app: 8080
-`)},
-		"assignments.yml": &fstest.MapFile{Data: []byte(`
+	fsys, _ := newSecretTestFS(t)
+
+	// Override assignments to reference only a broken secret, and add a
+	// directory entry where a file is expected (non-ErrNotExist read error).
+	fsys["assignments.yml"] = &fstest.MapFile{Data: []byte(`
 base:
   secrets:
     - secrets/broken.yml
 pi_types: {}
 features: {}
-`)},
-		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
-hostname: test-host
-external_hostname: test-host.ts.net
-pi_type: server
-features: []
-`)},
-		// Directory entry where a file is expected — causes a non-ErrNotExist read error.
-		"secrets/broken.yml": &fstest.MapFile{Mode: fs.ModeDir},
-	}
+`)}
+	fsys["secrets/broken.yml"] = &fstest.MapFile{Mode: fs.ModeDir}
+
 	cfg, err := config.LoadAll(fsys)
 	require.NoError(t, err)
 
