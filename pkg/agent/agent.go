@@ -344,7 +344,7 @@ func LoadAndResolve(repoPath, hostname, secretsDir string, rootless bool, opSecr
 	return resolved.Files, nil
 }
 
-func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, error) {
+func (a *Agent) loadAndResolve(ctx context.Context) ([]resolver.ResolvedFile, error) {
 	fleetPath := a.repoPath
 	if a.cfg.RepoSubDir != "" {
 		fleetPath = filepath.Join(a.repoPath, a.cfg.RepoSubDir)
@@ -353,7 +353,7 @@ func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, error) {
 	var opReader resolver.OpSecretReader
 	if a.cfg.OnePassword != nil {
 		var err error
-		opReader, err = op.NewReaderFromTokenFile(context.Background(), a.cfg.OnePassword.TokenPath)
+		opReader, err = op.NewReaderFromTokenFile(ctx, a.cfg.OnePassword.TokenPath)
 		if err != nil {
 			return nil, fmt.Errorf("setting up 1password: %w", err)
 		}
@@ -374,7 +374,7 @@ type ReconcileResult struct {
 
 // ReconcileOnce runs a single reconciliation cycle: load config, resolve, diff, validate, apply, save state.
 func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.State, store *state.Store) (*ReconcileResult, error) {
-	files, err := a.loadAndResolve()
+	files, err := a.loadAndResolve(ctx)
 	if err != nil {
 		return nil, err
 	}

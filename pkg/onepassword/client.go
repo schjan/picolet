@@ -44,6 +44,8 @@ func ValidateReference(ref string) bool {
 
 // NewReaderFromTokenFile reads a service account token from disk and returns
 // a secret reader closure. Returns (nil, nil) when tokenPath is empty.
+//
+//nolint:nilnil // nil reader signals "1Password not configured"; callers check for nil
 func NewReaderFromTokenFile(ctx context.Context, tokenPath string) (func(string) (string, error), error) {
 	if tokenPath == "" {
 		return nil, nil
@@ -57,7 +59,6 @@ func NewReaderFromTokenFile(ctx context.Context, tokenPath string) (func(string)
 		return nil, err
 	}
 	return func(ref string) (string, error) {
-		//nolint:contextcheck // template functions don't receive context; SDK calls are fast
 		return client.Resolve(ctx, ref)
 	}, nil
 }

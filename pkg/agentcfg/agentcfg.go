@@ -26,19 +26,19 @@ type OnePasswordConfig struct {
 
 // Config holds the agent runtime configuration from /etc/picolet/config.yml.
 type Config struct {
-	Hostname          string        `yaml:"hostname"`
-	RepoURL           string        `yaml:"repo_url"`
-	RepoBranch        string        `yaml:"repo_branch"`
-	GitTokenPath      string        `yaml:"git_token_path"`
-	PollInterval      time.Duration `yaml:"poll_interval"`
-	MetricsPort       int           `yaml:"metrics_port"`
-	SecretsDir        string        `yaml:"secrets_dir"`
-	Rootless          bool          `yaml:"rootless"`
-	SystemdUser       *bool         `yaml:"systemd_user"`
-	PodmanSocket      string        `yaml:"podman_socket"`
-	WebhookSecretPath string        `yaml:"webhook_secret_path"`
-	RepoSubDir        string        `yaml:"repo_sub_dir"` // optional subdirectory within the repo to use as fleet root (monorepo support)
-	DataDir           string        `yaml:"data_dir"`     // optional override for state file directory; used by apply/down commands
+	Hostname          string             `yaml:"hostname"`
+	RepoURL           string             `yaml:"repo_url"`
+	RepoBranch        string             `yaml:"repo_branch"`
+	GitTokenPath      string             `yaml:"git_token_path"`
+	PollInterval      time.Duration      `yaml:"poll_interval"`
+	MetricsPort       int                `yaml:"metrics_port"`
+	SecretsDir        string             `yaml:"secrets_dir"`
+	Rootless          bool               `yaml:"rootless"`
+	SystemdUser       *bool              `yaml:"systemd_user"`
+	PodmanSocket      string             `yaml:"podman_socket"`
+	WebhookSecretPath string             `yaml:"webhook_secret_path"`
+	RepoSubDir        string             `yaml:"repo_sub_dir"` // optional subdirectory within the repo to use as fleet root (monorepo support)
+	DataDir           string             `yaml:"data_dir"`     // optional override for state file directory; used by apply/down commands
 	MQTT              *MQTTConfig        `yaml:"mqtt"`
 	OnePassword       *OnePasswordConfig `yaml:"onepassword"`
 }
@@ -94,6 +94,8 @@ func (c *Config) UseSystemdUser() bool {
 }
 
 // Validate checks that required fields are set.
+//
+//nolint:cyclop // sequential field checks; splitting would obscure the validation logic
 func (c *Config) Validate() error {
 	if c.Hostname == "" {
 		return errors.New("hostname is required")

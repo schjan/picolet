@@ -294,7 +294,7 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 }
 
 // dryRunResolveWithConfig resolves files using agent config (secrets, RepoSubDir, rootless-aware state).
-func dryRunResolveWithConfig(repoDir, hostname, configPath string) ([]resolver.ResolvedFile, *state.Store, bool, error) {
+func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath string) ([]resolver.ResolvedFile, *state.Store, bool, error) {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
 		return nil, nil, false, err
@@ -302,7 +302,7 @@ func dryRunResolveWithConfig(repoDir, hostname, configPath string) ([]resolver.R
 
 	var opReader resolver.OpSecretReader
 	if cfg.OnePassword != nil {
-		opReader, err = op.NewReaderFromTokenFile(context.Background(), cfg.OnePassword.TokenPath)
+		opReader, err = op.NewReaderFromTokenFile(ctx, cfg.OnePassword.TokenPath)
 		if err != nil {
 			return nil, nil, false, fmt.Errorf("setting up 1password: %w", err)
 		}
@@ -341,7 +341,7 @@ func dryRunResolveBasic(repoDir, hostname string) ([]resolver.ResolvedFile, *sta
 	return resolved.Files, state.NewStore(agent.DefaultStatePath), nil
 }
 
-func runDryRun(_ context.Context, repoDir, hostname, configPath string) error {
+func runDryRun(ctx context.Context, repoDir, hostname, configPath string) error {
 	var (
 		files    []resolver.ResolvedFile
 		store    *state.Store
@@ -350,7 +350,7 @@ func runDryRun(_ context.Context, repoDir, hostname, configPath string) error {
 	)
 
 	if configPath != "" {
-		files, store, rootless, err = dryRunResolveWithConfig(repoDir, hostname, configPath)
+		files, store, rootless, err = dryRunResolveWithConfig(ctx, repoDir, hostname, configPath)
 	} else {
 		files, store, err = dryRunResolveBasic(repoDir, hostname)
 	}
@@ -540,6 +540,7 @@ func applyWithRollback(
 	return result, nil
 }
 
+//nolint:cyclop,funlen // sequential apply steps; splitting reduces readability
 func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
