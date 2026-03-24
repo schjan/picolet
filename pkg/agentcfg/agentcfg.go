@@ -19,6 +19,11 @@ type MQTTConfig struct {
 	TopicPrefix  string `yaml:"topic_prefix"`  // default: "picolet"
 }
 
+// OnePasswordConfig holds 1Password SDK settings.
+type OnePasswordConfig struct {
+	TokenPath string `yaml:"token_path"` // file path to service account token
+}
+
 // Config holds the agent runtime configuration from /etc/picolet/config.yml.
 type Config struct {
 	Hostname          string        `yaml:"hostname"`
@@ -34,7 +39,8 @@ type Config struct {
 	WebhookSecretPath string        `yaml:"webhook_secret_path"`
 	RepoSubDir        string        `yaml:"repo_sub_dir"` // optional subdirectory within the repo to use as fleet root (monorepo support)
 	DataDir           string        `yaml:"data_dir"`     // optional override for state file directory; used by apply/down commands
-	MQTT              *MQTTConfig   `yaml:"mqtt"`
+	MQTT              *MQTTConfig        `yaml:"mqtt"`
+	OnePassword       *OnePasswordConfig `yaml:"onepassword"`
 }
 
 // Load reads and parses the agent config from disk.
@@ -103,6 +109,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MQTT != nil && c.MQTT.PasswordPath != "" && c.MQTT.Username == "" {
 		return errors.New("mqtt.username is required when mqtt.password_path is set")
+	}
+	if c.OnePassword != nil && c.OnePassword.TokenPath == "" {
+		return errors.New("onepassword.token_path is required when onepassword is configured")
 	}
 	return nil
 }

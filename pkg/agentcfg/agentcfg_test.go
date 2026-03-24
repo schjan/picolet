@@ -163,6 +163,32 @@ repo_sub_dir: "../../../etc"
 			wantErr: "repo_sub_dir must be a relative path within the repo",
 		},
 		{
+			name: "onepassword config",
+			content: `
+hostname: rpi5-1
+onepassword:
+  token_path: /etc/picolet/op-token
+`,
+			want: Config{ //nolint:gosec // test fixture, not real credentials
+				Hostname:     "rpi5-1",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				SystemdUser:  new(false),
+				OnePassword:  &OnePasswordConfig{TokenPath: "/etc/picolet/op-token"},
+			},
+		},
+		{
+			name: "onepassword missing token_path",
+			content: `
+hostname: rpi5-1
+onepassword: {}
+`,
+			wantErr: "onepassword.token_path is required",
+		},
+		{
 			name:    "minimal config without repo_url",
 			content: "hostname: rpi5-1\n",
 			want: Config{ //nolint:gosec // test fixture, not real credentials
