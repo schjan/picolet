@@ -27,20 +27,41 @@ import (
 )
 
 // tWriter adapts testing.T to io.Writer so slog output lands in test logs.
-type tWriter struct{ t *testing.T }
+// Uses a done flag to silently drop writes after the test completes,
+// preventing panics from mochi-mqtt listener goroutines that log during shutdown.
+type tWriter struct {
+	t    *testing.T
+	done atomic.Bool
+}
 
-func (w tWriter) Write(p []byte) (int, error) {
+func (w *tWriter) Write(p []byte) (int, error) {
+	if w.done.Load() {
+		return len(p), nil
+	}
 	w.t.Log(strings.TrimRight(string(p), "\n"))
 	return len(p), nil
 }
 
 func testLogger(t *testing.T) *slog.Logger {
 	t.Helper()
-	return slog.New(slog.NewTextHandler(tWriter{t}, nil))
+	w := &tWriter{t: t}
+	t.Cleanup(func() { w.done.Store(true) })
+	return slog.New(slog.NewTextHandler(w, nil))
 }
 
 func init() {
 	metrics.Register()
+}
+
+// retainedPayload reads a retained message directly from the broker's topic
+// index, bypassing TCP subscribers to avoid the mochi-mqtt race between
+// RetainMessage (write) and scanMessages (read).
+func retainedPayload(srv *mqttserver.Server, topic string) string {
+	pk, ok := srv.Topics.Retained.Get(topic)
+	if !ok {
+		return ""
+	}
+	return string(pk.Payload)
 }
 
 func startTestBroker(t *testing.T) (string, *mqttserver.Server) {
@@ -171,27 +192,15 @@ func TestPublishStatus(t *testing.T) {
 	}
 	require.NoError(t, client.PublishStatus(ctx, status))
 
-	// Verify retained messages directly on the broker's topic index.
-	// This avoids the mochi-mqtt race between RetainMessage (write) and
-	// scanMessages (read) that occurs when a TCP subscriber triggers
-	// Messages() concurrently with a retained publish.
-	retainedPayload := func(topic string) string {
-		pk, ok := srv.Topics.Retained.Get(topic)
-		if !ok {
-			return ""
-		}
-		return string(pk.Payload)
-	}
-
 	require.Eventually(t, func() bool {
-		return retainedPayload("picolet/test-host/status/applied_sha") == "abc123"
+		return retainedPayload(srv, "picolet/test-host/status/applied_sha") == "abc123"
 	}, 3*time.Second, 50*time.Millisecond, "retained status should be stored")
 
-	assert.Equal(t, "abc123", retainedPayload("picolet/test-host/status/applied_sha"))
-	assert.Equal(t, "2", retainedPayload("picolet/test-host/status/failed_count"))
-	assert.Equal(t, "running", retainedPayload("picolet/test-host/status/state"))
-	assert.Equal(t, strconv.FormatInt(now.Unix(), 10), retainedPayload("picolet/test-host/status/last_reconciliation"))
-	assert.Equal(t, strconv.FormatInt(now.Unix(), 10), retainedPayload("picolet/test-host/status/last_successful_reconciliation"))
+	assert.Equal(t, "abc123", retainedPayload(srv, "picolet/test-host/status/applied_sha"))
+	assert.Equal(t, "2", retainedPayload(srv, "picolet/test-host/status/failed_count"))
+	assert.Equal(t, "running", retainedPayload(srv, "picolet/test-host/status/state"))
+	assert.Equal(t, strconv.FormatInt(now.Unix(), 10), retainedPayload(srv, "picolet/test-host/status/last_reconciliation"))
+	assert.Equal(t, strconv.FormatInt(now.Unix(), 10), retainedPayload(srv, "picolet/test-host/status/last_successful_reconciliation"))
 }
 
 // newTCPProxy creates a bidirectional TCP proxy in front of the broker.
@@ -369,11 +378,11 @@ func TestReconnectRepublishesStatus(t *testing.T) {
 	brokerURL, srv := startTestBroker(t)
 	proxyAddr, killConns := startRestartableTCPProxy(t, brokerURL)
 
-	cfg := mqtt.Config{BrokerURL: "tcp://" + proxyAddr, TopicPrefix: "picolet"}
+	cfg := mqtt.Config{BrokerURL: "tcp://" + proxyAddr, TopicPrefix: "picolet", ConnectRetryDelay: 500 * time.Millisecond}
 	client, err := mqtt.NewClient(cfg, "reconnect-host")
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	var pauseFlag atomic.Bool
@@ -391,32 +400,20 @@ func TestReconnectRepublishesStatus(t *testing.T) {
 	}
 	require.NoError(t, client.PublishStatus(ctx, status))
 
-	// Verify retained messages directly on the broker's topic index.
-	// This avoids the mochi-mqtt race between RetainMessage (write) and
-	// scanMessages (read) that occurs when a TCP subscriber's SUBSCRIBE
-	// triggers Messages() concurrently with a retained publish.
-	retainedPayload := func(topic string) string {
-		pk, ok := srv.Topics.Retained.Get(topic)
-		if !ok {
-			return ""
-		}
-		return string(pk.Payload)
-	}
-
-	verifyRetainedStatus := func(label string) {
+	verifyRetainedStatus := func(label string, timeout time.Duration) {
 		t.Helper()
 		require.Eventually(t, func() bool {
-			return retainedPayload("picolet/reconnect-host/status/applied_sha") == "deadbeef"
-		}, 5*time.Second, 50*time.Millisecond, "%s: applied_sha should be deadbeef", label)
+			return retainedPayload(srv, "picolet/reconnect-host/status/applied_sha") == "deadbeef"
+		}, timeout, 50*time.Millisecond, "%s: applied_sha should be deadbeef", label)
 
-		assert.Equal(t, "deadbeef", retainedPayload("picolet/reconnect-host/status/applied_sha"), "%s: applied_sha", label)
-		assert.Equal(t, "1", retainedPayload("picolet/reconnect-host/status/failed_count"), "%s: failed_count", label)
-		assert.Equal(t, "running", retainedPayload("picolet/reconnect-host/status/state"), "%s: state", label)
-		assert.Equal(t, strconv.FormatInt(now.Unix(), 10), retainedPayload("picolet/reconnect-host/status/last_reconciliation"), "%s: last_reconciliation", label)
-		assert.Equal(t, strconv.FormatInt(now.Unix(), 10), retainedPayload("picolet/reconnect-host/status/last_successful_reconciliation"), "%s: last_successful_reconciliation", label)
+		assert.Equal(t, "deadbeef", retainedPayload(srv, "picolet/reconnect-host/status/applied_sha"), "%s: applied_sha", label)
+		assert.Equal(t, "1", retainedPayload(srv, "picolet/reconnect-host/status/failed_count"), "%s: failed_count", label)
+		assert.Equal(t, "running", retainedPayload(srv, "picolet/reconnect-host/status/state"), "%s: state", label)
+		assert.Equal(t, strconv.FormatInt(now.Unix(), 10), retainedPayload(srv, "picolet/reconnect-host/status/last_reconciliation"), "%s: last_reconciliation", label)
+		assert.Equal(t, strconv.FormatInt(now.Unix(), 10), retainedPayload(srv, "picolet/reconnect-host/status/last_successful_reconciliation"), "%s: last_successful_reconciliation", label)
 	}
 
-	verifyRetainedStatus("before-reconnect")
+	verifyRetainedStatus("before-reconnect", 5*time.Second)
 
 	// Poison one retained topic directly on the broker (inline publish, bypassing
 	// proxy) to prove republish is needed. After reconnect, if applied_sha ==
@@ -425,11 +422,12 @@ func TestReconnectRepublishesStatus(t *testing.T) {
 
 	killConns()
 
-	require.Eventually(t, func() bool {
-		return client.AwaitConnection(ctx) == nil
-	}, 10*time.Second, 100*time.Millisecond, "client should reconnect after kill")
-
-	verifyRetainedStatus("after-reconnect")
+	// Wait for the full disconnect → reconnect → republish cycle.
+	// Don't rely on AwaitConnection here: autopaho may not have detected the
+	// TCP drop yet, so AwaitConnection can return nil (still "connected")
+	// before any reconnect actually occurs. Instead, poll the retained topic
+	// directly — that's the actual invariant under test.
+	verifyRetainedStatus("after-reconnect", 10*time.Second)
 }
 
 func TestTriggerFunction(t *testing.T) {

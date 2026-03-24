@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -267,12 +268,25 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 }
 
 // secretContent returns the content for a secret entry.
-// Template secrets are rendered with the full template engine.
-// Static secrets are read from SecretsDir via secretReader (never from the repo).
+// Modes, in priority order:
+//  1. Template secrets (.tmpl suffix) are rendered with the full template engine.
+//  2. Static repo secrets (file exists in repo without .tmpl) are copied as-is.
+//  3. Host-only secrets (not in repo) are read from SecretsDir via secretReader.
+//  4. If no secretReader is configured, a placeholder value ("<secret>") is returned and a warning is logged.
 func (r *Resolver) secretContent(registry *template.Template, tmplData *TemplateData, srcPath, filename string) (string, error) {
 	if strings.HasSuffix(srcPath, ".tmpl") {
 		return r.renderOrRead(registry, tmplData, srcPath)
 	}
+	// Static repo file — copy as-is without template rendering.
+	data, readErr := fs.ReadFile(r.fsys, srcPath)
+	if readErr == nil {
+		slog.Debug("reading static secret from repo", "path", srcPath)
+		return string(data), nil
+	}
+	if !errors.Is(readErr, fs.ErrNotExist) {
+		return "", fmt.Errorf("reading static secret %s: %w", srcPath, readErr)
+	}
+	// Host-only secret (API keys, tokens) — read from SecretsDir.
 	if r.secretReader != nil {
 		return r.secretReader(filename)
 	}

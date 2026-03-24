@@ -30,11 +30,18 @@ type Status struct {
 
 // Config holds MQTT connection settings. Password is already resolved (read from file at wire-up).
 type Config struct {
-	BrokerURL   string // tcp://host:1883
-	Username    string
-	Password    string
-	TopicPrefix string // default: "picolet"
+	BrokerURL         string // tcp://host:1883
+	Username          string
+	Password          string
+	TopicPrefix       string        // default: "picolet"
+	ConnectRetryDelay time.Duration // default: 10s (autopaho default)
 }
+
+// onConnectionUpTimeout bounds subscribe/publish operations in the
+// OnConnectionUp callback. If the connection drops mid-callback, autopaho's
+// Publish internally calls awaitConnection which blocks the reconnection
+// goroutine. A bounded timeout lets us fail fast and retry on the next connect.
+const onConnectionUpTimeout = 3 * time.Second
 
 // Client manages a long-lived MQTT connection with auto-reconnect.
 type Client struct {
@@ -60,6 +67,9 @@ func NewClient(cfg Config, hostname string) (*Client, error) {
 	if cfg.TopicPrefix == "" {
 		cfg.TopicPrefix = "picolet"
 	}
+	if cfg.ConnectRetryDelay == 0 {
+		cfg.ConnectRetryDelay = 10 * time.Second
+	}
 	return &Client{
 		cfg:          cfg,
 		hostname:     hostname,
@@ -81,8 +91,9 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 	}
 
 	cliCfg := autopaho.ClientConfig{
-		ServerUrls: []*url.URL{brokerURL},
-		KeepAlive:  30,
+		ServerUrls:        []*url.URL{brokerURL},
+		KeepAlive:         30,
+		ConnectRetryDelay: c.cfg.ConnectRetryDelay,
 		// Start fresh on initial connect; retained messages still delivered by broker.
 		CleanStartOnInitialConnection: true,
 		// Session survives short WiFi drops (5 minutes).
@@ -102,14 +113,18 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 			slog.Info("mqtt connected", "broker", c.cfg.BrokerURL)
 			metrics.MQTTConnected.Set(1)
 
+			upCtx, upCancel := context.WithTimeout(ctx, onConnectionUpTimeout)
+			defer upCancel()
+
 			// Re-subscribe on every (re)connect.
-			if _, subErr := cm.Subscribe(ctx, &paho.Subscribe{
+			if _, subErr := cm.Subscribe(upCtx, &paho.Subscribe{
 				Subscriptions: []paho.SubscribeOptions{
 					{Topic: c.pauseTopic, QoS: 1},
 					{Topic: c.triggerTopic, QoS: 1},
 				},
 			}); subErr != nil {
 				slog.Error("mqtt subscribe failed", "error", subErr)
+				return // connection likely broken, retry on next connect cycle
 			}
 
 			// Republish last known full status if available (reconnect after drop),
@@ -117,7 +132,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 			if prev := c.lastStatus.Load(); prev != nil {
 				status := *prev
 				status.Paused = pauseFlag.Load() // always reflect live pause state on reconnect
-				if pubErr := c.publishStatusTopics(ctx, status); pubErr != nil {
+				if pubErr := c.publishStatusTopics(upCtx, status); pubErr != nil {
 					slog.Warn("mqtt republish status on reconnect failed", "error", pubErr)
 				}
 			} else {
@@ -125,7 +140,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 				if pauseFlag.Load() {
 					initialState = "paused"
 				}
-				if _, pubErr := cm.Publish(ctx, &paho.Publish{
+				if _, pubErr := cm.Publish(upCtx, &paho.Publish{
 					Topic: c.stateTopic, QoS: 1, Retain: true,
 					Payload: []byte(initialState),
 				}); pubErr != nil {
@@ -202,21 +217,25 @@ func (c *Client) publishStatusTopics(ctx context.Context, status Status) error {
 		state = "paused"
 	}
 
-	topics := map[string]string{
-		c.stateTopic:                                       state,
-		c.statusPrefix + "/applied_sha":                    status.AppliedSHA,
-		c.statusPrefix + "/failed_count":                   strconv.Itoa(status.FailedCount),
-		c.statusPrefix + "/last_reconciliation":            formatTimestamp(status.LastReconciliation),
-		c.statusPrefix + "/last_successful_reconciliation": formatTimestamp(status.LastSuccessfulReconciliation),
+	// State first: on reconnect the LWT sets state=offline (retained), so we
+	// must overwrite it before the context expires. Deterministic slice order
+	// guarantees state is published even if later topics fail on timeout.
+	type topicPayload struct{ topic, payload string }
+	topics := []topicPayload{
+		{c.stateTopic, state},
+		{c.statusPrefix + "/applied_sha", status.AppliedSHA},
+		{c.statusPrefix + "/failed_count", strconv.Itoa(status.FailedCount)},
+		{c.statusPrefix + "/last_reconciliation", formatTimestamp(status.LastReconciliation)},
+		{c.statusPrefix + "/last_successful_reconciliation", formatTimestamp(status.LastSuccessfulReconciliation)},
 	}
 
 	var errs []error
-	for topic, payload := range topics {
+	for _, tp := range topics {
 		if _, err := c.conn.Publish(ctx, &paho.Publish{
-			Topic: topic, QoS: 1, Retain: true,
-			Payload: []byte(payload),
+			Topic: tp.topic, QoS: 1, Retain: true,
+			Payload: []byte(tp.payload),
 		}); err != nil {
-			slog.Warn("mqtt publish failed", "topic", topic, "error", err)
+			slog.Warn("mqtt publish failed", "topic", tp.topic, "error", err)
 			errs = append(errs, err)
 		}
 	}

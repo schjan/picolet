@@ -23,11 +23,13 @@ pi_types:
       - quadlets/containers/simple.container.tmpl
     secrets:
       - secrets/e2e_secret.txt
+      - secrets/static_alert_rules.yml
   dev:
     containers:
       - quadlets/containers/simple.container.tmpl
     secrets:
       - secrets/e2e_secret.txt
+      - secrets/static_alert_rules.yml
 features:
   app-a:
     containers:
