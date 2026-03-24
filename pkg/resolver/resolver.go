@@ -268,10 +268,11 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 }
 
 // secretContent returns the content for a secret entry.
-// Three modes:
+// Modes, in priority order:
 //  1. Template secrets (.tmpl suffix) are rendered with the full template engine.
 //  2. Static repo secrets (file exists in repo without .tmpl) are copied as-is.
 //  3. Host-only secrets (not in repo) are read from SecretsDir via secretReader.
+//  4. If no secretReader is configured, a placeholder value ("<secret>") is returned and a warning is logged.
 func (r *Resolver) secretContent(registry *template.Template, tmplData *TemplateData, srcPath, filename string) (string, error) {
 	if strings.HasSuffix(srcPath, ".tmpl") {
 		return r.renderOrRead(registry, tmplData, srcPath)
