@@ -98,6 +98,7 @@ func (r *ResolvedFileSet) merge(g AssignmentGroup) {
 // SortStableFunc preserves insertion order for equal keys, so the base layer's Header is kept
 // when a later layer duplicates the same (name, glob) with a different Header.
 func deduplicateAggregateSecrets(entries []AggregateSecret) []AggregateSecret {
+	entries = slices.Clone(entries) // avoid mutating the caller's slice
 	slices.SortStableFunc(entries, func(a, b AggregateSecret) int {
 		if n := cmp.Compare(a.Name, b.Name); n != 0 {
 			return n

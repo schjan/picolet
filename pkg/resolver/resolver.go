@@ -203,12 +203,20 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 
 	// Group aggregate secrets by name so that multiple layers can contribute
 	// different globs to the same Podman secret (additive merge).
+	// Deduplication of identical (name, glob) pairs has already happened in config.Resolve.
 	for _, ag := range groupAggregateSecrets(fileSet.AggregateSecrets) {
 		f, err := r.resolveAggregateSecret(ag.Name, ag.Header, ag.Globs)
 		if err != nil {
 			return nil, err
 		}
 		files = append(files, *f)
+	}
+
+	// Guard against a secret name being defined as both a regular secret and an
+	// aggregate secret — the reconciler keys on DestPath, so duplicates would
+	// cause non-deterministic overwrites.
+	if err := checkSecretNameCollisions(files); err != nil {
+		return nil, err
 	}
 
 	return &ResolvedHost{
@@ -405,6 +413,24 @@ func (r *Resolver) secretContent(registry *template.Template, tmplData *Template
 	return placeholderSecret, nil
 }
 
+// checkSecretNameCollisions returns an error if any secret DestPath appears more
+// than once — which would happen when a regular secret and an aggregate secret
+// resolve to the same Podman secret name.
+func checkSecretNameCollisions(files []ResolvedFile) error {
+	seen := make(map[string]bool)
+	for _, f := range files {
+		if f.Category != "secret" {
+			continue
+		}
+		if seen[f.DestPath] {
+			name := strings.TrimPrefix(f.DestPath, "secret:")
+			return fmt.Errorf("secret %q is defined both as a regular secret and an aggregate secret", name)
+		}
+		seen[f.DestPath] = true
+	}
+	return nil
+}
+
 // groupedAggregate holds the merged globs for a single aggregate secret name.
 type groupedAggregate struct {
 	Name   string
@@ -451,6 +477,7 @@ func (r *Resolver) resolveAggregateSecret(name, header string, globs []string) (
 		allMatches = append(allMatches, matches...)
 	}
 	slices.Sort(allMatches)
+	allMatches = slices.Compact(allMatches) // overlapping globs may match the same file
 
 	var buf bytes.Buffer
 	buf.WriteString(header)
@@ -463,7 +490,7 @@ func (r *Resolver) resolveAggregateSecret(name, header string, globs []string) (
 	}
 
 	return &ResolvedFile{
-		SrcPath:  strings.Join(globs, ","),
+		SrcPath:  "aggregate:" + name,
 		DestPath: "secret:" + name,
 		Content:  buf.String(),
 		Category: "secret",

@@ -556,6 +556,59 @@ func TestResolveAggregateSecret(t *testing.T) {
 		assert.Contains(t, secrets[0].Content, "- name: watchdog")
 		assert.Contains(t, secrets[0].Content, "- name: cpu")
 	})
+
+	t.Run("overlapping globs deduplicate matched files", func(t *testing.T) {
+		t.Parallel()
+		fsys := addBaseFiles(fstest.MapFS{
+			"rules/host.yml":     &fstest.MapFile{Data: []byte("host\n")},
+			"rules/watchdog.yml": &fstest.MapFile{Data: []byte("watchdog\n")},
+		})
+		cfg, err := config.LoadAll(fsys)
+		require.NoError(t, err)
+		// Both globs match rules/host.yml — it must appear only once in the output
+		cfg.Assignments.Base.AggregateSecrets = []config.AggregateSecret{
+			{Name: "overlap", Glob: "rules/*.yml"},
+			{Name: "overlap", Glob: "rules/host.yml"},
+		}
+
+		r, err := New(Config{FS: fsys, Config: cfg})
+		require.NoError(t, err)
+		resolved, err := r.ResolveHost("test-host")
+		require.NoError(t, err)
+
+		var agg *ResolvedFile
+		for i := range resolved.Files {
+			if resolved.Files[i].DestPath == "secret:overlap" {
+				agg = &resolved.Files[i]
+				break
+			}
+		}
+		require.NotNil(t, agg)
+		// host.yml content must appear exactly once, not twice
+		assert.Equal(t, "host\nwatchdog\n", agg.Content)
+	})
+
+	t.Run("name collision with regular secret returns error", func(t *testing.T) {
+		t.Parallel()
+		fsys := addBaseFiles(fstest.MapFS{
+			"secrets/myrules.yml": &fstest.MapFile{Data: []byte("static\n")},
+			"rules/alert.yml":     &fstest.MapFile{Data: []byte("alert\n")},
+		})
+		cfg, err := config.LoadAll(fsys)
+		require.NoError(t, err)
+		// Regular secret resolves to "secret:myrules", aggregate also targets "myrules"
+		cfg.Assignments.Base.Secrets = []string{"secrets/myrules.yml"}
+		cfg.Assignments.Base.AggregateSecrets = []config.AggregateSecret{
+			{Name: "myrules", Glob: "rules/*.yml"},
+		}
+
+		r, err := New(Config{FS: fsys, Config: cfg})
+		require.NoError(t, err)
+		_, err = r.ResolveHost("test-host")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "myrules")
+		assert.Contains(t, err.Error(), "both as a regular secret and an aggregate secret")
+	})
 }
 
 // addBaseFiles adds the minimum fleet.yml, assignments.yml, and host.yml to a MapFS
