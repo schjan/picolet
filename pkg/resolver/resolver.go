@@ -486,6 +486,10 @@ func (r *Resolver) resolveAggregateSecret(name, header string, globs []string) (
 		if err != nil {
 			return nil, fmt.Errorf("resolving aggregate secret %q: reading %s: %w", name, path, err)
 		}
+		// Ensure a newline separator between header/files so content is never glued together.
+		if buf.Len() > 0 && buf.Bytes()[buf.Len()-1] != '\n' {
+			buf.WriteByte('\n')
+		}
 		buf.Write(data)
 	}
 

@@ -588,6 +588,35 @@ func TestResolveAggregateSecret(t *testing.T) {
 		assert.Equal(t, "host\nwatchdog\n", agg.Content)
 	})
 
+	t.Run("missing trailing newline gets separator injected", func(t *testing.T) {
+		t.Parallel()
+		fsys := addBaseFiles(fstest.MapFS{
+			"rules/a.yml": &fstest.MapFile{Data: []byte("a-content")}, // no trailing newline
+			"rules/b.yml": &fstest.MapFile{Data: []byte("b-content\n")},
+		})
+		cfg, err := config.LoadAll(fsys)
+		require.NoError(t, err)
+		cfg.Assignments.Base.AggregateSecrets = []config.AggregateSecret{
+			{Name: "noeol", Glob: "rules/*.yml", Header: "header:"},
+		}
+
+		r, err := New(Config{FS: fsys, Config: cfg})
+		require.NoError(t, err)
+		resolved, err := r.ResolveHost("test-host")
+		require.NoError(t, err)
+
+		var agg *ResolvedFile
+		for i := range resolved.Files {
+			if resolved.Files[i].DestPath == "secret:noeol" {
+				agg = &resolved.Files[i]
+				break
+			}
+		}
+		require.NotNil(t, agg)
+		// header and a.yml both lack trailing newlines — separators must be injected
+		assert.Equal(t, "header:\na-content\nb-content\n", agg.Content)
+	})
+
 	t.Run("name collision with regular secret returns error", func(t *testing.T) {
 		t.Parallel()
 		fsys := addBaseFiles(fstest.MapFS{
