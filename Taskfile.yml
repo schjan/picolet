@@ -27,6 +27,11 @@ tasks:
     cmds:
       - go test -tags "{{.BUILD_TAGS}}" ./... -race -count=1
 
+  test:onepassword:
+    desc: Run 1Password integration tests (requires OP_SERVICE_ACCOUNT_TOKEN + OP_TEST_SECRET_REF)
+    cmds:
+      - go test -tags "{{.BUILD_TAGS}},onepassword_integration" ./pkg/onepassword/... -race -count=1 -v
+
   lint:
     desc: Run golangci-lint
     cmds:
