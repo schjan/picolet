@@ -3,6 +3,7 @@ package resolver
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -302,7 +303,8 @@ func TestStaticRepoSecret(t *testing.T) {
 
 	f := findByDest(t, resolved.Files, "secret:static_config")
 	assert.Equal(t, "secret", f.Category)
-	assert.Contains(t, f.Content, `{{ $labels.job }}`, "static secret must not be template-rendered")
+	assert.Equal(t, "groups:\n  - alert: InstanceDown\n    annotations:\n      summary: \"{{ $labels.job }} is down\"\n", f.Content,
+		"static secret must be copied verbatim without template rendering")
 }
 
 func TestTemplateSecret(t *testing.T) {
@@ -350,6 +352,42 @@ func TestHostOnlySecretPlaceholder(t *testing.T) {
 
 	f := findByDest(t, resolved.Files, "secret:host_only")
 	assert.Equal(t, "<secret>", f.Content)
+}
+
+func TestStaticRepoSecretReadError(t *testing.T) {
+	t.Parallel()
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte(`
+images:
+  app: "app:v1"
+ports:
+  app: 8080
+`)},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base:
+  secrets:
+    - secrets/broken.yml
+pi_types: {}
+features: {}
+`)},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: test-host
+external_hostname: test-host.ts.net
+pi_type: server
+features: []
+`)},
+		// Directory entry where a file is expected — causes a non-ErrNotExist read error.
+		"secrets/broken.yml": &fstest.MapFile{Mode: fs.ModeDir},
+	}
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	_, err = r.ResolveHost("test-host")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading static secret")
 }
 
 func TestSecretPathTraversal(t *testing.T) {

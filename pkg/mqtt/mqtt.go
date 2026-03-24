@@ -67,6 +67,9 @@ func NewClient(cfg Config, hostname string) (*Client, error) {
 	if cfg.TopicPrefix == "" {
 		cfg.TopicPrefix = "picolet"
 	}
+	if cfg.ConnectRetryDelay == 0 {
+		cfg.ConnectRetryDelay = 10 * time.Second
+	}
 	return &Client{
 		cfg:          cfg,
 		hostname:     hostname,
@@ -121,6 +124,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 				},
 			}); subErr != nil {
 				slog.Error("mqtt subscribe failed", "error", subErr)
+				return // connection likely broken, retry on next connect cycle
 			}
 
 			// Republish last known full status if available (reconnect after drop),
