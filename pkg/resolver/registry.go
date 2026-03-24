@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io/fs"
 	"slices"
@@ -17,13 +18,13 @@ type SecretReader func(path string) (string, error)
 
 // OpSecretReader resolves a 1Password secret reference (e.g. "op://vault/item/field").
 // Pass nil to disable 1Password integration (readOpSecret returns a placeholder).
-type OpSecretReader func(ref string) (string, error)
+type OpSecretReader func(ctx context.Context, ref string) (string, error)
 
 // BuildRegistry collects all .tmpl files from the filesystem and builds
 // a shared template registry with custom functions.
 //
 //nolint:cyclop,funlen // funcmap registration is inherently branchy
-func BuildRegistry(fsys fs.FS, secretReader SecretReader, opSecretReader OpSecretReader) (*template.Template, error) {
+func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, opSecretReader OpSecretReader) (*template.Template, error) {
 	sources := make(map[string]string)
 	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -63,7 +64,7 @@ func BuildRegistry(fsys fs.FS, secretReader SecretReader, opSecretReader OpSecre
 			if opSecretReader == nil {
 				return "<op-secret>", nil
 			}
-			return opSecretReader(ref)
+			return opSecretReader(ctx, ref)
 		},
 		// renderTemplate uses a closure depth counter to prevent infinite recursion.
 		// Not goroutine-safe; template rendering must be serial.

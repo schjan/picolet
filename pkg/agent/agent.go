@@ -302,7 +302,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 
 // LoadAndResolve loads fleet config from repoPath and resolves the desired state for the given host.
 // It is the shared implementation behind Agent.loadAndResolve and CLI subcommands (apply, dry-run).
-func LoadAndResolve(repoPath, hostname, secretsDir string, rootless bool, opSecretReader resolver.OpSecretReader) ([]resolver.ResolvedFile, error) {
+func LoadAndResolve(ctx context.Context, repoPath, hostname, secretsDir string, rootless bool, opSecretReader resolver.OpSecretReader) ([]resolver.ResolvedFile, error) {
 	slog.Debug("loading fleet config", "repo", repoPath)
 	repoFS := os.DirFS(repoPath)
 	cfg, err := config.LoadAll(repoFS)
@@ -336,7 +336,7 @@ func LoadAndResolve(repoPath, hostname, secretsDir string, rootless bool, opSecr
 	if err != nil {
 		return nil, fmt.Errorf("creating resolver: %w", err)
 	}
-	resolved, err := r.ResolveHost(hostname)
+	resolved, err := r.ResolveHost(ctx, hostname)
 	if err != nil {
 		return nil, fmt.Errorf("resolving host %s: %w", hostname, err)
 	}
@@ -359,7 +359,7 @@ func (a *Agent) loadAndResolve(ctx context.Context) ([]resolver.ResolvedFile, er
 		}
 	}
 
-	return LoadAndResolve(fleetPath, a.cfg.Hostname, a.cfg.SecretsDir, a.cfg.Rootless, opReader)
+	return LoadAndResolve(ctx, fleetPath, a.cfg.Hostname, a.cfg.SecretsDir, a.cfg.Rootless, opReader)
 }
 
 // ReconcileResult contains the outcome of a single reconciliation cycle.

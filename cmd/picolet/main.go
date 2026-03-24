@@ -79,8 +79,8 @@ func main() {
 						Required: true,
 					},
 				},
-				Action: func(_ context.Context, cmd *cli.Command) error {
-					return runResolve(cmd.Root().String("repo-dir"), cmd.String("host"))
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return runResolve(ctx, cmd.Root().String("repo-dir"), cmd.String("host"))
 				},
 			},
 			{
@@ -308,7 +308,7 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 		}
 	}
 
-	files, err := agent.LoadAndResolve(effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)
+	files, err := agent.LoadAndResolve(ctx, effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -322,7 +322,7 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 }
 
 // dryRunResolveBasic resolves files without agent config (no secrets, default state path).
-func dryRunResolveBasic(repoDir, hostname string) ([]resolver.ResolvedFile, *state.Store, error) {
+func dryRunResolveBasic(ctx context.Context, repoDir, hostname string) ([]resolver.ResolvedFile, *state.Store, error) {
 	repoFS := os.DirFS(repoDir)
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
@@ -333,7 +333,7 @@ func dryRunResolveBasic(repoDir, hostname string) ([]resolver.ResolvedFile, *sta
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating resolver: %w", err)
 	}
-	resolved, err := r.ResolveHost(hostname)
+	resolved, err := r.ResolveHost(ctx, hostname)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -352,7 +352,7 @@ func runDryRun(ctx context.Context, repoDir, hostname, configPath string) error 
 	if configPath != "" {
 		files, store, rootless, err = dryRunResolveWithConfig(ctx, repoDir, hostname, configPath)
 	} else {
-		files, store, err = dryRunResolveBasic(repoDir, hostname)
+		files, store, err = dryRunResolveBasic(ctx, repoDir, hostname)
 	}
 	if err != nil {
 		return err
@@ -408,7 +408,7 @@ func runValidate(ctx context.Context, repoDir string) error {
 	return validator.ValidateAll(ctx, r, cfg)
 }
 
-func runResolve(repoDir, host string) error {
+func runResolve(ctx context.Context, repoDir, host string) error {
 	repoFS := os.DirFS(repoDir)
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
@@ -418,7 +418,7 @@ func runResolve(repoDir, host string) error {
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)
 	}
-	resolved, err := r.ResolveHost(host)
+	resolved, err := r.ResolveHost(ctx, host)
 	if err != nil {
 		return err
 	}
@@ -555,7 +555,7 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		}
 	}
 
-	files, err := agent.LoadAndResolve(effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)
+	files, err := agent.LoadAndResolve(ctx, effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)
 	if err != nil {
 		return err
 	}

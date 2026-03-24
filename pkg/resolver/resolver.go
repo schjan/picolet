@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -108,7 +109,7 @@ func ResolveDirs(rootless bool) (quadletDir, systemdDir, dataDir string, err err
 // ResolveHost computes the complete desired state for a given hostname.
 //
 //nolint:cyclop // sequential resolution of file categories; splitting would obscure the flow
-func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
+func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedHost, error) {
 	host, ok := r.cfg.Hosts[hostname]
 	if !ok {
 		return nil, &HostNotFoundError{Hostname: hostname}
@@ -119,7 +120,7 @@ func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 		return nil, err
 	}
 
-	registry, err := BuildRegistry(r.fsys, r.secretReader, r.opSecretReader)
+	registry, err := BuildRegistry(ctx, r.fsys, r.secretReader, r.opSecretReader)
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}
@@ -174,10 +175,10 @@ func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 }
 
 // ResolveAll resolves all hosts and returns the results.
-func (r *Resolver) ResolveAll() (map[string]*ResolvedHost, error) {
+func (r *Resolver) ResolveAll(ctx context.Context) (map[string]*ResolvedHost, error) {
 	results := make(map[string]*ResolvedHost, len(r.cfg.Hosts))
 	for _, hostname := range r.cfg.SortedHostnames() {
-		resolved, err := r.ResolveHost(hostname)
+		resolved, err := r.ResolveHost(ctx, hostname)
 		if err != nil {
 			return nil, fmt.Errorf("resolving host %s: %w", hostname, err)
 		}

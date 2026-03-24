@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -98,7 +99,7 @@ func TestResolveHost(t *testing.T) {
 
 	r, err := New(Config{FS: fsys, Config: cfg})
 	require.NoError(t, err)
-	resolved, err := r.ResolveHost("test-host")
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
 	require.NoError(t, err)
 
 	assert.Equal(t, "test-host", resolved.Hostname)
@@ -139,7 +140,7 @@ func TestResolveHostNotFound(t *testing.T) {
 
 	r, err := New(Config{FS: fsys, Config: cfg})
 	require.NoError(t, err)
-	_, err = r.ResolveHost("nonexistent")
+	_, err = r.ResolveHost(t.Context(), "nonexistent")
 	require.Error(t, err)
 }
 
@@ -191,7 +192,7 @@ func TestRenderTemplateRecursion(t *testing.T) {
 		"a.tmpl": &fstest.MapFile{Data: []byte(`{{renderTemplate "b.tmpl" .}}`)},
 		"b.tmpl": &fstest.MapFile{Data: []byte(`{{renderTemplate "a.tmpl" .}}`)},
 	}
-	registry, err := BuildRegistry(fsys, nil, nil)
+	registry, err := BuildRegistry(t.Context(), fsys, nil, nil)
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
@@ -212,7 +213,7 @@ func TestRootlessPaths(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 
-	resolved, err := r.ResolveHost("test-host")
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
 	require.NoError(t, err)
 
 	for _, f := range resolved.Files {
@@ -407,13 +408,13 @@ func TestReadOpSecret(t *testing.T) {
 
 	t.Run("with reader", func(t *testing.T) {
 		t.Parallel()
-		reader := func(ref string) (string, error) {
+		reader := func(_ context.Context, ref string) (string, error) {
 			if ref == "op://vault/item/pw" {
 				return "s3cret", nil
 			}
 			return "", fmt.Errorf("unknown ref: %s", ref)
 		}
-		registry, err := BuildRegistry(fsys, nil, reader)
+		registry, err := BuildRegistry(t.Context(), fsys, nil, reader)
 		require.NoError(t, err)
 		var buf bytes.Buffer
 		require.NoError(t, registry.ExecuteTemplate(&buf, "secret.tmpl", nil))
@@ -422,7 +423,7 @@ func TestReadOpSecret(t *testing.T) {
 
 	t.Run("nil reader returns placeholder", func(t *testing.T) {
 		t.Parallel()
-		registry, err := BuildRegistry(fsys, nil, nil)
+		registry, err := BuildRegistry(t.Context(), fsys, nil, nil)
 		require.NoError(t, err)
 		var buf bytes.Buffer
 		require.NoError(t, registry.ExecuteTemplate(&buf, "secret.tmpl", nil))
@@ -431,8 +432,8 @@ func TestReadOpSecret(t *testing.T) {
 
 	t.Run("reader error propagates", func(t *testing.T) {
 		t.Parallel()
-		reader := func(_ string) (string, error) { return "", fmt.Errorf("1password error") }
-		registry, err := BuildRegistry(fsys, nil, reader)
+		reader := func(_ context.Context, _ string) (string, error) { return "", fmt.Errorf("1password error") }
+		registry, err := BuildRegistry(t.Context(), fsys, nil, reader)
 		require.NoError(t, err)
 		var buf bytes.Buffer
 		err = registry.ExecuteTemplate(&buf, "secret.tmpl", nil)

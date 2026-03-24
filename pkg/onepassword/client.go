@@ -39,9 +39,10 @@ func (c *Client) Resolve(ctx context.Context, ref string) (string, error) {
 
 // NewReaderFromTokenFile reads a service account token from disk and returns
 // a secret reader closure. Returns (nil, nil) when tokenPath is empty.
+// The init context is used only for SDK client creation; each call receives its own context.
 //
 //nolint:nilnil // nil reader signals "1Password not configured"; callers check for nil
-func NewReaderFromTokenFile(ctx context.Context, tokenPath string) (func(string) (string, error), error) {
+func NewReaderFromTokenFile(ctx context.Context, tokenPath string) (func(context.Context, string) (string, error), error) {
 	if tokenPath == "" {
 		return nil, nil
 	}
@@ -53,7 +54,7 @@ func NewReaderFromTokenFile(ctx context.Context, tokenPath string) (func(string)
 	if err != nil {
 		return nil, err
 	}
-	return func(ref string) (string, error) {
+	return func(ctx context.Context, ref string) (string, error) {
 		return client.Resolve(ctx, ref)
 	}, nil
 }

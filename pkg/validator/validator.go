@@ -29,9 +29,9 @@ func ValidateFiles(files []resolver.ResolvedFile, rootless bool) error {
 }
 
 // ValidateHost resolves and validates files for a single host.
-func ValidateHost(_ context.Context, r *resolver.Resolver, hostname string) error {
+func ValidateHost(ctx context.Context, r *resolver.Resolver, hostname string) error {
 	slog.Info("validating host", "host", hostname)
-	resolved, err := r.ResolveHost(hostname)
+	resolved, err := r.ResolveHost(ctx, hostname)
 	if err != nil {
 		return fmt.Errorf("host %s: resolve: %w", hostname, err)
 	}

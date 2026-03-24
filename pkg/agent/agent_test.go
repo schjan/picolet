@@ -1039,7 +1039,7 @@ Internal=true
 
 	// Resolve from the subdirectory path (simulates what Agent.loadAndResolve does with RepoSubDir).
 	fleetPath := filepath.Join(repoDir, subDir)
-	files, err := LoadAndResolve(fleetPath, "test-host", t.TempDir(), false, nil)
+	files, err := LoadAndResolve(t.Context(), fleetPath, "test-host", t.TempDir(), false, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, files)
 	assert.Equal(t, "/etc/containers/systemd/picolet/internal.network", files[0].DestPath)

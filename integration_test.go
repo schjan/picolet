@@ -42,7 +42,7 @@ func TestIntegrationResolveGolden(t *testing.T) {
 	for _, hostname := range cfg.SortedHostnames() {
 		t.Run(hostname, func(t *testing.T) {
 			t.Parallel()
-			resolved, err := r.ResolveHost(hostname)
+			resolved, err := r.ResolveHost(t.Context(), hostname)
 			require.NoError(t, err)
 
 			for _, f := range resolved.Files {
@@ -70,7 +70,7 @@ func TestIntegrationReconcilePipeline(t *testing.T) {
 	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
 	hostname := "node-1" // worker + app-a: exercises multi-feature assignment merging
-	resolved, err := r.ResolveHost(hostname)
+	resolved, err := r.ResolveHost(t.Context(), hostname)
 	require.NoError(t, err)
 
 	// First deploy: all creates
@@ -106,7 +106,7 @@ func TestIntegrationMultiHostConsistency(t *testing.T) {
 
 	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
-	allResolved, err := r.ResolveAll()
+	allResolved, err := r.ResolveAll(t.Context())
 	require.NoError(t, err)
 
 	// Base resources (network, systemd) should be identical across hosts
@@ -151,7 +151,7 @@ func TestIntegrationErrorPaths(t *testing.T) {
 		require.NoError(t, err)
 		r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
 		require.NoError(t, err)
-		_, err = r.ResolveHost("nonexistent")
+		_, err = r.ResolveHost(t.Context(), "nonexistent")
 		require.Error(t, err)
 		var notFound *resolver.HostNotFoundError
 		require.ErrorAs(t, err, &notFound)
