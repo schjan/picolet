@@ -16,6 +16,7 @@ import (
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
 
 	"github.com/schjan/picolet/pkg/config"
+	op "github.com/schjan/picolet/pkg/onepassword"
 )
 
 // PicoletMarker is the comment header prepended to systemd unit files managed by picolet.
@@ -161,7 +162,7 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 	}
 
 	for _, path := range fileSet.Secrets {
-		f, err := r.resolveSecret(registry, tmplData, path)
+		f, err := r.resolveSecret(ctx, registry, tmplData, path)
 		if err != nil {
 			return nil, err
 		}
@@ -253,7 +254,12 @@ func (r *Resolver) resolveManifest(registry *template.Template, tmplData *Templa
 	}, nil
 }
 
-func (r *Resolver) resolveSecret(registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {
+func (r *Resolver) resolveSecret(ctx context.Context, registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {
+	// 1Password direct secret: op://vault/item/field → Podman secret "item_field"
+	if strings.HasPrefix(srcPath, "op://") {
+		return r.resolveOpSecret(ctx, srcPath)
+	}
+
 	// secrets/prometheus_config.yml.tmpl → secret name "prometheus_config"
 	filename := destFilename(srcPath)
 	secretName := strings.TrimSuffix(filename, filepath.Ext(filename))
@@ -265,6 +271,37 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 
 	return &ResolvedFile{
 		SrcPath:  srcPath,
+		DestPath: "secret:" + secretName,
+		Content:  content,
+		Category: "secret",
+	}, nil
+}
+
+func (r *Resolver) resolveOpSecret(ctx context.Context, ref string) (*ResolvedFile, error) {
+	parsed, err := op.ParseOpRef(ref)
+	if err != nil {
+		return nil, err
+	}
+	secretName := parsed.PodmanSecretName()
+
+	if r.opSecretReader == nil {
+		slog.Warn("op:// secret requested but 1password not configured, using placeholder", "ref", ref)
+		return &ResolvedFile{
+			SrcPath:  ref,
+			DestPath: "secret:" + secretName,
+			Content:  "<op-secret>",
+			Category: "secret",
+		}, nil
+	}
+
+	slog.Debug("resolving 1password secret", "ref", ref, "secret_name", secretName)
+	content, err := r.opSecretReader(ctx, ref)
+	if err != nil {
+		return nil, fmt.Errorf("resolving op secret %s: %w", ref, err)
+	}
+
+	return &ResolvedFile{
+		SrcPath:  ref,
 		DestPath: "secret:" + secretName,
 		Content:  content,
 		Category: "secret",

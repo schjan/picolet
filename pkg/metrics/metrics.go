@@ -121,6 +121,28 @@ var (
 		},
 		[]string{"feature"},
 	)
+
+	OpSecretsSynced = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "picolet_op_secrets_synced",
+			Help: "Number of op:// secrets currently managed by picolet.",
+		},
+	)
+
+	OpSyncTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "picolet_op_sync_total",
+			Help: "Total 1Password sync attempts by result (success, failure).",
+		},
+		[]string{"result"},
+	)
+
+	OpLastSyncTimestamp = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "picolet_op_last_sync_timestamp",
+			Help: "Unix timestamp of the last successful 1Password secret sync.",
+		},
+	)
 )
 
 var registerOnce sync.Once
@@ -146,6 +168,9 @@ func Register() {
 			AgentPaused,
 			BuildInfo,
 			FeatureInfo,
+			OpSecretsSynced,
+			OpSyncTotal,
+			OpLastSyncTimestamp,
 			UnitHealth,
 		)
 		BuildInfo.WithLabelValues(version.Version, version.GitSHA).Set(1)

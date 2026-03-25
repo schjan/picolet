@@ -177,7 +177,7 @@ onepassword:
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
 				SystemdUser:  new(false),
-				OnePassword:  &OnePasswordConfig{TokenPath: "/etc/picolet/op-token"}, //nolint:gosec // test fixture
+				OnePassword:  &OnePasswordConfig{TokenPath: "/etc/picolet/op-token", RefreshInterval: 6 * time.Hour}, //nolint:gosec // test fixture
 			},
 		},
 		{

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -56,7 +57,9 @@ type Agent struct {
 	statePath string
 	lockPath  string
 
-	opReader resolver.OpSecretReader // nil when 1Password not configured; initialized in Run
+	opReader          resolver.OpSecretReader // nil when 1Password not configured; initialized in Run
+	lastOPRefresh     time.Time               // zero = never refreshed; in-memory only (restart always re-fetches)
+	opRefreshInterval time.Duration           // copied from config; 0 = feature disabled
 
 	webhookCh          chan struct{}
 	ready              atomic.Bool
@@ -158,6 +161,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			return fmt.Errorf("setting up 1password: %w", err)
 		}
 		slog.Info("1password client initialized", "token_path", a.cfg.OnePassword.TokenPath)
+		a.opRefreshInterval = a.cfg.OnePassword.RefreshInterval
 	}
 
 	// Initialize git poller
@@ -259,18 +263,24 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	}
 
 	if !pollResult.Changed {
-		metrics.GitPollTotal.WithLabelValues("noop").Inc()
-		slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
-		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
-		// A noop is a successful reconciliation — the agent confirmed the
-		// desired state matches. Update the timestamp so dashboards and MQTT
-		// reflect "last time we verified everything is OK", not just "last
-		// time files changed". Only update in-memory (the defer publishes
-		// MQTT, Prometheus is scraped); no state save needed for noops.
-		now := time.Now()
-		st.LastSuccessfulReconciliationAt = now
-		metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
-		return nil
+		if !a.opRefreshDue() {
+			metrics.GitPollTotal.WithLabelValues("noop").Inc()
+			slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
+			metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
+			// A noop is a successful reconciliation — the agent confirmed the
+			// desired state matches. Update the timestamp so dashboards and MQTT
+			// reflect "last time we verified everything is OK", not just "last
+			// time files changed". Only update in-memory (the defer publishes
+			// MQTT, Prometheus is scraped); no state save needed for noops.
+			now := time.Now()
+			st.LastSuccessfulReconciliationAt = now
+			metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
+			return nil
+		}
+		slog.Info("forcing reconciliation for 1password secret refresh", "sha", pollResult.HeadSHA)
+		// Snooze the refresh timer now so that the failed-SHA gate (below) does not
+		// cause opRefreshDue() to fire on every subsequent tick.
+		a.lastOPRefresh = time.Now()
 	}
 	metrics.GitPollTotal.WithLabelValues("changed").Inc()
 
@@ -294,6 +304,9 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if err != nil {
 		slog.Error("reconciliation failed", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
 		metrics.ReconciliationTotal.WithLabelValues("failure").Inc()
+		if a.opReader != nil {
+			metrics.OpSyncTotal.WithLabelValues("failure").Inc()
+		}
 
 		// Track failure count for the same SHA
 		if st.FailedSHA == pollResult.HeadSHA {
@@ -310,6 +323,11 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return err
 	}
 
+	if a.opReader != nil {
+		a.lastOPRefresh = time.Now()
+		metrics.OpSyncTotal.WithLabelValues("success").Inc()
+		metrics.OpLastSyncTimestamp.SetToCurrentTime()
+	}
 	metrics.ReconciliationTotal.WithLabelValues("success").Inc()
 	slog.Info("reconciliation complete", "sha", pollResult.HeadSHA, "result", "success", "duration", elapsed.Round(time.Millisecond))
 	return nil
@@ -383,6 +401,8 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	if err != nil {
 		return nil, err
 	}
+
+	a.recordOpSecretsCount(files)
 
 	changeset := reconciler.Diff(files, st)
 
@@ -577,6 +597,29 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 			slog.Warn("daemon-reload after orphan cleanup failed", "error", err)
 		}
 	}
+}
+
+// recordOpSecretsCount updates the picolet_op_secrets_synced gauge.
+func (a *Agent) recordOpSecretsCount(files []resolver.ResolvedFile) {
+	if a.opReader == nil {
+		return
+	}
+	var count int
+	for _, f := range files {
+		if strings.HasPrefix(f.SrcPath, "op://") {
+			count++
+		}
+	}
+	metrics.OpSecretsSynced.Set(float64(count))
+}
+
+// opRefreshDue reports whether op:// secrets should be re-fetched.
+// Returns true when 1Password is configured and the refresh interval has elapsed.
+func (a *Agent) opRefreshDue() bool {
+	if a.opReader == nil || a.opRefreshInterval == 0 {
+		return false
+	}
+	return a.lastOPRefresh.IsZero() || time.Since(a.lastOPRefresh) >= a.opRefreshInterval
 }
 
 func (a *Agent) triggerReconcile() {

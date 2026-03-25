@@ -21,7 +21,8 @@ type MQTTConfig struct {
 
 // OnePasswordConfig holds 1Password SDK settings.
 type OnePasswordConfig struct {
-	TokenPath string `yaml:"token_path"` // file path to service account token
+	TokenPath       string        `yaml:"token_path"`       // file path to service account token
+	RefreshInterval time.Duration `yaml:"refresh_interval"` // how often to re-fetch op:// secrets (default 6h)
 }
 
 // Config holds the agent runtime configuration from /etc/picolet/config.yml.
@@ -60,6 +61,7 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+//nolint:cyclop // sequential field defaults; splitting would obscure the logic
 func (c *Config) setDefaults() {
 	if c.RepoBranch == "" {
 		c.RepoBranch = "main"
@@ -78,6 +80,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.MQTT != nil && c.MQTT.TopicPrefix == "" {
 		c.MQTT.TopicPrefix = "picolet"
+	}
+	if c.OnePassword != nil && c.OnePassword.RefreshInterval == 0 {
+		c.OnePassword.RefreshInterval = 6 * time.Hour
 	}
 	if c.SystemdUser == nil {
 		c.SystemdUser = new(c.Rootless)
