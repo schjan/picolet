@@ -256,7 +256,7 @@ func (r *Resolver) resolveManifest(registry *template.Template, tmplData *Templa
 
 func (r *Resolver) resolveSecret(ctx context.Context, registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {
 	// 1Password direct secret: op://vault/item/field → Podman secret "item_field"
-	if strings.HasPrefix(srcPath, "op://") {
+	if op.IsRef(srcPath) {
 		return r.resolveOpSecret(ctx, srcPath)
 	}
 
@@ -284,20 +284,16 @@ func (r *Resolver) resolveOpSecret(ctx context.Context, ref string) (*ResolvedFi
 	}
 	secretName := parsed.PodmanSecretName()
 
+	var content string
 	if r.opSecretReader == nil {
 		slog.Warn("op:// secret requested but 1password not configured, using placeholder", "ref", ref)
-		return &ResolvedFile{
-			SrcPath:  ref,
-			DestPath: "secret:" + secretName,
-			Content:  "<op-secret>",
-			Category: "secret",
-		}, nil
-	}
-
-	slog.Debug("resolving 1password secret", "ref", ref, "secret_name", secretName)
-	content, err := r.opSecretReader(ctx, ref)
-	if err != nil {
-		return nil, fmt.Errorf("resolving op secret %s: %w", ref, err)
+		content = "<op-secret>"
+	} else {
+		slog.Debug("resolving 1password secret", "ref", ref, "secret_name", secretName)
+		content, err = r.opSecretReader(ctx, ref)
+		if err != nil {
+			return nil, fmt.Errorf("resolving op secret %s: %w", ref, err)
+		}
 	}
 
 	return &ResolvedFile{

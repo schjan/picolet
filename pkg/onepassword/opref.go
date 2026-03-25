@@ -5,6 +5,12 @@ import (
 	"strings"
 )
 
+// Prefix is the URI scheme prefix for 1Password secret references.
+const Prefix = "op://"
+
+// IsRef reports whether s is a 1Password secret reference.
+func IsRef(s string) bool { return strings.HasPrefix(s, Prefix) }
+
 // OpRef is a parsed op:// secret reference.
 type OpRef struct {
 	Vault string
@@ -15,7 +21,7 @@ type OpRef struct {
 // ParseOpRef parses a 1Password secret reference of the form "op://vault/item/field".
 // The field component may contain slashes (e.g. "op://vault/item/section/field").
 func ParseOpRef(ref string) (OpRef, error) {
-	path, ok := strings.CutPrefix(ref, "op://")
+	path, ok := strings.CutPrefix(ref, Prefix)
 	if !ok {
 		return OpRef{}, fmt.Errorf("invalid op:// reference %q: missing op:// prefix", ref)
 	}

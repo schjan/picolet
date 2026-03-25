@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -57,9 +56,8 @@ type Agent struct {
 	statePath string
 	lockPath  string
 
-	opReader          resolver.OpSecretReader // nil when 1Password not configured; initialized in Run
-	lastOPRefresh     time.Time               // zero = never refreshed; in-memory only (restart always re-fetches)
-	opRefreshInterval time.Duration           // copied from config; 0 = feature disabled
+	opReader      resolver.OpSecretReader // nil when 1Password not configured; initialized in Run
+	lastOPRefresh time.Time               // zero = never refreshed; in-memory only (restart always re-fetches)
 
 	webhookCh          chan struct{}
 	ready              atomic.Bool
@@ -161,7 +159,6 @@ func (a *Agent) Run(ctx context.Context) error {
 			return fmt.Errorf("setting up 1password: %w", err)
 		}
 		slog.Info("1password client initialized", "token_path", a.cfg.OnePassword.TokenPath)
-		a.opRefreshInterval = a.cfg.OnePassword.RefreshInterval
 	}
 
 	// Initialize git poller
@@ -606,7 +603,7 @@ func (a *Agent) recordOpSecretsCount(files []resolver.ResolvedFile) {
 	}
 	var count int
 	for _, f := range files {
-		if strings.HasPrefix(f.SrcPath, "op://") {
+		if op.IsRef(f.SrcPath) {
 			count++
 		}
 	}
@@ -616,10 +613,11 @@ func (a *Agent) recordOpSecretsCount(files []resolver.ResolvedFile) {
 // opRefreshDue reports whether op:// secrets should be re-fetched.
 // Returns true when 1Password is configured and the refresh interval has elapsed.
 func (a *Agent) opRefreshDue() bool {
-	if a.opReader == nil || a.opRefreshInterval == 0 {
+	if a.opReader == nil {
 		return false
 	}
-	return a.lastOPRefresh.IsZero() || time.Since(a.lastOPRefresh) >= a.opRefreshInterval
+	interval := a.cfg.OnePassword.RefreshInterval
+	return a.lastOPRefresh.IsZero() || time.Since(a.lastOPRefresh) >= interval
 }
 
 func (a *Agent) triggerReconcile() {
