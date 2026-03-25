@@ -299,7 +299,7 @@ func TestStaticRepoSecret(t *testing.T) {
 	r, err := New(Config{FS: fsys, Config: cfg})
 	require.NoError(t, err)
 
-	resolved, err := r.ResolveHost("test-host")
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
 	require.NoError(t, err)
 
 	f := findByDest(t, resolved.Files, "secret:static_config")
@@ -314,7 +314,7 @@ func TestTemplateSecret(t *testing.T) {
 	r, err := New(Config{FS: fsys, Config: cfg})
 	require.NoError(t, err)
 
-	resolved, err := r.ResolveHost("test-host")
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
 	require.NoError(t, err)
 
 	f := findByDest(t, resolved.Files, "secret:rendered")
@@ -334,7 +334,7 @@ func TestHostOnlySecretWithReader(t *testing.T) {
 	r, err := New(Config{FS: fsys, Config: cfg, SecretReader: reader})
 	require.NoError(t, err)
 
-	resolved, err := r.ResolveHost("test-host")
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
 	require.NoError(t, err)
 
 	f := findByDest(t, resolved.Files, "secret:host_only")
@@ -348,7 +348,7 @@ func TestHostOnlySecretPlaceholder(t *testing.T) {
 	r, err := New(Config{FS: fsys, Config: cfg})
 	require.NoError(t, err)
 
-	resolved, err := r.ResolveHost("test-host")
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
 	require.NoError(t, err)
 
 	f := findByDest(t, resolved.Files, "secret:host_only")
@@ -376,7 +376,7 @@ features: {}
 	r, err := New(Config{FS: fsys, Config: cfg})
 	require.NoError(t, err)
 
-	_, err = r.ResolveHost("test-host")
+	_, err = r.ResolveHost(t.Context(), "test-host")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading static secret")
 }
