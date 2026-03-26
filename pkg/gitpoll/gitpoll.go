@@ -16,13 +16,83 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 )
 
+// AuthProvider provides authentication for git operations.
+type AuthProvider interface {
+	GitAuth(ctx context.Context) (transport.AuthMethod, error)
+}
+
+type tokenFileAuth struct {
+	path string
+}
+
+type tokenValueAuth struct {
+	token string
+}
+
+//nolint:nilnil // nil signals anonymous access; interface needed for auth abstraction
+func (a *tokenFileAuth) GitAuth(_ context.Context) (transport.AuthMethod, error) {
+	if a.path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(a.path)
+	if err != nil {
+		return nil, fmt.Errorf("reading token from %s: %w", a.path, err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return nil, nil
+	}
+	return &http.BasicAuth{Username: "x", Password: token}, nil
+}
+
+//nolint:nilnil // nil signals anonymous access; interface needed for auth abstraction
+func (a *tokenValueAuth) GitAuth(_ context.Context) (transport.AuthMethod, error) {
+	token := strings.TrimSpace(a.token)
+	if token == "" {
+		return nil, nil
+	}
+	return &http.BasicAuth{Username: "x", Password: token}, nil
+}
+
+type sshAgentAuth struct {
+	repoURL string
+}
+
+func (a *sshAgentAuth) GitAuth(_ context.Context) (transport.AuthMethod, error) {
+	user := "git"
+	if ep, err := transport.NewEndpoint(a.repoURL); err == nil && ep.User != "" {
+		user = ep.User
+	}
+	auth, err := ssh.NewSSHAgentAuth(user)
+	if err != nil {
+		return nil, fmt.Errorf("SSH agent auth: %w", err)
+	}
+	return auth, nil
+}
+
+// NewTokenFileAuth creates an AuthProvider that reads a PAT from a file.
+func NewTokenFileAuth(tokenPath string) AuthProvider {
+	return &tokenFileAuth{path: tokenPath}
+}
+
+// NewSSHAgentAuth creates an AuthProvider using the SSH agent.
+func NewSSHAgentAuth(repoURL string) AuthProvider {
+	return &sshAgentAuth{repoURL: repoURL}
+}
+
+// IsSSHURL reports whether the given URL uses an SSH transport.
+func IsSSHURL(url string) bool {
+	return strings.HasPrefix(url, "ssh://") ||
+		strings.HasPrefix(url, "git+ssh://") ||
+		strings.HasPrefix(url, "git@")
+}
+
 // Poller manages a local clone of a remote git repo and polls for changes.
 type Poller struct {
 	repoURL   string
 	branch    string
 	localPath string
-	tokenPath string
-	token     string // direct token value; takes precedence over tokenPath
+	auth      AuthProvider
 	repo      *git.Repository
 }
 
@@ -33,19 +103,19 @@ type PollResult struct {
 }
 
 // New creates a poller. localPath is where the repo is cloned to.
-func New(repoURL, branch, localPath, tokenPath string) *Poller {
+func New(repoURL, branch, localPath string, auth AuthProvider) *Poller {
 	return &Poller{
 		repoURL:   repoURL,
 		branch:    branch,
 		localPath: localPath,
-		tokenPath: tokenPath,
+		auth:      auth,
 	}
 }
 
 // NewWithToken creates a poller that uses a direct token value for HTTP authentication.
 // The token takes precedence over a token file path.
 func NewWithToken(repoURL, branch, localPath, token string) *Poller {
-	return &Poller{repoURL: repoURL, branch: branch, localPath: localPath, token: token}
+	return New(repoURL, branch, localPath, newTokenAuthForRepo(repoURL, token))
 }
 
 // Init opens an existing clone or clones fresh.
@@ -62,7 +132,7 @@ func (p *Poller) Init(ctx context.Context) error {
 		}
 	}
 
-	auth, err := p.auth()
+	auth, err := p.auth.GitAuth(ctx)
 	if err != nil {
 		return err
 	}
@@ -101,7 +171,7 @@ func (p *Poller) Poll(ctx context.Context, previousSHA string) (*PollResult, err
 }
 
 func (p *Poller) fetch(ctx context.Context) error {
-	auth, err := p.auth()
+	auth, err := p.auth.GitAuth(ctx)
 	if err != nil {
 		return err
 	}
@@ -146,46 +216,11 @@ func (p *Poller) headSHA() (string, error) {
 	return ref.Hash().String(), nil
 }
 
-func isSSHURL(url string) bool {
-	return strings.HasPrefix(url, "ssh://") ||
-		strings.HasPrefix(url, "git+ssh://") ||
-		strings.HasPrefix(url, "git@")
-}
-
-//nolint:nilnil // nil signals anonymous access; interface needed for SSH vs HTTP auth
-func (p *Poller) auth() (transport.AuthMethod, error) {
-	if isSSHURL(p.repoURL) {
-		user := "git"
-		if ep, err := transport.NewEndpoint(p.repoURL); err == nil && ep.User != "" {
-			user = ep.User
-		}
-		auth, err := ssh.NewSSHAgentAuth(user)
-		if err != nil {
-			return nil, fmt.Errorf("SSH agent auth: %w", err)
-		}
-		return auth, nil
+func newTokenAuthForRepo(repoURL, token string) AuthProvider {
+	if IsSSHURL(repoURL) {
+		return NewSSHAgentAuth(repoURL)
 	}
-
-	// Direct token value (from 1Password) — takes precedence over tokenPath
-	if p.token != "" {
-		return &http.BasicAuth{Username: "x", Password: p.token}, nil
-	}
-
-	if p.tokenPath == "" {
-		return nil, nil
-	}
-	data, err := os.ReadFile(p.tokenPath)
-	if err != nil {
-		return nil, fmt.Errorf("reading token from %s: %w", p.tokenPath, err)
-	}
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return nil, nil
-	}
-	return &http.BasicAuth{
-		Username: "x",
-		Password: token,
-	}, nil
+	return &tokenValueAuth{token: token}
 }
 
 // verifyRemote checks that the existing clone's origin URL matches the expected repo URL.

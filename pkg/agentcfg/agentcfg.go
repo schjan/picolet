@@ -151,7 +151,6 @@ func (c *Config) validateOnePassword() error {
 	}
 	return nil
 }
-
 func (c *Config) validateGitHubApp() error {
 	fields := [3]bool{c.GitHubAppID != 0, c.GitHubInstallationID != 0, c.GitHubPrivateKeyPath != ""}
 	set := 0

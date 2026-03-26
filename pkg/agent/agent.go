@@ -340,48 +340,14 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 
 	slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
 
-	var deploymentID int64
-	if a.deployReporter != nil {
-		var depErr error
-		deploymentID, depErr = a.deployReporter.CreateDeployment(ctx, pollResult.HeadSHA)
-		if depErr != nil {
-			slog.Warn("deployment status: create failed", "error", depErr)
-			metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
-		} else {
-			metrics.DeploymentStatusTotal.WithLabelValues("pending").Inc()
-		}
-		if deploymentID != 0 {
-			if err := a.deployReporter.ReportInProgress(ctx, deploymentID); err != nil {
-				slog.Warn("deployment status: in_progress failed", "error", err)
-				metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
-			} else {
-				metrics.DeploymentStatusTotal.WithLabelValues("in_progress").Inc()
-			}
-		}
-	}
+	deploymentID := a.createDeployment(ctx, pollResult.HeadSHA)
 
 	start := time.Now()
 	result, err := a.ReconcileOnce(ctx, pollResult.HeadSHA, st, store)
 	elapsed := time.Since(start)
 	metrics.ReconciliationDuration.Observe(elapsed.Seconds())
 
-	if deploymentID != 0 && a.deployReporter != nil {
-		if err != nil {
-			if reportErr := a.deployReporter.ReportFailure(ctx, deploymentID, err); reportErr != nil {
-				slog.Warn("deployment status: failure report failed", "error", reportErr)
-				metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
-			} else {
-				metrics.DeploymentStatusTotal.WithLabelValues("failure").Inc()
-			}
-		} else {
-			if reportErr := a.deployReporter.ReportSuccess(ctx, deploymentID); reportErr != nil {
-				slog.Warn("deployment status: success report failed", "error", reportErr)
-				metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
-			} else {
-				metrics.DeploymentStatusTotal.WithLabelValues("success").Inc()
-			}
-		}
-	}
+	a.reportDeploymentResult(ctx, deploymentID, err)
 
 	if err != nil {
 		slog.Error("reconciliation failed", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
@@ -798,4 +764,49 @@ func boolToFloat(b bool) float64 {
 		return 1
 	}
 	return 0
+}
+
+// createDeployment creates a GitHub deployment and reports in_progress if a reporter is configured.
+// Returns 0 when no reporter is set or when the API call fails.
+func (a *Agent) createDeployment(ctx context.Context, sha string) int64 {
+	if a.deployReporter == nil {
+		return 0
+	}
+	deploymentID, err := a.deployReporter.CreateDeployment(ctx, sha)
+	if err != nil {
+		slog.Warn("deployment status: create failed", "error", err)
+		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
+		return 0
+	}
+	metrics.DeploymentStatusTotal.WithLabelValues("pending").Inc()
+
+	if err := a.deployReporter.ReportInProgress(ctx, deploymentID); err != nil {
+		slog.Warn("deployment status: in_progress failed", "error", err)
+		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
+	} else {
+		metrics.DeploymentStatusTotal.WithLabelValues("in_progress").Inc()
+	}
+	return deploymentID
+}
+
+// reportDeploymentResult reports the final deployment status (success/failure) if a deployment was created.
+func (a *Agent) reportDeploymentResult(ctx context.Context, deploymentID int64, reconcileErr error) {
+	if deploymentID == 0 || a.deployReporter == nil {
+		return
+	}
+	if reconcileErr != nil {
+		if err := a.deployReporter.ReportFailure(ctx, deploymentID, reconcileErr); err != nil {
+			slog.Warn("deployment status: failure report failed", "error", err)
+			metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
+		} else {
+			metrics.DeploymentStatusTotal.WithLabelValues("failure").Inc()
+		}
+		return
+	}
+	if err := a.deployReporter.ReportSuccess(ctx, deploymentID); err != nil {
+		slog.Warn("deployment status: success report failed", "error", err)
+		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
+	} else {
+		metrics.DeploymentStatusTotal.WithLabelValues("success").Inc()
+	}
 }

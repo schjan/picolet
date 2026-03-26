@@ -28,9 +28,9 @@ func (r *DeploymentReporter) CreateDeployment(ctx context.Context, sha string) (
 	deployment, _, err := r.client.gh.Repositories.CreateDeployment(ctx, r.client.Owner, r.client.Repo, &gogithub.DeploymentRequest{
 		Ref:              &sha,
 		Environment:      &r.environment,
-		AutoMerge:        gogithub.Ptr(false),
+		AutoMerge:        new(false),
 		RequiredContexts: &[]string{},
-		Description:      gogithub.Ptr("picolet deployment"),
+		Description:      new("picolet deployment"),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("creating deployment: %w", err)

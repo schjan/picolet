@@ -100,6 +100,7 @@ func TestReportFailureTruncatesDescription(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "failure", gotStatus["state"])
 
-	desc := gotStatus["description"].(string)
+	desc, ok := gotStatus["description"].(string)
+	require.True(t, ok, "description should be a string")
 	assert.LessOrEqual(t, len(desc), 140)
 }

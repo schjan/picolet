@@ -14,6 +14,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type anonymousAuth struct{}
+
+func (anonymousAuth) GitAuth(_ context.Context) (transport.AuthMethod, error) {
+	return nil, nil //nolint:nilnil
+}
+
 // initBareRepo creates a bare git repo with an initial commit on "main" branch.
 func initBareRepo(t *testing.T) string {
 	t.Helper()
@@ -67,7 +73,7 @@ func TestPollerInitAndPoll(t *testing.T) {
 	localDir := filepath.Join(t.TempDir(), "clone")
 	ctx := context.Background()
 
-	p := New(bareDir, "master", localDir, "")
+	p := New(bareDir, "master", localDir, anonymousAuth{})
 	require.NoError(t, p.Init(ctx))
 
 	// First poll with empty previous SHA — should report changed
@@ -104,7 +110,7 @@ func TestIsSSHURL(t *testing.T) {
 		{"", false},
 	}
 	for _, tt := range tests {
-		assert.Equal(t, tt.want, isSSHURL(tt.url), "isSSHURL(%q)", tt.url)
+		assert.Equal(t, tt.want, IsSSHURL(tt.url), "isSSHURL(%q)", tt.url)
 	}
 }
 
@@ -129,7 +135,7 @@ func TestSSHAuthUser(t *testing.T) {
 func TestNewWithTokenAuthHTTPS(t *testing.T) {
 	t.Parallel()
 	p := NewWithToken("https://github.com/org/repo.git", "main", "/tmp/clone", "ghp_secret123")
-	auth, err := p.auth()
+	auth, err := p.auth.GitAuth(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, auth)
 	basic, ok := auth.(*http.BasicAuth)
@@ -141,7 +147,7 @@ func TestNewWithTokenAuthHTTPS(t *testing.T) {
 func TestNewWithTokenSSHTakesPrecedence(t *testing.T) {
 	t.Parallel()
 	p := NewWithToken("git@github.com:org/repo.git", "main", "/tmp/clone", "ghp_secret123")
-	auth, err := p.auth()
+	auth, err := p.auth.GitAuth(context.Background())
 	if err != nil {
 		// SSH agent may not be available in test/CI — skip gracefully
 		t.Skipf("SSH agent unavailable: %v", err)
@@ -158,11 +164,11 @@ func TestPollerReopenExisting(t *testing.T) {
 	ctx := context.Background()
 
 	// First init (clone)
-	p1 := New(bareDir, "master", localDir, "")
+	p1 := New(bareDir, "master", localDir, anonymousAuth{})
 	require.NoError(t, p1.Init(ctx))
 
 	// Second init (open existing)
-	p2 := New(bareDir, "master", localDir, "")
+	p2 := New(bareDir, "master", localDir, anonymousAuth{})
 	require.NoError(t, p2.Init(ctx))
 
 	result, err := p2.Poll(ctx, "")

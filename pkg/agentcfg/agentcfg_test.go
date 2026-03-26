@@ -171,7 +171,7 @@ github_app_id: 12345
 github_installation_id: 67890
 github_private_key_path: /etc/picolet/secrets/github-app.pem
 `,
-			want: Config{
+			want: Config{ //nolint:gosec // test fixture, not real credentials
 				Hostname:             "rpi5-1",
 				RepoURL:              "https://github.com/example/fleet.git",
 				RepoBranch:           "main",
