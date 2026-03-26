@@ -45,6 +45,9 @@ type Config struct {
 	DataDir           string             `yaml:"data_dir"`     // optional override for state file directory; used by apply/down commands
 	MQTT              *MQTTConfig        `yaml:"mqtt"`
 	OnePassword       *OnePasswordConfig `yaml:"onepassword"`
+	GitHubAppID          int64         `yaml:"github_app_id"`
+	GitHubInstallationID int64         `yaml:"github_installation_id"`
+	GitHubPrivateKeyPath string        `yaml:"github_private_key_path"`
 }
 
 // Load reads and parses the agent config from disk.
@@ -125,6 +128,9 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	if err := c.validateGitHubApp(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -144,4 +150,35 @@ func (c *Config) validateOnePassword() error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) validateGitHubApp() error {
+	fields := [3]bool{c.GitHubAppID != 0, c.GitHubInstallationID != 0, c.GitHubPrivateKeyPath != ""}
+	set := 0
+	for _, f := range fields {
+		if f {
+			set++
+		}
+	}
+	if set == 0 {
+		return nil
+	}
+	if set < len(fields) {
+		return errors.New("all GitHub App fields must be set together (github_app_id, github_installation_id, github_private_key_path)")
+	}
+	if c.GitTokenPath != "" {
+		return errors.New("github_app_id and git_token_path are mutually exclusive")
+	}
+	if c.GitHubAppID <= 0 {
+		return errors.New("github_app_id must be positive")
+	}
+	if c.GitHubInstallationID <= 0 {
+		return errors.New("github_installation_id must be positive")
+	}
+	return nil
+}
+
+// HasGitHubApp reports whether GitHub App authentication is configured.
+func (c *Config) HasGitHubApp() bool {
+	return c.GitHubAppID != 0 && c.GitHubInstallationID != 0 && c.GitHubPrivateKeyPath != ""
 }

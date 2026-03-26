@@ -163,6 +163,58 @@ repo_sub_dir: "../../../etc"
 			wantErr: "repo_sub_dir must be a relative path within the repo",
 		},
 		{
+			name: "github app config valid",
+			content: `
+hostname: rpi5-1
+repo_url: https://github.com/example/fleet.git
+github_app_id: 12345
+github_installation_id: 67890
+github_private_key_path: /etc/picolet/secrets/github-app.pem
+`,
+			want: Config{
+				Hostname:             "rpi5-1",
+				RepoURL:              "https://github.com/example/fleet.git",
+				RepoBranch:           "main",
+				PollInterval:         5 * time.Minute,
+				MetricsPort:          9417,
+				SecretsDir:           "/etc/picolet/secrets",
+				PodmanSocket:         "/run/podman/podman.sock",
+				GitHubAppID:          12345,
+				GitHubInstallationID: 67890,
+				GitHubPrivateKeyPath: "/etc/picolet/secrets/github-app.pem",
+				SystemdUser:          new(false),
+			},
+		},
+		{
+			name: "github app partial config rejected",
+			content: `
+hostname: rpi5-1
+github_app_id: 12345
+`,
+			wantErr: "all GitHub App fields must be set together",
+		},
+		{
+			name: "github app and git_token_path mutually exclusive",
+			content: `
+hostname: rpi5-1
+git_token_path: /etc/picolet/git-token
+github_app_id: 12345
+github_installation_id: 67890
+github_private_key_path: /etc/picolet/secrets/github-app.pem
+`,
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "github app id must be positive",
+			content: `
+hostname: rpi5-1
+github_app_id: -1
+github_installation_id: 67890
+github_private_key_path: /etc/picolet/secrets/github-app.pem
+`,
+			wantErr: "github_app_id must be positive",
+		},
+		{
 			name: "onepassword config",
 			content: `
 hostname: rpi5-1
