@@ -150,15 +150,24 @@ type DeploymentReporter interface {
 
 ```go
 // Simplified tick() flow:
-deploymentID, _ := reporter.CreateDeployment(ctx, sha)  // pending
-reporter.ReportInProgress(ctx, deploymentID)              // in_progress
-result, err := a.ReconcileOnce(ctx, sha, st, store)
+deploymentID, err := reporter.CreateDeployment(ctx, sha)  // pending
 if err != nil {
-    reporter.ReportFailure(ctx, deploymentID, err)        // failure
-} else {
-    reporter.ReportSuccess(ctx, deploymentID)             // success
+    slog.Warn("deployment status: create failed", "error", err)
+}
+if deploymentID != 0 {
+    reporter.ReportInProgress(ctx, deploymentID)           // in_progress
+}
+result, err := a.ReconcileOnce(ctx, sha, st, store)
+if deploymentID != 0 {
+    if err != nil {
+        reporter.ReportFailure(ctx, deploymentID, err)     // failure
+    } else {
+        reporter.ReportSuccess(ctx, deploymentID)          // success
+    }
 }
 ```
+
+All status calls are guarded behind `deploymentID != 0` so a failed `CreateDeployment` (API unreachable, etc.) does not trigger meaningless follow-up calls.
 
 This means `in_progress` fires just before `ReconcileOnce` (including validation time), not between validation and apply. The practical difference is negligible — both happen within the same tick.
 
@@ -256,14 +265,24 @@ pkg/github/
 
 ## New Dependencies
 
-- `github.com/google/go-github/v84` (or latest at implementation time)
+- `github.com/google/go-github` (latest major version at implementation time — the library increments major versions frequently)
 - `github.com/bradleyfalzon/ghinstallation/v2`
 
 ## Metrics
 
 Add a Prometheus counter to `pkg/metrics`:
 
-- `picolet_deployment_status_total` — counter with labels `status` (`pending`, `in_progress`, `success`, `failure`, `error`) and `result` (`ok`, `api_error`). Follows the existing pattern of `GitPollTotal`, `ReconciliationTotal`, etc.
+- `picolet_deployment_status_total` — counter with label `result` (`pending`, `in_progress`, `success`, `failure`, `error`, `api_error`). Follows the single-label pattern of existing counters like `picolet_reconciliation_total` (which uses `result` with values `success`/`failure`/`noop`/`paused`). The `api_error` value covers any GitHub API call failure.
+
+## Design Notes
+
+### `picolet apply` CLI
+
+The `picolet apply` subcommand calls `ReconcileOnce` directly and does not report deployment status. This is by design — `apply` is a local one-shot tool for manual intervention, not a production deployment path.
+
+### Rate Limiting with Large Fleets
+
+When a commit is pushed, all fleet instances may detect it on their next poll and create deployments near-simultaneously. With the default `poll_interval: 60s` and staggered instance start times, natural jitter is expected to spread API calls sufficiently. If this becomes an issue with very large fleets, adding configurable jitter to the poll interval would be the mitigation — but this is out of scope for the initial implementation.
 
 ## Testing
 
