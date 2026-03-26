@@ -31,3 +31,4 @@ packages:
       structname: "Mock{{.InterfaceName}}"
     interfaces:
       MQTTClient: ~
+      DeploymentReporter: ~

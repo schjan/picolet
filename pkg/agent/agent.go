@@ -34,6 +34,15 @@ type MQTTClient interface {
 	Close(ctx context.Context)
 }
 
+// DeploymentReporter reports deployment lifecycle to an external system.
+type DeploymentReporter interface {
+	CreateDeployment(ctx context.Context, sha string) (int64, error)
+	ReportInProgress(ctx context.Context, deploymentID int64) error
+	ReportSuccess(ctx context.Context, deploymentID int64) error
+	ReportFailure(ctx context.Context, deploymentID int64, err error) error
+	ReportError(ctx context.Context, deploymentID int64, err error) error
+}
+
 const (
 	defaultRepoPath = "/var/lib/picolet/repo"
 	defaultLockPath = "/var/lib/picolet/reconciliation.lock"
@@ -68,7 +77,8 @@ type Agent struct {
 	paused             atomic.Bool // set by MQTT pause subscription
 	seededSuccessfulAt atomic.Bool // guards one-time gauge seed from persisted state
 	mqttClient         MQTTClient  // nil when MQTT not configured
-
+	deployReporter     DeploymentReporter // nil when GitHub App not configured
+	authProvider       gitpoll.AuthProvider // nil = use default SSH/token logic
 	consecutiveHealthFailures atomic.Int32
 }
 
@@ -113,6 +123,16 @@ func WithLockPath(path string) Option {
 // WithMQTT sets the MQTTClient for pause/trigger/status publishing.
 func WithMQTT(c MQTTClient) Option {
 	return func(a *Agent) { a.mqttClient = c }
+}
+
+// WithDeploymentReporter sets the deployment status reporter.
+func WithDeploymentReporter(r DeploymentReporter) Option {
+	return func(a *Agent) { a.deployReporter = r }
+}
+
+// WithAuthProvider sets the git auth provider.
+func WithAuthProvider(p gitpoll.AuthProvider) Option {
+	return func(a *Agent) { a.authProvider = p }
 }
 
 // New creates a new Agent.
@@ -168,26 +188,15 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	// Initialize git poller
-	var poller *gitpoll.Poller
-	if a.opReader != nil && a.cfg.OnePassword.GitTokenRef != "" {
-		// NOTE: The git token is resolved once at startup. If the underlying 1Password
-		// secret changes (e.g., GitHub PAT rotation), a picolet restart is required.
-		// The OP refresh cycle re-fetches secrets in assignments but does NOT refresh
-		// the git token.
-		ref := a.cfg.OnePassword.GitTokenRef
-		results, err := a.opReader(ctx, []string{ref})
-		if err != nil {
-			return fmt.Errorf("resolving git token from 1password: %w", err)
+	auth := a.authProvider
+	if auth == nil {
+		if gitpoll.IsSSHURL(a.cfg.RepoURL) {
+			auth = gitpoll.NewSSHAgentAuth(a.cfg.RepoURL)
+		} else {
+			auth = gitpoll.NewTokenFileAuth(a.cfg.GitTokenPath)
 		}
-		token, ok := results[ref]
-		if !ok {
-			return fmt.Errorf("resolving git token from 1password: ref %q not in response", ref)
-		}
-		slog.Info("git token resolved from 1password")
-		poller = gitpoll.NewWithToken(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, token)
-	} else {
-		poller = gitpoll.New(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, a.cfg.GitTokenPath)
 	}
+	poller := gitpoll.New(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, auth)
 	if err := poller.Init(ctx); err != nil {
 		return fmt.Errorf("initializing git poller: %w", err)
 	}
@@ -331,10 +340,48 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 
 	slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
 
+	var deploymentID int64
+	if a.deployReporter != nil {
+		var depErr error
+		deploymentID, depErr = a.deployReporter.CreateDeployment(ctx, pollResult.HeadSHA)
+		if depErr != nil {
+			slog.Warn("deployment status: create failed", "error", depErr)
+			metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
+		} else {
+			metrics.DeploymentStatusTotal.WithLabelValues("pending").Inc()
+		}
+		if deploymentID != 0 {
+			if err := a.deployReporter.ReportInProgress(ctx, deploymentID); err != nil {
+				slog.Warn("deployment status: in_progress failed", "error", err)
+				metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
+			} else {
+				metrics.DeploymentStatusTotal.WithLabelValues("in_progress").Inc()
+			}
+		}
+	}
+
 	start := time.Now()
 	result, err := a.ReconcileOnce(ctx, pollResult.HeadSHA, st, store)
 	elapsed := time.Since(start)
 	metrics.ReconciliationDuration.Observe(elapsed.Seconds())
+
+	if deploymentID != 0 && a.deployReporter != nil {
+		if err != nil {
+			if reportErr := a.deployReporter.ReportFailure(ctx, deploymentID, err); reportErr != nil {
+				slog.Warn("deployment status: failure report failed", "error", reportErr)
+				metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
+			} else {
+				metrics.DeploymentStatusTotal.WithLabelValues("failure").Inc()
+			}
+		} else {
+			if reportErr := a.deployReporter.ReportSuccess(ctx, deploymentID); reportErr != nil {
+				slog.Warn("deployment status: success report failed", "error", reportErr)
+				metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
+			} else {
+				metrics.DeploymentStatusTotal.WithLabelValues("success").Inc()
+			}
+		}
+	}
 
 	if err != nil {
 		slog.Error("reconciliation failed", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
