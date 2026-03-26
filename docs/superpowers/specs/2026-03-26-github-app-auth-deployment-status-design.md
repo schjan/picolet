@@ -77,18 +77,20 @@ func NewClient(appID, installationID int64, privateKeyPath string, repoURL strin
 
 ### Git Auth Abstraction (`pkg/gitpoll`)
 
-Extract an `AuthProvider` interface from the current inline auth logic in `Poller`:
+Extract an `AuthProvider` interface from the current inline auth logic in `Poller`. The interface lives in `pkg/gitpoll` (consumer-owned), and returns `transport.AuthMethod` from `go-git/v5/plumbing/transport`:
 
 ```go
 // AuthProvider provides authentication for git operations.
+// Defined in pkg/gitpoll. Implementations: fileTokenAuth (PAT), sshAgentAuth,
+// and github.Client (which imports go-git's transport package to satisfy this).
 type AuthProvider interface {
     GitAuth(ctx context.Context) (transport.AuthMethod, error)
 }
 ```
 
-The current PAT/SSH logic becomes concrete implementations. `github.Client` becomes another implementation (calls `transport.Token(ctx)` and returns `*http.BasicAuth{Username: "x-access-token", Password: token}`).
+The current PAT/SSH logic becomes concrete implementations within `pkg/gitpoll` (unexported). `github.Client` becomes another implementation — it imports `go-git/v5/plumbing/transport` and calls `transport.Token(ctx)` to return `*http.BasicAuth{Username: "x-access-token", Password: token}`. This means `pkg/github` depends on `pkg/gitpoll` (for the interface) and on `go-git` (for `transport.AuthMethod`). `pkg/gitpoll` has no dependency on `pkg/github`.
 
-`Poller` is refactored to accept an `AuthProvider` instead of a `tokenPath` string.
+**Constructor change:** `Poller.New` signature changes from `New(repoURL, branch, localPath, tokenPath string)` to `New(repoURL, branch, localPath string, auth AuthProvider)`. Call sites in `pkg/agent` and `cmd/picolet` are updated accordingly. The `tokenPath` field is removed from the `Poller` struct.
 
 ### Deployment Status Reporting (`pkg/github/deployment.go`)
 
@@ -144,34 +146,46 @@ type DeploymentReporter interface {
 
 ### Reconciliation Pipeline Changes
 
+**Key decision: deployment reporting stays in `tick()`, not inside `ReconcileOnce()`.** `ReconcileOnce()` remains unchanged — it bundles load/resolve/diff/validate/apply/save and is also used by `runApply` in `cmd/picolet/main.go`. Deployment reporting wraps the `ReconcileOnce()` call in `tick()`:
+
+```go
+// Simplified tick() flow:
+deploymentID, _ := reporter.CreateDeployment(ctx, sha)  // pending
+reporter.ReportInProgress(ctx, deploymentID)              // in_progress
+result, err := a.ReconcileOnce(ctx, sha, st, store)
+if err != nil {
+    reporter.ReportFailure(ctx, deploymentID, err)        // failure
+} else {
+    reporter.ReportSuccess(ctx, deploymentID)             // success
+}
+```
+
+This means `in_progress` fires just before `ReconcileOnce` (including validation time), not between validation and apply. The practical difference is negligible — both happen within the same tick.
+
 Modified `tick()` flow (new steps in bold):
 
 1. Health enforce
 2. Git poll (now via `AuthProvider` — GitHub App or PAT/SSH)
 3. Failure gate
 4. **Create deployment with `pending` status** (if SHA changed and reporter != nil)
-5. Config load
-6. Resolve
-7. Diff
-8. Validate
-9. **Report `in_progress`**
-10. Snapshot
-11. Apply
-12. **Report `success` or `failure`**
-13. State save
-14. MQTT status
+5. **Report `in_progress`**
+6. `ReconcileOnce()` (load → resolve → diff → validate → apply → save state)
+7. **Report `success` or `failure`/`error` based on `ReconcileOnce` result**
+8. MQTT status
 
-The deployment ID is a local variable in `tick()`, threaded to steps 9 and 12. Not persisted to the state file.
+The deployment ID is a local variable in `tick()`. Not persisted to the state file.
+
+**Shutdown handling:** A `defer` at the top of `tick()` checks `ctx.Err() != nil && deploymentID != 0` and sends a best-effort `error` status using a detached context with a 10-second timeout (following the existing `applyWithRollback` pattern that uses `context.WithoutCancel`).
 
 #### Edge Cases
 
 | Scenario                        | Behavior                                                                           |
 | ------------------------------- | ---------------------------------------------------------------------------------- |
-| SHA unchanged (no-op tick)      | No deployment created, steps 4/9/12 skipped                                       |
+| SHA unchanged (no-op tick)      | No deployment created, reporting skipped                                           |
 | Failure gate blocks             | No deployment created (already reported failure on previous ticks)                 |
-| Validation fails                | Report `failure` with validation error summary, skip apply                        |
-| Apply fails + rollback          | Report `error` with rollback context                                               |
-| Context cancelled (shutdown)    | Best-effort `error` status with detached context                                   |
+| Validation fails                | `ReconcileOnce` returns error → report `failure` with validation error summary     |
+| Apply fails + rollback          | `ReconcileOnce` returns error → report `error` with rollback context               |
+| Context cancelled (shutdown)    | Defer sends best-effort `error` via detached context (10s timeout)                 |
 | GitHub API unreachable          | Log warning, continue reconciliation normally                                      |
 | Restart mid-tick                | Stale `pending`/`in_progress` in GitHub; next successful tick creates fresh deployment |
 
@@ -185,11 +199,16 @@ GitHubInstallationID int64  `yaml:"github_installation_id"`
 GitHubPrivateKeyPath string `yaml:"github_private_key_path"`
 ```
 
-Validation:
+Validation in `agentcfg.Validate()`:
 - All three must be set together (partial config is an error).
 - Mutually exclusive with `git_token_path` (error if both set).
-- If GitHub App is configured, repo URL must be a GitHub URL (validated at startup).
+- `github_app_id` and `github_installation_id` must be positive.
 - Presence of GitHub App config automatically enables deployment status reporting.
+
+Validation in `cmd/picolet` wiring code (not in `agentcfg`):
+- If GitHub App is configured, `repo_url` must be an HTTPS GitHub URL. SSH GitHub URLs are rejected because `github.Client.GitAuth()` returns `*http.BasicAuth` which only works over HTTPS.
+- `github_private_key_path` must point to a valid, readable PEM file (fail-fast at startup rather than on first auth attempt).
+- Owner/repo parsing from `repo_url` is validated here.
 
 Example config:
 
@@ -210,10 +229,8 @@ github_private_key_path: "/etc/picolet/secrets/github-app.pem"
 Parses `owner` and `repo` from the configured `repo_url`:
 
 - `https://github.com/org/repo.git` -> `org`, `repo`
-- `git@github.com:org/repo.git` -> `org`, `repo`
-- `ssh://git@github.com/org/repo.git` -> `org`, `repo`
 
-Returns an error for non-GitHub URLs when GitHub App auth is configured.
+Returns an error for non-GitHub URLs or non-HTTPS GitHub URLs when GitHub App auth is configured. SSH-style URLs (`git@github.com:...`) are rejected because GitHub App tokens require HTTPS.
 
 ## Package Structure
 
@@ -242,8 +259,18 @@ pkg/github/
 - `github.com/google/go-github/v84` (or latest at implementation time)
 - `github.com/bradleyfalzon/ghinstallation/v2`
 
+## Metrics
+
+Add a Prometheus counter to `pkg/metrics`:
+
+- `picolet_deployment_status_total` — counter with labels `status` (`pending`, `in_progress`, `success`, `failure`, `error`) and `result` (`ok`, `api_error`). Follows the existing pattern of `GitPollTotal`, `ReconciliationTotal`, etc.
+
 ## Testing
 
 - **`pkg/github`**: Unit tests with `httptest.NewServer` mocking GitHub API responses. Test token refresh, deployment lifecycle, error handling, URL parsing.
 - **`pkg/gitpoll`**: Existing tests updated to use `AuthProvider` interface (mock implementation).
-- **`pkg/agent`**: Agent integration test extended with a mock `DeploymentReporter` to verify lifecycle calls happen in correct order.
+- **`pkg/agent`**: Agent integration test extended with a mock `DeploymentReporter` to verify lifecycle calls happen in correct order. Add `DeploymentReporter` to `.mockery.yml` under `pkg/agent` (alongside existing `MQTTClient` mock).
+
+## Dependency Considerations
+
+Both `google/go-github` and `bradleyfalzon/ghinstallation` are pure Go with no CGO requirements. The binary size impact should be verified during implementation but is expected to be modest given the project already depends on `go-git` and Podman bindings. Cross-compilation to `linux/arm64` is unaffected since `CGO_ENABLED=0` is already required.
