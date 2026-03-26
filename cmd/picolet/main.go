@@ -20,6 +20,7 @@ import (
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
+	"github.com/schjan/picolet/pkg/github"
 	"github.com/schjan/picolet/pkg/metrics"
 	mqttpkg "github.com/schjan/picolet/pkg/mqtt"
 	op "github.com/schjan/picolet/pkg/onepassword"
@@ -287,6 +288,19 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 		opts = append(opts, agent.WithMQTT(mqttClient))
 	} else {
 		slog.Info("mqtt disabled")
+	}
+
+	if cfg.HasGitHubApp() {
+		ghClient, err := github.NewClient(cfg.GitHubAppID, cfg.GitHubInstallationID, cfg.GitHubPrivateKeyPath, cfg.RepoURL)
+		if err != nil {
+			return fmt.Errorf("creating GitHub client: %w", err)
+		}
+
+		opts = append(opts,
+			agent.WithAuthProvider(ghClient),
+			agent.WithDeploymentReporter(github.NewDeploymentReporter(ghClient, cfg.Hostname)),
+		)
+		slog.Info("github app auth enabled", "app_id", cfg.GitHubAppID, "environment", cfg.Hostname)
 	}
 
 	a := agent.New(cfg, opts...)
