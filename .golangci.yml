@@ -52,6 +52,7 @@ linters:
         - empty
         - stdlib
         - "transport.AuthMethod"
+        - "gitpoll.AuthProvider"
 
 formatters:
   enable:
