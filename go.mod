@@ -3,12 +3,13 @@ module github.com/schjan/picolet
 go 1.26.1
 
 require (
-	github.com/1password/onepassword-sdk-go v0.3.1
+	github.com/bradleyfalzon/ghinstallation/v2 v2.18.0
 	github.com/containers/podman/v5 v5.8.1
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/eclipse/paho.golang v0.23.0
-	github.com/go-git/go-git/v5 v5.17.2
+	github.com/go-git/go-git/v5 v5.17.0
 	github.com/godbus/dbus/v5 v5.2.2
+	github.com/google/go-github/v84 v84.0.0
 	github.com/mochi-mqtt/server/v2 v2.7.9
 	github.com/prometheus/client_golang v1.23.2
 	github.com/sebdah/goldie/v2 v2.8.0
@@ -55,9 +56,7 @@ require (
 	github.com/docker/docker-credential-helpers v0.9.4 // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
-	github.com/dylibso/observe-sdk/go v0.0.0-20240828172851-9145d8ad07e1 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
-	github.com/extism/go-sdk v1.7.1 // indirect
 	github.com/fatih/structs v1.1.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
@@ -68,11 +67,12 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
-	github.com/gobwas/glob v0.2.3 // indirect
+	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/go-containerregistry v0.20.7 // indirect
 	github.com/google/go-intervals v0.0.2 // indirect
+	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/gorilla/schema v1.4.1 // indirect
@@ -80,7 +80,6 @@ require (
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
-	github.com/ianlancetaylor/demangle v0.0.0-20251118225945-96ee0021ea0f // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/jedib0t/go-pretty/v6 v6.7.8 // indirect
@@ -150,8 +149,6 @@ require (
 	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/sylabs/sif/v2 v2.22.0 // indirect
 	github.com/tchap/go-patricia/v2 v2.3.3 // indirect
-	github.com/tetratelabs/wabin v0.0.0-20230304001439-f6f874872834 // indirect
-	github.com/tetratelabs/wazero v1.11.0 // indirect
 	github.com/titanous/rocacheck v0.0.0-20171023193734-afe73141d399 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/vbatts/tar-split v0.12.2 // indirect
@@ -167,7 +164,6 @@ require (
 	go.opentelemetry.io/otel v1.39.0 // indirect
 	go.opentelemetry.io/otel/metric v1.39.0 // indirect
 	go.opentelemetry.io/otel/trace v1.39.0 // indirect
-	go.opentelemetry.io/proto/otlp v1.9.0 // indirect
 	go.podman.io/common v0.67.0 // indirect
 	go.podman.io/image/v5 v5.39.1 // indirect
 	go.podman.io/storage v1.62.0 // indirect
