@@ -40,6 +40,10 @@ const (
 	// DefaultStatePath is the default location for the reconciliation state file.
 	// Exported so that CLI subcommands (e.g. dry-run) can read from the same path.
 	DefaultStatePath = "/var/lib/picolet/state.json"
+
+	// healthFailureThreshold is the number of consecutive all-error health ticks
+	// before /health returns 503 to trigger a container restart.
+	healthFailureThreshold = 3
 )
 
 // Agent is the main reconciliation loop.
@@ -60,6 +64,8 @@ type Agent struct {
 	paused             atomic.Bool // set by MQTT pause subscription
 	seededSuccessfulAt atomic.Bool // guards one-time gauge seed from persisted state
 	mqttClient         MQTTClient  // nil when MQTT not configured
+
+	consecutiveHealthFailures atomic.Int32
 }
 
 // Option configures the Agent.
@@ -226,6 +232,20 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		slog.Error("health enforcement error", "error", err)
 	} else {
 		recordHealthMetrics(hr)
+	}
+
+	// Track D-Bus health for /health endpoint.
+	// Only counts GetUnitStatus failures (all units errored, none reached Healthy/Unhealthy/Inactive).
+	// RestartUnit errors go into hr.Errors too but those units already appeared in Unhealthy,
+	// so len(hr.Errors) == totalChecked only when ALL GetUnitStatus calls failed — the right
+	// signal for D-Bus being dead.
+	if hr != nil {
+		totalChecked := len(hr.Healthy) + len(hr.Unhealthy) + len(hr.Inactive) + len(hr.Errors)
+		if totalChecked > 0 && len(hr.Errors) == totalChecked {
+			a.consecutiveHealthFailures.Add(1)
+		} else {
+			a.consecutiveHealthFailures.Store(0)
+		}
 	}
 
 	// 1b. Pause check — health ran, skip reconciliation when paused via MQTT
@@ -519,6 +539,13 @@ func recordHealthMetrics(hr *health.CheckResult) {
 	for unit, s := range hr.Statuses {
 		metrics.UnitHealth.Set(unit, s.ActiveState, s.SubState)
 	}
+
+	metrics.HealthCheckErrorsTotal.Add(float64(len(hr.Errors)))
+
+	// When D-Bus is fully down, clear stale unit gauges so they disappear from scrapes.
+	if len(hr.Statuses) == 0 && len(hr.Errors) > 0 {
+		metrics.UnitHealth.Clear()
+	}
 }
 
 func countCategoriesFromState(managed map[string]state.ManagedFile) map[string]float64 {
@@ -596,6 +623,11 @@ func (a *Agent) newMux() *http.ServeMux {
 		if !a.ready.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"status":"starting"}`))
+			return
+		}
+		if !a.paused.Load() && a.consecutiveHealthFailures.Load() >= healthFailureThreshold {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"systemd_unreachable"}`))
 			return
 		}
 		w.WriteHeader(http.StatusOK)

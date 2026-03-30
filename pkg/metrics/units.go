@@ -95,3 +95,11 @@ func (c *UnitHealthCollector) Delete(unit string) {
 	defer c.mu.Unlock()
 	delete(c.units, unit)
 }
+
+// Clear removes all units from the collector. Called when D-Bus is fully down
+// so stale gauges disappear from scrapes (absent, not 0).
+func (c *UnitHealthCollector) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	clear(c.units)
+}

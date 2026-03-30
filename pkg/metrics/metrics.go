@@ -106,6 +106,16 @@ var (
 		Help: "1 if the agent is paused via MQTT, 0 otherwise.",
 	})
 
+	DBusConnected = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "picolet_dbus_connected",
+		Help: "1 if the D-Bus connection to systemd is alive, 0 otherwise.",
+	})
+
+	HealthCheckErrorsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "picolet_health_check_errors_total",
+		Help: "Total health check errors (D-Bus failures, not per-unit).",
+	})
+
 	BuildInfo = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "picolet_build_info",
@@ -136,6 +146,8 @@ func Register() {
 			OrphansRemovedTotal,
 			MQTTConnected,
 			AgentPaused,
+			DBusConnected,
+			HealthCheckErrorsTotal,
 			BuildInfo,
 			UnitHealth,
 		)

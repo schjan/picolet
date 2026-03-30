@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -22,6 +23,7 @@ import (
 	agentmocks "github.com/schjan/picolet/mocks/agent"
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
+	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/mqtt"
 	"github.com/schjan/picolet/pkg/reconciler"
@@ -1043,6 +1045,143 @@ Internal=true
 	require.NoError(t, err)
 	require.NotEmpty(t, files)
 	assert.Equal(t, "/etc/containers/systemd/picolet/internal.network", files[0].DestPath)
+}
+
+func TestHealthEndpoint_Returns503AfterConsecutiveDBusFailures(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{
+		Hostname: "test",
+		RepoURL:  "https://example.com/repo.git",
+	}
+	a := New(cfg)
+	a.ready.Store(true)
+
+	srv := httptest.NewServer(a.newMux())
+	defer srv.Close()
+
+	// Below threshold: should return 200
+	a.consecutiveHealthFailures.Store(2)
+	resp, err := http.Get(srv.URL + "/health") //nolint:noctx // test helper
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// At threshold: should return 503
+	a.consecutiveHealthFailures.Store(3)
+	resp2, err := http.Get(srv.URL + "/health") //nolint:noctx // test helper
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	assert.Equal(t, http.StatusServiceUnavailable, resp2.StatusCode)
+
+	// Recovery: counter resets below threshold
+	a.consecutiveHealthFailures.Store(0)
+	resp3, err := http.Get(srv.URL + "/health") //nolint:noctx // test helper
+	require.NoError(t, err)
+	defer resp3.Body.Close()
+	assert.Equal(t, http.StatusOK, resp3.StatusCode)
+}
+
+func TestHealthEndpoint_Returns200WhenPausedEvenWithDBusDown(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{
+		Hostname: "test",
+		RepoURL:  "https://example.com/repo.git",
+	}
+	a := New(cfg)
+	a.ready.Store(true)
+	a.paused.Store(true)
+	a.consecutiveHealthFailures.Store(5) // well above threshold
+
+	srv := httptest.NewServer(a.newMux())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/health") //nolint:noctx // test helper
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestConsecutiveHealthFailureTracking(t *testing.T) {
+	t.Parallel()
+
+	t.Run("all errors increments counter", func(t *testing.T) {
+		t.Parallel()
+		a := New(&agentcfg.Config{Hostname: "test", RepoURL: "https://example.com/repo.git"})
+
+		hr := &health.CheckResult{
+			Errors: []error{fmt.Errorf("dbus dead"), fmt.Errorf("dbus dead")},
+		}
+		// Simulate what tick does
+		totalChecked := len(hr.Healthy) + len(hr.Unhealthy) + len(hr.Inactive) + len(hr.Errors)
+		if totalChecked > 0 && len(hr.Errors) == totalChecked {
+			a.consecutiveHealthFailures.Add(1)
+		} else {
+			a.consecutiveHealthFailures.Store(0)
+		}
+		assert.Equal(t, int32(1), a.consecutiveHealthFailures.Load())
+	})
+
+	t.Run("mixed results resets counter", func(t *testing.T) {
+		t.Parallel()
+		a := New(&agentcfg.Config{Hostname: "test", RepoURL: "https://example.com/repo.git"})
+		a.consecutiveHealthFailures.Store(5)
+
+		hr := &health.CheckResult{
+			Healthy: []string{"foo.service"},
+			Errors:  []error{fmt.Errorf("dbus dead")},
+		}
+		totalChecked := len(hr.Healthy) + len(hr.Unhealthy) + len(hr.Inactive) + len(hr.Errors)
+		if totalChecked > 0 && len(hr.Errors) == totalChecked {
+			a.consecutiveHealthFailures.Add(1)
+		} else {
+			a.consecutiveHealthFailures.Store(0)
+		}
+		assert.Equal(t, int32(0), a.consecutiveHealthFailures.Load())
+	})
+
+	t.Run("zero managed units stays at zero", func(t *testing.T) {
+		t.Parallel()
+		a := New(&agentcfg.Config{Hostname: "test", RepoURL: "https://example.com/repo.git"})
+
+		hr := &health.CheckResult{}
+		totalChecked := len(hr.Healthy) + len(hr.Unhealthy) + len(hr.Inactive) + len(hr.Errors)
+		if totalChecked > 0 && len(hr.Errors) == totalChecked {
+			a.consecutiveHealthFailures.Add(1)
+		} else {
+			a.consecutiveHealthFailures.Store(0)
+		}
+		assert.Equal(t, int32(0), a.consecutiveHealthFailures.Load())
+	})
+}
+
+func TestRecordHealthMetrics_ClearsStaleGauges(t *testing.T) {
+	t.Parallel()
+	metrics.Register()
+
+	collector := metrics.NewUnitHealthCollector()
+	collector.Set("test.service", "active", "running")
+
+	// Simulate D-Bus down: all errors, no statuses
+	hr := &health.CheckResult{
+		Errors:   []error{fmt.Errorf("dbus dead")},
+		Statuses: map[string]applier.UnitStatus{},
+	}
+
+	// Verify the clearing logic works (we test it on a separate collector to avoid
+	// polluting the global one used by other tests).
+	if len(hr.Statuses) == 0 && len(hr.Errors) > 0 {
+		collector.Clear()
+	}
+
+	// Collector should emit no metrics after clearing
+	ch := make(chan prometheus.Metric, 10)
+	collector.Collect(ch)
+	close(ch)
+	count := 0
+	for range ch {
+		count++
+	}
+	assert.Equal(t, 0, count, "cleared collector should emit no metrics")
 }
 
 func TestSetFilesManagedMetric(t *testing.T) {

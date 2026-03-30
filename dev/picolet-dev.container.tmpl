@@ -5,9 +5,8 @@ ContainerName=picolet-dev
 # Podman socket (manage host containers)
 Volume=%t/podman/podman.sock:/run/podman/podman.sock
 
-# systemd user private socket — bypasses D-Bus session bus entirely
-# (see pkg/applier/systemd.go:newUserSystemdConnectionContext)
-Volume=%t/systemd/private:%t/systemd/private
+# systemd user D-Bus directory — mount dir, not socket file, to survive systemd restarts.
+Volume=%t/systemd:%t/systemd
 Environment=XDG_RUNTIME_DIR=%t
 
 # Quadlet output: user's container systemd directory
