@@ -234,18 +234,12 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		recordHealthMetrics(hr)
 	}
 
-	// Track D-Bus health for /health endpoint.
-	// Only counts GetUnitStatus failures (all units errored, none reached Healthy/Unhealthy/Inactive).
-	// RestartUnit errors go into hr.Errors too but those units already appeared in Unhealthy,
-	// so len(hr.Errors) == totalChecked only when ALL GetUnitStatus calls failed — the right
-	// signal for D-Bus being dead.
+	// Track consecutive D-Bus failures for /health endpoint.
+	// AllFailed() is true only when every GetUnitStatus call errored — the signal
+	// for D-Bus being dead (RestartUnit errors don't count because those units
+	// already appeared in Unhealthy).
 	if hr != nil {
-		totalChecked := len(hr.Healthy) + len(hr.Unhealthy) + len(hr.Inactive) + len(hr.Errors)
-		if totalChecked > 0 && len(hr.Errors) == totalChecked {
-			a.consecutiveHealthFailures.Add(1)
-		} else {
-			a.consecutiveHealthFailures.Store(0)
-		}
+		a.updateHealthFailures(hr)
 	}
 
 	// 1b. Pause check — health ran, skip reconciliation when paused via MQTT
@@ -520,6 +514,14 @@ func setFilesManagedMetric(counts map[string]float64) {
 	}
 }
 
+func (a *Agent) updateHealthFailures(hr *health.CheckResult) {
+	if hr.AllFailed() {
+		a.consecutiveHealthFailures.Add(1)
+	} else {
+		a.consecutiveHealthFailures.Store(0)
+	}
+}
+
 func recordHealthMetrics(hr *health.CheckResult) {
 	for _, u := range hr.Healthy {
 		metrics.HealthCheckTotal.WithLabelValues(u, "healthy").Inc()
@@ -542,8 +544,7 @@ func recordHealthMetrics(hr *health.CheckResult) {
 
 	metrics.HealthCheckErrorsTotal.Add(float64(len(hr.Errors)))
 
-	// When D-Bus is fully down, clear stale unit gauges so they disappear from scrapes.
-	if len(hr.Statuses) == 0 && len(hr.Errors) > 0 {
+	if hr.AllFailed() {
 		metrics.UnitHealth.Clear()
 	}
 }

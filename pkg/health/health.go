@@ -22,6 +22,13 @@ type CheckResult struct {
 	Statuses  map[string]applier.UnitStatus // all successfully queried units
 }
 
+// AllFailed reports whether every unit check errored and none succeeded.
+// Returns false when no units were checked (empty state).
+func (r *CheckResult) AllFailed() bool {
+	totalChecked := len(r.Healthy) + len(r.Unhealthy) + len(r.Inactive) + len(r.Errors)
+	return totalChecked > 0 && len(r.Errors) == totalChecked
+}
+
 // Checker enforces that managed systemd units are active.
 type Checker struct {
 	systemd     applier.SystemdManager

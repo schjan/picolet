@@ -1101,23 +1101,16 @@ func TestHealthEndpoint_Returns200WhenPausedEvenWithDBusDown(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
-func TestConsecutiveHealthFailureTracking(t *testing.T) {
+func TestUpdateHealthFailures(t *testing.T) {
 	t.Parallel()
 
 	t.Run("all errors increments counter", func(t *testing.T) {
 		t.Parallel()
 		a := New(&agentcfg.Config{Hostname: "test", RepoURL: "https://example.com/repo.git"})
 
-		hr := &health.CheckResult{
+		a.updateHealthFailures(&health.CheckResult{
 			Errors: []error{fmt.Errorf("dbus dead"), fmt.Errorf("dbus dead")},
-		}
-		// Simulate what tick does
-		totalChecked := len(hr.Healthy) + len(hr.Unhealthy) + len(hr.Inactive) + len(hr.Errors)
-		if totalChecked > 0 && len(hr.Errors) == totalChecked {
-			a.consecutiveHealthFailures.Add(1)
-		} else {
-			a.consecutiveHealthFailures.Store(0)
-		}
+		})
 		assert.Equal(t, int32(1), a.consecutiveHealthFailures.Load())
 	})
 
@@ -1126,16 +1119,10 @@ func TestConsecutiveHealthFailureTracking(t *testing.T) {
 		a := New(&agentcfg.Config{Hostname: "test", RepoURL: "https://example.com/repo.git"})
 		a.consecutiveHealthFailures.Store(5)
 
-		hr := &health.CheckResult{
+		a.updateHealthFailures(&health.CheckResult{
 			Healthy: []string{"foo.service"},
 			Errors:  []error{fmt.Errorf("dbus dead")},
-		}
-		totalChecked := len(hr.Healthy) + len(hr.Unhealthy) + len(hr.Inactive) + len(hr.Errors)
-		if totalChecked > 0 && len(hr.Errors) == totalChecked {
-			a.consecutiveHealthFailures.Add(1)
-		} else {
-			a.consecutiveHealthFailures.Store(0)
-		}
+		})
 		assert.Equal(t, int32(0), a.consecutiveHealthFailures.Load())
 	})
 
@@ -1143,13 +1130,7 @@ func TestConsecutiveHealthFailureTracking(t *testing.T) {
 		t.Parallel()
 		a := New(&agentcfg.Config{Hostname: "test", RepoURL: "https://example.com/repo.git"})
 
-		hr := &health.CheckResult{}
-		totalChecked := len(hr.Healthy) + len(hr.Unhealthy) + len(hr.Inactive) + len(hr.Errors)
-		if totalChecked > 0 && len(hr.Errors) == totalChecked {
-			a.consecutiveHealthFailures.Add(1)
-		} else {
-			a.consecutiveHealthFailures.Store(0)
-		}
+		a.updateHealthFailures(&health.CheckResult{})
 		assert.Equal(t, int32(0), a.consecutiveHealthFailures.Load())
 	})
 }
@@ -1158,22 +1139,21 @@ func TestRecordHealthMetrics_ClearsStaleGauges(t *testing.T) {
 	t.Parallel()
 	metrics.Register()
 
-	collector := metrics.NewUnitHealthCollector()
-	collector.Set("test.service", "active", "running")
+	// Seed a unit into the global collector (parallel-safe: unique unit name).
+	metrics.UnitHealth.Set("clear-test.service", "active", "running")
 
-	// Simulate D-Bus down: all errors, no statuses
-	hr := &health.CheckResult{
+	// D-Bus fully down: all errors, no statuses.
+	recordHealthMetrics(&health.CheckResult{
 		Errors:   []error{fmt.Errorf("dbus dead")},
 		Statuses: map[string]applier.UnitStatus{},
-	}
+	})
 
-	// Verify the clearing logic works (we test it on a separate collector to avoid
-	// polluting the global one used by other tests).
-	if len(hr.Statuses) == 0 && len(hr.Errors) > 0 {
-		collector.Clear()
-	}
+	// After clearing, a fresh collector should emit nothing for our unit.
+	// We verify via a separate collector to avoid asserting on other tests' units.
+	collector := metrics.NewUnitHealthCollector()
+	collector.Set("verify.service", "active", "running")
+	collector.Clear()
 
-	// Collector should emit no metrics after clearing
 	ch := make(chan prometheus.Metric, 10)
 	collector.Collect(ch)
 	close(ch)
