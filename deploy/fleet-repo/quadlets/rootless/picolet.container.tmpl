@@ -23,8 +23,10 @@ Volume=%h/.config/containers/systemd:/etc/containers/systemd
 # systemd user units
 Volume=%h/.config/systemd/user:/etc/systemd/system
 
-# systemd user private socket — bypasses D-Bus session bus entirely
-Volume=%t/systemd/private:%t/systemd/private
+# systemd user D-Bus directory — mount the directory (not the socket file) so the
+# container sees a new socket if systemd --user restarts and recreates it.
+# A file bind mount pins the inode and breaks permanently on socket recreation.
+Volume=%t/systemd:%t/systemd
 Environment=XDG_RUNTIME_DIR=%t
 
 # Podman socket (rootless — lives under XDG_RUNTIME_DIR)

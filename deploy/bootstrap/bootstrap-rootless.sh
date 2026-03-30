@@ -28,7 +28,7 @@ Volume=${CONFIG_DIR}:/etc/picolet:ro
 Volume=${DATA_DIR}:/var/lib/picolet
 Volume=${QUADLET_DIR}:/etc/containers/systemd
 Volume=${HOME}/.config/systemd/user:/etc/systemd/system
-Volume=${XDG_RUNTIME_DIR}/systemd/private:${XDG_RUNTIME_DIR}/systemd/private
+Volume=${XDG_RUNTIME_DIR}/systemd:${XDG_RUNTIME_DIR}/systemd
 Volume=${XDG_RUNTIME_DIR}/podman/podman.sock:/run/podman/podman.sock
 Network=host
 Environment=PICOLET_CONFIG=/etc/picolet/config.yml

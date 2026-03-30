@@ -205,3 +205,23 @@ func TestEnforceFailedUnitPopulatesStatus(t *testing.T) {
 	assert.Equal(t, "failed", status.ActiveState)
 	assert.Equal(t, "failed", status.SubState)
 }
+
+func TestAllFailed(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		hr   CheckResult
+		want bool
+	}{
+		{"all errors", CheckResult{Errors: []error{assert.AnError, assert.AnError}}, true},
+		{"mixed", CheckResult{Healthy: []string{"a"}, Errors: []error{assert.AnError}}, false},
+		{"all healthy", CheckResult{Healthy: []string{"a"}}, false},
+		{"empty", CheckResult{}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.hr.AllFailed())
+		})
+	}
+}

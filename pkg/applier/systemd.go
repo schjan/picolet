@@ -14,6 +14,8 @@ import (
 
 	"github.com/coreos/go-systemd/v22/dbus"
 	godbus "github.com/godbus/dbus/v5"
+
+	"github.com/schjan/picolet/pkg/metrics"
 )
 
 // systemd job result strings as documented in go-systemd dbus/methods.go:97-102.
@@ -28,11 +30,17 @@ const (
 // hangs forever. This timeout lets the tick fail so the next tick can reconnect.
 const jobTimeout = 30 * time.Second
 
+// reconnectCooldown prevents rapid reconnect attempts when D-Bus is persistently down.
+const reconnectCooldown = 30 * time.Second
+
 // DBusSystemdManager implements SystemdManager using the systemd D-Bus API.
 type DBusSystemdManager struct {
-	mu       sync.Mutex
-	conn     *dbus.Conn
-	rootless bool
+	mu                   sync.Mutex
+	conn                 *dbus.Conn
+	rootless             bool
+	lastReconnectAttempt time.Time
+	lastReconnectErr     error
+	nowFn                func() time.Time // injectable clock, defaults to time.Now
 }
 
 // NewDBusSystemdManager creates a new SystemdManager backed by D-Bus.
@@ -43,7 +51,8 @@ func NewDBusSystemdManager(ctx context.Context, rootless bool) (*DBusSystemdMana
 	if err != nil {
 		return nil, err
 	}
-	return &DBusSystemdManager{conn: conn, rootless: rootless}, nil
+	metrics.DBusConnected.Set(1)
+	return &DBusSystemdManager{conn: conn, rootless: rootless, nowFn: time.Now}, nil
 }
 
 // connect creates a new D-Bus connection based on the rootless flag.
@@ -94,10 +103,22 @@ func (m *DBusSystemdManager) withReconnect(ctx context.Context, fn func(*dbus.Co
 	m.mu.Lock()
 	// Only reconnect if no other goroutine already did (pointer-equality guard).
 	if m.conn == conn {
-		if err := m.reconnect(ctx); err != nil {
+		now := m.nowFn()
+		if now.Sub(m.lastReconnectAttempt) < reconnectCooldown && m.lastReconnectErr != nil {
+			err := m.lastReconnectErr
 			m.mu.Unlock()
 			return err
 		}
+		if err := m.reconnect(ctx); err != nil {
+			m.lastReconnectAttempt = now
+			m.lastReconnectErr = err
+			metrics.DBusConnected.Set(0)
+			m.mu.Unlock()
+			return err
+		}
+		m.lastReconnectAttempt = time.Time{}
+		m.lastReconnectErr = nil
+		metrics.DBusConnected.Set(1)
 	}
 	conn = m.conn
 	m.mu.Unlock()

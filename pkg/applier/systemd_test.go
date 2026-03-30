@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coreos/go-systemd/v22/dbus"
 	godbus "github.com/godbus/dbus/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -109,6 +110,74 @@ func TestWaitJobResultTimeout(t *testing.T) {
 	require.Error(t, err)
 	// Either context deadline or job timeout fires — both are valid
 	assert.Contains(t, err.Error(), "starting test.service")
+}
+
+func TestReconnectCooldown(t *testing.T) {
+	t.Parallel()
+
+	t.Run("within cooldown returns cached error", func(t *testing.T) {
+		t.Parallel()
+		now := time.Now()
+		cachedErr := fmt.Errorf("D-Bus reconnect: connecting to user-systemd D-Bus: connection refused")
+
+		m := &DBusSystemdManager{
+			rootless:             true,
+			lastReconnectAttempt: now.Add(-10 * time.Second), // 10s ago, within 30s cooldown
+			lastReconnectErr:     cachedErr,
+			nowFn:                func() time.Time { return now },
+		}
+		// conn is nil — the pointer-equality guard (m.conn == conn) will match,
+		// so the cooldown check runs.
+
+		err := m.withReconnect(context.Background(), func(_ *dbus.Conn) error {
+			return godbus.ErrClosed // triggers reconnect path
+		})
+		// Should return cached error, not attempt reconnect (which would panic on nil conn.Close)
+		require.Error(t, err)
+		assert.Equal(t, cachedErr, err)
+	})
+
+	t.Run("expired cooldown retries reconnect", func(t *testing.T) {
+		t.Parallel()
+		now := time.Now()
+		cachedErr := fmt.Errorf("D-Bus reconnect: connection refused")
+
+		m := &DBusSystemdManager{
+			rootless:             true,
+			lastReconnectAttempt: now.Add(-60 * time.Second), // 60s ago, past 30s cooldown
+			lastReconnectErr:     cachedErr,
+			nowFn:                func() time.Time { return now },
+		}
+
+		// reconnect will fail (nil conn → panic), but we can verify the cooldown was bypassed
+		// by checking that it doesn't return the cached error.
+		// We can't test actual reconnect without a real D-Bus, so verify the code path
+		// by catching the panic from conn.Close() on nil conn.
+		assert.Panics(t, func() {
+			_ = m.withReconnect(context.Background(), func(_ *dbus.Conn) error {
+				return godbus.ErrClosed
+			})
+		}, "should attempt reconnect (and panic on nil conn) when cooldown is expired")
+	})
+
+	t.Run("nil lastReconnectErr bypasses cooldown", func(t *testing.T) {
+		t.Parallel()
+		now := time.Now()
+
+		m := &DBusSystemdManager{
+			rootless:             true,
+			lastReconnectAttempt: now.Add(-5 * time.Second), // recent, but err is nil
+			lastReconnectErr:     nil,                       // no cached error → don't suppress
+			nowFn:                func() time.Time { return now },
+		}
+
+		// Should attempt reconnect (not return nil), hitting the nil conn panic.
+		assert.Panics(t, func() {
+			_ = m.withReconnect(context.Background(), func(_ *dbus.Conn) error {
+				return godbus.ErrClosed
+			})
+		}, "should attempt reconnect when lastReconnectErr is nil regardless of time")
+	})
 }
 
 func TestIsConnectionDead(t *testing.T) {
