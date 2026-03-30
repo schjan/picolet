@@ -6,7 +6,7 @@ require (
 	github.com/containers/podman/v5 v5.8.1
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/eclipse/paho.golang v0.23.0
-	github.com/go-git/go-git/v5 v5.17.0
+	github.com/go-git/go-git/v5 v5.17.1
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/mochi-mqtt/server/v2 v2.7.9
 	github.com/prometheus/client_golang v1.23.2
