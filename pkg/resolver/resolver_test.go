@@ -440,4 +440,151 @@ func TestReadOpSecret(t *testing.T) {
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "1password error")
 	})
+
+	t.Run("invalid ref returns error", func(t *testing.T) {
+		t.Parallel()
+		invalidFS := fstest.MapFS{
+			"bad.tmpl": &fstest.MapFile{Data: []byte(`pw={{readOpSecret "not-an-op-ref"}}`)},
+		}
+		reader := func(_ context.Context, _ string) (string, error) {
+			return "should-not-be-called", nil
+		}
+		registry, err := BuildRegistry(t.Context(), invalidFS, nil, reader)
+		require.NoError(t, err)
+		var buf bytes.Buffer
+		err = registry.ExecuteTemplate(&buf, "bad.tmpl", nil)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "is not a valid op:// reference")
+	})
+}
+
+func TestResolveHostSkipsOpSecretWhenNotConfigured(t *testing.T) {
+	t.Parallel()
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte(`
+images:
+  app: "app:v1"
+ports:
+  app: 8080
+`)},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base:
+  secrets:
+    - op://vault/item/field
+    - secrets/normal.yml
+pi_types: {}
+features: {}
+`)},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: test-host
+external_hostname: test-host.ts.net
+pi_type: server
+features: []
+`)},
+		"secrets/normal.yml": &fstest.MapFile{Data: []byte("normal-secret-data")},
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+
+	// nil OpSecretReader — 1Password not configured.
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
+	require.NoError(t, err)
+
+	// The op:// secret should be skipped, only the normal secret should be present.
+	require.Len(t, resolved.Files, 1)
+	assert.Equal(t, "secret:normal", resolved.Files[0].DestPath)
+	assert.Equal(t, "normal-secret-data", resolved.Files[0].Content)
+}
+
+// newOpSecretTestFS returns a filesystem and config wired for op:// secret tests.
+// The only secret in assignments is an op:// ref so tests can control exactly what resolves.
+func newOpSecretTestFS(tb testing.TB, secretRef string) (fstest.MapFS, *config.Config) {
+	tb.Helper()
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte(`
+images:
+  app: "app:v1"
+ports:
+  app: 8080
+`)},
+		"assignments.yml": &fstest.MapFile{Data: fmt.Appendf(nil, `
+base:
+  secrets:
+    - %s
+pi_types: {}
+features: {}
+`, secretRef)},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: test-host
+external_hostname: test-host.ts.net
+pi_type: server
+features: []
+`)},
+	}
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(tb, err)
+	return fsys, cfg
+}
+
+func TestResolveOpSecret(t *testing.T) {
+	t.Parallel()
+
+	t.Run("with reader resolves secret", func(t *testing.T) {
+		t.Parallel()
+		const ref = "op://vault/item/field"
+		fsys, cfg := newOpSecretTestFS(t, ref)
+
+		reader := func(_ context.Context, got string) (string, error) {
+			if got == ref {
+				return "resolved-value", nil
+			}
+			return "", fmt.Errorf("unexpected ref: %s", got)
+		}
+		r, err := New(Config{FS: fsys, Config: cfg, OpSecretReader: reader})
+		require.NoError(t, err)
+
+		resolved, err := r.ResolveHost(t.Context(), "test-host")
+		require.NoError(t, err)
+
+		require.Len(t, resolved.Files, 1)
+		f := resolved.Files[0]
+		assert.Equal(t, ref, f.SrcPath)
+		assert.Equal(t, "secret:item_field", f.DestPath)
+		assert.Equal(t, "resolved-value", f.Content)
+		assert.Equal(t, "secret", f.Category)
+	})
+
+	t.Run("nil reader skips op secret", func(t *testing.T) {
+		t.Parallel()
+		fsys, cfg := newOpSecretTestFS(t, "op://vault/item/field")
+
+		// No OpSecretReader — ErrOpNotConfigured is silently skipped by ResolveHost.
+		r, err := New(Config{FS: fsys, Config: cfg})
+		require.NoError(t, err)
+
+		resolved, err := r.ResolveHost(t.Context(), "test-host")
+		require.NoError(t, err)
+
+		// op:// secret must be absent from resolved files.
+		assert.Empty(t, resolved.Files)
+	})
+
+	t.Run("invalid ref returns error", func(t *testing.T) {
+		t.Parallel()
+		// op://vault/item has only two path components — field is missing.
+		fsys, cfg := newOpSecretTestFS(t, "op://vault/item")
+
+		reader := func(_ context.Context, _ string) (string, error) {
+			return "should-not-be-called", nil
+		}
+		r, err := New(Config{FS: fsys, Config: cfg, OpSecretReader: reader})
+		require.NoError(t, err)
+
+		_, err = r.ResolveHost(t.Context(), "test-host")
+		require.Error(t, err)
+	})
 }

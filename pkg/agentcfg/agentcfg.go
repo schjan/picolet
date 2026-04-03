@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"go.yaml.in/yaml/v4"
+
+	op "github.com/schjan/picolet/pkg/onepassword"
 )
 
 // MQTTConfig holds MQTT broker connection settings.
@@ -23,6 +25,7 @@ type MQTTConfig struct {
 type OnePasswordConfig struct {
 	TokenPath       string        `yaml:"token_path"`       // file path to service account token
 	RefreshInterval time.Duration `yaml:"refresh_interval"` // how often to re-fetch op:// secrets (default 6h)
+	GitTokenRef     string        `yaml:"git_token_ref"`    // op:// ref for git pull token; replaces git_token_path
 }
 
 // Config holds the agent runtime configuration from /etc/picolet/config.yml.
@@ -119,6 +122,17 @@ func (c *Config) Validate() error {
 	}
 	if c.OnePassword != nil && c.OnePassword.TokenPath == "" {
 		return errors.New("onepassword.token_path is required when onepassword is configured")
+	}
+	if c.OnePassword != nil && c.OnePassword.RefreshInterval < time.Minute {
+		return errors.New("onepassword.refresh_interval must be at least 1m")
+	}
+	if c.OnePassword != nil && c.OnePassword.GitTokenRef != "" {
+		if _, err := op.ParseOpRef(c.OnePassword.GitTokenRef); err != nil {
+			return fmt.Errorf("onepassword.git_token_ref: %w", err)
+		}
+	}
+	if c.OnePassword != nil && c.OnePassword.GitTokenRef != "" && c.GitTokenPath != "" {
+		return errors.New("git_token_path and onepassword.git_token_ref are mutually exclusive")
 	}
 	return nil
 }

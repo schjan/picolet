@@ -9,6 +9,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -123,6 +124,31 @@ func TestSSHAuthUser(t *testing.T) {
 		}
 		assert.Equal(t, tt.want, user, "url=%s", tt.url)
 	}
+}
+
+func TestNewWithTokenAuthHTTPS(t *testing.T) {
+	t.Parallel()
+	p := NewWithToken("https://github.com/org/repo.git", "main", "/tmp/clone", "ghp_secret123")
+	auth, err := p.auth()
+	require.NoError(t, err)
+	require.NotNil(t, auth)
+	basic, ok := auth.(*http.BasicAuth)
+	require.True(t, ok, "expected *http.BasicAuth, got %T", auth)
+	assert.Equal(t, "x", basic.Username)
+	assert.Equal(t, "ghp_secret123", basic.Password)
+}
+
+func TestNewWithTokenSSHTakesPrecedence(t *testing.T) {
+	t.Parallel()
+	p := NewWithToken("git@github.com:org/repo.git", "main", "/tmp/clone", "ghp_secret123")
+	auth, err := p.auth()
+	if err != nil {
+		// SSH agent may not be available in test/CI — skip gracefully
+		t.Skipf("SSH agent unavailable: %v", err)
+	}
+	// SSH URL must return SSH auth, not BasicAuth, even when token is set
+	_, isBasic := auth.(*http.BasicAuth)
+	assert.False(t, isBasic, "SSH URL should not return BasicAuth even when token is set")
 }
 
 func TestPollerReopenExisting(t *testing.T) {

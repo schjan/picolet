@@ -122,10 +122,10 @@ var (
 		[]string{"feature"},
 	)
 
-	OpSecretsSynced = prometheus.NewGauge(
+	OpDirectSecretsCount = prometheus.NewGauge(
 		prometheus.GaugeOpts{
-			Name: "picolet_op_secrets_synced",
-			Help: "Number of op:// secrets currently managed by picolet.",
+			Name: "picolet_op_direct_secrets_count",
+			Help: "Number of direct op:// secret assignments currently managed by picolet.",
 		},
 	)
 
@@ -168,7 +168,7 @@ func Register() {
 			AgentPaused,
 			BuildInfo,
 			FeatureInfo,
-			OpSecretsSynced,
+			OpDirectSecretsCount,
 			OpSyncTotal,
 			OpLastSyncTimestamp,
 			UnitHealth,

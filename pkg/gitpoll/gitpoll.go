@@ -22,6 +22,7 @@ type Poller struct {
 	branch    string
 	localPath string
 	tokenPath string
+	token     string // direct token value; takes precedence over tokenPath
 	repo      *git.Repository
 }
 
@@ -39,6 +40,12 @@ func New(repoURL, branch, localPath, tokenPath string) *Poller {
 		localPath: localPath,
 		tokenPath: tokenPath,
 	}
+}
+
+// NewWithToken creates a poller that uses a direct token value for HTTP authentication.
+// The token takes precedence over a token file path.
+func NewWithToken(repoURL, branch, localPath, token string) *Poller {
+	return &Poller{repoURL: repoURL, branch: branch, localPath: localPath, token: token}
 }
 
 // Init opens an existing clone or clones fresh.
@@ -157,6 +164,11 @@ func (p *Poller) auth() (transport.AuthMethod, error) {
 			return nil, fmt.Errorf("SSH agent auth: %w", err)
 		}
 		return auth, nil
+	}
+
+	// Direct token value (from 1Password) — takes precedence over tokenPath
+	if p.token != "" {
+		return &http.BasicAuth{Username: "x", Password: p.token}, nil
 	}
 
 	if p.tokenPath == "" {

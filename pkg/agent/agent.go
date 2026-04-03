@@ -162,7 +162,21 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	// Initialize git poller
-	poller := gitpoll.New(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, a.cfg.GitTokenPath)
+	var poller *gitpoll.Poller
+	if a.opReader != nil && a.cfg.OnePassword.GitTokenRef != "" {
+		// NOTE: The git token is resolved once at startup. If the underlying 1Password
+		// secret changes (e.g., GitHub PAT rotation), a picolet restart is required.
+		// The OP refresh cycle re-fetches secrets in assignments but does NOT refresh
+		// the git token.
+		token, err := a.opReader(ctx, a.cfg.OnePassword.GitTokenRef)
+		if err != nil {
+			return fmt.Errorf("resolving git token from 1password: %w", err)
+		}
+		slog.Info("git token resolved from 1password")
+		poller = gitpoll.NewWithToken(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, token)
+	} else {
+		poller = gitpoll.New(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, a.cfg.GitTokenPath)
+	}
 	if err := poller.Init(ctx); err != nil {
 		return fmt.Errorf("initializing git poller: %w", err)
 	}
@@ -275,9 +289,9 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 			return nil
 		}
 		slog.Info("forcing reconciliation for 1password secret refresh", "sha", pollResult.HeadSHA)
-		// Snooze the refresh timer now so that the failed-SHA gate (below) does not
-		// cause opRefreshDue() to fire on every subsequent tick.
-		a.lastOPRefresh = time.Now()
+		// Snooze with short backoff so the failed-SHA gate doesn't re-trigger opRefreshDue()
+		// on every tick. On success, lastOPRefresh is set to time.Now() (full interval).
+		a.lastOPRefresh = time.Now().Add(-(a.cfg.OnePassword.RefreshInterval - 5*time.Minute))
 	}
 	metrics.GitPollTotal.WithLabelValues("changed").Inc()
 
@@ -596,7 +610,7 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	}
 }
 
-// recordOpSecretsCount updates the picolet_op_secrets_synced gauge.
+// recordOpSecretsCount updates the picolet_op_direct_secrets_count gauge.
 func (a *Agent) recordOpSecretsCount(files []resolver.ResolvedFile) {
 	if a.opReader == nil {
 		return
@@ -607,13 +621,13 @@ func (a *Agent) recordOpSecretsCount(files []resolver.ResolvedFile) {
 			count++
 		}
 	}
-	metrics.OpSecretsSynced.Set(float64(count))
+	metrics.OpDirectSecretsCount.Set(float64(count))
 }
 
 // opRefreshDue reports whether op:// secrets should be re-fetched.
 // Returns true when 1Password is configured and the refresh interval has elapsed.
 func (a *Agent) opRefreshDue() bool {
-	if a.opReader == nil {
+	if a.opReader == nil || a.cfg.OnePassword == nil {
 		return false
 	}
 	interval := a.cfg.OnePassword.RefreshInterval

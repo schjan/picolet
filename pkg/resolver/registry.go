@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"text/template"
+
+	op "github.com/schjan/picolet/pkg/onepassword"
 )
 
 const maxTemplateDepth = 10
@@ -63,9 +65,13 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 		},
 		"readOpSecret": func(ref string) (string, error) {
 			if opSecretReader == nil {
+				slog.Debug("readOpSecret: 1password not configured, using placeholder", "ref", ref)
 				return "<op-secret>", nil
 			}
-			slog.Debug("resolving 1password secret", "ref", ref)
+			if !op.IsRef(ref) {
+				return "", fmt.Errorf("readOpSecret: %q is not a valid op:// reference", ref)
+			}
+			slog.Debug("resolving 1password secret via template", "ref", ref)
 			return opSecretReader(ctx, ref)
 		},
 		// renderTemplate uses a closure depth counter to prevent infinite recursion.
