@@ -77,7 +77,11 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 			if err != nil {
 				return "", err
 			}
-			return results[ref], nil
+			val, ok := results[ref]
+			if !ok {
+				return "", fmt.Errorf("readOpSecret: ref %q failed to resolve", ref)
+			}
+			return val, nil
 		},
 		// renderTemplate uses a closure depth counter to prevent infinite recursion.
 		// Not goroutine-safe; template rendering must be serial.

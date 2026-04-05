@@ -313,15 +313,12 @@ func (r *Resolver) batchResolveOpSecrets(ctx context.Context, allSecrets []strin
 		slog.Warn("skipping op:// secrets (1password not configured)", "count", len(opRefs))
 		return nil, nil
 	}
-	// Validate all refs before making the API call.
-	for _, ref := range opRefs {
-		if _, err := op.ParseOpRef(ref); err != nil {
-			return nil, err
-		}
-	}
 	slog.Debug("batch-resolving 1password secrets", "count", len(opRefs))
 	results, err := r.opSecretReader(ctx, opRefs)
 	if err != nil {
+		if len(results) == 0 {
+			return nil, fmt.Errorf("all 1password secrets failed to resolve: %w", err)
+		}
 		slog.Warn("some 1password secrets failed to resolve", "error", err)
 	}
 	return results, nil
