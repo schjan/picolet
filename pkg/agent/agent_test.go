@@ -1070,7 +1070,9 @@ func TestSetFilesManagedMetric(t *testing.T) {
 func TestOpRefreshDue(t *testing.T) {
 	t.Parallel()
 
-	dummyReader := func(_ context.Context, _ string) (string, error) { return "", nil }
+	dummyReader := resolver.OpSecretReader(func(_ context.Context, _ []string) (map[string]string, error) {
+		return nil, nil //nolint:nilnil // test stub
+	})
 	opCfg := &agentcfg.OnePasswordConfig{RefreshInterval: 10 * time.Minute}
 
 	tests := []struct {

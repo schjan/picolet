@@ -168,9 +168,14 @@ func (a *Agent) Run(ctx context.Context) error {
 		// secret changes (e.g., GitHub PAT rotation), a picolet restart is required.
 		// The OP refresh cycle re-fetches secrets in assignments but does NOT refresh
 		// the git token.
-		token, err := a.opReader(ctx, a.cfg.OnePassword.GitTokenRef)
+		ref := a.cfg.OnePassword.GitTokenRef
+		results, err := a.opReader(ctx, []string{ref})
 		if err != nil {
 			return fmt.Errorf("resolving git token from 1password: %w", err)
+		}
+		token, ok := results[ref]
+		if !ok {
+			return fmt.Errorf("resolving git token from 1password: ref %q not in response", ref)
 		}
 		slog.Info("git token resolved from 1password")
 		poller = gitpoll.NewWithToken(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, token)
@@ -273,29 +278,26 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return fmt.Errorf("polling git: %w", err)
 	}
 
-	if !pollResult.Changed {
-		if !a.opRefreshDue() {
-			metrics.GitPollTotal.WithLabelValues("noop").Inc()
-			slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
-			metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
-			// A noop is a successful reconciliation — the agent confirmed the
-			// desired state matches. Update the timestamp so dashboards and MQTT
-			// reflect "last time we verified everything is OK", not just "last
-			// time files changed". Only update in-memory (the defer publishes
-			// MQTT, Prometheus is scraped); no state save needed for noops.
-			now := time.Now()
-			st.LastSuccessfulReconciliationAt = now
-			metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
-			return nil
-		}
+	if !pollResult.Changed && !a.opRefreshDue() {
+		metrics.GitPollTotal.WithLabelValues("noop").Inc()
+		slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
+		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
+		// A noop is a successful reconciliation — the agent confirmed the
+		// desired state matches. Update the timestamp so dashboards and MQTT
+		// reflect "last time we verified everything is OK", not just "last
+		// time files changed". Only update in-memory (the defer publishes
+		// MQTT, Prometheus is scraped); no state save needed for noops.
+		now := time.Now()
+		st.LastSuccessfulReconciliationAt = now
+		metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
+		return nil
+	}
+
+	if pollResult.Changed {
+		metrics.GitPollTotal.WithLabelValues("changed").Inc()
+	} else {
 		slog.Info("forcing reconciliation for 1password secret refresh", "sha", pollResult.HeadSHA)
 		metrics.GitPollTotal.WithLabelValues("op_refresh").Inc()
-		// Snooze with short backoff so the failed-SHA gate doesn't re-trigger opRefreshDue()
-		// on every tick. On success, lastOPRefresh is set to time.Now() (full interval).
-		backoff := a.cfg.OnePassword.RefreshInterval / 12
-		a.lastOPRefresh = time.Now().Add(-a.cfg.OnePassword.RefreshInterval + backoff)
-	} else {
-		metrics.GitPollTotal.WithLabelValues("changed").Inc()
 	}
 
 	// Skip only after >= 3 consecutive failures on the same SHA, with a 1-hour expiry

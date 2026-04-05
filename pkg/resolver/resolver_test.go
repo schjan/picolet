@@ -400,6 +400,7 @@ func TestSecretPathTraversal(t *testing.T) {
 	require.Error(t, err)
 }
 
+//nolint:funlen // table-driven test subtests
 func TestReadOpSecret(t *testing.T) {
 	t.Parallel()
 	fsys := fstest.MapFS{
@@ -408,11 +409,16 @@ func TestReadOpSecret(t *testing.T) {
 
 	t.Run("with reader", func(t *testing.T) {
 		t.Parallel()
-		reader := func(_ context.Context, ref string) (string, error) {
-			if ref == "op://vault/item/pw" {
-				return "s3cret", nil
+		reader := func(_ context.Context, refs []string) (map[string]string, error) {
+			results := make(map[string]string, len(refs))
+			for _, ref := range refs {
+				if ref == "op://vault/item/pw" {
+					results[ref] = "s3cret"
+				} else {
+					return nil, fmt.Errorf("unknown ref: %s", ref)
+				}
 			}
-			return "", fmt.Errorf("unknown ref: %s", ref)
+			return results, nil
 		}
 		registry, err := BuildRegistry(t.Context(), fsys, nil, reader)
 		require.NoError(t, err)
@@ -432,7 +438,9 @@ func TestReadOpSecret(t *testing.T) {
 
 	t.Run("reader error propagates", func(t *testing.T) {
 		t.Parallel()
-		reader := func(_ context.Context, _ string) (string, error) { return "", fmt.Errorf("1password error") }
+		reader := func(_ context.Context, _ []string) (map[string]string, error) {
+			return nil, fmt.Errorf("1password error")
+		}
 		registry, err := BuildRegistry(t.Context(), fsys, nil, reader)
 		require.NoError(t, err)
 		var buf bytes.Buffer
@@ -446,8 +454,8 @@ func TestReadOpSecret(t *testing.T) {
 		invalidFS := fstest.MapFS{
 			"bad.tmpl": &fstest.MapFile{Data: []byte(`pw={{readOpSecret "not-an-op-ref"}}`)},
 		}
-		reader := func(_ context.Context, _ string) (string, error) {
-			return "should-not-be-called", nil
+		reader := func(_ context.Context, _ []string) (map[string]string, error) {
+			return nil, fmt.Errorf("should-not-be-called")
 		}
 		registry, err := BuildRegistry(t.Context(), invalidFS, nil, reader)
 		require.NoError(t, err)
@@ -530,6 +538,7 @@ features: []
 	return fsys, cfg
 }
 
+//nolint:funlen // table-driven test subtests
 func TestResolveOpSecret(t *testing.T) {
 	t.Parallel()
 
@@ -538,11 +547,16 @@ func TestResolveOpSecret(t *testing.T) {
 		const ref = "op://vault/item/field"
 		fsys, cfg := newOpSecretTestFS(t, ref)
 
-		reader := func(_ context.Context, got string) (string, error) {
-			if got == ref {
-				return "resolved-value", nil
+		reader := func(_ context.Context, refs []string) (map[string]string, error) {
+			results := make(map[string]string, len(refs))
+			for _, r := range refs {
+				if r == ref {
+					results[r] = "resolved-value"
+				} else {
+					return nil, fmt.Errorf("unexpected ref: %s", r)
+				}
 			}
-			return "", fmt.Errorf("unexpected ref: %s", got)
+			return results, nil
 		}
 		r, err := New(Config{FS: fsys, Config: cfg, OpSecretReader: reader})
 		require.NoError(t, err)
@@ -562,7 +576,7 @@ func TestResolveOpSecret(t *testing.T) {
 		t.Parallel()
 		fsys, cfg := newOpSecretTestFS(t, "op://vault/item/field")
 
-		// No OpSecretReader — ErrOpNotConfigured is silently skipped by ResolveHost.
+		// No OpSecretReader — op:// secrets are silently skipped by ResolveHost.
 		r, err := New(Config{FS: fsys, Config: cfg})
 		require.NoError(t, err)
 
@@ -578,13 +592,58 @@ func TestResolveOpSecret(t *testing.T) {
 		// op://vault/item has only two path components — field is missing.
 		fsys, cfg := newOpSecretTestFS(t, "op://vault/item")
 
-		reader := func(_ context.Context, _ string) (string, error) {
-			return "should-not-be-called", nil
+		reader := func(_ context.Context, _ []string) (map[string]string, error) {
+			return nil, fmt.Errorf("should-not-be-called")
 		}
 		r, err := New(Config{FS: fsys, Config: cfg, OpSecretReader: reader})
 		require.NoError(t, err)
 
 		_, err = r.ResolveHost(t.Context(), "test-host")
 		require.Error(t, err)
+	})
+
+	t.Run("partial failure resolves successful refs only", func(t *testing.T) {
+		t.Parallel()
+		// Two op:// secrets: one succeeds, one fails.
+		fsys := fstest.MapFS{
+			"fleet.yml": &fstest.MapFile{Data: []byte(`
+images:
+  app: "app:v1"
+ports:
+  app: 8080
+`)},
+			"assignments.yml": &fstest.MapFile{Data: []byte(`
+base:
+  secrets:
+    - op://vault/good/field
+    - op://vault/bad/field
+pi_types: {}
+features: {}
+`)},
+			"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: test-host
+external_hostname: test-host.ts.net
+pi_type: server
+features: []
+`)},
+		}
+		cfg, err := config.LoadAll(fsys)
+		require.NoError(t, err)
+
+		reader := func(_ context.Context, _ []string) (map[string]string, error) {
+			// Return only the good ref; report an error for the bad one.
+			results := map[string]string{"op://vault/good/field": "good-value"}
+			return results, fmt.Errorf("resolving 1password secret %q: fieldNotFound", "op://vault/bad/field")
+		}
+		r, err := New(Config{FS: fsys, Config: cfg, OpSecretReader: reader})
+		require.NoError(t, err)
+
+		resolved, err := r.ResolveHost(t.Context(), "test-host")
+		require.NoError(t, err)
+
+		// Only the successful secret should be present.
+		require.Len(t, resolved.Files, 1)
+		assert.Equal(t, "secret:good_field", resolved.Files[0].DestPath)
+		assert.Equal(t, "good-value", resolved.Files[0].Content)
 	})
 }

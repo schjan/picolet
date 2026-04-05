@@ -19,9 +19,10 @@ const maxTemplateDepth = 10
 // Pass nil for placeholder mode (validate/CI).
 type SecretReader func(path string) (string, error)
 
-// OpSecretReader resolves a 1Password secret reference (e.g. "op://vault/item/field").
+// OpSecretReader resolves 1Password secret references in batch.
+// Returns successfully resolved secrets and per-reference errors separately.
 // Pass nil to disable 1Password integration (readOpSecret returns a placeholder).
-type OpSecretReader func(ctx context.Context, ref string) (string, error)
+type OpSecretReader func(ctx context.Context, refs []string) (map[string]string, error)
 
 // BuildRegistry collects all .tmpl files from the filesystem and builds
 // a shared template registry with custom functions.
@@ -72,7 +73,11 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 				return "", fmt.Errorf("readOpSecret: %q is not a valid op:// reference", ref)
 			}
 			slog.Debug("resolving 1password secret via template", "ref", ref)
-			return opSecretReader(ctx, ref)
+			results, err := opSecretReader(ctx, []string{ref})
+			if err != nil {
+				return "", err
+			}
+			return results[ref], nil
 		},
 		// renderTemplate uses a closure depth counter to prevent infinite recursion.
 		// Not goroutine-safe; template rendering must be serial.

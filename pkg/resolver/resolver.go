@@ -19,9 +19,6 @@ import (
 	op "github.com/schjan/picolet/pkg/onepassword"
 )
 
-// ErrOpNotConfigured is returned when an op:// secret is referenced but 1Password is not configured.
-var ErrOpNotConfigured = errors.New("1password not configured")
-
 // PicoletMarker is the comment header prepended to systemd unit files managed by picolet.
 // Including it in Content (and thus in the state hash) ensures orphan detection works
 // correctly: a one-time ActionUpdate rewrites any pre-existing file with the marker,
@@ -164,13 +161,30 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 		files = append(files, *f)
 	}
 
+	// Batch-resolve op:// secrets in a single SDK call.
+	opResolved, err := r.batchResolveOpSecrets(ctx, fileSet.Secrets)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, path := range fileSet.Secrets {
-		f, err := r.resolveSecret(ctx, registry, tmplData, path)
-		if err != nil {
-			if errors.Is(err, ErrOpNotConfigured) {
-				slog.Warn("skipping op:// secret (1password not configured)", "ref", path)
+		if op.IsRef(path) {
+			content, ok := opResolved[path]
+			if !ok {
+				if r.opSecretReader != nil {
+					slog.Warn("skipping failed op:// secret", "ref", path)
+				}
 				continue
 			}
+			f, err := r.buildOpSecretFile(path, content)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, *f)
+			continue
+		}
+		f, err := r.resolveSecret(registry, tmplData, path)
+		if err != nil {
 			return nil, err
 		}
 		files = append(files, *f)
@@ -261,12 +275,7 @@ func (r *Resolver) resolveManifest(registry *template.Template, tmplData *Templa
 	}, nil
 }
 
-func (r *Resolver) resolveSecret(ctx context.Context, registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {
-	// 1Password direct secret: op://vault/item/field → Podman secret "item_field"
-	if op.IsRef(srcPath) {
-		return r.resolveOpSecret(ctx, srcPath)
-	}
-
+func (r *Resolver) resolveSecret(registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {
 	// secrets/prometheus_config.yml.tmpl → secret name "prometheus_config"
 	filename := destFilename(srcPath)
 	secretName := strings.TrimSuffix(filename, filepath.Ext(filename))
@@ -284,27 +293,49 @@ func (r *Resolver) resolveSecret(ctx context.Context, registry *template.Templat
 	}, nil
 }
 
-func (r *Resolver) resolveOpSecret(ctx context.Context, ref string) (*ResolvedFile, error) {
+// batchResolveOpSecrets collects all op:// refs from the secrets list and resolves
+// them in a single SDK call. Returns a map from ref to secret value.
+// Failed refs are logged and omitted — successful refs still deploy (partial failure resilience).
+// When 1Password is not configured, all op:// refs are skipped with a warning.
+//
+//nolint:nilnil // nil map signals "no op:// secrets to resolve" or "1Password not configured"
+func (r *Resolver) batchResolveOpSecrets(ctx context.Context, allSecrets []string) (map[string]string, error) {
+	var opRefs []string
+	for _, path := range allSecrets {
+		if op.IsRef(path) {
+			opRefs = append(opRefs, path)
+		}
+	}
+	if len(opRefs) == 0 {
+		return nil, nil
+	}
+	if r.opSecretReader == nil {
+		slog.Warn("skipping op:// secrets (1password not configured)", "count", len(opRefs))
+		return nil, nil
+	}
+	// Validate all refs before making the API call.
+	for _, ref := range opRefs {
+		if _, err := op.ParseOpRef(ref); err != nil {
+			return nil, err
+		}
+	}
+	slog.Debug("batch-resolving 1password secrets", "count", len(opRefs))
+	results, err := r.opSecretReader(ctx, opRefs)
+	if err != nil {
+		slog.Warn("some 1password secrets failed to resolve", "error", err)
+	}
+	return results, nil
+}
+
+// buildOpSecretFile creates a ResolvedFile for a pre-resolved op:// secret.
+func (r *Resolver) buildOpSecretFile(ref, content string) (*ResolvedFile, error) {
 	parsed, err := op.ParseOpRef(ref)
 	if err != nil {
 		return nil, err
 	}
-
-	if r.opSecretReader == nil {
-		return nil, fmt.Errorf("op:// secret %s: %w", ref, ErrOpNotConfigured)
-	}
-
-	secretName := parsed.PodmanSecretName()
-	slog.Debug("resolving 1password direct secret", "ref", ref, "secret_name", secretName)
-
-	content, err := r.opSecretReader(ctx, ref)
-	if err != nil {
-		return nil, fmt.Errorf("resolving op secret %s: %w", ref, err)
-	}
-
 	return &ResolvedFile{
 		SrcPath:  ref,
-		DestPath: "secret:" + secretName,
+		DestPath: "secret:" + parsed.PodmanSecretName(),
 		Content:  content,
 		Category: "secret",
 	}, nil

@@ -2,6 +2,7 @@ package onepassword
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -37,12 +38,40 @@ func (c *Client) Resolve(ctx context.Context, ref string) (string, error) {
 	return val, nil
 }
 
+// ResolveAll fetches multiple secrets in a single SDK call.
+// Returns successfully resolved secrets and any per-reference errors separately,
+// so callers can use partial results (e.g. skip a broken secret while still
+// resolving the git token).
+func (c *Client) ResolveAll(ctx context.Context, refs []string) (map[string]string, error) {
+	if len(refs) == 0 {
+		return nil, nil //nolint:nilnil // empty input → no work
+	}
+	resp, err := c.secrets.ResolveAll(ctx, refs)
+	if err != nil {
+		return nil, fmt.Errorf("resolving 1password secrets: %w", err)
+	}
+	results := make(map[string]string, len(resp.IndividualResponses))
+	var errs []error
+	for ref, r := range resp.IndividualResponses {
+		if r.Error != nil {
+			errs = append(errs, fmt.Errorf("resolving 1password secret %q: %s", ref, r.Error.Type))
+			continue
+		}
+		if r.Content == nil {
+			errs = append(errs, fmt.Errorf("resolving 1password secret %q: empty response", ref))
+			continue
+		}
+		results[ref] = r.Content.Secret
+	}
+	return results, errors.Join(errs...)
+}
+
 // NewReaderFromTokenFile reads a service account token from disk and returns
-// a secret reader closure. Returns (nil, nil) when tokenPath is empty.
+// a batch secret reader closure. Returns (nil, nil) when tokenPath is empty.
 // The init context is used only for SDK client creation; each call receives its own context.
 //
 //nolint:nilnil // nil reader signals "1Password not configured"; callers check for nil
-func NewReaderFromTokenFile(ctx context.Context, tokenPath string) (func(context.Context, string) (string, error), error) {
+func NewReaderFromTokenFile(ctx context.Context, tokenPath string) (func(context.Context, []string) (map[string]string, error), error) {
 	if tokenPath == "" {
 		return nil, nil
 	}
@@ -54,7 +83,7 @@ func NewReaderFromTokenFile(ctx context.Context, tokenPath string) (func(context
 	if err != nil {
 		return nil, err
 	}
-	return func(ctx context.Context, ref string) (string, error) {
-		return client.Resolve(ctx, ref)
+	return func(ctx context.Context, refs []string) (map[string]string, error) {
+		return client.ResolveAll(ctx, refs)
 	}, nil
 }
