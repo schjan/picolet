@@ -24,11 +24,53 @@ type SecretReader func(path string) (string, error)
 // Pass nil to disable 1Password integration (readOpSecret returns a placeholder).
 type OpSecretReader func(ctx context.Context, refs []string) (map[string]string, error)
 
+// OpSecretCache manages two-phase op:// secret resolution for templates.
+// Phase 1 (collect): readOpSecret records refs and returns a placeholder.
+// Phase 2 (resolve): readOpSecret returns pre-resolved values from the cache.
+//
+// This avoids N individual SDK round-trips when templates use multiple readOpSecret calls.
+// Not goroutine-safe; template rendering must be serial (same constraint as renderTemplate).
+type OpSecretCache struct {
+	reader    OpSecretReader
+	collected []string          // refs seen during collect phase
+	resolved  map[string]string // batch-resolved values after Resolve()
+	resolving bool              // true after Resolve(); readOpSecret returns from cache
+}
+
+// Resolve batch-resolves all collected refs. After this call, readOpSecret returns cached values.
+func (c *OpSecretCache) Resolve(ctx context.Context) error {
+	if len(c.collected) == 0 {
+		c.resolving = true
+		return nil
+	}
+	// Deduplicate collected refs (same ref may appear in multiple templates).
+	seen := make(map[string]struct{}, len(c.collected))
+	unique := make([]string, 0, len(c.collected))
+	for _, ref := range c.collected {
+		if _, ok := seen[ref]; !ok {
+			seen[ref] = struct{}{}
+			unique = append(unique, ref)
+		}
+	}
+	slog.Debug("batch-resolving template op:// secrets", "count", len(unique))
+	results, err := c.reader(ctx, unique)
+	if err != nil {
+		return fmt.Errorf("resolving template 1password secrets: %w", err)
+	}
+	c.resolved = results
+	c.resolving = true
+	return nil
+}
+
 // BuildRegistry collects all .tmpl files from the filesystem and builds
 // a shared template registry with custom functions.
 //
+// When opSecretReader is non-nil, the returned OpSecretCache manages two-phase
+// resolution: callers must run a collect pass, call cache.Resolve, then run
+// the real render pass. When opSecretReader is nil, the cache is nil.
+//
 //nolint:cyclop,funlen // funcmap registration is inherently branchy
-func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, opSecretReader OpSecretReader) (*template.Template, error) {
+func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, opSecretReader OpSecretReader) (*template.Template, *OpSecretCache, error) {
 	sources := make(map[string]string)
 	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -45,7 +87,12 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("walking templates: %w", err)
+		return nil, nil, fmt.Errorf("walking templates: %w", err)
+	}
+
+	var cache *OpSecretCache
+	if opSecretReader != nil {
+		cache = &OpSecretCache{reader: opSecretReader}
 	}
 
 	var root *template.Template
@@ -65,14 +112,23 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 			return secretReader(path)
 		},
 		"readOpSecret": func(ref string) (string, error) {
-			if opSecretReader == nil {
+			if cache == nil {
 				slog.Debug("readOpSecret: 1password not configured, using placeholder", "ref", ref)
 				return "<op-secret>", nil
 			}
 			if !op.IsRef(ref) {
 				return "", fmt.Errorf("readOpSecret: %q is not a valid op:// reference", ref)
 			}
-			slog.Debug("resolving 1password secret via template", "ref", ref)
+			if !cache.resolving {
+				// Collect phase: record ref, return placeholder.
+				cache.collected = append(cache.collected, ref)
+				return "<op-secret-pending>", nil
+			}
+			// Resolve phase: return from cache, fall back to individual call for dynamic refs.
+			if val, ok := cache.resolved[ref]; ok {
+				return val, nil
+			}
+			slog.Debug("readOpSecret: cache miss, resolving individually", "ref", ref)
 			results, err := opSecretReader(ctx, []string{ref})
 			if err != nil {
 				return "", err
@@ -108,10 +164,10 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 	root = template.New("").Option("missingkey=error").Funcs(funcMap)
 	for name, src := range sources {
 		if _, err := root.New(name).Parse(src); err != nil {
-			return nil, fmt.Errorf("parsing %s: %w", name, err)
+			return nil, nil, fmt.Errorf("parsing %s: %w", name, err)
 		}
 	}
-	return root, nil
+	return root, cache, nil
 }
 
 func indentFunc(n int, s string) string {

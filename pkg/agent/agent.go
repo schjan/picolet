@@ -318,16 +318,13 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
 
 	start := time.Now()
-	_, err = a.ReconcileOnce(ctx, pollResult.HeadSHA, st, store)
+	result, err := a.ReconcileOnce(ctx, pollResult.HeadSHA, st, store)
 	elapsed := time.Since(start)
 	metrics.ReconciliationDuration.Observe(elapsed.Seconds())
 
 	if err != nil {
 		slog.Error("reconciliation failed", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
 		metrics.ReconciliationTotal.WithLabelValues("failure").Inc()
-		if a.opReader != nil {
-			metrics.OpSyncTotal.WithLabelValues("failure").Inc()
-		}
 
 		// Track failure count for the same SHA
 		if st.FailedSHA == pollResult.HeadSHA {
@@ -346,8 +343,10 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 
 	if a.opReader != nil {
 		a.lastOPRefresh = time.Now()
-		metrics.OpSyncTotal.WithLabelValues("success").Inc()
-		metrics.OpLastSyncTimestamp.SetToCurrentTime()
+		if result.OpSecretsCount > 0 {
+			metrics.OpSyncTotal.WithLabelValues("success").Inc()
+			metrics.OpLastSyncTimestamp.SetToCurrentTime()
+		}
 	}
 	metrics.ReconciliationTotal.WithLabelValues("success").Inc()
 	slog.Info("reconciliation complete", "sha", pollResult.HeadSHA, "result", "success", "duration", elapsed.Round(time.Millisecond))
@@ -414,6 +413,8 @@ type ReconcileResult struct {
 	Summary map[reconciler.Action]int
 	// ApplyResult contains details from the apply phase (nil when no changes).
 	ApplyResult *applier.ApplyResult
+	// OpSecretsCount is the number of op:// secrets resolved in this cycle.
+	OpSecretsCount int
 }
 
 // ReconcileOnce runs a single reconciliation cycle: load config, resolve, diff, validate, apply, save state.
@@ -423,7 +424,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		return nil, err
 	}
 
-	a.recordOpSecretsCount(files)
+	opCount := a.recordOpSecretsCount(files)
 
 	changeset := reconciler.Diff(files, st)
 
@@ -433,7 +434,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		if err := store.Save(st); err != nil {
 			return nil, fmt.Errorf("saving state: %w", err)
 		}
-		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary}, nil
+		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: opCount}, nil
 	}
 
 	slog.Info("changes detected",
@@ -467,9 +468,10 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	}
 
 	return &ReconcileResult{
-		HasChanges:  true,
-		Summary:     changeset.Summary,
-		ApplyResult: applyResult,
+		HasChanges:     true,
+		Summary:        changeset.Summary,
+		ApplyResult:    applyResult,
+		OpSecretsCount: opCount,
 	}, nil
 }
 
@@ -620,10 +622,10 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	}
 }
 
-// recordOpSecretsCount updates the picolet_op_direct_secrets_count gauge.
-func (a *Agent) recordOpSecretsCount(files []resolver.ResolvedFile) {
+// recordOpSecretsCount updates the picolet_op_direct_secrets_count gauge and returns the count.
+func (a *Agent) recordOpSecretsCount(files []resolver.ResolvedFile) int {
 	if a.opReader == nil {
-		return
+		return 0
 	}
 	var count int
 	for _, f := range files {
@@ -632,6 +634,7 @@ func (a *Agent) recordOpSecretsCount(files []resolver.ResolvedFile) {
 		}
 	}
 	metrics.OpDirectSecretsCount.Set(float64(count))
+	return count
 }
 
 // opRefreshDue reports whether op:// secrets should be re-fetched.

@@ -21,19 +21,19 @@ func TestParseOpRef(t *testing.T) {
 			name:     "simple reference",
 			ref:      "op://vault/item/field",
 			want:     OpRef{Vault: "vault", Item: "item", Field: "field"},
-			wantName: "item_field",
+			wantName: "vault_item_field",
 		},
 		{
 			name:     "nested field with slashes",
 			ref:      "op://vault/item/section/field",
 			want:     OpRef{Vault: "vault", Item: "item", Field: "section/field"},
-			wantName: "item_section_field",
+			wantName: "vault_item_section_field",
 		},
 		{
 			name:     "real-world reference",
 			ref:      "op://Infrastructure/db-password/password",
 			want:     OpRef{Vault: "Infrastructure", Item: "db-password", Field: "password"},
-			wantName: "db-password_password",
+			wantName: "Infrastructure_db-password_password",
 		},
 		{
 			name:       "missing prefix",

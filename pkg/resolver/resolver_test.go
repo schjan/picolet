@@ -192,7 +192,7 @@ func TestRenderTemplateRecursion(t *testing.T) {
 		"a.tmpl": &fstest.MapFile{Data: []byte(`{{renderTemplate "b.tmpl" .}}`)},
 		"b.tmpl": &fstest.MapFile{Data: []byte(`{{renderTemplate "a.tmpl" .}}`)},
 	}
-	registry, err := BuildRegistry(t.Context(), fsys, nil, nil)
+	registry, _, err := BuildRegistry(t.Context(), fsys, nil, nil)
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
@@ -407,7 +407,7 @@ func TestReadOpSecret(t *testing.T) {
 		"secret.tmpl": &fstest.MapFile{Data: []byte(`pw={{readOpSecret "op://vault/item/pw"}}`)},
 	}
 
-	t.Run("with reader", func(t *testing.T) {
+	t.Run("with reader two-phase", func(t *testing.T) {
 		t.Parallel()
 		reader := func(_ context.Context, refs []string) (map[string]string, error) {
 			results := make(map[string]string, len(refs))
@@ -420,8 +420,19 @@ func TestReadOpSecret(t *testing.T) {
 			}
 			return results, nil
 		}
-		registry, err := BuildRegistry(t.Context(), fsys, nil, reader)
+		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, reader)
 		require.NoError(t, err)
+		require.NotNil(t, cache)
+
+		// Phase 1: collect (output discarded).
+		var discard bytes.Buffer
+		require.NoError(t, registry.ExecuteTemplate(&discard, "secret.tmpl", nil))
+		assert.Equal(t, "pw=<op-secret-pending>", discard.String())
+
+		// Batch resolve.
+		require.NoError(t, cache.Resolve(t.Context()))
+
+		// Phase 2: resolve (output used).
 		var buf bytes.Buffer
 		require.NoError(t, registry.ExecuteTemplate(&buf, "secret.tmpl", nil))
 		assert.Equal(t, "pw=s3cret", buf.String())
@@ -429,27 +440,33 @@ func TestReadOpSecret(t *testing.T) {
 
 	t.Run("nil reader returns placeholder", func(t *testing.T) {
 		t.Parallel()
-		registry, err := BuildRegistry(t.Context(), fsys, nil, nil)
+		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, nil)
 		require.NoError(t, err)
+		assert.Nil(t, cache)
 		var buf bytes.Buffer
 		require.NoError(t, registry.ExecuteTemplate(&buf, "secret.tmpl", nil))
 		assert.Equal(t, "pw=<op-secret>", buf.String())
 	})
 
-	t.Run("reader error propagates", func(t *testing.T) {
+	t.Run("reader error propagates via cache resolve", func(t *testing.T) {
 		t.Parallel()
 		reader := func(_ context.Context, _ []string) (map[string]string, error) {
 			return nil, fmt.Errorf("1password error")
 		}
-		registry, err := BuildRegistry(t.Context(), fsys, nil, reader)
+		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, reader)
 		require.NoError(t, err)
-		var buf bytes.Buffer
-		err = registry.ExecuteTemplate(&buf, "secret.tmpl", nil)
+
+		// Collect phase.
+		var discard bytes.Buffer
+		require.NoError(t, registry.ExecuteTemplate(&discard, "secret.tmpl", nil))
+
+		// Resolve fails.
+		err = cache.Resolve(t.Context())
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "1password error")
 	})
 
-	t.Run("invalid ref returns error", func(t *testing.T) {
+	t.Run("invalid ref returns error in collect phase", func(t *testing.T) {
 		t.Parallel()
 		invalidFS := fstest.MapFS{
 			"bad.tmpl": &fstest.MapFile{Data: []byte(`pw={{readOpSecret "not-an-op-ref"}}`)},
@@ -457,12 +474,45 @@ func TestReadOpSecret(t *testing.T) {
 		reader := func(_ context.Context, _ []string) (map[string]string, error) {
 			return nil, fmt.Errorf("should-not-be-called")
 		}
-		registry, err := BuildRegistry(t.Context(), invalidFS, nil, reader)
+		registry, _, err := BuildRegistry(t.Context(), invalidFS, nil, reader)
 		require.NoError(t, err)
 		var buf bytes.Buffer
 		err = registry.ExecuteTemplate(&buf, "bad.tmpl", nil)
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "is not a valid op:// reference")
+	})
+
+	t.Run("batches multiple refs in single call", func(t *testing.T) {
+		t.Parallel()
+		multiFS := fstest.MapFS{
+			"multi.tmpl": &fstest.MapFile{Data: []byte(
+				`a={{readOpSecret "op://v/a/f"}} b={{readOpSecret "op://v/b/f"}}`,
+			)},
+		}
+		var callCount int
+		reader := func(_ context.Context, refs []string) (map[string]string, error) {
+			callCount++
+			results := make(map[string]string, len(refs))
+			for _, ref := range refs {
+				results[ref] = "val-" + ref
+			}
+			return results, nil
+		}
+		registry, cache, err := BuildRegistry(t.Context(), multiFS, nil, reader)
+		require.NoError(t, err)
+
+		// Collect.
+		var discard bytes.Buffer
+		require.NoError(t, registry.ExecuteTemplate(&discard, "multi.tmpl", nil))
+
+		// Batch resolve — single call for both refs.
+		require.NoError(t, cache.Resolve(t.Context()))
+		assert.Equal(t, 1, callCount, "expected single batch call, got %d", callCount)
+
+		// Resolve.
+		var buf bytes.Buffer
+		require.NoError(t, registry.ExecuteTemplate(&buf, "multi.tmpl", nil))
+		assert.Equal(t, `a=val-op://v/a/f b=val-op://v/b/f`, buf.String())
 	})
 }
 
@@ -567,7 +617,7 @@ func TestResolveOpSecret(t *testing.T) {
 		require.Len(t, resolved.Files, 1)
 		f := resolved.Files[0]
 		assert.Equal(t, ref, f.SrcPath)
-		assert.Equal(t, "secret:item_field", f.DestPath)
+		assert.Equal(t, "secret:vault_item_field", f.DestPath)
 		assert.Equal(t, "resolved-value", f.Content)
 		assert.Equal(t, "secret", f.Category)
 	})
@@ -587,9 +637,11 @@ func TestResolveOpSecret(t *testing.T) {
 		assert.Empty(t, resolved.Files)
 	})
 
-	t.Run("invalid ref returns error", func(t *testing.T) {
+	t.Run("malformed op ref falls through to regular secret path", func(t *testing.T) {
 		t.Parallel()
-		// op://vault/item has only two path components — field is missing.
+		// "op://vault/item" has only two path components — field is missing.
+		// IsRef rejects it (uses ParseOpRef), so it falls through to the regular
+		// secret path. Without a secretReader, it gets a placeholder.
 		fsys, cfg := newOpSecretTestFS(t, "op://vault/item")
 
 		reader := func(_ context.Context, _ []string) (map[string]string, error) {
@@ -598,13 +650,17 @@ func TestResolveOpSecret(t *testing.T) {
 		r, err := New(Config{FS: fsys, Config: cfg, OpSecretReader: reader})
 		require.NoError(t, err)
 
-		_, err = r.ResolveHost(t.Context(), "test-host")
-		require.Error(t, err)
+		resolved, err := r.ResolveHost(t.Context(), "test-host")
+		require.NoError(t, err)
+		// Falls through to host-only secret, gets placeholder since no SecretReader.
+		require.Len(t, resolved.Files, 1)
+		assert.Equal(t, "<secret>", resolved.Files[0].Content)
 	})
 
-	t.Run("partial failure resolves successful refs only", func(t *testing.T) {
+	t.Run("partial failure aborts to prevent secret deletion", func(t *testing.T) {
 		t.Parallel()
 		// Two op:// secrets: one succeeds, one fails.
+		// Must return an error so reconciler.Diff does not mark the failed secret for deletion.
 		fsys := fstest.MapFS{
 			"fleet.yml": &fstest.MapFile{Data: []byte(`
 images:
@@ -631,19 +687,29 @@ features: []
 		require.NoError(t, err)
 
 		reader := func(_ context.Context, _ []string) (map[string]string, error) {
-			// Return only the good ref; report an error for the bad one.
 			results := map[string]string{"op://vault/good/field": "good-value"}
 			return results, fmt.Errorf("resolving 1password secret %q: fieldNotFound", "op://vault/bad/field")
 		}
 		r, err := New(Config{FS: fsys, Config: cfg, OpSecretReader: reader})
 		require.NoError(t, err)
 
-		resolved, err := r.ResolveHost(t.Context(), "test-host")
+		_, err = r.ResolveHost(t.Context(), "test-host")
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "resolving 1password secrets")
+	})
+
+	t.Run("total failure returns error", func(t *testing.T) {
+		t.Parallel()
+		fsys, cfg := newOpSecretTestFS(t, "op://vault/item/field")
+
+		reader := func(_ context.Context, _ []string) (map[string]string, error) {
+			return nil, fmt.Errorf("1password service unavailable")
+		}
+		r, err := New(Config{FS: fsys, Config: cfg, OpSecretReader: reader})
 		require.NoError(t, err)
 
-		// Only the successful secret should be present.
-		require.Len(t, resolved.Files, 1)
-		assert.Equal(t, "secret:good_field", resolved.Files[0].DestPath)
-		assert.Equal(t, "good-value", resolved.Files[0].Content)
+		_, err = r.ResolveHost(t.Context(), "test-host")
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "1password service unavailable")
 	})
 }

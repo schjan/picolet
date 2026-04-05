@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/template"
 
@@ -121,12 +122,23 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 		return nil, err
 	}
 
-	registry, err := BuildRegistry(ctx, r.fsys, r.secretReader, r.opSecretReader)
+	registry, opCache, err := BuildRegistry(ctx, r.fsys, r.secretReader, r.opSecretReader)
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}
 
 	fileSet := r.cfg.Assignments.Resolve(host)
+
+	// Two-phase op:// secret resolution for templates:
+	// Phase 1 (collect): render all templates to discover readOpSecret calls (output discarded).
+	// Phase 2 (resolve): batch-resolve collected refs, then render templates for real.
+	if opCache != nil {
+		r.collectOpTemplateRefs(registry, tmplData, fileSet)
+		if err := opCache.Resolve(ctx); err != nil {
+			return nil, err
+		}
+	}
+
 	var files []ResolvedFile
 
 	// Standard file categories with their destination directories.
@@ -169,14 +181,12 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 
 	for _, path := range fileSet.Secrets {
 		if op.IsRef(path) {
-			content, ok := opResolved[path]
-			if !ok {
-				if r.opSecretReader != nil {
-					slog.Warn("skipping failed op:// secret", "ref", path)
-				}
+			// batchResolveOpSecrets guarantees all refs are resolved or returns an error.
+			// When opSecretReader is nil, opResolved is nil and IsRef entries are skipped.
+			if opResolved == nil {
 				continue
 			}
-			f, err := r.buildOpSecretFile(path, content)
+			f, err := r.buildOpSecretFile(path, opResolved[path])
 			if err != nil {
 				return nil, err
 			}
@@ -295,7 +305,8 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 
 // batchResolveOpSecrets collects all op:// refs from the secrets list and resolves
 // them in a single SDK call. Returns a map from ref to secret value.
-// Failed refs are logged and omitted — successful refs still deploy (partial failure resilience).
+// Any resolution failure is fatal to prevent reconciler.Diff from marking
+// unresolved secrets for deletion (which would remove them from Podman).
 // When 1Password is not configured, all op:// refs are skipped with a warning.
 //
 //nolint:nilnil // nil map signals "no op:// secrets to resolve" or "1Password not configured"
@@ -316,12 +327,31 @@ func (r *Resolver) batchResolveOpSecrets(ctx context.Context, allSecrets []strin
 	slog.Debug("batch-resolving 1password secrets", "count", len(opRefs))
 	results, err := r.opSecretReader(ctx, opRefs)
 	if err != nil {
-		if len(results) == 0 {
-			return nil, fmt.Errorf("all 1password secrets failed to resolve: %w", err)
-		}
-		slog.Warn("some 1password secrets failed to resolve", "error", err)
+		return nil, fmt.Errorf("resolving 1password secrets: %w", err)
 	}
 	return results, nil
+}
+
+// collectOpTemplateRefs executes all .tmpl files in collect mode to discover readOpSecret calls.
+// Output is discarded — only the side effect of populating the OpSecretCache matters.
+func (r *Resolver) collectOpTemplateRefs(registry *template.Template, tmplData *TemplateData, fileSet *config.ResolvedFileSet) {
+	allPaths := slices.Concat(
+		fileSet.Networks, fileSet.Systemd, fileSet.Volumes,
+		fileSet.Containers, fileSet.Kube, fileSet.Manifests,
+	)
+	// Include non-op:// secrets that are templates (they might call readOpSecret).
+	for _, path := range fileSet.Secrets {
+		if !op.IsRef(path) {
+			allPaths = append(allPaths, path)
+		}
+	}
+	for _, path := range allPaths {
+		if !strings.HasSuffix(path, ".tmpl") {
+			continue
+		}
+		var buf bytes.Buffer
+		_ = registry.ExecuteTemplate(&buf, path, tmplData) // errors are non-fatal in collect phase
+	}
 }
 
 // buildOpSecretFile creates a ResolvedFile for a pre-resolved op:// secret.

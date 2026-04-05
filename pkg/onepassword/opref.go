@@ -8,8 +8,11 @@ import (
 // Prefix is the URI scheme prefix for 1Password secret references.
 const Prefix = "op://"
 
-// IsRef reports whether s is a 1Password secret reference.
-func IsRef(s string) bool { return strings.HasPrefix(s, Prefix) }
+// IsRef reports whether s is a valid 1Password secret reference (op://vault/item/field).
+func IsRef(s string) bool {
+	_, err := ParseOpRef(s)
+	return err == nil
+}
 
 // OpRef is a parsed op:// secret reference.
 type OpRef struct {
@@ -37,9 +40,9 @@ func ParseOpRef(ref string) (OpRef, error) {
 }
 
 // PodmanSecretName returns the canonical Podman secret name derived from this reference.
-// "op://vault/item/field" produces "item_field".
+// "op://vault/item/field" produces "vault_item_field".
 // Slashes in the field component are replaced with underscores.
 func (r OpRef) PodmanSecretName() string {
 	field := strings.ReplaceAll(r.Field, "/", "_")
-	return r.Item + "_" + field
+	return r.Vault + "_" + r.Item + "_" + field
 }
