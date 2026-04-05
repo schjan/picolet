@@ -307,6 +307,11 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if pollResult.HeadSHA == st.FailedSHA && st.FailedCount >= maxRetries && time.Since(st.FailedAt) < failedSHAExpiry {
 		slog.Warn("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "failed_sha_gate", "failures", st.FailedCount)
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
+		// Still update lastOPRefresh so the agent does not retry OP refresh every tick
+		// while blocked by the failed-SHA gate.
+		if a.opReader != nil {
+			a.lastOPRefresh = time.Now()
+		}
 		return nil
 	}
 
@@ -320,6 +325,9 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if err != nil {
 		slog.Error("reconciliation failed", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
 		metrics.ReconciliationTotal.WithLabelValues("failure").Inc()
+		if a.opReader != nil {
+			metrics.OpSyncTotal.WithLabelValues("failure").Inc()
+		}
 
 		// Track failure count for the same SHA
 		if st.FailedSHA == pollResult.HeadSHA {

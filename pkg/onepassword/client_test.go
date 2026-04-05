@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// mockSecretsAPI is a minimal hand-written mock. If it grows more complex,
+// consider switching to a mockery-generated mock (see .mockery.yaml).
 type mockSecretsAPI struct {
 	resolveAllFn func(ctx context.Context, refs []string) (op.ResolveAllResponse, error)
 }
