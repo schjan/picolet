@@ -289,12 +289,14 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 			return nil
 		}
 		slog.Info("forcing reconciliation for 1password secret refresh", "sha", pollResult.HeadSHA)
+		metrics.GitPollTotal.WithLabelValues("op_refresh").Inc()
 		// Snooze with short backoff so the failed-SHA gate doesn't re-trigger opRefreshDue()
 		// on every tick. On success, lastOPRefresh is set to time.Now() (full interval).
 		backoff := a.cfg.OnePassword.RefreshInterval / 12
 		a.lastOPRefresh = time.Now().Add(-a.cfg.OnePassword.RefreshInterval + backoff)
+	} else {
+		metrics.GitPollTotal.WithLabelValues("changed").Inc()
 	}
-	metrics.GitPollTotal.WithLabelValues("changed").Inc()
 
 	// Skip only after >= 3 consecutive failures on the same SHA, with a 1-hour expiry
 	// so transient failures (e.g. D-Bus reconnection) don't permanently brick the agent.
