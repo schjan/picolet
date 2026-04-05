@@ -120,19 +120,28 @@ func (c *Config) Validate() error {
 	if c.MQTT != nil && c.MQTT.PasswordPath != "" && c.MQTT.Username == "" {
 		return errors.New("mqtt.username is required when mqtt.password_path is set")
 	}
-	if c.OnePassword != nil && c.OnePassword.TokenPath == "" {
+	if c.OnePassword != nil {
+		if err := c.validateOnePassword(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateOnePassword() error {
+	if c.OnePassword.TokenPath == "" {
 		return errors.New("onepassword.token_path is required when onepassword is configured")
 	}
-	if c.OnePassword != nil && c.OnePassword.RefreshInterval < time.Minute {
+	if c.OnePassword.RefreshInterval < time.Minute {
 		return errors.New("onepassword.refresh_interval must be at least 1m")
 	}
-	if c.OnePassword != nil && c.OnePassword.GitTokenRef != "" {
+	if c.OnePassword.GitTokenRef != "" {
 		if _, err := op.ParseOpRef(c.OnePassword.GitTokenRef); err != nil {
 			return fmt.Errorf("onepassword.git_token_ref: %w", err)
 		}
-	}
-	if c.OnePassword != nil && c.OnePassword.GitTokenRef != "" && c.GitTokenPath != "" {
-		return errors.New("git_token_path and onepassword.git_token_ref are mutually exclusive")
+		if c.GitTokenPath != "" {
+			return errors.New("git_token_path and onepassword.git_token_ref are mutually exclusive")
+		}
 	}
 	return nil
 }

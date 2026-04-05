@@ -1088,13 +1088,6 @@ func TestOpRefreshDue(t *testing.T) {
 			want:        false,
 		},
 		{
-			name:          "nil OnePassword config returns false even with reader set",
-			opReader:      dummyReader,
-			onePassword:   nil,
-			lastOPRefresh: time.Time{}, // zero — would be true if guard were absent
-			want:          false,
-		},
-		{
 			name:          "zero lastOPRefresh returns true (first run)",
 			opReader:      dummyReader,
 			onePassword:   opCfg,

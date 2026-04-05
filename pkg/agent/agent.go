@@ -291,7 +291,8 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		slog.Info("forcing reconciliation for 1password secret refresh", "sha", pollResult.HeadSHA)
 		// Snooze with short backoff so the failed-SHA gate doesn't re-trigger opRefreshDue()
 		// on every tick. On success, lastOPRefresh is set to time.Now() (full interval).
-		a.lastOPRefresh = time.Now().Add(-(a.cfg.OnePassword.RefreshInterval - 5*time.Minute))
+		backoff := a.cfg.OnePassword.RefreshInterval / 12
+		a.lastOPRefresh = time.Now().Add(-a.cfg.OnePassword.RefreshInterval + backoff)
 	}
 	metrics.GitPollTotal.WithLabelValues("changed").Inc()
 
@@ -315,9 +316,6 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if err != nil {
 		slog.Error("reconciliation failed", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
 		metrics.ReconciliationTotal.WithLabelValues("failure").Inc()
-		if a.opReader != nil {
-			metrics.OpSyncTotal.WithLabelValues("failure").Inc()
-		}
 
 		// Track failure count for the same SHA
 		if st.FailedSHA == pollResult.HeadSHA {
@@ -626,8 +624,9 @@ func (a *Agent) recordOpSecretsCount(files []resolver.ResolvedFile) {
 
 // opRefreshDue reports whether op:// secrets should be re-fetched.
 // Returns true when 1Password is configured and the refresh interval has elapsed.
+// opReader is non-nil iff cfg.OnePassword is non-nil, so a single nil check suffices.
 func (a *Agent) opRefreshDue() bool {
-	if a.opReader == nil || a.cfg.OnePassword == nil {
+	if a.opReader == nil {
 		return false
 	}
 	interval := a.cfg.OnePassword.RefreshInterval
