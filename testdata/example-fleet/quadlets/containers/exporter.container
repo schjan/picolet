@@ -1,5 +1,5 @@
 [Container]
-Image=quay.io/prometheus/node-exporter:v1.10.2
+Image=quay.io/prometheus/node-exporter:v1.11.0
 Network=internal.network
 
 [Install]
