@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -349,8 +350,7 @@ func (r *Resolver) collectOpTemplateRefs(registry *template.Template, tmplData *
 		if !strings.HasSuffix(path, ".tmpl") {
 			continue
 		}
-		var buf bytes.Buffer
-		_ = registry.ExecuteTemplate(&buf, path, tmplData) // errors are non-fatal in collect phase
+		_ = registry.ExecuteTemplate(io.Discard, path, tmplData) // errors are non-fatal in collect phase
 	}
 }
 
@@ -392,7 +392,7 @@ func (r *Resolver) secretContent(registry *template.Template, tmplData *Template
 		return r.secretReader(filename)
 	}
 	slog.Warn("secret reader not configured, using placeholder", "file", srcPath)
-	return "<secret>", nil
+	return placeholderSecret, nil
 }
 
 func (r *Resolver) renderOrRead(registry *template.Template, tmplData *TemplateData, path string) (string, error) {

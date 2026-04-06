@@ -24,41 +24,34 @@ type SecretReader func(path string) (string, error)
 // Pass nil to disable 1Password integration (readOpSecret returns a placeholder).
 type OpSecretReader func(ctx context.Context, refs []string) (map[string]string, error)
 
+const (
+	placeholderSecret          = "<secret>"
+	placeholderOpSecret        = "<op-secret>"
+	placeholderOpSecretPending = "<op-secret-pending>"
+)
+
 // OpSecretCache manages two-phase op:// secret resolution for templates.
-// Phase 1 (collect): readOpSecret records refs and returns a placeholder.
-// Phase 2 (resolve): readOpSecret returns pre-resolved values from the cache.
-//
-// This avoids N individual SDK round-trips when templates use multiple readOpSecret calls.
+// Avoids N individual SDK round-trips when templates use multiple readOpSecret calls.
 // Not goroutine-safe; template rendering must be serial (same constraint as renderTemplate).
 type OpSecretCache struct {
 	reader    OpSecretReader
-	collected []string          // refs seen during collect phase
-	resolved  map[string]string // batch-resolved values after Resolve()
-	resolving bool              // true after Resolve(); readOpSecret returns from cache
+	collected []string
+	resolved  map[string]string // non-nil after Resolve(); doubles as phase indicator
 }
 
 // Resolve batch-resolves all collected refs. After this call, readOpSecret returns cached values.
 func (c *OpSecretCache) Resolve(ctx context.Context) error {
 	if len(c.collected) == 0 {
-		c.resolving = true
+		c.resolved = make(map[string]string)
 		return nil
 	}
-	// Deduplicate collected refs (same ref may appear in multiple templates).
-	seen := make(map[string]struct{}, len(c.collected))
-	unique := make([]string, 0, len(c.collected))
-	for _, ref := range c.collected {
-		if _, ok := seen[ref]; !ok {
-			seen[ref] = struct{}{}
-			unique = append(unique, ref)
-		}
-	}
+	unique := slices.Compact(slices.Sorted(slices.Values(c.collected)))
 	slog.Debug("batch-resolving template op:// secrets", "count", len(unique))
 	results, err := c.reader(ctx, unique)
 	if err != nil {
 		return fmt.Errorf("resolving template 1password secrets: %w", err)
 	}
 	c.resolved = results
-	c.resolving = true
 	return nil
 }
 
@@ -107,27 +100,25 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 		"indent": indentFunc,
 		"readSecretFile": func(path string) (string, error) {
 			if secretReader == nil {
-				return "<secret>", nil
+				return placeholderSecret, nil
 			}
 			return secretReader(path)
 		},
 		"readOpSecret": func(ref string) (string, error) {
 			if cache == nil {
-				slog.Debug("readOpSecret: 1password not configured, using placeholder", "ref", ref)
-				return "<op-secret>", nil
+				return placeholderOpSecret, nil
 			}
 			if !op.IsRef(ref) {
 				return "", fmt.Errorf("readOpSecret: %q is not a valid op:// reference", ref)
 			}
-			if !cache.resolving {
-				// Collect phase: record ref, return placeholder.
+			if cache.resolved == nil {
 				cache.collected = append(cache.collected, ref)
-				return "<op-secret-pending>", nil
+				return placeholderOpSecretPending, nil
 			}
-			// Resolve phase: return from cache, fall back to individual call for dynamic refs.
 			if val, ok := cache.resolved[ref]; ok {
 				return val, nil
 			}
+			// Cache miss: dynamic ref not seen in collect phase.
 			slog.Debug("readOpSecret: cache miss, resolving individually", "ref", ref)
 			results, err := opSecretReader(ctx, []string{ref})
 			if err != nil {
