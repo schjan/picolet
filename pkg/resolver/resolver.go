@@ -2,12 +2,15 @@ package resolver
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/template"
 
@@ -15,6 +18,7 @@ import (
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
 
 	"github.com/schjan/picolet/pkg/config"
+	op "github.com/schjan/picolet/pkg/onepassword"
 )
 
 // PicoletMarker is the comment header prepended to systemd unit files managed by picolet.
@@ -47,21 +51,23 @@ type ResolvedHost struct {
 
 // Config holds configuration for creating a Resolver.
 type Config struct {
-	FS           fs.FS
-	Config       *config.Config
-	SecretReader SecretReader
-	Rootless     bool
+	FS             fs.FS
+	Config         *config.Config
+	SecretReader   SecretReader
+	OpSecretReader OpSecretReader
+	Rootless       bool
 }
 
 // Resolver renders templates and resolves the desired state for hosts.
 type Resolver struct {
-	fsys         fs.FS
-	cfg          *config.Config
-	secretReader SecretReader
-	quadletDir   string
-	systemdDir   string
-	dataDir      string
-	rootless     bool
+	fsys           fs.FS
+	cfg            *config.Config
+	secretReader   SecretReader
+	opSecretReader OpSecretReader
+	quadletDir     string
+	systemdDir     string
+	dataDir        string
+	rootless       bool
 }
 
 // Rootless reports whether the resolver is configured for rootless mode.
@@ -76,13 +82,14 @@ func New(rc Config) (*Resolver, error) {
 		return nil, err
 	}
 	return &Resolver{
-		fsys:         rc.FS,
-		cfg:          rc.Config,
-		secretReader: rc.SecretReader,
-		quadletDir:   quadletDir,
-		systemdDir:   systemdDir,
-		dataDir:      dataDir,
-		rootless:     rc.Rootless,
+		fsys:           rc.FS,
+		cfg:            rc.Config,
+		secretReader:   rc.SecretReader,
+		opSecretReader: rc.OpSecretReader,
+		quadletDir:     quadletDir,
+		systemdDir:     systemdDir,
+		dataDir:        dataDir,
+		rootless:       rc.Rootless,
 	}, nil
 }
 
@@ -104,8 +111,8 @@ func ResolveDirs(rootless bool) (quadletDir, systemdDir, dataDir string, err err
 
 // ResolveHost computes the complete desired state for a given hostname.
 //
-//nolint:cyclop // sequential resolution of file categories; splitting would obscure the flow
-func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
+//nolint:cyclop,funlen // sequential resolution of file categories; splitting would obscure the flow
+func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedHost, error) {
 	host, ok := r.cfg.Hosts[hostname]
 	if !ok {
 		return nil, &HostNotFoundError{Hostname: hostname}
@@ -116,12 +123,23 @@ func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 		return nil, err
 	}
 
-	registry, err := BuildRegistry(r.fsys, r.secretReader)
+	registry, opCache, err := BuildRegistry(ctx, r.fsys, r.secretReader, r.opSecretReader)
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}
 
 	fileSet := r.cfg.Assignments.Resolve(host)
+
+	// Two-phase op:// secret resolution for templates:
+	// Phase 1 (collect): render all templates to discover readOpSecret calls (output discarded).
+	// Phase 2 (resolve): batch-resolve collected refs, then render templates for real.
+	if opCache != nil {
+		r.collectOpTemplateRefs(registry, tmplData, fileSet)
+		if err := opCache.Resolve(ctx); err != nil {
+			return nil, err
+		}
+	}
+
 	var files []ResolvedFile
 
 	// Standard file categories with their destination directories.
@@ -156,7 +174,26 @@ func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 		files = append(files, *f)
 	}
 
+	// Batch-resolve op:// secrets in a single SDK call.
+	opResolved, err := r.batchResolveOpSecrets(ctx, fileSet.Secrets)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, path := range fileSet.Secrets {
+		if op.IsRef(path) {
+			// batchResolveOpSecrets guarantees all refs are resolved or returns an error.
+			// When opSecretReader is nil, opResolved is nil and IsRef entries are skipped.
+			if opResolved == nil {
+				continue
+			}
+			f, err := r.buildOpSecretFile(path, opResolved[path])
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, *f)
+			continue
+		}
 		f, err := r.resolveSecret(registry, tmplData, path)
 		if err != nil {
 			return nil, err
@@ -171,10 +208,10 @@ func (r *Resolver) ResolveHost(hostname string) (*ResolvedHost, error) {
 }
 
 // ResolveAll resolves all hosts and returns the results.
-func (r *Resolver) ResolveAll() (map[string]*ResolvedHost, error) {
+func (r *Resolver) ResolveAll(ctx context.Context) (map[string]*ResolvedHost, error) {
 	results := make(map[string]*ResolvedHost, len(r.cfg.Hosts))
 	for _, hostname := range r.cfg.SortedHostnames() {
-		resolved, err := r.ResolveHost(hostname)
+		resolved, err := r.ResolveHost(ctx, hostname)
 		if err != nil {
 			return nil, fmt.Errorf("resolving host %s: %w", hostname, err)
 		}
@@ -267,6 +304,70 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 	}, nil
 }
 
+// batchResolveOpSecrets collects all op:// refs from the secrets list and resolves
+// them in a single SDK call. Returns a map from ref to secret value.
+// Any resolution failure is fatal to prevent reconciler.Diff from marking
+// unresolved secrets for deletion (which would remove them from Podman).
+// When 1Password is not configured, all op:// refs are skipped with a warning.
+//
+//nolint:nilnil // nil map signals "no op:// secrets to resolve" or "1Password not configured"
+func (r *Resolver) batchResolveOpSecrets(ctx context.Context, allSecrets []string) (map[string]string, error) {
+	var opRefs []string
+	for _, path := range allSecrets {
+		if op.IsRef(path) {
+			opRefs = append(opRefs, path)
+		}
+	}
+	if len(opRefs) == 0 {
+		return nil, nil
+	}
+	if r.opSecretReader == nil {
+		slog.Warn("skipping op:// secrets (1password not configured)", "count", len(opRefs))
+		return nil, nil
+	}
+	slog.Debug("batch-resolving 1password secrets", "count", len(opRefs))
+	results, err := r.opSecretReader(ctx, opRefs)
+	if err != nil {
+		return nil, fmt.Errorf("resolving 1password secrets: %w", err)
+	}
+	return results, nil
+}
+
+// collectOpTemplateRefs executes all .tmpl files in collect mode to discover readOpSecret calls.
+// Output is discarded — only the side effect of populating the OpSecretCache matters.
+func (r *Resolver) collectOpTemplateRefs(registry *template.Template, tmplData *TemplateData, fileSet *config.ResolvedFileSet) {
+	allPaths := slices.Concat(
+		fileSet.Networks, fileSet.Systemd, fileSet.Volumes,
+		fileSet.Containers, fileSet.Kube, fileSet.Manifests,
+	)
+	// Include non-op:// secrets that are templates (they might call readOpSecret).
+	for _, path := range fileSet.Secrets {
+		if !op.IsRef(path) {
+			allPaths = append(allPaths, path)
+		}
+	}
+	for _, path := range allPaths {
+		if !strings.HasSuffix(path, ".tmpl") {
+			continue
+		}
+		_ = registry.ExecuteTemplate(io.Discard, path, tmplData) // errors are non-fatal in collect phase
+	}
+}
+
+// buildOpSecretFile creates a ResolvedFile for a pre-resolved op:// secret.
+func (r *Resolver) buildOpSecretFile(ref, content string) (*ResolvedFile, error) {
+	parsed, err := op.ParseOpRef(ref)
+	if err != nil {
+		return nil, err
+	}
+	return &ResolvedFile{
+		SrcPath:  ref,
+		DestPath: "secret:" + parsed.PodmanSecretName(),
+		Content:  content,
+		Category: "secret",
+	}, nil
+}
+
 // secretContent returns the content for a secret entry.
 // Modes, in priority order:
 //  1. Template secrets (.tmpl suffix) are rendered with the full template engine.
@@ -291,7 +392,7 @@ func (r *Resolver) secretContent(registry *template.Template, tmplData *Template
 		return r.secretReader(filename)
 	}
 	slog.Warn("secret reader not configured, using placeholder", "file", srcPath)
-	return "<secret>", nil
+	return placeholderSecret, nil
 }
 
 func (r *Resolver) renderOrRead(registry *template.Template, tmplData *TemplateData, path string) (string, error) {

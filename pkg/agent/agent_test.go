@@ -27,6 +27,7 @@ import (
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/mqtt"
 	"github.com/schjan/picolet/pkg/reconciler"
+	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
 )
 
@@ -1041,7 +1042,7 @@ Internal=true
 
 	// Resolve from the subdirectory path (simulates what Agent.loadAndResolve does with RepoSubDir).
 	fleetPath := filepath.Join(repoDir, subDir)
-	files, err := LoadAndResolve(fleetPath, "test-host", t.TempDir(), false)
+	files, err := LoadAndResolve(t.Context(), fleetPath, "test-host", t.TempDir(), false, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, files)
 	assert.Equal(t, "/etc/containers/systemd/picolet/internal.network", files[0].DestPath)
@@ -1182,5 +1183,66 @@ func TestSetFilesManagedMetric(t *testing.T) {
 	for _, cat := range reconciler.Categories() {
 		got := testutil.ToFloat64(metrics.FilesManagedTotal.WithLabelValues(cat))
 		assert.InDelta(t, counts[cat], got, 0.001, "category %s", cat)
+	}
+}
+
+func TestOpRefreshDue(t *testing.T) {
+	t.Parallel()
+
+	dummyReader := resolver.OpSecretReader(func(_ context.Context, _ []string) (map[string]string, error) {
+		return nil, nil //nolint:nilnil // test stub
+	})
+	opCfg := &agentcfg.OnePasswordConfig{RefreshInterval: 10 * time.Minute}
+
+	tests := []struct {
+		name          string
+		opReader      resolver.OpSecretReader
+		onePassword   *agentcfg.OnePasswordConfig
+		lastOPRefresh time.Time
+		want          bool
+	}{
+		{
+			name:     "nil opReader always returns false",
+			opReader: nil,
+			// cfg.OnePassword populated to prove the nil-reader guard triggers first.
+			onePassword: opCfg,
+			want:        false,
+		},
+		{
+			name:          "zero lastOPRefresh returns true (first run)",
+			opReader:      dummyReader,
+			onePassword:   opCfg,
+			lastOPRefresh: time.Time{},
+			want:          true,
+		},
+		{
+			name:          "interval not yet elapsed returns false",
+			opReader:      dummyReader,
+			onePassword:   opCfg,
+			lastOPRefresh: time.Now().Add(-5 * time.Minute), // < 10m interval
+			want:          false,
+		},
+		{
+			name:          "interval elapsed returns true",
+			opReader:      dummyReader,
+			onePassword:   opCfg,
+			lastOPRefresh: time.Now().Add(-11 * time.Minute), // > 10m interval
+			want:          true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := &Agent{
+				opReader: tc.opReader,
+				cfg: &agentcfg.Config{
+					Hostname:    "test-host",
+					OnePassword: tc.onePassword,
+				},
+				lastOPRefresh: tc.lastOPRefresh,
+			}
+			assert.Equal(t, tc.want, a.opRefreshDue())
+		})
 	}
 }

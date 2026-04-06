@@ -163,6 +163,71 @@ repo_sub_dir: "../../../etc"
 			wantErr: "repo_sub_dir must be a relative path within the repo",
 		},
 		{
+			name: "onepassword config",
+			content: `
+hostname: rpi5-1
+onepassword:
+  token_path: /etc/picolet/op-token
+`,
+			want: Config{ //nolint:gosec // test fixture, not real credentials
+				Hostname:     "rpi5-1",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				SystemdUser:  new(false),
+				OnePassword:  &OnePasswordConfig{TokenPath: "/etc/picolet/op-token", RefreshInterval: 6 * time.Hour}, //nolint:gosec // test fixture
+			},
+		},
+		{
+			name: "onepassword missing token_path",
+			content: `
+hostname: rpi5-1
+onepassword: {}
+`,
+			wantErr: "onepassword.token_path is required",
+		},
+		{
+			name: "onepassword negative refresh_interval",
+			content: `
+hostname: rpi5-1
+onepassword:
+  token_path: /etc/picolet/op-token
+  refresh_interval: -5m
+`,
+			wantErr: "onepassword.refresh_interval must be at least 1m",
+		},
+		{
+			name: "onepassword sub-minute refresh_interval",
+			content: `
+hostname: rpi5-1
+onepassword:
+  token_path: /etc/picolet/op-token
+  refresh_interval: 30s
+`,
+			wantErr: "onepassword.refresh_interval must be at least 1m",
+		},
+		{
+			name: "onepassword valid refresh_interval",
+			content: `
+hostname: rpi5-1
+onepassword:
+  token_path: /etc/picolet/op-token
+  refresh_interval: 1h
+`,
+			want: Config{ //nolint:gosec // test fixture, not real credentials
+				Hostname:     "rpi5-1",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				SystemdUser:  new(false),
+				OnePassword:  &OnePasswordConfig{TokenPath: "/etc/picolet/op-token", RefreshInterval: time.Hour}, //nolint:gosec // test fixture
+			},
+		},
+		{
 			name:    "minimal config without repo_url",
 			content: "hostname: rpi5-1\n",
 			want: Config{ //nolint:gosec // test fixture, not real credentials
@@ -173,6 +238,73 @@ repo_sub_dir: "../../../etc"
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
 				SystemdUser:  new(false),
+			},
+		},
+		{
+			name: "onepassword git_token_ref valid",
+			content: `
+hostname: rpi5-1
+onepassword:
+  token_path: /etc/picolet/op-token
+  git_token_ref: "op://vault/item/token"
+`,
+			want: Config{ //nolint:gosec // test fixture, not real credentials
+				Hostname:     "rpi5-1",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				SystemdUser:  new(false),
+				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture
+					TokenPath:       "/etc/picolet/op-token",
+					RefreshInterval: 6 * time.Hour,
+					GitTokenRef:     "op://vault/item/token",
+				},
+			},
+		},
+		{
+			name: "onepassword git_token_ref invalid ref missing field",
+			content: `
+hostname: rpi5-1
+onepassword:
+  token_path: /etc/picolet/op-token
+  git_token_ref: "op://vault/item"
+`,
+			wantErr: "onepassword.git_token_ref",
+		},
+		{
+			name: "onepassword git_token_ref and git_token_path mutually exclusive",
+			content: `
+hostname: rpi5-1
+git_token_path: /etc/picolet/git-token
+onepassword:
+  token_path: /etc/picolet/op-token
+  git_token_ref: "op://vault/item/token"
+`,
+			wantErr: "git_token_path and onepassword.git_token_ref are mutually exclusive",
+		},
+		{
+			name: "onepassword git_token_ref without git_token_path succeeds",
+			content: `
+hostname: rpi5-1
+onepassword:
+  token_path: /etc/picolet/op-token
+  git_token_ref: "op://vault/item/credential"
+`,
+			want: Config{ //nolint:gosec // test fixture, not real credentials
+				Hostname:     "rpi5-1",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				SystemdUser:  new(false),
+				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture
+					TokenPath:       "/etc/picolet/op-token",
+					RefreshInterval: 6 * time.Hour,
+					GitTokenRef:     "op://vault/item/credential",
+				},
 			},
 		},
 	}

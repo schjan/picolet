@@ -74,6 +74,25 @@ jobs:
           GITHUB_REF_NAME: ${{ github.ref_name }}
         run: go test -tags "e2e,$BUILD_TAGS" -run TestE2E -race -count=1 -v -timeout 300s .
 
+  test-onepassword:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    # Only run on main branch pushes and PRs from the same repo (not forks)
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: 1Password integration tests
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          OP_TEST_SECRET_REF: ${{ secrets.OP_TEST_SECRET_REF }}
+          OP_TEST_SECTIONED_REF: ${{ secrets.OP_TEST_SECTIONED_REF }}
+        run: go test -tags "$BUILD_TAGS,onepassword_integration" ./pkg/onepassword/... -race -count=1 -v
+
   lint:
     runs-on: ubuntu-24.04-arm
     steps:

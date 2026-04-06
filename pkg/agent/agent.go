@@ -17,6 +17,7 @@ import (
 	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/mqtt"
+	op "github.com/schjan/picolet/pkg/onepassword"
 	"github.com/schjan/picolet/pkg/orphan"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
@@ -58,6 +59,9 @@ type Agent struct {
 	repoPath  string
 	statePath string
 	lockPath  string
+
+	opReader      resolver.OpSecretReader // nil when 1Password not configured; initialized in Run
+	lastOPRefresh time.Time               // zero = never refreshed; in-memory only (restart always re-fetches)
 
 	webhookCh          chan struct{}
 	ready              atomic.Bool
@@ -153,8 +157,37 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}
 
+	// Initialize 1Password client (if configured)
+	if a.cfg.OnePassword != nil {
+		var err error
+		a.opReader, err = op.NewReaderFromTokenFile(ctx, a.cfg.OnePassword.TokenPath)
+		if err != nil {
+			return fmt.Errorf("setting up 1password: %w", err)
+		}
+		slog.Info("1password client initialized", "token_path", a.cfg.OnePassword.TokenPath)
+	}
+
 	// Initialize git poller
-	poller := gitpoll.New(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, a.cfg.GitTokenPath)
+	var poller *gitpoll.Poller
+	if a.opReader != nil && a.cfg.OnePassword.GitTokenRef != "" {
+		// NOTE: The git token is resolved once at startup. If the underlying 1Password
+		// secret changes (e.g., GitHub PAT rotation), a picolet restart is required.
+		// The OP refresh cycle re-fetches secrets in assignments but does NOT refresh
+		// the git token.
+		ref := a.cfg.OnePassword.GitTokenRef
+		results, err := a.opReader(ctx, []string{ref})
+		if err != nil {
+			return fmt.Errorf("resolving git token from 1password: %w", err)
+		}
+		token, ok := results[ref]
+		if !ok {
+			return fmt.Errorf("resolving git token from 1password: ref %q not in response", ref)
+		}
+		slog.Info("git token resolved from 1password")
+		poller = gitpoll.NewWithToken(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, token)
+	} else {
+		poller = gitpoll.New(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, a.cfg.GitTokenPath)
+	}
 	if err := poller.Init(ctx); err != nil {
 		return fmt.Errorf("initializing git poller: %w", err)
 	}
@@ -163,6 +196,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	healthChecker := health.New(a.systemd)
 
 	a.scanOrphans(ctx, store)
+
+	metrics.FeatureInfo.WithLabelValues("mqtt").Set(boolToFloat(a.mqttClient != nil))
+	metrics.FeatureInfo.WithLabelValues("onepassword").Set(boolToFloat(a.opReader != nil))
 
 	slog.Info("agent started",
 		"hostname", a.cfg.Hostname,
@@ -256,7 +292,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return fmt.Errorf("polling git: %w", err)
 	}
 
-	if !pollResult.Changed {
+	if !pollResult.Changed && !a.opRefreshDue() {
 		metrics.GitPollTotal.WithLabelValues("noop").Inc()
 		slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
@@ -270,7 +306,13 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
 		return nil
 	}
-	metrics.GitPollTotal.WithLabelValues("changed").Inc()
+
+	if pollResult.Changed {
+		metrics.GitPollTotal.WithLabelValues("changed").Inc()
+	} else {
+		slog.Info("forcing reconciliation for 1password secret refresh", "sha", pollResult.HeadSHA)
+		metrics.GitPollTotal.WithLabelValues("op_refresh").Inc()
+	}
 
 	// Skip only after >= 3 consecutive failures on the same SHA, with a 1-hour expiry
 	// so transient failures (e.g. D-Bus reconnection) don't permanently brick the agent.
@@ -279,13 +321,18 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if pollResult.HeadSHA == st.FailedSHA && st.FailedCount >= maxRetries && time.Since(st.FailedAt) < failedSHAExpiry {
 		slog.Warn("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "failed_sha_gate", "failures", st.FailedCount)
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
+		// Still update lastOPRefresh so the agent does not retry OP refresh every tick
+		// while blocked by the failed-SHA gate.
+		if a.opReader != nil {
+			a.lastOPRefresh = time.Now()
+		}
 		return nil
 	}
 
 	slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
 
 	start := time.Now()
-	_, err = a.ReconcileOnce(ctx, pollResult.HeadSHA, st, store)
+	result, err := a.ReconcileOnce(ctx, pollResult.HeadSHA, st, store)
 	elapsed := time.Since(start)
 	metrics.ReconciliationDuration.Observe(elapsed.Seconds())
 
@@ -308,6 +355,13 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return err
 	}
 
+	if a.opReader != nil {
+		a.lastOPRefresh = time.Now()
+		if result.OpSecretsCount > 0 {
+			metrics.OpSyncTotal.WithLabelValues("success").Inc()
+			metrics.OpLastSyncTimestamp.SetToCurrentTime()
+		}
+	}
 	metrics.ReconciliationTotal.WithLabelValues("success").Inc()
 	slog.Info("reconciliation complete", "sha", pollResult.HeadSHA, "result", "success", "duration", elapsed.Round(time.Millisecond))
 	return nil
@@ -315,7 +369,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 
 // LoadAndResolve loads fleet config from repoPath and resolves the desired state for the given host.
 // It is the shared implementation behind Agent.loadAndResolve and CLI subcommands (apply, dry-run).
-func LoadAndResolve(repoPath, hostname, secretsDir string, rootless bool) ([]resolver.ResolvedFile, error) {
+func LoadAndResolve(ctx context.Context, repoPath, hostname, secretsDir string, rootless bool, opSecretReader resolver.OpSecretReader) ([]resolver.ResolvedFile, error) {
 	slog.Debug("loading fleet config", "repo", repoPath)
 	repoFS := os.DirFS(repoPath)
 	cfg, err := config.LoadAll(repoFS)
@@ -340,15 +394,16 @@ func LoadAndResolve(repoPath, hostname, secretsDir string, rootless bool) ([]res
 	slog.Debug("resolving host", "hostname", hostname)
 	loadStart := time.Now()
 	r, err := resolver.New(resolver.Config{
-		FS:           repoFS,
-		Config:       cfg,
-		SecretReader: secretReader,
-		Rootless:     rootless,
+		FS:             repoFS,
+		Config:         cfg,
+		SecretReader:   secretReader,
+		OpSecretReader: opSecretReader,
+		Rootless:       rootless,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating resolver: %w", err)
 	}
-	resolved, err := r.ResolveHost(hostname)
+	resolved, err := r.ResolveHost(ctx, hostname)
 	if err != nil {
 		return nil, fmt.Errorf("resolving host %s: %w", hostname, err)
 	}
@@ -356,12 +411,12 @@ func LoadAndResolve(repoPath, hostname, secretsDir string, rootless bool) ([]res
 	return resolved.Files, nil
 }
 
-func (a *Agent) loadAndResolve() ([]resolver.ResolvedFile, error) {
+func (a *Agent) loadAndResolve(ctx context.Context) ([]resolver.ResolvedFile, error) {
 	fleetPath := a.repoPath
 	if a.cfg.RepoSubDir != "" {
 		fleetPath = filepath.Join(a.repoPath, a.cfg.RepoSubDir)
 	}
-	return LoadAndResolve(fleetPath, a.cfg.Hostname, a.cfg.SecretsDir, a.cfg.Rootless)
+	return LoadAndResolve(ctx, fleetPath, a.cfg.Hostname, a.cfg.SecretsDir, a.cfg.Rootless, a.opReader)
 }
 
 // ReconcileResult contains the outcome of a single reconciliation cycle.
@@ -372,14 +427,18 @@ type ReconcileResult struct {
 	Summary map[reconciler.Action]int
 	// ApplyResult contains details from the apply phase (nil when no changes).
 	ApplyResult *applier.ApplyResult
+	// OpSecretsCount is the number of op:// secrets resolved in this cycle.
+	OpSecretsCount int
 }
 
 // ReconcileOnce runs a single reconciliation cycle: load config, resolve, diff, validate, apply, save state.
 func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.State, store *state.Store) (*ReconcileResult, error) {
-	files, err := a.loadAndResolve()
+	files, err := a.loadAndResolve(ctx)
 	if err != nil {
 		return nil, err
 	}
+
+	opCount := a.recordOpSecretsCount(files)
 
 	changeset := reconciler.Diff(files, st)
 
@@ -389,7 +448,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		if err := store.Save(st); err != nil {
 			return nil, fmt.Errorf("saving state: %w", err)
 		}
-		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary}, nil
+		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: opCount}, nil
 	}
 
 	slog.Info("changes detected",
@@ -423,9 +482,10 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	}
 
 	return &ReconcileResult{
-		HasChanges:  true,
-		Summary:     changeset.Summary,
-		ApplyResult: applyResult,
+		HasChanges:     true,
+		Summary:        changeset.Summary,
+		ApplyResult:    applyResult,
+		OpSecretsCount: opCount,
 	}, nil
 }
 
@@ -590,6 +650,32 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	}
 }
 
+// recordOpSecretsCount updates the picolet_op_direct_secrets_count gauge and returns the count.
+func (a *Agent) recordOpSecretsCount(files []resolver.ResolvedFile) int {
+	if a.opReader == nil {
+		return 0
+	}
+	var count int
+	for _, f := range files {
+		if op.IsRef(f.SrcPath) {
+			count++
+		}
+	}
+	metrics.OpDirectSecretsCount.Set(float64(count))
+	return count
+}
+
+// opRefreshDue reports whether op:// secrets should be re-fetched.
+// Returns true when 1Password is configured and the refresh interval has elapsed.
+// opReader is non-nil iff cfg.OnePassword is non-nil, so a single nil check suffices.
+func (a *Agent) opRefreshDue() bool {
+	if a.opReader == nil {
+		return false
+	}
+	interval := a.cfg.OnePassword.RefreshInterval
+	return a.lastOPRefresh.IsZero() || time.Since(a.lastOPRefresh) >= interval
+}
+
 func (a *Agent) triggerReconcile() {
 	select {
 	case a.webhookCh <- struct{}{}:
@@ -658,4 +744,11 @@ func (a *Agent) serveHTTP(ctx context.Context) {
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		slog.Error("http server error", "error", err)
 	}
+}
+
+func boolToFloat(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
 }

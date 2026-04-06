@@ -22,6 +22,7 @@ import (
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/metrics"
 	mqttpkg "github.com/schjan/picolet/pkg/mqtt"
+	op "github.com/schjan/picolet/pkg/onepassword"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/rollback"
@@ -78,8 +79,8 @@ func main() {
 						Required: true,
 					},
 				},
-				Action: func(_ context.Context, cmd *cli.Command) error {
-					return runResolve(cmd.Root().String("repo-dir"), cmd.String("host"))
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return runResolve(ctx, cmd.Root().String("repo-dir"), cmd.String("host"))
 				},
 			},
 			{
@@ -292,14 +293,33 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 	return a.Run(ctx)
 }
 
+// opReaderFromConfig creates an OpSecretReader from agent config, or nil if 1Password is not configured.
+//
+//nolint:nilnil // nil reader signals "1Password not configured"; matches OpSecretReader convention
+func opReaderFromConfig(ctx context.Context, cfg *agentcfg.Config) (resolver.OpSecretReader, error) {
+	if cfg.OnePassword == nil {
+		return nil, nil
+	}
+	reader, err := op.NewReaderFromTokenFile(ctx, cfg.OnePassword.TokenPath)
+	if err != nil {
+		return nil, fmt.Errorf("setting up 1password: %w", err)
+	}
+	return reader, nil
+}
+
 // dryRunResolveWithConfig resolves files using agent config (secrets, RepoSubDir, rootless-aware state).
-func dryRunResolveWithConfig(repoDir, hostname, configPath string) ([]resolver.ResolvedFile, *state.Store, bool, error) {
+func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath string) ([]resolver.ResolvedFile, *state.Store, bool, error) {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
 		return nil, nil, false, err
 	}
 
-	files, err := agent.LoadAndResolve(effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless)
+	opReader, err := opReaderFromConfig(ctx, cfg)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	files, err := agent.LoadAndResolve(ctx, effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -313,7 +333,7 @@ func dryRunResolveWithConfig(repoDir, hostname, configPath string) ([]resolver.R
 }
 
 // dryRunResolveBasic resolves files without agent config (no secrets, default state path).
-func dryRunResolveBasic(repoDir, hostname string) ([]resolver.ResolvedFile, *state.Store, error) {
+func dryRunResolveBasic(ctx context.Context, repoDir, hostname string) ([]resolver.ResolvedFile, *state.Store, error) {
 	repoFS := os.DirFS(repoDir)
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
@@ -324,7 +344,7 @@ func dryRunResolveBasic(repoDir, hostname string) ([]resolver.ResolvedFile, *sta
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating resolver: %w", err)
 	}
-	resolved, err := r.ResolveHost(hostname)
+	resolved, err := r.ResolveHost(ctx, hostname)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -332,7 +352,7 @@ func dryRunResolveBasic(repoDir, hostname string) ([]resolver.ResolvedFile, *sta
 	return resolved.Files, state.NewStore(agent.DefaultStatePath), nil
 }
 
-func runDryRun(_ context.Context, repoDir, hostname, configPath string) error {
+func runDryRun(ctx context.Context, repoDir, hostname, configPath string) error {
 	var (
 		files    []resolver.ResolvedFile
 		store    *state.Store
@@ -341,9 +361,9 @@ func runDryRun(_ context.Context, repoDir, hostname, configPath string) error {
 	)
 
 	if configPath != "" {
-		files, store, rootless, err = dryRunResolveWithConfig(repoDir, hostname, configPath)
+		files, store, rootless, err = dryRunResolveWithConfig(ctx, repoDir, hostname, configPath)
 	} else {
-		files, store, err = dryRunResolveBasic(repoDir, hostname)
+		files, store, err = dryRunResolveBasic(ctx, repoDir, hostname)
 	}
 	if err != nil {
 		return err
@@ -399,7 +419,7 @@ func runValidate(ctx context.Context, repoDir string) error {
 	return validator.ValidateAll(ctx, r, cfg)
 }
 
-func runResolve(repoDir, host string) error {
+func runResolve(ctx context.Context, repoDir, host string) error {
 	repoFS := os.DirFS(repoDir)
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
@@ -409,7 +429,7 @@ func runResolve(repoDir, host string) error {
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)
 	}
-	resolved, err := r.ResolveHost(host)
+	resolved, err := r.ResolveHost(ctx, host)
 	if err != nil {
 		return err
 	}
@@ -531,13 +551,19 @@ func applyWithRollback(
 	return result, nil
 }
 
+//nolint:cyclop,funlen // sequential apply steps; splitting reduces readability
 func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
 		return err
 	}
 
-	files, err := agent.LoadAndResolve(effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless)
+	opReader, err := opReaderFromConfig(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
+	files, err := agent.LoadAndResolve(ctx, effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)
 	if err != nil {
 		return err
 	}

@@ -881,7 +881,7 @@ func TestE2EResolverRootlessPaths(t *testing.T) {
 
 	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg, Rootless: true})
 	require.NoError(t, err)
-	resolved, err := r.ResolveHost("e2e-host")
+	resolved, err := r.ResolveHost(t.Context(), "e2e-host")
 	require.NoError(t, err)
 
 	destPaths := make(map[string]bool, len(resolved.Files))

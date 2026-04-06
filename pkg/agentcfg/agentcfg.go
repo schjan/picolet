@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"go.yaml.in/yaml/v4"
+
+	op "github.com/schjan/picolet/pkg/onepassword"
 )
 
 // MQTTConfig holds MQTT broker connection settings.
@@ -19,22 +21,30 @@ type MQTTConfig struct {
 	TopicPrefix  string `yaml:"topic_prefix"`  // default: "picolet"
 }
 
+// OnePasswordConfig holds 1Password SDK settings.
+type OnePasswordConfig struct {
+	TokenPath       string        `yaml:"token_path"`       // file path to service account token
+	RefreshInterval time.Duration `yaml:"refresh_interval"` // how often to re-fetch op:// secrets (default 6h)
+	GitTokenRef     string        `yaml:"git_token_ref"`    // op:// ref for git pull token; replaces git_token_path
+}
+
 // Config holds the agent runtime configuration from /etc/picolet/config.yml.
 type Config struct {
-	Hostname          string        `yaml:"hostname"`
-	RepoURL           string        `yaml:"repo_url"`
-	RepoBranch        string        `yaml:"repo_branch"`
-	GitTokenPath      string        `yaml:"git_token_path"`
-	PollInterval      time.Duration `yaml:"poll_interval"`
-	MetricsPort       int           `yaml:"metrics_port"`
-	SecretsDir        string        `yaml:"secrets_dir"`
-	Rootless          bool          `yaml:"rootless"`
-	SystemdUser       *bool         `yaml:"systemd_user"`
-	PodmanSocket      string        `yaml:"podman_socket"`
-	WebhookSecretPath string        `yaml:"webhook_secret_path"`
-	RepoSubDir        string        `yaml:"repo_sub_dir"` // optional subdirectory within the repo to use as fleet root (monorepo support)
-	DataDir           string        `yaml:"data_dir"`     // optional override for state file directory; used by apply/down commands
-	MQTT              *MQTTConfig   `yaml:"mqtt"`
+	Hostname          string             `yaml:"hostname"`
+	RepoURL           string             `yaml:"repo_url"`
+	RepoBranch        string             `yaml:"repo_branch"`
+	GitTokenPath      string             `yaml:"git_token_path"`
+	PollInterval      time.Duration      `yaml:"poll_interval"`
+	MetricsPort       int                `yaml:"metrics_port"`
+	SecretsDir        string             `yaml:"secrets_dir"`
+	Rootless          bool               `yaml:"rootless"`
+	SystemdUser       *bool              `yaml:"systemd_user"`
+	PodmanSocket      string             `yaml:"podman_socket"`
+	WebhookSecretPath string             `yaml:"webhook_secret_path"`
+	RepoSubDir        string             `yaml:"repo_sub_dir"` // optional subdirectory within the repo to use as fleet root (monorepo support)
+	DataDir           string             `yaml:"data_dir"`     // optional override for state file directory; used by apply/down commands
+	MQTT              *MQTTConfig        `yaml:"mqtt"`
+	OnePassword       *OnePasswordConfig `yaml:"onepassword"`
 }
 
 // Load reads and parses the agent config from disk.
@@ -54,6 +64,7 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+//nolint:cyclop // sequential field defaults; splitting would obscure the logic
 func (c *Config) setDefaults() {
 	if c.RepoBranch == "" {
 		c.RepoBranch = "main"
@@ -73,6 +84,9 @@ func (c *Config) setDefaults() {
 	if c.MQTT != nil && c.MQTT.TopicPrefix == "" {
 		c.MQTT.TopicPrefix = "picolet"
 	}
+	if c.OnePassword != nil && c.OnePassword.RefreshInterval == 0 {
+		c.OnePassword.RefreshInterval = 6 * time.Hour
+	}
 	if c.SystemdUser == nil {
 		c.SystemdUser = new(c.Rootless)
 	}
@@ -88,6 +102,8 @@ func (c *Config) UseSystemdUser() bool {
 }
 
 // Validate checks that required fields are set.
+//
+//nolint:cyclop // sequential field checks; splitting would obscure the validation logic
 func (c *Config) Validate() error {
 	if c.Hostname == "" {
 		return errors.New("hostname is required")
@@ -103,6 +119,29 @@ func (c *Config) Validate() error {
 	}
 	if c.MQTT != nil && c.MQTT.PasswordPath != "" && c.MQTT.Username == "" {
 		return errors.New("mqtt.username is required when mqtt.password_path is set")
+	}
+	if c.OnePassword != nil {
+		if err := c.validateOnePassword(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateOnePassword() error {
+	if c.OnePassword.TokenPath == "" {
+		return errors.New("onepassword.token_path is required when onepassword is configured")
+	}
+	if c.OnePassword.RefreshInterval < time.Minute {
+		return errors.New("onepassword.refresh_interval must be at least 1m")
+	}
+	if c.OnePassword.GitTokenRef != "" {
+		if _, err := op.ParseOpRef(c.OnePassword.GitTokenRef); err != nil {
+			return fmt.Errorf("onepassword.git_token_ref: %w", err)
+		}
+		if c.GitTokenPath != "" {
+			return errors.New("git_token_path and onepassword.git_token_ref are mutually exclusive")
+		}
 	}
 	return nil
 }
