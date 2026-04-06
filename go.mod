@@ -3,7 +3,7 @@ module github.com/schjan/picolet
 go 1.26.1
 
 require (
-	github.com/1password/onepassword-sdk-go v0.3.1
+	github.com/1password/onepassword-sdk-go v0.4.0
 	github.com/containers/podman/v5 v5.8.1
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/eclipse/paho.golang v0.23.0
