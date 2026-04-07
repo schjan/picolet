@@ -97,7 +97,14 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 			}
 			return string(data), nil
 		},
-		"indent": indentFunc,
+		"indent":  indentFunc,
+		"nindent": nindentFunc,
+		"glob": func(patterns ...string) ([]string, error) {
+			return globFunc(fsys, patterns...)
+		},
+		"concatFiles": func(patterns ...string) (string, error) {
+			return concatFilesFunc(fsys, patterns...)
+		},
 		"readSecretFile": func(path string) (string, error) {
 			if secretReader == nil {
 				return placeholderSecret, nil
@@ -170,4 +177,60 @@ func indentFunc(n int, s string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func nindentFunc(n int, s string) string {
+	return "\n" + indentFunc(n, s)
+}
+
+func globFunc(fsys fs.FS, patterns ...string) ([]string, error) {
+	if len(patterns) == 0 {
+		return nil, fmt.Errorf("glob: at least one pattern is required")
+	}
+
+	var paths []string
+	for _, pattern := range patterns {
+		matches, err := fs.Glob(fsys, pattern)
+		if err != nil {
+			return nil, fmt.Errorf("glob %q: %w", pattern, err)
+		}
+		if len(matches) == 0 {
+			return nil, fmt.Errorf("glob %q: no files matched", pattern)
+		}
+		paths = append(paths, matches...)
+	}
+
+	slices.Sort(paths)
+	return slices.Compact(paths), nil
+}
+
+func concatFilesFunc(fsys fs.FS, patterns ...string) (string, error) {
+	paths, err := globFunc(fsys, patterns...)
+	if err != nil {
+		return "", err
+	}
+
+	var b strings.Builder
+	var prev string
+	for _, path := range paths {
+		data, readErr := fs.ReadFile(fsys, path)
+		if readErr != nil {
+			return "", fmt.Errorf("concatFiles %q: %w", path, readErr)
+		}
+		current := string(data)
+		if needsNewlineSeparator(prev, current) {
+			b.WriteByte('\n')
+		}
+		b.WriteString(current)
+		prev = current
+	}
+
+	return b.String(), nil
+}
+
+func needsNewlineSeparator(left, right string) bool {
+	return left != "" &&
+		right != "" &&
+		!strings.HasSuffix(left, "\n") &&
+		!strings.HasPrefix(right, "\n")
 }

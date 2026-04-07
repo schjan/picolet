@@ -1,4 +1,3 @@
-groups:
   - name: instance_alerts
     rules:
       - alert: InstanceDown

@@ -172,9 +172,20 @@ Available data: `.Host` (hostname, pi_type, features), `.Images`, `.Ports`, `.Fl
 |----------|---------|
 | `readFile(path)` | Embed a static file from the repo |
 | `renderTemplate(name, data)` | Render another template inline |
+| `glob(patterns...)` | Resolve one or more glob patterns (strict: invalid/empty matches are errors), sorted + deduplicated |
+| `concatFiles(patterns...)` | Read matched files raw and concatenate them with newline glue only when needed |
 | `indent(n, str)` | Indent all lines by n spaces |
+| `nindent(n, str)` | Prepend a newline, then indent all lines by n spaces |
 | `readSecretFile(path)` | Read secret (placeholder in CI mode) |
-| `has(slice, item)` | Check if a feature is assigned |
+| `has(item, slice)` | Check if a feature is assigned |
+
+Use this when runtime expects one file but you want many repo fragments. Example:
+
+```yaml
+groups:{{ concatFiles "rules/vmalert/*.yml" | nindent 0 }}
+```
+
+`concatFiles` is intentionally raw-only (it does not auto-render matched `.tmpl` files). If you need rendered fragments, use `glob`, iterate, and call `renderTemplate` explicitly in your template.
 
 ### Validation
 
