@@ -164,7 +164,7 @@ Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a co
 
 ### Templates
 
-Files ending in `.tmpl` are rendered with Go `text/template` (`missingkey=error`). Static files are deployed as-is.
+Files ending in `.tmpl` are rendered with Go `text/template` (`missingkey=error`) plus Sprig's hermetic text helpers. Static files are deployed as-is.
 
 Available data: `.Host` (hostname, pi_type, features), `.Images`, `.Ports`, `.Fleet` (all hosts + config).
 
@@ -174,10 +174,10 @@ Available data: `.Host` (hostname, pi_type, features), `.Images`, `.Ports`, `.Fl
 | `renderTemplate(name, data)` | Render another template inline |
 | `glob(patterns...)` | Resolve one or more glob patterns (strict: invalid/empty matches are errors), sorted + deduplicated |
 | `concatFiles(patterns...)` | Read matched files raw and concatenate them with newline glue only when needed |
-| `indent(n, str)` | Indent all lines by n spaces |
-| `nindent(n, str)` | Prepend a newline, then indent all lines by n spaces |
+| `indent(n, str)` | Sprig: indent all lines by n spaces |
+| `nindent(n, str)` | Sprig: prepend a newline, then indent all lines by n spaces |
 | `readSecretFile(path)` | Read secret (placeholder in CI mode) |
-| `has(item, slice)` | Check if a feature is assigned |
+| `has(item, slice)` | Sprig: check if a value is present in a list |
 
 Use this when runtime expects one file but you want many repo fragments. Example:
 

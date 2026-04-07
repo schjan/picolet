@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"text/template"
+
+	sprig "github.com/Masterminds/sprig/v3"
 
 	op "github.com/schjan/picolet/pkg/onepassword"
 )
@@ -56,7 +59,7 @@ func (c *OpSecretCache) Resolve(ctx context.Context) error {
 }
 
 // BuildRegistry collects all .tmpl files from the filesystem and builds
-// a shared template registry with custom functions.
+// a shared template registry with Sprig + picolet-specific functions.
 //
 // When opSecretReader is non-nil, the returned OpSecretCache manages two-phase
 // resolution: callers must run a collect pass, call cache.Resolve, then run
@@ -89,7 +92,8 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 	}
 
 	var root *template.Template
-	funcMap := template.FuncMap{
+	funcMap := sprig.HermeticTxtFuncMap()
+	maps.Copy(funcMap, template.FuncMap{
 		"readFile": func(path string) (string, error) {
 			data, err := fs.ReadFile(fsys, path)
 			if err != nil {
@@ -97,8 +101,6 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 			}
 			return string(data), nil
 		},
-		"indent":  indentFunc,
-		"nindent": nindentFunc,
 		"glob": func(patterns ...string) ([]string, error) {
 			return globFunc(fsys, patterns...)
 		},
@@ -154,10 +156,7 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 				return buf.String(), nil
 			}
 		}(),
-		"has": func(item string, list []string) bool {
-			return slices.Contains(list, item)
-		},
-	}
+	})
 
 	root = template.New("").Option("missingkey=error").Funcs(funcMap)
 	for name, src := range sources {
@@ -166,21 +165,6 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 		}
 	}
 	return root, cache, nil
-}
-
-func indentFunc(n int, s string) string {
-	pad := strings.Repeat(" ", n)
-	lines := strings.Split(s, "\n")
-	for i := range lines {
-		if lines[i] != "" {
-			lines[i] = pad + lines[i]
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-func nindentFunc(n int, s string) string {
-	return "\n" + indentFunc(n, s)
 }
 
 func globFunc(fsys fs.FS, patterns ...string) ([]string, error) {
