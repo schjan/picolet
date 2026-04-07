@@ -232,7 +232,7 @@ onepassword:
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
 				SystemdUser:  new(false),
-				OnePassword: &OnePasswordConfig{
+				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture, not real credentials
 					TokenPath:             "/etc/picolet/op-token",
 					RefreshInterval:       6 * time.Hour,
 					GitHubAppIDRef:        "op://vault/app/id",

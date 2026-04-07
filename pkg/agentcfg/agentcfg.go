@@ -144,86 +144,50 @@ func (c *Config) validateOnePassword() error {
 	if c.OnePassword.RefreshInterval < time.Minute {
 		return errors.New("onepassword.refresh_interval must be at least 1m")
 	}
+	if err := validateOptionalOpRef("onepassword.git_token_ref", c.OnePassword.GitTokenRef); err != nil {
+		return err
+	}
 	if c.OnePassword.GitTokenRef != "" {
-		if _, err := op.ParseOpRef(c.OnePassword.GitTokenRef); err != nil {
-			return fmt.Errorf("onepassword.git_token_ref: %w", err)
-		}
 		if c.GitTokenPath != "" {
 			return errors.New("git_token_path and onepassword.git_token_ref are mutually exclusive")
 		}
 	}
-	if c.OnePassword.GitHubAppIDRef != "" {
-		if _, err := op.ParseOpRef(c.OnePassword.GitHubAppIDRef); err != nil {
-			return fmt.Errorf("onepassword.github_app_id_ref: %w", err)
-		}
-	}
-	if c.OnePassword.GitHubInstallationRef != "" {
-		if _, err := op.ParseOpRef(c.OnePassword.GitHubInstallationRef); err != nil {
-			return fmt.Errorf("onepassword.github_installation_id_ref: %w", err)
-		}
-	}
-	if c.OnePassword.GitHubPrivateKeyRef != "" {
-		if _, err := op.ParseOpRef(c.OnePassword.GitHubPrivateKeyRef); err != nil {
-			return fmt.Errorf("onepassword.github_private_key_ref: %w", err)
+	for key, ref := range map[string]string{
+		"onepassword.github_app_id_ref":          c.OnePassword.GitHubAppIDRef,
+		"onepassword.github_installation_id_ref": c.OnePassword.GitHubInstallationRef,
+		"onepassword.github_private_key_ref":     c.OnePassword.GitHubPrivateKeyRef,
+	} {
+		if err := validateOptionalOpRef(key, ref); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
 func (c *Config) validateGitHubApp() error {
-	direct := [3]bool{c.GitHubAppID != 0, c.GitHubInstallationID != 0, c.GitHubPrivateKeyPath != ""}
-	directSet := 0
-	for _, f := range direct {
-		if f {
-			directSet++
-		}
-	}
-
+	directSet := countSet(c.GitHubAppID != 0, c.GitHubInstallationID != 0, c.GitHubPrivateKeyPath != "")
 	refSet := 0
 	if c.OnePassword != nil {
-		refFields := [3]bool{
+		refSet = countSet(
 			c.OnePassword.GitHubAppIDRef != "",
 			c.OnePassword.GitHubInstallationRef != "",
 			c.OnePassword.GitHubPrivateKeyRef != "",
-		}
-		for _, f := range refFields {
-			if f {
-				refSet++
-			}
-		}
+		)
 	}
 
+	if err := validateGitHubAppMode(directSet, refSet); err != nil {
+		return err
+	}
 	if directSet == 0 && refSet == 0 {
 		return nil
 	}
-
-	if directSet > 0 && refSet > 0 {
-		return errors.New("github app direct fields and onepassword github app refs are mutually exclusive")
-	}
-
-	if directSet > 0 && directSet < len(direct) {
-		return errors.New("all GitHub App fields must be set together (github_app_id, github_installation_id, github_private_key_path)")
-	}
-
-	if refSet > 0 && refSet < 3 {
-		return errors.New("all onepassword github app refs must be set together (onepassword.github_app_id_ref, onepassword.github_installation_id_ref, onepassword.github_private_key_ref)")
-	}
-
 	if c.GitTokenPath != "" {
 		return errors.New("github_app_id and git_token_path are mutually exclusive")
 	}
-
 	if directSet == 0 {
 		return nil
 	}
-
-	if c.GitHubAppID <= 0 {
-		return errors.New("github_app_id must be positive")
-	}
-	if c.GitHubInstallationID <= 0 {
-		return errors.New("github_installation_id must be positive")
-	}
-	return nil
+	return validateGitHubAppDirectValues(c.GitHubAppID, c.GitHubInstallationID)
 }
 
 // HasGitHubApp reports whether GitHub App authentication is configured.
@@ -237,4 +201,47 @@ func (c *Config) HasGitHubAppRefs() bool {
 		return false
 	}
 	return c.OnePassword.GitHubAppIDRef != "" && c.OnePassword.GitHubInstallationRef != "" && c.OnePassword.GitHubPrivateKeyRef != ""
+}
+
+func validateOptionalOpRef(name, ref string) error {
+	if ref == "" {
+		return nil
+	}
+	if _, err := op.ParseOpRef(ref); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return nil
+}
+
+func countSet(values ...bool) int {
+	var set int
+	for _, v := range values {
+		if v {
+			set++
+		}
+	}
+	return set
+}
+
+func validateGitHubAppMode(directSet, refSet int) error {
+	switch {
+	case directSet > 0 && refSet > 0:
+		return errors.New("github app direct fields and onepassword github app refs are mutually exclusive")
+	case directSet > 0 && directSet < 3:
+		return errors.New("all GitHub App fields must be set together (github_app_id, github_installation_id, github_private_key_path)")
+	case refSet > 0 && refSet < 3:
+		return errors.New("all onepassword github app refs must be set together (onepassword.github_app_id_ref, onepassword.github_installation_id_ref, onepassword.github_private_key_ref)")
+	default:
+		return nil
+	}
+}
+
+func validateGitHubAppDirectValues(appID, installationID int64) error {
+	if appID <= 0 {
+		return errors.New("github_app_id must be positive")
+	}
+	if installationID <= 0 {
+		return errors.New("github_installation_id must be positive")
+	}
+	return nil
 }

@@ -188,29 +188,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	// Initialize git poller
-	auth := a.authProvider
-	if auth == nil {
-		if a.opReader != nil && a.cfg.OnePassword != nil && a.cfg.OnePassword.GitTokenRef != "" {
-			// NOTE: The git token is resolved once at startup. If the underlying 1Password
-			// secret changes (e.g., GitHub PAT rotation), a picolet restart is required.
-			// The OP refresh cycle re-fetches secrets in assignments but does NOT refresh
-			// the git token.
-			ref := a.cfg.OnePassword.GitTokenRef
-			results, err := a.opReader(ctx, []string{ref})
-			if err != nil {
-				return fmt.Errorf("resolving git token from 1password: %w", err)
-			}
-			token, ok := results[ref]
-			if !ok {
-				return fmt.Errorf("resolving git token from 1password: ref %q not in response", ref)
-			}
-			slog.Info("git token resolved from 1password")
-			auth = gitpoll.NewStaticTokenAuth(a.cfg.RepoURL, token)
-		} else if gitpoll.IsSSHURL(a.cfg.RepoURL) {
-			auth = gitpoll.NewSSHAgentAuth(a.cfg.RepoURL)
-		} else {
-			auth = gitpoll.NewTokenFileAuth(a.cfg.GitTokenPath)
-		}
+	auth, err := a.resolvePollerAuth(ctx)
+	if err != nil {
+		return err
 	}
 	poller := gitpoll.New(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, auth)
 	if err := poller.Init(ctx); err != nil {
@@ -569,6 +549,35 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	}
 
 	return result, nil
+}
+
+func (a *Agent) resolvePollerAuth(ctx context.Context) (gitpoll.AuthProvider, error) {
+	if a.authProvider != nil {
+		return a.authProvider, nil
+	}
+
+	if a.opReader != nil && a.cfg.OnePassword != nil && a.cfg.OnePassword.GitTokenRef != "" {
+		// NOTE: The git token is resolved once at startup. If the underlying 1Password
+		// secret changes (e.g., GitHub PAT rotation), a picolet restart is required.
+		// The OP refresh cycle re-fetches secrets in assignments but does NOT refresh
+		// the git token.
+		ref := a.cfg.OnePassword.GitTokenRef
+		results, err := a.opReader(ctx, []string{ref})
+		if err != nil {
+			return nil, fmt.Errorf("resolving git token from 1password: %w", err)
+		}
+		token, ok := results[ref]
+		if !ok {
+			return nil, fmt.Errorf("resolving git token from 1password: ref %q not in response", ref)
+		}
+		slog.Info("git token resolved from 1password")
+		return gitpoll.NewStaticTokenAuth(a.cfg.RepoURL, token), nil
+	}
+
+	if gitpoll.IsSSHURL(a.cfg.RepoURL) {
+		return gitpoll.NewSSHAgentAuth(a.cfg.RepoURL), nil
+	}
+	return gitpoll.NewTokenFileAuth(a.cfg.GitTokenPath), nil
 }
 
 // UpdateState rebuilds ManagedFiles and ServiceNames from the changeset.

@@ -329,12 +329,20 @@ func githubClientFromConfig(ctx context.Context, cfg *agentcfg.Config) (*github.
 }
 
 func resolveGitHubAppFromOnePassword(ctx context.Context, cfg *agentcfg.Config) (int64, int64, []byte, error) {
-	reader, err := opReaderFromConfig(ctx, cfg)
+	appIDRaw, installationRaw, privateKeyRaw, err := resolveGitHubAppRefValues(ctx, cfg)
 	if err != nil {
 		return 0, 0, nil, err
 	}
+	return parseGitHubAppRefValues(appIDRaw, installationRaw, privateKeyRaw)
+}
+
+func resolveGitHubAppRefValues(ctx context.Context, cfg *agentcfg.Config) (string, string, string, error) {
+	reader, err := opReaderFromConfig(ctx, cfg)
+	if err != nil {
+		return "", "", "", err
+	}
 	if reader == nil || cfg.OnePassword == nil {
-		return 0, 0, nil, errors.New("onepassword must be configured to resolve github app refs")
+		return "", "", "", errors.New("onepassword must be configured to resolve github app refs")
 	}
 
 	refs := []string{
@@ -344,22 +352,25 @@ func resolveGitHubAppFromOnePassword(ctx context.Context, cfg *agentcfg.Config) 
 	}
 	results, err := reader(ctx, refs)
 	if err != nil {
-		return 0, 0, nil, fmt.Errorf("resolving github app refs from 1password: %w", err)
+		return "", "", "", fmt.Errorf("resolving github app refs from 1password: %w", err)
 	}
 
-	appIDRaw, ok := results[cfg.OnePassword.GitHubAppIDRef]
-	if !ok {
-		return 0, 0, nil, fmt.Errorf("resolving github app refs from 1password: missing ref %q", cfg.OnePassword.GitHubAppIDRef)
+	appIDRaw, err := resolvedRef(results, cfg.OnePassword.GitHubAppIDRef, "onepassword.github_app_id_ref")
+	if err != nil {
+		return "", "", "", err
 	}
-	installationRaw, ok := results[cfg.OnePassword.GitHubInstallationRef]
-	if !ok {
-		return 0, 0, nil, fmt.Errorf("resolving github app refs from 1password: missing ref %q", cfg.OnePassword.GitHubInstallationRef)
+	installationRaw, err := resolvedRef(results, cfg.OnePassword.GitHubInstallationRef, "onepassword.github_installation_id_ref")
+	if err != nil {
+		return "", "", "", err
 	}
-	privateKeyRaw, ok := results[cfg.OnePassword.GitHubPrivateKeyRef]
-	if !ok {
-		return 0, 0, nil, fmt.Errorf("resolving github app refs from 1password: missing ref %q", cfg.OnePassword.GitHubPrivateKeyRef)
+	privateKeyRaw, err := resolvedRef(results, cfg.OnePassword.GitHubPrivateKeyRef, "onepassword.github_private_key_ref")
+	if err != nil {
+		return "", "", "", err
 	}
+	return appIDRaw, installationRaw, privateKeyRaw, nil
+}
 
+func parseGitHubAppRefValues(appIDRaw, installationRaw, privateKeyRaw string) (int64, int64, []byte, error) {
 	appID, err := parsePositiveInt64("onepassword.github_app_id_ref", appIDRaw)
 	if err != nil {
 		return 0, 0, nil, err
@@ -375,6 +386,14 @@ func resolveGitHubAppFromOnePassword(ctx context.Context, cfg *agentcfg.Config) 
 	}
 
 	return appID, installationID, []byte(privateKey), nil
+}
+
+func resolvedRef(results map[string]string, ref, fieldName string) (string, error) {
+	value, ok := results[ref]
+	if !ok {
+		return "", fmt.Errorf("resolving github app refs from 1password: missing %s (%q)", fieldName, ref)
+	}
+	return value, nil
 }
 
 func parsePositiveInt64(name, value string) (int64, error) {
