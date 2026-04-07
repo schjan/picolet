@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	op "github.com/1password/onepassword-sdk-go"
 
@@ -17,8 +18,15 @@ type Client struct {
 	secrets op.SecretsAPI
 }
 
+// onepassword-sdk-go v0.3.x initializes a shared global core without
+// synchronization. Guard client creation to avoid concurrent initialization.
+var newClientMu sync.Mutex
+
 // NewClient creates a 1Password SDK client with the given service account token.
 func NewClient(ctx context.Context, token string) (*Client, error) {
+	newClientMu.Lock()
+	defer newClientMu.Unlock()
+
 	client, err := op.NewClient(ctx,
 		op.WithServiceAccountToken(token),
 		op.WithIntegrationInfo("picolet", version.Version),
