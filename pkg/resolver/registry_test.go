@@ -126,6 +126,20 @@ func TestNindentSemantics(t *testing.T) {
 	assert.Equal(t, "\n  foo\n  bar|\n", out)
 }
 
+func TestHasSemantics(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"main.tmpl": &fstest.MapFile{Data: []byte(`{{if has "gpu" .Host.Features}}enabled{{else}}disabled{{end}}`)},
+	}
+
+	out, err := renderRegistryTemplate(t, fsys, "main.tmpl", map[string]any{
+		"Host": map[string]any{"Features": []string{"mqtt", "gpu"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "enabled", out)
+}
+
 func TestGlobAndRenderTemplateWorkflow(t *testing.T) {
 	t.Parallel()
 

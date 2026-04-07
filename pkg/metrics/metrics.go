@@ -116,6 +116,14 @@ var (
 		Help: "Total health check errors (D-Bus failures, not per-unit).",
 	})
 
+	DeploymentStatusTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "picolet_deployment_status_total",
+			Help: "Total deployment status reports by result.",
+		},
+		[]string{"result"},
+	)
+
 	BuildInfo = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "picolet_build_info",
@@ -178,6 +186,7 @@ func Register() {
 			AgentPaused,
 			DBusConnected,
 			HealthCheckErrorsTotal,
+			DeploymentStatusTotal,
 			BuildInfo,
 			FeatureInfo,
 			OpDirectSecretsCount,

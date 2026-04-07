@@ -20,6 +20,8 @@ import (
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
+	"github.com/schjan/picolet/pkg/github"
+	"github.com/schjan/picolet/pkg/githubauth"
 	"github.com/schjan/picolet/pkg/metrics"
 	mqttpkg "github.com/schjan/picolet/pkg/mqtt"
 	op "github.com/schjan/picolet/pkg/onepassword"
@@ -275,22 +277,64 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 		agent.WithFileWriter(applier.NewAtomicFileWriter()),
 	}
 
-	if cfg.MQTT != nil {
-		mqttCfg, err := mqttConfigFrom(cfg.MQTT)
-		if err != nil {
-			return err
-		}
-		mqttClient, err := mqttpkg.NewClient(mqttCfg, cfg.Hostname)
-		if err != nil {
-			return err
-		}
-		opts = append(opts, agent.WithMQTT(mqttClient))
-	} else {
-		slog.Info("mqtt disabled")
+	opts, err = appendMQTTOptions(cfg, opts)
+	if err != nil {
+		return err
+	}
+
+	opts, err = appendGitHubOptions(ctx, cfg, opts)
+	if err != nil {
+		return err
 	}
 
 	a := agent.New(cfg, opts...)
 	return a.Run(ctx)
+}
+
+func appendMQTTOptions(cfg *agentcfg.Config, opts []agent.Option) ([]agent.Option, error) {
+	if cfg.MQTT == nil {
+		slog.Info("mqtt disabled")
+		return opts, nil
+	}
+
+	mqttCfg, err := mqttConfigFrom(cfg.MQTT)
+	if err != nil {
+		return nil, err
+	}
+	mqttClient, err := mqttpkg.NewClient(mqttCfg, cfg.Hostname)
+	if err != nil {
+		return nil, err
+	}
+	return append(opts, agent.WithMQTT(mqttClient)), nil
+}
+
+func appendGitHubOptions(ctx context.Context, cfg *agentcfg.Config, opts []agent.Option) ([]agent.Option, error) {
+	if !cfg.HasGitHubApp() {
+		return opts, nil
+	}
+
+	var (
+		opReader resolver.OpSecretReader
+		err      error
+	)
+	if cfg.HasGitHubAppRefs() {
+		opReader, err = opReaderFromConfig(ctx, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("setting up 1password for github app auth: %w", err)
+		}
+	}
+
+	ghClient, appID, err := githubauth.NewClientFromConfig(ctx, cfg, opReader)
+	if err != nil {
+		return nil, fmt.Errorf("creating GitHub client: %w", err)
+	}
+
+	opts = append(opts,
+		agent.WithAuthProvider(ghClient),
+		agent.WithDeploymentReporter(github.NewDeploymentReporter(ghClient, cfg.Hostname)),
+	)
+	slog.Info("github app auth enabled", "app_id", appID, "environment", cfg.Hostname)
+	return opts, nil
 }
 
 // opReaderFromConfig creates an OpSecretReader from agent config, or nil if 1Password is not configured.

@@ -144,7 +144,7 @@ func TestE2EPipeline(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
 
-		poller := gitpoll.New(repoURL, branch, cloneDir, tokenPath)
+		poller := gitpoll.New(repoURL, branch, cloneDir, gitpoll.NewTokenFileAuth(tokenPath))
 		require.NoError(t, poller.Init(ctx))
 
 		result, err := poller.Poll(ctx, "")

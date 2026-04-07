@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,7 @@ import (
 	agentmocks "github.com/schjan/picolet/mocks/agent"
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
+	"github.com/schjan/picolet/pkg/gitpoll"
 	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/mqtt"
@@ -1245,4 +1247,134 @@ func TestOpRefreshDue(t *testing.T) {
 			assert.Equal(t, tc.want, a.opRefreshDue())
 		})
 	}
+}
+
+func TestCreateDeploymentContinuesWhenPendingStatusFails(t *testing.T) {
+	t.Parallel()
+	metrics.Register()
+
+	cfg := &agentcfg.Config{Hostname: "test-host", RepoURL: "https://example.com/repo.git"}
+	reporter := agentmocks.NewMockDeploymentReporter(t)
+	reporter.EXPECT().CreateDeployment(mock.Anything, "abc123").Return(int64(42), errors.New("pending status failed"))
+	reporter.EXPECT().ReportInProgress(mock.Anything, int64(42)).Return(nil)
+
+	a := New(cfg, WithDeploymentReporter(reporter))
+	got := a.createDeployment(context.Background(), "abc123")
+	assert.Equal(t, int64(42), got)
+}
+
+func TestReportDeploymentResultUsesErrorForRollback(t *testing.T) {
+	t.Parallel()
+	metrics.Register()
+
+	beforeError := testutil.ToFloat64(metrics.DeploymentStatusTotal.WithLabelValues("error"))
+
+	cfg := &agentcfg.Config{Hostname: "test-host", RepoURL: "https://example.com/repo.git"}
+	reporter := agentmocks.NewMockDeploymentReporter(t)
+	reporter.EXPECT().ReportError(mock.Anything, int64(7), mock.Anything).Return(nil)
+
+	a := New(cfg, WithDeploymentReporter(reporter))
+	a.reportDeploymentResult(context.Background(), 7, fmt.Errorf("%w: apply failed", errRollbackPerformed))
+
+	afterError := testutil.ToFloat64(metrics.DeploymentStatusTotal.WithLabelValues("error"))
+	assert.InDelta(t, beforeError+1, afterError, 0.001)
+}
+
+func TestReportDeploymentResultUsesDetachedContextOnSuccess(t *testing.T) {
+	t.Parallel()
+	metrics.Register()
+
+	cfg := &agentcfg.Config{Hostname: "test-host", RepoURL: "https://example.com/repo.git"}
+	reporter := agentmocks.NewMockDeploymentReporter(t)
+	reporter.EXPECT().ReportSuccess(mock.Anything, int64(9)).RunAndReturn(func(ctx context.Context, _ int64) error {
+		assert.NoError(t, ctx.Err(), "terminal deployment report should not inherit parent cancellation")
+		return nil
+	})
+
+	a := New(cfg, WithDeploymentReporter(reporter))
+
+	parentCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	a.reportDeploymentResult(parentCtx, 9, nil)
+}
+
+func TestShouldReportDeploymentError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "rollback error", err: fmt.Errorf("%w: boom", errRollbackPerformed), want: true},
+		{name: "context canceled", err: context.Canceled, want: true},
+		{name: "context deadline exceeded", err: context.DeadlineExceeded, want: true},
+		{name: "normal error", err: errors.New("validation failed"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, shouldReportDeploymentError(tt.err))
+		})
+	}
+}
+
+func TestTickDoesNotCreateDeploymentForUnchangedSHAOpRefresh(t *testing.T) {
+	t.Parallel()
+
+	bareDir := initTestRepo(t)
+	repoDir := filepath.Join(t.TempDir(), "clone")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+
+	metrics.Register()
+
+	sys, pod, fw := newBareMocks(t)
+	setupApplyMocks(sys, pod, fw)
+
+	cfg := &agentcfg.Config{
+		Hostname:     "test-host",
+		RepoURL:      bareDir,
+		RepoBranch:   "master",
+		PollInterval: time.Second,
+		MetricsPort:  0,
+		SecretsDir:   t.TempDir(),
+		OnePassword: &agentcfg.OnePasswordConfig{
+			RefreshInterval: time.Hour,
+		},
+	}
+
+	reporter := agentmocks.NewMockDeploymentReporter(t)
+	a := New(cfg,
+		WithSystemd(sys),
+		WithPodman(pod),
+		WithFileWriter(fw),
+		WithRepoPath(repoDir),
+		WithStatePath(statePath),
+		WithDeploymentReporter(reporter),
+	)
+	a.opReader = resolver.OpSecretReader(func(_ context.Context, _ []string) (map[string]string, error) {
+		return map[string]string{}, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
+	require.NoError(t, poller.Init(ctx))
+
+	initial, err := poller.Poll(ctx, "")
+	require.NoError(t, err)
+
+	store := state.NewStore(statePath)
+	st := state.NewState()
+	st.MarkApplied(initial.HeadSHA)
+	require.NoError(t, store.Save(st))
+
+	healthChecker := health.New(sys)
+	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
+	reporter.AssertNotCalled(t, "CreateDeployment", mock.Anything, mock.Anything)
+	reporter.AssertNotCalled(t, "ReportInProgress", mock.Anything, mock.Anything)
+	reporter.AssertNotCalled(t, "ReportSuccess", mock.Anything, mock.Anything)
+	reporter.AssertNotCalled(t, "ReportFailure", mock.Anything, mock.Anything, mock.Anything)
+	reporter.AssertNotCalled(t, "ReportError", mock.Anything, mock.Anything, mock.Anything)
 }

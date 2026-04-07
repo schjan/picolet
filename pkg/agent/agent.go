@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -34,9 +35,19 @@ type MQTTClient interface {
 	Close(ctx context.Context)
 }
 
+// DeploymentReporter reports deployment lifecycle to an external system.
+type DeploymentReporter interface {
+	CreateDeployment(ctx context.Context, sha string) (int64, error)
+	ReportInProgress(ctx context.Context, deploymentID int64) error
+	ReportSuccess(ctx context.Context, deploymentID int64) error
+	ReportFailure(ctx context.Context, deploymentID int64, err error) error
+	ReportError(ctx context.Context, deploymentID int64, err error) error
+}
+
 const (
-	defaultRepoPath = "/var/lib/picolet/repo"
-	defaultLockPath = "/var/lib/picolet/reconciliation.lock"
+	defaultRepoPath         = "/var/lib/picolet/repo"
+	defaultLockPath         = "/var/lib/picolet/reconciliation.lock"
+	deploymentReportTimeout = 10 * time.Second
 
 	// DefaultStatePath is the default location for the reconciliation state file.
 	// Exported so that CLI subcommands (e.g. dry-run) can read from the same path.
@@ -46,6 +57,8 @@ const (
 	// before /health returns 503 to trigger a container restart.
 	healthFailureThreshold = 3
 )
+
+var errRollbackPerformed = errors.New("rollback performed")
 
 // Agent is the main reconciliation loop.
 type Agent struct {
@@ -63,12 +76,13 @@ type Agent struct {
 	opReader      resolver.OpSecretReader // nil when 1Password not configured; initialized in Run
 	lastOPRefresh time.Time               // zero = never refreshed; in-memory only (restart always re-fetches)
 
-	webhookCh          chan struct{}
-	ready              atomic.Bool
-	paused             atomic.Bool // set by MQTT pause subscription
-	seededSuccessfulAt atomic.Bool // guards one-time gauge seed from persisted state
-	mqttClient         MQTTClient  // nil when MQTT not configured
-
+	webhookCh                 chan struct{}
+	ready                     atomic.Bool
+	paused                    atomic.Bool          // set by MQTT pause subscription
+	seededSuccessfulAt        atomic.Bool          // guards one-time gauge seed from persisted state
+	mqttClient                MQTTClient           // nil when MQTT not configured
+	deployReporter            DeploymentReporter   // nil when GitHub App not configured
+	authProvider              gitpoll.AuthProvider // nil = use default SSH/token logic
 	consecutiveHealthFailures atomic.Int32
 }
 
@@ -113,6 +127,16 @@ func WithLockPath(path string) Option {
 // WithMQTT sets the MQTTClient for pause/trigger/status publishing.
 func WithMQTT(c MQTTClient) Option {
 	return func(a *Agent) { a.mqttClient = c }
+}
+
+// WithDeploymentReporter sets the deployment status reporter.
+func WithDeploymentReporter(r DeploymentReporter) Option {
+	return func(a *Agent) { a.deployReporter = r }
+}
+
+// WithAuthProvider sets the git auth provider.
+func WithAuthProvider(p gitpoll.AuthProvider) Option {
+	return func(a *Agent) { a.authProvider = p }
 }
 
 // New creates a new Agent.
@@ -168,26 +192,11 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	// Initialize git poller
-	var poller *gitpoll.Poller
-	if a.opReader != nil && a.cfg.OnePassword.GitTokenRef != "" {
-		// NOTE: The git token is resolved once at startup. If the underlying 1Password
-		// secret changes (e.g., GitHub PAT rotation), a picolet restart is required.
-		// The OP refresh cycle re-fetches secrets in assignments but does NOT refresh
-		// the git token.
-		ref := a.cfg.OnePassword.GitTokenRef
-		results, err := a.opReader(ctx, []string{ref})
-		if err != nil {
-			return fmt.Errorf("resolving git token from 1password: %w", err)
-		}
-		token, ok := results[ref]
-		if !ok {
-			return fmt.Errorf("resolving git token from 1password: ref %q not in response", ref)
-		}
-		slog.Info("git token resolved from 1password")
-		poller = gitpoll.NewWithToken(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, token)
-	} else {
-		poller = gitpoll.New(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, a.cfg.GitTokenPath)
+	auth, err := a.resolvePollerAuth(ctx)
+	if err != nil {
+		return err
 	}
+	poller := gitpoll.New(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, auth)
 	if err := poller.Init(ctx); err != nil {
 		return fmt.Errorf("initializing git poller: %w", err)
 	}
@@ -329,12 +338,22 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return nil
 	}
 
-	slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
+	// Report deployments only for new git SHAs; forced OP refresh runs on the same SHA
+	// are reconciliations, not deployments.
+	var deploymentID int64
+	if pollResult.Changed {
+		slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
+		deploymentID = a.createDeployment(ctx, pollResult.HeadSHA)
+	} else {
+		slog.Info("reconciling unchanged git commit for 1password secret refresh", "sha", pollResult.HeadSHA)
+	}
 
 	start := time.Now()
 	result, err := a.ReconcileOnce(ctx, pollResult.HeadSHA, st, store)
 	elapsed := time.Since(start)
 	metrics.ReconciliationDuration.Observe(elapsed.Seconds())
+
+	a.reportDeploymentResult(ctx, deploymentID, err)
 
 	if err != nil {
 		slog.Error("reconciliation failed", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
@@ -516,7 +535,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		} else {
 			slog.Warn("rollback complete", "sha", headSHA)
 		}
-		return nil, fmt.Errorf("apply: %w", err)
+		return nil, fmt.Errorf("%w: apply: %w", errRollbackPerformed, err)
 	}
 
 	for _, change := range changeset.Changes {
@@ -540,6 +559,35 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	}
 
 	return result, nil
+}
+
+func (a *Agent) resolvePollerAuth(ctx context.Context) (gitpoll.AuthProvider, error) {
+	if a.authProvider != nil {
+		return a.authProvider, nil
+	}
+
+	if a.opReader != nil && a.cfg.OnePassword != nil && a.cfg.OnePassword.GitTokenRef != "" {
+		// NOTE: The git token is resolved once at startup. If the underlying 1Password
+		// secret changes (e.g., GitHub PAT rotation), a picolet restart is required.
+		// The OP refresh cycle re-fetches secrets in assignments but does NOT refresh
+		// the git token.
+		ref := a.cfg.OnePassword.GitTokenRef
+		results, err := a.opReader(ctx, []string{ref})
+		if err != nil {
+			return nil, fmt.Errorf("resolving git token from 1password: %w", err)
+		}
+		token, ok := results[ref]
+		if !ok {
+			return nil, fmt.Errorf("resolving git token from 1password: ref %q not in response", ref)
+		}
+		slog.Info("git token resolved from 1password")
+		return gitpoll.NewStaticTokenAuth(a.cfg.RepoURL, token), nil
+	}
+
+	if gitpoll.IsSSHURL(a.cfg.RepoURL) {
+		return gitpoll.NewSSHAgentAuth(a.cfg.RepoURL), nil
+	}
+	return gitpoll.NewTokenFileAuth(a.cfg.GitTokenPath), nil
 }
 
 // UpdateState rebuilds ManagedFiles and ServiceNames from the changeset.
@@ -751,4 +799,85 @@ func boolToFloat(b bool) float64 {
 		return 1
 	}
 	return 0
+}
+
+// createDeployment creates a GitHub deployment and reports in_progress if a reporter is configured.
+// Returns 0 when no reporter is set or when deployment creation itself fails.
+func (a *Agent) createDeployment(ctx context.Context, sha string) int64 {
+	if a.deployReporter == nil {
+		return 0
+	}
+	deploymentID, err := a.deployReporter.CreateDeployment(ctx, sha)
+	if err == nil {
+		metrics.DeploymentStatusTotal.WithLabelValues("pending").Inc()
+	}
+	if err != nil {
+		slog.Warn("deployment status: create failed", "error", err)
+		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
+		if deploymentID == 0 {
+			return 0
+		}
+		slog.Info("deployment status: continuing with created deployment despite pending status error", "deployment_id", deploymentID)
+	}
+
+	if err := a.deployReporter.ReportInProgress(ctx, deploymentID); err != nil {
+		slog.Warn("deployment status: in_progress failed", "error", err)
+		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
+	} else {
+		metrics.DeploymentStatusTotal.WithLabelValues("in_progress").Inc()
+	}
+	return deploymentID
+}
+
+// reportDeploymentResult reports the final deployment status (success/failure) if a deployment was created.
+func (a *Agent) reportDeploymentResult(ctx context.Context, deploymentID int64, reconcileErr error) {
+	if deploymentID == 0 || a.deployReporter == nil {
+		return
+	}
+	reportCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deploymentReportTimeout)
+	defer cancel()
+
+	if reconcileErr == nil {
+		a.reportDeploymentSuccess(reportCtx, deploymentID)
+		return
+	}
+	if shouldReportDeploymentError(reconcileErr) {
+		a.reportDeploymentError(reportCtx, deploymentID, reconcileErr)
+		return
+	}
+	a.reportDeploymentFailure(reportCtx, deploymentID, reconcileErr)
+}
+
+func (a *Agent) reportDeploymentSuccess(ctx context.Context, deploymentID int64) {
+	if err := a.deployReporter.ReportSuccess(ctx, deploymentID); err != nil {
+		slog.Warn("deployment status: success report failed", "error", err)
+		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
+		return
+	}
+	metrics.DeploymentStatusTotal.WithLabelValues("success").Inc()
+}
+
+func (a *Agent) reportDeploymentFailure(ctx context.Context, deploymentID int64, reconcileErr error) {
+	if err := a.deployReporter.ReportFailure(ctx, deploymentID, reconcileErr); err != nil {
+		slog.Warn("deployment status: failure report failed", "error", err)
+		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
+		return
+	}
+	metrics.DeploymentStatusTotal.WithLabelValues("failure").Inc()
+}
+
+func (a *Agent) reportDeploymentError(ctx context.Context, deploymentID int64, reconcileErr error) {
+	if err := a.deployReporter.ReportError(ctx, deploymentID, reconcileErr); err != nil {
+		slog.Warn("deployment status: error report failed", "error", err)
+		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
+		return
+	}
+	metrics.DeploymentStatusTotal.WithLabelValues("error").Inc()
+}
+
+func shouldReportDeploymentError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return errors.Is(err, errRollbackPerformed)
 }
