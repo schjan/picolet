@@ -58,6 +58,8 @@ const (
 	healthFailureThreshold = 3
 )
 
+var errRollbackPerformed = errors.New("rollback performed")
+
 // Agent is the main reconciliation loop.
 type Agent struct {
 	cfg     *agentcfg.Config
@@ -527,7 +529,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		} else {
 			slog.Warn("rollback complete", "sha", headSHA)
 		}
-		return nil, &rollbackError{cause: fmt.Errorf("apply: %w", err)}
+		return nil, fmt.Errorf("%w: apply: %w", errRollbackPerformed, err)
 	}
 
 	for _, change := range changeset.Changes {
@@ -551,18 +553,6 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	}
 
 	return result, nil
-}
-
-type rollbackError struct {
-	cause error
-}
-
-func (e *rollbackError) Error() string {
-	return e.cause.Error()
-}
-
-func (e *rollbackError) Unwrap() error {
-	return e.cause
 }
 
 func (a *Agent) resolvePollerAuth(ctx context.Context) (gitpoll.AuthProvider, error) {
@@ -883,6 +873,5 @@ func shouldReportDeploymentError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
-	var rbErr *rollbackError
-	return errors.As(err, &rbErr)
+	return errors.Is(err, errRollbackPerformed)
 }

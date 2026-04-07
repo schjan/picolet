@@ -21,6 +21,13 @@ type AuthProvider interface {
 	GitAuth(ctx context.Context) (transport.AuthMethod, error)
 }
 
+type noAuthProvider struct{}
+
+//nolint:nilnil // nil signals anonymous access
+func (noAuthProvider) GitAuth(_ context.Context) (transport.AuthMethod, error) {
+	return nil, nil
+}
+
 type tokenFileAuth struct {
 	path string
 }
@@ -82,9 +89,14 @@ func NewSSHAgentAuth(repoURL string) AuthProvider {
 
 // IsSSHURL reports whether the given URL uses an SSH transport.
 func IsSSHURL(url string) bool {
-	return strings.HasPrefix(url, "ssh://") ||
-		strings.HasPrefix(url, "git+ssh://") ||
-		strings.HasPrefix(url, "git@")
+	if strings.HasPrefix(url, "git+ssh://") {
+		return true
+	}
+	endpoint, err := transport.NewEndpoint(url)
+	if err != nil {
+		return false
+	}
+	return endpoint.Protocol == "ssh" || endpoint.Protocol == "git+ssh"
 }
 
 // Poller manages a local clone of a remote git repo and polls for changes.
@@ -104,6 +116,9 @@ type PollResult struct {
 
 // New creates a poller. localPath is where the repo is cloned to.
 func New(repoURL, branch, localPath string, auth AuthProvider) *Poller {
+	if auth == nil {
+		auth = noAuthProvider{}
+	}
 	return &Poller{
 		repoURL:   repoURL,
 		branch:    branch,

@@ -107,11 +107,23 @@ func TestIsSSHURL(t *testing.T) {
 		{"https://github.com/org/repo.git", false},
 		{"http://github.com/org/repo.git", false},
 		{"/local/path/repo", false},
+		{"%%%://bad-url", false},
 		{"", false},
 	}
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, IsSSHURL(tt.url), "isSSHURL(%q)", tt.url)
 	}
+}
+
+func TestNewDefaultsToAnonymousAuthWhenNilProvider(t *testing.T) {
+	t.Parallel()
+
+	p := New("https://github.com/org/repo.git", "main", "/tmp/clone", nil)
+	require.NotNil(t, p.auth)
+
+	auth, err := p.auth.GitAuth(context.Background())
+	require.NoError(t, err)
+	assert.Nil(t, auth)
 }
 
 func TestSSHAuthUser(t *testing.T) {

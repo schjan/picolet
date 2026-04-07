@@ -1271,7 +1271,7 @@ func TestReportDeploymentResultUsesErrorForRollback(t *testing.T) {
 	reporter.EXPECT().ReportError(mock.Anything, int64(7), mock.Anything).Return(nil)
 
 	a := New(cfg, WithDeploymentReporter(reporter))
-	a.reportDeploymentResult(context.Background(), 7, &rollbackError{cause: errors.New("apply failed")})
+	a.reportDeploymentResult(context.Background(), 7, fmt.Errorf("%w: apply failed", errRollbackPerformed))
 
 	afterError := testutil.ToFloat64(metrics.DeploymentStatusTotal.WithLabelValues("error"))
 	assert.InDelta(t, beforeError+1, afterError, 0.001)
@@ -1300,7 +1300,7 @@ func TestShouldReportDeploymentError(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{name: "rollback error", err: &rollbackError{cause: errors.New("boom")}, want: true},
+		{name: "rollback error", err: fmt.Errorf("%w: boom", errRollbackPerformed), want: true},
 		{name: "context canceled", err: context.Canceled, want: true},
 		{name: "context deadline exceeded", err: context.DeadlineExceeded, want: true},
 		{name: "normal error", err: errors.New("validation failed"), want: false},
