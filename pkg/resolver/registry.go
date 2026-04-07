@@ -94,6 +94,9 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 	var root *template.Template
 	funcMap := sprig.HermeticTxtFuncMap()
 	maps.Copy(funcMap, template.FuncMap{
+		// Keep historical picolet semantics: do not indent empty lines.
+		"indent":  indentFunc,
+		"nindent": nindentFunc,
 		"readFile": func(path string) (string, error) {
 			data, err := fs.ReadFile(fsys, path)
 			if err != nil {
@@ -165,6 +168,21 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 		}
 	}
 	return root, cache, nil
+}
+
+func indentFunc(n int, s string) string {
+	pad := strings.Repeat(" ", n)
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		if lines[i] != "" {
+			lines[i] = pad + lines[i]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func nindentFunc(n int, s string) string {
+	return "\n" + indentFunc(n, s)
 }
 
 func globFunc(fsys fs.FS, patterns ...string) ([]string, error) {

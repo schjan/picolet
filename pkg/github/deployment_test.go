@@ -104,3 +104,27 @@ func TestReportFailureTruncatesDescription(t *testing.T) {
 	require.True(t, ok, "description should be a string")
 	assert.LessOrEqual(t, len(desc), 140)
 }
+
+func TestReportErrorUsesRawErrorDescription(t *testing.T) {
+	t.Parallel()
+
+	var gotStatus map[string]any
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("POST /app/installations/67890/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"ghs_test","expires_at":"2099-01-01T00:00:00Z"}`))
+	})
+
+	mux.HandleFunc("POST /api/v3/repos/org/repo/deployments/42/statuses", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotStatus)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":4}`))
+	})
+
+	reporter := setupDeploymentTest(t, mux)
+	err := reporter.ReportError(context.Background(), 42, errors.New("context canceled"))
+	require.NoError(t, err)
+	assert.Equal(t, "error", gotStatus["state"])
+	assert.Equal(t, "context canceled", gotStatus["description"])
+}

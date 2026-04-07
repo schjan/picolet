@@ -338,9 +338,15 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return nil
 	}
 
-	slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
-
-	deploymentID := a.createDeployment(ctx, pollResult.HeadSHA)
+	// Report deployments only for new git SHAs; forced OP refresh runs on the same SHA
+	// are reconciliations, not deployments.
+	var deploymentID int64
+	if pollResult.Changed {
+		slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
+		deploymentID = a.createDeployment(ctx, pollResult.HeadSHA)
+	} else {
+		slog.Info("reconciling unchanged git commit for 1password secret refresh", "sha", pollResult.HeadSHA)
+	}
 
 	start := time.Now()
 	result, err := a.ReconcileOnce(ctx, pollResult.HeadSHA, st, store)

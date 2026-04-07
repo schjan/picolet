@@ -123,7 +123,7 @@ func TestNindentSemantics(t *testing.T) {
 
 	out, err := renderRegistryTemplate(t, fsys, "main.tmpl", nil)
 	require.NoError(t, err)
-	assert.Equal(t, "\n  foo\n  bar|\n    ", out)
+	assert.Equal(t, "\n  foo\n  bar|\n", out)
 }
 
 func TestHasSemantics(t *testing.T) {

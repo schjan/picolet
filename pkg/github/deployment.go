@@ -60,7 +60,7 @@ func (r *DeploymentReporter) ReportFailure(ctx context.Context, deploymentID int
 
 // ReportError updates the deployment status to error (e.g. rollback occurred).
 func (r *DeploymentReporter) ReportError(ctx context.Context, deploymentID int64, deployErr error) error {
-	return r.createStatus(ctx, deploymentID, "error", truncate("rollback: "+deployErr.Error(), maxDescriptionLen))
+	return r.createStatus(ctx, deploymentID, "error", truncate(deployErr.Error(), maxDescriptionLen))
 }
 
 func (r *DeploymentReporter) createStatus(ctx context.Context, deploymentID int64, state, description string) error {
