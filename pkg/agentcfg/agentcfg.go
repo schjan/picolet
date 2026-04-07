@@ -184,6 +184,9 @@ func (c *Config) validateGitHubApp() error {
 	if c.GitTokenPath != "" {
 		return errors.New("github_app_id and git_token_path are mutually exclusive")
 	}
+	if c.OnePassword != nil && c.OnePassword.GitTokenRef != "" {
+		return errors.New("github_app_id and onepassword.git_token_ref are mutually exclusive")
+	}
 	if directSet == 0 {
 		return nil
 	}

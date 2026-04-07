@@ -39,6 +39,11 @@ func TestParseRepoURL(t *testing.T) {
 			wantErr: "not a GitHub URL",
 		},
 		{
+			name:    "http URL rejected",
+			url:     "http://github.com/org/repo.git",
+			wantErr: "requires HTTPS",
+		},
+		{
 			name:    "empty URL",
 			url:     "",
 			wantErr: "empty",

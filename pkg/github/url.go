@@ -21,6 +21,9 @@ func ParseRepoURL(repoURL string) (owner, repo string, err error) {
 	if err != nil {
 		return "", "", fmt.Errorf("parsing URL %q: %w", repoURL, err)
 	}
+	if u.Scheme != "https" {
+		return "", "", fmt.Errorf("GitHub App requires HTTPS repository URL, got scheme %q: %s", u.Scheme, repoURL)
+	}
 
 	if u.Hostname() != "github.com" {
 		return "", "", fmt.Errorf("not a GitHub URL (host=%q): %s", u.Hostname(), repoURL)

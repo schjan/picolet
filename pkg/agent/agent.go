@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -44,8 +45,9 @@ type DeploymentReporter interface {
 }
 
 const (
-	defaultRepoPath = "/var/lib/picolet/repo"
-	defaultLockPath = "/var/lib/picolet/reconciliation.lock"
+	defaultRepoPath         = "/var/lib/picolet/repo"
+	defaultLockPath         = "/var/lib/picolet/reconciliation.lock"
+	deploymentReportTimeout = 10 * time.Second
 
 	// DefaultStatePath is the default location for the reconciliation state file.
 	// Exported so that CLI subcommands (e.g. dry-run) can read from the same path.
@@ -525,7 +527,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		} else {
 			slog.Warn("rollback complete", "sha", headSHA)
 		}
-		return nil, fmt.Errorf("apply: %w", err)
+		return nil, &rollbackError{cause: fmt.Errorf("apply: %w", err)}
 	}
 
 	for _, change := range changeset.Changes {
@@ -549,6 +551,18 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	}
 
 	return result, nil
+}
+
+type rollbackError struct {
+	cause error
+}
+
+func (e *rollbackError) Error() string {
+	return e.cause.Error()
+}
+
+func (e *rollbackError) Unwrap() error {
+	return e.cause
 }
 
 func (a *Agent) resolvePollerAuth(ctx context.Context) (gitpoll.AuthProvider, error) {
@@ -792,18 +806,23 @@ func boolToFloat(b bool) float64 {
 }
 
 // createDeployment creates a GitHub deployment and reports in_progress if a reporter is configured.
-// Returns 0 when no reporter is set or when the API call fails.
+// Returns 0 when no reporter is set or when deployment creation itself fails.
 func (a *Agent) createDeployment(ctx context.Context, sha string) int64 {
 	if a.deployReporter == nil {
 		return 0
 	}
 	deploymentID, err := a.deployReporter.CreateDeployment(ctx, sha)
+	if err == nil {
+		metrics.DeploymentStatusTotal.WithLabelValues("pending").Inc()
+	}
 	if err != nil {
 		slog.Warn("deployment status: create failed", "error", err)
 		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
-		return 0
+		if deploymentID == 0 {
+			return 0
+		}
+		slog.Info("deployment status: continuing with created deployment despite pending status error", "deployment_id", deploymentID)
 	}
-	metrics.DeploymentStatusTotal.WithLabelValues("pending").Inc()
 
 	if err := a.deployReporter.ReportInProgress(ctx, deploymentID); err != nil {
 		slog.Warn("deployment status: in_progress failed", "error", err)
@@ -819,19 +838,51 @@ func (a *Agent) reportDeploymentResult(ctx context.Context, deploymentID int64, 
 	if deploymentID == 0 || a.deployReporter == nil {
 		return
 	}
-	if reconcileErr != nil {
-		if err := a.deployReporter.ReportFailure(ctx, deploymentID, reconcileErr); err != nil {
-			slog.Warn("deployment status: failure report failed", "error", err)
-			metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
-		} else {
-			metrics.DeploymentStatusTotal.WithLabelValues("failure").Inc()
-		}
+	reportCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deploymentReportTimeout)
+	defer cancel()
+
+	if reconcileErr == nil {
+		a.reportDeploymentSuccess(reportCtx, deploymentID)
 		return
 	}
+	if shouldReportDeploymentError(reconcileErr) {
+		a.reportDeploymentError(reportCtx, deploymentID, reconcileErr)
+		return
+	}
+	a.reportDeploymentFailure(reportCtx, deploymentID, reconcileErr)
+}
+
+func (a *Agent) reportDeploymentSuccess(ctx context.Context, deploymentID int64) {
 	if err := a.deployReporter.ReportSuccess(ctx, deploymentID); err != nil {
 		slog.Warn("deployment status: success report failed", "error", err)
 		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
-	} else {
-		metrics.DeploymentStatusTotal.WithLabelValues("success").Inc()
+		return
 	}
+	metrics.DeploymentStatusTotal.WithLabelValues("success").Inc()
+}
+
+func (a *Agent) reportDeploymentFailure(ctx context.Context, deploymentID int64, reconcileErr error) {
+	if err := a.deployReporter.ReportFailure(ctx, deploymentID, reconcileErr); err != nil {
+		slog.Warn("deployment status: failure report failed", "error", err)
+		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
+		return
+	}
+	metrics.DeploymentStatusTotal.WithLabelValues("failure").Inc()
+}
+
+func (a *Agent) reportDeploymentError(ctx context.Context, deploymentID int64, reconcileErr error) {
+	if err := a.deployReporter.ReportError(ctx, deploymentID, reconcileErr); err != nil {
+		slog.Warn("deployment status: error report failed", "error", err)
+		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
+		return
+	}
+	metrics.DeploymentStatusTotal.WithLabelValues("error").Inc()
+}
+
+func shouldReportDeploymentError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var rbErr *rollbackError
+	return errors.As(err, &rbErr)
 }

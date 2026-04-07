@@ -205,6 +205,19 @@ github_private_key_path: /etc/picolet/secrets/github-app.pem
 			wantErr: "mutually exclusive",
 		},
 		{
+			name: "github app and onepassword git_token_ref mutually exclusive",
+			content: `
+hostname: rpi5-1
+github_app_id: 12345
+github_installation_id: 67890
+github_private_key_path: /etc/picolet/secrets/github-app.pem
+onepassword:
+  token_path: /etc/picolet/op-token
+  git_token_ref: "op://vault/item/token"
+`,
+			wantErr: "github_app_id and onepassword.git_token_ref are mutually exclusive",
+		},
+		{
 			name: "github app id must be positive",
 			content: `
 hostname: rpi5-1

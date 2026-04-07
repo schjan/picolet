@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1243,6 +1244,71 @@ func TestOpRefreshDue(t *testing.T) {
 				lastOPRefresh: tc.lastOPRefresh,
 			}
 			assert.Equal(t, tc.want, a.opRefreshDue())
+		})
+	}
+}
+
+func TestCreateDeploymentContinuesWhenPendingStatusFails(t *testing.T) {
+	metrics.Register()
+
+	cfg := &agentcfg.Config{Hostname: "test-host", RepoURL: "https://example.com/repo.git"}
+	reporter := agentmocks.NewMockDeploymentReporter(t)
+	reporter.EXPECT().CreateDeployment(mock.Anything, "abc123").Return(int64(42), errors.New("pending status failed"))
+	reporter.EXPECT().ReportInProgress(mock.Anything, int64(42)).Return(nil)
+
+	a := New(cfg, WithDeploymentReporter(reporter))
+	got := a.createDeployment(context.Background(), "abc123")
+	assert.Equal(t, int64(42), got)
+}
+
+func TestReportDeploymentResultUsesErrorForRollback(t *testing.T) {
+	metrics.Register()
+
+	beforeError := testutil.ToFloat64(metrics.DeploymentStatusTotal.WithLabelValues("error"))
+
+	cfg := &agentcfg.Config{Hostname: "test-host", RepoURL: "https://example.com/repo.git"}
+	reporter := agentmocks.NewMockDeploymentReporter(t)
+	reporter.EXPECT().ReportError(mock.Anything, int64(7), mock.Anything).Return(nil)
+
+	a := New(cfg, WithDeploymentReporter(reporter))
+	a.reportDeploymentResult(context.Background(), 7, &rollbackError{cause: errors.New("apply failed")})
+
+	afterError := testutil.ToFloat64(metrics.DeploymentStatusTotal.WithLabelValues("error"))
+	assert.InDelta(t, beforeError+1, afterError, 0.001)
+}
+
+func TestReportDeploymentResultUsesDetachedContextOnSuccess(t *testing.T) {
+	metrics.Register()
+
+	cfg := &agentcfg.Config{Hostname: "test-host", RepoURL: "https://example.com/repo.git"}
+	reporter := agentmocks.NewMockDeploymentReporter(t)
+	reporter.EXPECT().ReportSuccess(mock.Anything, int64(9)).RunAndReturn(func(ctx context.Context, _ int64) error {
+		assert.NoError(t, ctx.Err(), "terminal deployment report should not inherit parent cancellation")
+		return nil
+	})
+
+	a := New(cfg, WithDeploymentReporter(reporter))
+
+	parentCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	a.reportDeploymentResult(parentCtx, 9, nil)
+}
+
+func TestShouldReportDeploymentError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "rollback error", err: &rollbackError{cause: errors.New("boom")}, want: true},
+		{name: "context canceled", err: context.Canceled, want: true},
+		{name: "context deadline exceeded", err: context.DeadlineExceeded, want: true},
+		{name: "normal error", err: errors.New("validation failed"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, shouldReportDeploymentError(tt.err))
 		})
 	}
 }
