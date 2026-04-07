@@ -115,7 +115,7 @@ func New(repoURL, branch, localPath string, auth AuthProvider) *Poller {
 // NewWithToken creates a poller that uses a direct token value for HTTP authentication.
 // The token takes precedence over a token file path.
 func NewWithToken(repoURL, branch, localPath, token string) *Poller {
-	return New(repoURL, branch, localPath, newTokenAuthForRepo(repoURL, token))
+	return New(repoURL, branch, localPath, NewStaticTokenAuth(repoURL, token))
 }
 
 // Init opens an existing clone or clones fresh.
@@ -216,7 +216,9 @@ func (p *Poller) headSHA() (string, error) {
 	return ref.Hash().String(), nil
 }
 
-func newTokenAuthForRepo(repoURL, token string) AuthProvider {
+// NewStaticTokenAuth creates an AuthProvider for a direct token value.
+// For SSH repo URLs it falls back to SSH agent auth.
+func NewStaticTokenAuth(repoURL, token string) AuthProvider {
 	if IsSSHURL(repoURL) {
 		return NewSSHAgentAuth(repoURL)
 	}

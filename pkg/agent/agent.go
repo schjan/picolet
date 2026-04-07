@@ -72,13 +72,13 @@ type Agent struct {
 	opReader      resolver.OpSecretReader // nil when 1Password not configured; initialized in Run
 	lastOPRefresh time.Time               // zero = never refreshed; in-memory only (restart always re-fetches)
 
-	webhookCh          chan struct{}
-	ready              atomic.Bool
-	paused             atomic.Bool // set by MQTT pause subscription
-	seededSuccessfulAt atomic.Bool // guards one-time gauge seed from persisted state
-	mqttClient         MQTTClient  // nil when MQTT not configured
-	deployReporter     DeploymentReporter // nil when GitHub App not configured
-	authProvider       gitpoll.AuthProvider // nil = use default SSH/token logic
+	webhookCh                 chan struct{}
+	ready                     atomic.Bool
+	paused                    atomic.Bool          // set by MQTT pause subscription
+	seededSuccessfulAt        atomic.Bool          // guards one-time gauge seed from persisted state
+	mqttClient                MQTTClient           // nil when MQTT not configured
+	deployReporter            DeploymentReporter   // nil when GitHub App not configured
+	authProvider              gitpoll.AuthProvider // nil = use default SSH/token logic
 	consecutiveHealthFailures atomic.Int32
 }
 
@@ -190,7 +190,23 @@ func (a *Agent) Run(ctx context.Context) error {
 	// Initialize git poller
 	auth := a.authProvider
 	if auth == nil {
-		if gitpoll.IsSSHURL(a.cfg.RepoURL) {
+		if a.opReader != nil && a.cfg.OnePassword != nil && a.cfg.OnePassword.GitTokenRef != "" {
+			// NOTE: The git token is resolved once at startup. If the underlying 1Password
+			// secret changes (e.g., GitHub PAT rotation), a picolet restart is required.
+			// The OP refresh cycle re-fetches secrets in assignments but does NOT refresh
+			// the git token.
+			ref := a.cfg.OnePassword.GitTokenRef
+			results, err := a.opReader(ctx, []string{ref})
+			if err != nil {
+				return fmt.Errorf("resolving git token from 1password: %w", err)
+			}
+			token, ok := results[ref]
+			if !ok {
+				return fmt.Errorf("resolving git token from 1password: ref %q not in response", ref)
+			}
+			slog.Info("git token resolved from 1password")
+			auth = gitpoll.NewStaticTokenAuth(a.cfg.RepoURL, token)
+		} else if gitpoll.IsSSHURL(a.cfg.RepoURL) {
 			auth = gitpoll.NewSSHAgentAuth(a.cfg.RepoURL)
 		} else {
 			auth = gitpoll.NewTokenFileAuth(a.cfg.GitTokenPath)

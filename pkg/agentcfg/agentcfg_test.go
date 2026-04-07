@@ -215,6 +215,58 @@ github_private_key_path: /etc/picolet/secrets/github-app.pem
 			wantErr: "github_app_id must be positive",
 		},
 		{
+			name: "github app refs via onepassword valid",
+			content: `
+hostname: rpi5-1
+onepassword:
+  token_path: /etc/picolet/op-token
+  github_app_id_ref: "op://vault/app/id"
+  github_installation_id_ref: "op://vault/app/installation_id"
+  github_private_key_ref: "op://vault/app/private_key"
+`,
+			want: Config{ //nolint:gosec // test fixture, not real credentials
+				Hostname:     "rpi5-1",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				SystemdUser:  new(false),
+				OnePassword: &OnePasswordConfig{
+					TokenPath:             "/etc/picolet/op-token",
+					RefreshInterval:       6 * time.Hour,
+					GitHubAppIDRef:        "op://vault/app/id",
+					GitHubInstallationRef: "op://vault/app/installation_id",
+					GitHubPrivateKeyRef:   "op://vault/app/private_key",
+				},
+			},
+		},
+		{
+			name: "github app refs partial rejected",
+			content: `
+hostname: rpi5-1
+onepassword:
+  token_path: /etc/picolet/op-token
+  github_app_id_ref: "op://vault/app/id"
+`,
+			wantErr: "all onepassword github app refs must be set together",
+		},
+		{
+			name: "github app refs and direct fields mutually exclusive",
+			content: `
+hostname: rpi5-1
+github_app_id: 12345
+github_installation_id: 67890
+github_private_key_path: /etc/picolet/secrets/github-app.pem
+onepassword:
+  token_path: /etc/picolet/op-token
+  github_app_id_ref: "op://vault/app/id"
+  github_installation_id_ref: "op://vault/app/installation_id"
+  github_private_key_ref: "op://vault/app/private_key"
+`,
+			wantErr: "mutually exclusive",
+		},
+		{
 			name: "onepassword config",
 			content: `
 hostname: rpi5-1

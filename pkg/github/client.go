@@ -22,17 +22,21 @@ type Client struct {
 
 // NewClient creates a GitHub App client from a PEM key file.
 func NewClient(appID, installationID int64, privateKeyPath, repoURL string) (*Client, error) {
+	keyData, err := os.ReadFile(privateKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading private key %s: %w", privateKeyPath, err)
+	}
+	return NewClientFromPEM(appID, installationID, keyData, repoURL)
+}
+
+// NewClientFromPEM creates a GitHub App client from PEM key data.
+func NewClientFromPEM(appID, installationID int64, privateKeyPEM []byte, repoURL string) (*Client, error) {
 	owner, repo, err := ParseRepoURL(repoURL)
 	if err != nil {
 		return nil, fmt.Errorf("parsing repo URL: %w", err)
 	}
 
-	keyData, err := os.ReadFile(privateKeyPath)
-	if err != nil {
-		return nil, fmt.Errorf("reading private key %s: %w", privateKeyPath, err)
-	}
-
-	itr, err := ghinstallation.New(http.DefaultTransport, appID, installationID, keyData)
+	itr, err := ghinstallation.New(http.DefaultTransport, appID, installationID, privateKeyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("creating GitHub App transport: %w", err)
 	}

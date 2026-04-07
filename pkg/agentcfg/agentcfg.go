@@ -23,31 +23,34 @@ type MQTTConfig struct {
 
 // OnePasswordConfig holds 1Password SDK settings.
 type OnePasswordConfig struct {
-	TokenPath       string        `yaml:"token_path"`       // file path to service account token
-	RefreshInterval time.Duration `yaml:"refresh_interval"` // how often to re-fetch op:// secrets (default 6h)
-	GitTokenRef     string        `yaml:"git_token_ref"`    // op:// ref for git pull token; replaces git_token_path
+	TokenPath             string        `yaml:"token_path"`                 // file path to service account token
+	RefreshInterval       time.Duration `yaml:"refresh_interval"`           // how often to re-fetch op:// secrets (default 6h)
+	GitTokenRef           string        `yaml:"git_token_ref"`              // op:// ref for git pull token; replaces git_token_path
+	GitHubAppIDRef        string        `yaml:"github_app_id_ref"`          // op:// ref for GitHub App ID
+	GitHubInstallationRef string        `yaml:"github_installation_id_ref"` // op:// ref for GitHub installation ID
+	GitHubPrivateKeyRef   string        `yaml:"github_private_key_ref"`     // op:// ref for GitHub App PEM private key
 }
 
 // Config holds the agent runtime configuration from /etc/picolet/config.yml.
 type Config struct {
-	Hostname          string             `yaml:"hostname"`
-	RepoURL           string             `yaml:"repo_url"`
-	RepoBranch        string             `yaml:"repo_branch"`
-	GitTokenPath      string             `yaml:"git_token_path"`
-	PollInterval      time.Duration      `yaml:"poll_interval"`
-	MetricsPort       int                `yaml:"metrics_port"`
-	SecretsDir        string             `yaml:"secrets_dir"`
-	Rootless          bool               `yaml:"rootless"`
-	SystemdUser       *bool              `yaml:"systemd_user"`
-	PodmanSocket      string             `yaml:"podman_socket"`
-	WebhookSecretPath string             `yaml:"webhook_secret_path"`
-	RepoSubDir        string             `yaml:"repo_sub_dir"` // optional subdirectory within the repo to use as fleet root (monorepo support)
-	DataDir           string             `yaml:"data_dir"`     // optional override for state file directory; used by apply/down commands
-	MQTT              *MQTTConfig        `yaml:"mqtt"`
-	OnePassword       *OnePasswordConfig `yaml:"onepassword"`
-	GitHubAppID          int64         `yaml:"github_app_id"`
-	GitHubInstallationID int64         `yaml:"github_installation_id"`
-	GitHubPrivateKeyPath string        `yaml:"github_private_key_path"`
+	Hostname             string             `yaml:"hostname"`
+	RepoURL              string             `yaml:"repo_url"`
+	RepoBranch           string             `yaml:"repo_branch"`
+	GitTokenPath         string             `yaml:"git_token_path"`
+	PollInterval         time.Duration      `yaml:"poll_interval"`
+	MetricsPort          int                `yaml:"metrics_port"`
+	SecretsDir           string             `yaml:"secrets_dir"`
+	Rootless             bool               `yaml:"rootless"`
+	SystemdUser          *bool              `yaml:"systemd_user"`
+	PodmanSocket         string             `yaml:"podman_socket"`
+	WebhookSecretPath    string             `yaml:"webhook_secret_path"`
+	RepoSubDir           string             `yaml:"repo_sub_dir"` // optional subdirectory within the repo to use as fleet root (monorepo support)
+	DataDir              string             `yaml:"data_dir"`     // optional override for state file directory; used by apply/down commands
+	MQTT                 *MQTTConfig        `yaml:"mqtt"`
+	OnePassword          *OnePasswordConfig `yaml:"onepassword"`
+	GitHubAppID          int64              `yaml:"github_app_id"`
+	GitHubInstallationID int64              `yaml:"github_installation_id"`
+	GitHubPrivateKeyPath string             `yaml:"github_private_key_path"`
 }
 
 // Load reads and parses the agent config from disk.
@@ -149,25 +152,71 @@ func (c *Config) validateOnePassword() error {
 			return errors.New("git_token_path and onepassword.git_token_ref are mutually exclusive")
 		}
 	}
-	return nil
-}
-func (c *Config) validateGitHubApp() error {
-	fields := [3]bool{c.GitHubAppID != 0, c.GitHubInstallationID != 0, c.GitHubPrivateKeyPath != ""}
-	set := 0
-	for _, f := range fields {
-		if f {
-			set++
+	if c.OnePassword.GitHubAppIDRef != "" {
+		if _, err := op.ParseOpRef(c.OnePassword.GitHubAppIDRef); err != nil {
+			return fmt.Errorf("onepassword.github_app_id_ref: %w", err)
 		}
 	}
-	if set == 0 {
+	if c.OnePassword.GitHubInstallationRef != "" {
+		if _, err := op.ParseOpRef(c.OnePassword.GitHubInstallationRef); err != nil {
+			return fmt.Errorf("onepassword.github_installation_id_ref: %w", err)
+		}
+	}
+	if c.OnePassword.GitHubPrivateKeyRef != "" {
+		if _, err := op.ParseOpRef(c.OnePassword.GitHubPrivateKeyRef); err != nil {
+			return fmt.Errorf("onepassword.github_private_key_ref: %w", err)
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateGitHubApp() error {
+	direct := [3]bool{c.GitHubAppID != 0, c.GitHubInstallationID != 0, c.GitHubPrivateKeyPath != ""}
+	directSet := 0
+	for _, f := range direct {
+		if f {
+			directSet++
+		}
+	}
+
+	refSet := 0
+	if c.OnePassword != nil {
+		refFields := [3]bool{
+			c.OnePassword.GitHubAppIDRef != "",
+			c.OnePassword.GitHubInstallationRef != "",
+			c.OnePassword.GitHubPrivateKeyRef != "",
+		}
+		for _, f := range refFields {
+			if f {
+				refSet++
+			}
+		}
+	}
+
+	if directSet == 0 && refSet == 0 {
 		return nil
 	}
-	if set < len(fields) {
+
+	if directSet > 0 && refSet > 0 {
+		return errors.New("github app direct fields and onepassword github app refs are mutually exclusive")
+	}
+
+	if directSet > 0 && directSet < len(direct) {
 		return errors.New("all GitHub App fields must be set together (github_app_id, github_installation_id, github_private_key_path)")
 	}
+
+	if refSet > 0 && refSet < 3 {
+		return errors.New("all onepassword github app refs must be set together (onepassword.github_app_id_ref, onepassword.github_installation_id_ref, onepassword.github_private_key_ref)")
+	}
+
 	if c.GitTokenPath != "" {
 		return errors.New("github_app_id and git_token_path are mutually exclusive")
 	}
+
+	if directSet == 0 {
+		return nil
+	}
+
 	if c.GitHubAppID <= 0 {
 		return errors.New("github_app_id must be positive")
 	}
@@ -179,5 +228,13 @@ func (c *Config) validateGitHubApp() error {
 
 // HasGitHubApp reports whether GitHub App authentication is configured.
 func (c *Config) HasGitHubApp() bool {
-	return c.GitHubAppID != 0 && c.GitHubInstallationID != 0 && c.GitHubPrivateKeyPath != ""
+	return (c.GitHubAppID != 0 && c.GitHubInstallationID != 0 && c.GitHubPrivateKeyPath != "") || c.HasGitHubAppRefs()
+}
+
+// HasGitHubAppRefs reports whether GitHub App credentials are configured via 1Password refs.
+func (c *Config) HasGitHubAppRefs() bool {
+	if c.OnePassword == nil {
+		return false
+	}
+	return c.OnePassword.GitHubAppIDRef != "" && c.OnePassword.GitHubInstallationRef != "" && c.OnePassword.GitHubPrivateKeyRef != ""
 }
