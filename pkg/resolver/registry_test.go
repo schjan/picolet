@@ -94,6 +94,26 @@ func TestConcatFilesNewlineSeparatorInjection(t *testing.T) {
 	assert.False(t, strings.HasSuffix(out, "\n"))
 }
 
+func TestConcatFilesNoPatternsError(t *testing.T) {
+	t.Parallel()
+
+	_, err := concatFilesFunc(fstest.MapFS{}, []string{}...)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "at least one pattern is required")
+}
+
+func TestConcatFilesEmptyMatchError(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fragments/one.yml": &fstest.MapFile{Data: []byte("one")},
+	}
+
+	_, err := concatFilesFunc(fsys, "fragments/*.txt")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, `glob "fragments/*.txt": no files matched`)
+}
+
 func TestNindentSemantics(t *testing.T) {
 	t.Parallel()
 
