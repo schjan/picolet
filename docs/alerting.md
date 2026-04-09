@@ -42,3 +42,43 @@ groups:
           summary: "picolet has gated a SHA after 3 consecutive failures"
           description: "The current git HEAD has failed reconciliation 3+ times and is permanently skipped until a new commit arrives."
 ```
+
+## Split Rules Across Multiple Files
+
+Use one secret template that aggregates many rule fragments from the repo.
+
+```yaml
+# secrets/static_alert_rules.yml.tmpl
+groups:{{ concatFiles "rules/static_alert_rules/*.yml" | nindent 2 }}
+```
+
+```yaml
+# rules/static_alert_rules/instance_alerts.yml
+- name: instance_alerts
+  rules:
+    - alert: InstanceDown
+      expr: up == 0
+      for: 5m
+```
+
+Behavior notes:
+
+- `glob` / `concatFiles` resolve files in lexical order.
+- Empty glob matches are validation errors.
+- `concatFiles` reads files raw and does not render nested templates, so expressions like `{{ $labels.instance }}` pass through.
+- Keep rule fragments unindented and let the template own indentation with `nindent`.
+- Picolet validates rendered YAML syntax, but backend-specific semantic checks (`promtool`, `vmalert` tooling, etc.) should run in fleet CI.
+
+## Migration From Monolithic Rules
+
+You can keep the same secret assignment and migrate incrementally:
+
+1. Keep the existing secret file name (for example `secrets/prometheus_rules.yml.tmpl`).
+2. Replace monolithic inline groups with `concatFiles`:
+
+```yaml
+groups:{{ concatFiles "rules/prometheus/*.yml" | nindent 2 }}
+```
+
+3. Move each alert group into its own file under `rules/prometheus/`.
+4. Keep backend-specific semantic checks in fleet CI (Prometheus, VictoriaMetrics/vmalert, etc.).

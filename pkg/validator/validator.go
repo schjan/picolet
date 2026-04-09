@@ -9,10 +9,13 @@ import (
 	"strings"
 
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
+	"go.yaml.in/yaml/v4"
 
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/resolver"
 )
+
+const unresolvedSecretPlaceholder = "<secret>"
 
 // ValidateFiles validates a set of already-resolved files.
 // rootless must match the target host's Podman mode so that quadlet conversion
@@ -67,7 +70,7 @@ func validateFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInf
 	case "systemd":
 		return validateSystemdUnit(f.DestPath, f.Content)
 	case "secret":
-		return validateSecret(f.DestPath, f.Content)
+		return validateSecret(f)
 	default:
 		slog.Warn("unknown file category, skipping validation", "category", f.Category, "path", f.SrcPath)
 		return nil
@@ -133,9 +136,43 @@ func validateSystemdUnit(path, content string) error {
 	return nil
 }
 
-func validateSecret(path, content string) error {
-	if len(strings.TrimSpace(content)) == 0 {
-		return fmt.Errorf("%s: empty secret content", path)
+func validateSecret(f resolver.ResolvedFile) error {
+	content := strings.TrimSpace(f.Content)
+	if content == "" {
+		return fmt.Errorf("%s: empty secret content", f.DestPath)
+	}
+	if !shouldValidateSecretYAML(f, content) {
+		return nil
+	}
+	if err := validateYAMLSyntax(f.DestPath, []byte(f.Content)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func shouldValidateSecretYAML(f resolver.ResolvedFile, trimmedContent string) bool {
+	if trimmedContent == unresolvedSecretPlaceholder {
+		return false
+	}
+	effectivePath := strings.TrimSuffix(strings.ToLower(f.SrcPath), ".tmpl")
+	switch filepath.Ext(effectivePath) {
+	case ".yml", ".yaml":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateYAMLSyntax(path string, content []byte) error {
+	docs, err := splitYAMLDocuments(content)
+	if err != nil {
+		return fmt.Errorf("%s: YAML parse error: %w", path, err)
+	}
+	for docIdx, doc := range docs {
+		var decoded any
+		if err := yaml.Unmarshal(doc, &decoded); err != nil {
+			return fmt.Errorf("%s: document %d: YAML parse error: %w", path, docIdx+1, err)
+		}
 	}
 	return nil
 }

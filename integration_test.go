@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/sebdah/goldie/v2"
 	"github.com/stretchr/testify/assert"
@@ -157,4 +158,106 @@ func TestIntegrationErrorPaths(t *testing.T) {
 		require.ErrorAs(t, err, &notFound)
 		assert.Equal(t, "nonexistent", notFound.Hostname)
 	})
+}
+
+func newAggregatedSecretFleetFS(ruleExpr string) fstest.MapFS {
+	return fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`base:
+  secrets:
+    - secrets/alerts.yml.tmpl
+pi_types: {}
+features: {}
+`)},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`hostname: test-host
+external_hostname: test-host.ts.net
+pi_type: node
+features: []
+`)},
+		"secrets/alerts.yml.tmpl": &fstest.MapFile{Data: []byte(`groups:{{ concatFiles "rules/*.yml" | nindent 2 -}}`)},
+		"rules/instance.yml": &fstest.MapFile{Data: []byte(`- name: instance_alerts
+  rules:
+    - alert: InstanceDown
+      expr: ` + ruleExpr + `
+      for: 5m
+`)},
+		"rules/node.yml": &fstest.MapFile{Data: []byte(`- name: node_alerts
+  rules:
+    - alert: NodeUptimeLow
+      expr: node_time_seconds - node_boot_time_seconds < 600
+      for: 2m
+`)},
+	}
+}
+
+func TestIntegrationAggregatedSecretFragmentChangeTriggersUpdate(t *testing.T) {
+	t.Parallel()
+
+	fsysV1 := newAggregatedSecretFleetFS("up == 0")
+	cfgV1, err := config.LoadAll(fsysV1)
+	require.NoError(t, err)
+	rV1, err := resolver.New(resolver.Config{FS: fsysV1, Config: cfgV1})
+	require.NoError(t, err)
+	resolvedV1, err := rV1.ResolveHost(t.Context(), "test-host")
+	require.NoError(t, err)
+	require.NoError(t, validator.ValidateFiles(resolvedV1.Files, false))
+
+	initialState := state.NewState()
+	csV1 := reconciler.Diff(resolvedV1.Files, initialState)
+	require.Equal(t, 1, csV1.Summary[reconciler.ActionCreate])
+	for _, c := range csV1.Changes {
+		if c.Action == reconciler.ActionDelete {
+			continue
+		}
+		initialState.ManagedFiles[c.DestPath] = state.ManagedFile{Hash: c.NewHash, Category: c.Category}
+	}
+
+	fsysV2 := newAggregatedSecretFleetFS("up == 1")
+	cfgV2, err := config.LoadAll(fsysV2)
+	require.NoError(t, err)
+	rV2, err := resolver.New(resolver.Config{FS: fsysV2, Config: cfgV2})
+	require.NoError(t, err)
+	resolvedV2, err := rV2.ResolveHost(t.Context(), "test-host")
+	require.NoError(t, err)
+	require.NoError(t, validator.ValidateFiles(resolvedV2.Files, false))
+
+	v1Secret := filesByDest(resolvedV1.Files)["secret:alerts"]
+	v2Secret := filesByDest(resolvedV2.Files)["secret:alerts"]
+	assert.NotEqual(t, v1Secret.Content, v2Secret.Content, "aggregated secret content should change when one fragment changes")
+
+	csV2 := reconciler.Diff(resolvedV2.Files, initialState)
+	assert.Equal(t, 1, csV2.Summary[reconciler.ActionUpdate], "changed aggregated secret should produce update")
+}
+
+func TestIntegrationAggregatedSecretMalformedFragmentFailsValidation(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`base:
+  secrets:
+    - secrets/alerts.yml.tmpl
+pi_types: {}
+features: {}
+`)},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`hostname: test-host
+external_hostname: test-host.ts.net
+pi_type: node
+features: []
+`)},
+		"secrets/alerts.yml.tmpl": &fstest.MapFile{Data: []byte(`groups:{{ concatFiles "rules/*.yml" | nindent 2 -}}`)},
+		"rules/instance.yml":      &fstest.MapFile{Data: []byte("- name: instance_alerts\n  rules:\n    - alert: InstanceDown\n      expr: up == 0\n")},
+		"rules/invalid.yml":       &fstest.MapFile{Data: []byte("- name: invalid\n  rules:\n    - alert: Broken\n      expr: [this is broken\n")},
+	}
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := resolver.New(resolver.Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
+	require.NoError(t, err)
+
+	err = validator.ValidateFiles(resolved.Files, false)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "secret:alerts")
+	require.ErrorContains(t, err, "YAML parse error")
 }

@@ -1,7 +1,7 @@
-  - name: node_uptime_alerts
-    rules:
-      - alert: NodeUptimeLow
-        expr: node_time_seconds - node_boot_time_seconds < 600
-        for: 2m
-        annotations:
-          summary: "Node {{ $labels.instance }} restarted recently"
+- name: node_uptime_alerts
+  rules:
+    - alert: NodeUptimeLow
+      expr: node_time_seconds - node_boot_time_seconds < 600
+      for: 2m
+      annotations:
+        summary: "Node {{ $labels.instance }} restarted recently"

@@ -171,6 +171,18 @@ metadata:
 `,
 		},
 		{
+			name: "invalid second document",
+			content: `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-config
+---
+invalid: [yaml: broken
+`,
+			wantErr: true,
+			errMsg:  "document 2: YAML parse error",
+		},
+		{
 			name:    "unsupported kind",
 			content: "apiVersion: v1\nkind: Service\nmetadata:\n  name: test\n",
 			wantErr: true,
@@ -251,7 +263,8 @@ func TestValidateSystemdUnit(t *testing.T) {
 func TestSplitYAMLDocumentsLeadingSeparator(t *testing.T) {
 	t.Parallel()
 	content := []byte("---\napiVersion: v1\nkind: Pod\nmetadata:\n  name: test\n")
-	docs := splitYAMLDocuments(content)
+	docs, err := splitYAMLDocuments(content)
+	require.NoError(t, err)
 	require.Len(t, docs, 1)
 	require.Contains(t, string(docs[0]), "apiVersion: v1")
 }
@@ -259,6 +272,149 @@ func TestSplitYAMLDocumentsLeadingSeparator(t *testing.T) {
 func TestSplitYAMLDocumentsMulti(t *testing.T) {
 	t.Parallel()
 	content := []byte("---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n---\napiVersion: v1\nkind: Pod\nmetadata:\n  name: b\n")
-	docs := splitYAMLDocuments(content)
+	docs, err := splitYAMLDocuments(content)
+	require.NoError(t, err)
 	require.Len(t, docs, 2)
+}
+
+func TestValidateYAMLSyntax(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		content string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "single document",
+			content: `a:
+  b: c
+`,
+		},
+		{
+			name: "multi document",
+			content: `a: b
+---
+c: d
+`,
+		},
+		{
+			name:    "invalid second document",
+			content: "a: b\n---\ninvalid: [yaml: broken\n",
+			wantErr: true,
+			errMsg:  "document 2: YAML parse error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateYAMLSyntax("secret:test", []byte(tt.content))
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errMsg != "" {
+					require.ErrorContains(t, err, tt.errMsg)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+//nolint:funlen // table-driven validation test
+func TestValidateSecret(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		file    resolver.ResolvedFile
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "empty secret",
+			file: resolver.ResolvedFile{
+				SrcPath:  "secrets/empty.yml",
+				DestPath: "secret:empty",
+				Category: "secret",
+			},
+			wantErr: true,
+			errMsg:  "empty secret content",
+		},
+		{
+			name: "repo yaml syntax error",
+			file: resolver.ResolvedFile{
+				SrcPath:  "secrets/bad.yml",
+				DestPath: "secret:bad",
+				Category: "secret",
+				Content:  "invalid: [yaml: broken",
+			},
+			wantErr: true,
+			errMsg:  "YAML parse error",
+		},
+		{
+			name: "templated yaml syntax error",
+			file: resolver.ResolvedFile{
+				SrcPath:  "secrets/bad.yaml.tmpl",
+				DestPath: "secret:bad_template",
+				Category: "secret",
+				Content:  "invalid: [yaml: broken",
+			},
+			wantErr: true,
+			errMsg:  "YAML parse error",
+		},
+		{
+			name: "placeholder host-only yaml is skipped",
+			file: resolver.ResolvedFile{
+				SrcPath:  "secrets/host_only.yml",
+				DestPath: "secret:host_only",
+				Category: "secret",
+				Content:  "<secret>",
+			},
+		},
+		{
+			name: "non-yaml secret only checks non-empty",
+			file: resolver.ResolvedFile{
+				SrcPath:  "secrets/token.txt",
+				DestPath: "secret:token",
+				Category: "secret",
+				Content:  "token=abc",
+			},
+		},
+		{
+			name: "op secret stays out of yaml validation",
+			file: resolver.ResolvedFile{
+				SrcPath:  "op://vault/item/field",
+				DestPath: "secret:item_field",
+				Category: "secret",
+				Content:  "invalid: [yaml: broken",
+			},
+		},
+		{
+			name: "valid yaml secret passes",
+			file: resolver.ResolvedFile{
+				SrcPath:  "secrets/good.yml",
+				DestPath: "secret:good",
+				Category: "secret",
+				Content:  "a:\n  b: c\n",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateSecret(tt.file)
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errMsg != "" {
+					require.ErrorContains(t, err, tt.errMsg)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }
