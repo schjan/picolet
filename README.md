@@ -182,13 +182,17 @@ Available data: `.Host` (hostname, pi_type, features), `.Images`, `.Ports`, `.Fl
 Use this when runtime expects one file but you want many repo fragments. Example:
 
 ```yaml
-groups:{{ concatFiles "rules/vmalert/*.yml" | nindent 0 }}
+groups:{{ concatFiles "rules/vmalert/*.yml" | nindent 2 }}
 ```
+
+Keep fragments unindented (`- name: ...`) and let the template handle indentation with `nindent`.
 
 `concatFiles` is intentionally raw-only (it does not auto-render matched `.tmpl` files). If you need rendered fragments, use `glob`, iterate, and call `renderTemplate` explicitly in your template.
 
 ### Validation
 
 All files are validated before deployment: quadlet files via Podman's own `quadlet.Convert*()`, K8s manifests via strict unmarshalling into `k8s.io/api` types, systemd units structurally, and templates at render time (`missingkey=error`).
+
+Secrets always require non-empty content. Repo-backed YAML secrets (`.yml` / `.yaml`, including `.tmpl`) are also syntax-validated after template rendering. External placeholder secrets in repo-only validation mode are skipped for YAML syntax checks.
 
 Run `./picolet validate` in CI to catch errors before pushing.

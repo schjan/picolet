@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 
 	"go.yaml.in/yaml/v4"
 	appsv1 "k8s.io/api/apps/v1"
@@ -35,39 +36,43 @@ type k8sMeta struct {
 func validateManifest(path string, content []byte) error {
 	var errs []error
 
-	docs := splitYAMLDocuments(content)
+	docs, err := splitYAMLDocuments(content)
+	if err != nil {
+		return fmt.Errorf("%s: YAML parse error: %w", path, err)
+	}
 	if len(docs) == 0 {
 		return fmt.Errorf("%s: empty manifest (no YAML documents)", path)
 	}
 
 	for docIdx, doc := range docs {
+		docNum := docIdx + 1
 		// First pass: extract kind for dispatch
 		var meta k8sMeta
 		if err := yaml.Unmarshal(doc, &meta); err != nil {
-			errs = append(errs, fmt.Errorf("%s: document %d: YAML parse error: %w", path, docIdx, err))
+			errs = append(errs, fmt.Errorf("%s: document %d: YAML parse error: %w", path, docNum, err))
 			continue
 		}
 
 		if meta.Kind == "" {
-			errs = append(errs, fmt.Errorf("%s: document %d: missing 'kind' field", path, docIdx))
+			errs = append(errs, fmt.Errorf("%s: document %d: missing 'kind' field", path, docNum))
 			continue
 		}
 		if meta.APIVersion == "" {
-			errs = append(errs, fmt.Errorf("%s: document %d: missing 'apiVersion' field", path, docIdx))
+			errs = append(errs, fmt.Errorf("%s: document %d: missing 'apiVersion' field", path, docNum))
 		}
 		if meta.Metadata.Name == "" {
-			errs = append(errs, fmt.Errorf("%s: document %d: missing 'metadata.name' field", path, docIdx))
+			errs = append(errs, fmt.Errorf("%s: document %d: missing 'metadata.name' field", path, docNum))
 		}
 
 		if !supportedKinds[meta.Kind] {
-			errs = append(errs, fmt.Errorf("%s: document %d: kind %q not supported by podman kube play", path, docIdx, meta.Kind))
+			errs = append(errs, fmt.Errorf("%s: document %d: kind %q not supported by podman kube play", path, docNum, meta.Kind))
 			continue
 		}
 
 		// Second pass: unmarshal into real K8s types for schema validation.
 		// sigs.k8s.io/yaml handles the json struct tags used by K8s types.
 		if err := unmarshalK8sType(meta.Kind, doc); err != nil {
-			errs = append(errs, fmt.Errorf("%s: document %d: %s: %w", path, docIdx, meta.Kind, err))
+			errs = append(errs, fmt.Errorf("%s: document %d: %s: %w", path, docNum, meta.Kind, err))
 		}
 	}
 
@@ -101,17 +106,21 @@ func unmarshalK8sType(kind string, doc []byte) error {
 }
 
 // splitYAMLDocuments splits a multi-document YAML file on "---" separators.
-func splitYAMLDocuments(content []byte) [][]byte {
+// Reader-level errors are returned so callers don't silently skip malformed input.
+func splitYAMLDocuments(content []byte) ([][]byte, error) {
 	reader := k8syaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(content)))
 	var docs [][]byte
 	for {
 		doc, err := reader.Read()
 		if err != nil {
-			break // io.EOF or parse error
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
 		}
 		if len(bytes.TrimSpace(doc)) > 0 {
 			docs = append(docs, doc)
 		}
 	}
-	return docs
+	return docs, nil
 }
