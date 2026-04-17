@@ -3,6 +3,7 @@ package resolver
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"maps"
@@ -462,7 +463,7 @@ ListenStream=8080
 }
 
 //nolint:funlen // table-driven collision matrix is intentionally explicit
-func TestResolveHostCrossSourceCollision(t *testing.T) {
+func TestResolveHostCollision(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -473,7 +474,7 @@ func TestResolveHostCrossSourceCollision(t *testing.T) {
 		wantSources     []string
 	}{
 		{
-			name: "quadlet",
+			name: "cross-source quadlet",
 			assignmentsYAML: `
 base:
   services:
@@ -506,7 +507,7 @@ WantedBy=default.target
 			},
 		},
 		{
-			name: "systemd",
+			name: "cross-source systemd",
 			assignmentsYAML: `
 base:
   services:
@@ -527,7 +528,7 @@ features: {}
 			},
 		},
 		{
-			name: "manifest",
+			name: "cross-source manifest",
 			assignmentsYAML: `
 base:
   services:
@@ -548,7 +549,7 @@ features: {}
 			},
 		},
 		{
-			name: "secret",
+			name: "cross-source secret",
 			assignmentsYAML: `
 base:
   services:
@@ -566,6 +567,82 @@ features: {}
 			wantSources: []string{
 				"secrets/config.yaml",
 				"services/web/secrets/config.yml",
+			},
+		},
+		{
+			name: "within-bundle quadlet tmpl variant",
+			assignmentsYAML: `
+base:
+  services:
+    - web
+pi_types: {}
+features: {}
+`,
+			files: fstest.MapFS{
+				"services/web/containers/web.container":      &fstest.MapFile{Data: []byte("[Container]\nImage=a\nContainerName=web\n")},
+				"services/web/containers/web.container.tmpl": &fstest.MapFile{Data: []byte("[Container]\nImage=b\nContainerName=web\n")},
+			},
+			wantDest: "/etc/containers/systemd/picolet/web.container",
+			wantSources: []string{
+				"services/web/containers/web.container",
+				"services/web/containers/web.container.tmpl",
+			},
+		},
+		{
+			name: "within-bundle cross-category quadlet",
+			assignmentsYAML: `
+base:
+  services:
+    - web
+pi_types: {}
+features: {}
+`,
+			files: fstest.MapFS{
+				"services/web/containers/web.container": &fstest.MapFile{Data: []byte("[Container]\nImage=a\nContainerName=web\n")},
+				"services/web/volumes/web.container":    &fstest.MapFile{Data: []byte("[Volume]\n")},
+			},
+			wantDest: "/etc/containers/systemd/picolet/web.container",
+			wantSources: []string{
+				"services/web/containers/web.container",
+				"services/web/volumes/web.container",
+			},
+		},
+		{
+			name: "within-bundle secret extension",
+			assignmentsYAML: `
+base:
+  services:
+    - web
+pi_types: {}
+features: {}
+`,
+			files: fstest.MapFS{
+				"services/web/secrets/config.yml":  &fstest.MapFile{Data: []byte("a: 1\n")},
+				"services/web/secrets/config.yaml": &fstest.MapFile{Data: []byte("a: 2\n")},
+			},
+			wantDest: "secret:config",
+			wantSources: []string{
+				"services/web/secrets/config.yaml",
+				"services/web/secrets/config.yml",
+			},
+		},
+		{
+			name: "within-bundle manifest tmpl variant",
+			assignmentsYAML: `
+base:
+  services:
+    - web
+pi_types: {}
+features: {}
+`,
+			files: fstest.MapFS{
+				"services/web/manifests/app/deployment.yml":      &fstest.MapFile{Data: []byte("kind: ConfigMap\n")},
+				"services/web/manifests/app/deployment.yml.tmpl": &fstest.MapFile{Data: []byte("kind: Secret\n")},
+			},
+			wantDest: "/var/lib/picolet/manifests/app/deployment.yml",
+			wantSources: []string{
+				"services/web/manifests/app/deployment.yml",
+				"services/web/manifests/app/deployment.yml.tmpl",
 			},
 		},
 	}
@@ -591,12 +668,58 @@ features: []
 			require.NoError(t, err)
 
 			_, err = r.ResolveHost(t.Context(), "test-host")
+			require.ErrorContains(t, err, "destination collision")
 			require.ErrorContains(t, err, tt.wantDest)
 			for _, src := range tt.wantSources {
 				assert.ErrorContains(t, err, src)
 			}
 		})
 	}
+}
+
+// TestResolveHostCollisionFastFail pins the regression: a collision must be
+// detected before any 1Password SDK call fires. If the pre-render collision
+// check is ever moved back behind template rendering, the op reader would be
+// invoked and fail this test.
+func TestResolveHostCollisionFastFail(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base:
+  services:
+    - web
+  secrets:
+    - secrets/config.yaml
+pi_types: {}
+features: {}
+`)},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: test-host
+external_hostname: test-host.example.net
+pi_type: node
+features: []
+`)},
+		"services/web/secrets/config.yml": &fstest.MapFile{Data: []byte("a: 1\n")},
+		"secrets/config.yaml":             &fstest.MapFile{Data: []byte("a: 2\n")},
+	}
+
+	readerCalled := false
+	reader := func(_ context.Context, _ []string) (map[string]string, error) {
+		readerCalled = true
+		t.Fatal("1Password reader must not be called when a destination collision is detectable")
+		return nil, errors.New("unreachable")
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg, OpSecretReader: reader})
+	require.NoError(t, err)
+
+	_, err = r.ResolveHost(t.Context(), "test-host")
+	require.ErrorContains(t, err, "destination collision")
+	assert.False(t, readerCalled, "1Password reader must not be invoked on collision")
 }
 
 func TestResolveHostLegacyAssignmentsUnchanged(t *testing.T) {

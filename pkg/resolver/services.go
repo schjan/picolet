@@ -49,24 +49,9 @@ type expandedBundles struct {
 	Manifests  []manifestRef
 }
 
-func sortedUniqueStrings(values []string) []string {
+// sortedUnique returns a sorted copy with duplicates removed.
+func sortedUnique(values []string) []string {
 	return slices.Compact(slices.Sorted(slices.Values(values)))
-}
-
-func collisionKey(srcPath, category, logicalPath string) string {
-	switch category {
-	case "container", "volume", "network", "kube":
-		return "quadlet/" + destFilename(srcPath)
-	case "systemd":
-		return "systemd/" + destFilename(srcPath)
-	case "manifest":
-		return "manifest/" + strings.TrimSuffix(logicalPath, ".tmpl")
-	case "secret":
-		filename := destFilename(srcPath)
-		return "secret/" + strings.TrimSuffix(filename, path.Ext(filename))
-	default:
-		return category + "/" + destFilename(srcPath)
-	}
 }
 
 func expandServiceBundles(fsys fs.FS, services []string) (*expandedBundles, error) {
@@ -82,12 +67,12 @@ func expandServiceBundles(fsys fs.FS, services []string) (*expandedBundles, erro
 		expanded.append(bundle)
 	}
 
-	expanded.Networks = sortedUniqueStrings(expanded.Networks)
-	expanded.Systemd = sortedUniqueStrings(expanded.Systemd)
-	expanded.Volumes = sortedUniqueStrings(expanded.Volumes)
-	expanded.Containers = sortedUniqueStrings(expanded.Containers)
-	expanded.Kube = sortedUniqueStrings(expanded.Kube)
-	expanded.Secrets = sortedUniqueStrings(expanded.Secrets)
+	expanded.Networks = sortedUnique(expanded.Networks)
+	expanded.Systemd = sortedUnique(expanded.Systemd)
+	expanded.Volumes = sortedUnique(expanded.Volumes)
+	expanded.Containers = sortedUnique(expanded.Containers)
+	expanded.Kube = sortedUnique(expanded.Kube)
+	expanded.Secrets = sortedUnique(expanded.Secrets)
 	slices.SortFunc(expanded.Manifests, func(a, b manifestRef) int {
 		if diff := cmp.Compare(a.LogicalPath, b.LogicalPath); diff != 0 {
 			return diff
@@ -117,11 +102,12 @@ func expandServiceBundle(fsys fs.FS, service string) (*expandedBundles, error) {
 		}
 	}
 
-	if bundle.fileCount() == 0 {
+	// Only emit "empty" when the root itself is clean; root-level errors already
+	// explain why the bundle has no usable entries.
+	if bundle.fileCount() == 0 && len(rootErrs) == 0 {
 		errs = append(errs, fmt.Errorf("%s: empty service bundle", root))
 	}
 
-	errs = append(errs, bundle.validateConflicts()...)
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
@@ -166,9 +152,6 @@ func collectBundleSubdirs(root string, entries []fs.DirEntry) ([]bundleSubdir, [
 		valid = append(valid, subdir)
 	}
 
-	slices.SortFunc(valid, func(a, b bundleSubdir) int {
-		return cmp.Compare(a.Subdir, b.Subdir)
-	})
 	return valid, errs
 }
 
@@ -182,7 +165,7 @@ func (b *expandedBundles) append(other *expandedBundles) {
 	b.Manifests = append(b.Manifests, other.Manifests...)
 }
 
-func (b *expandedBundles) addPath(category, srcPath string) {
+func (b *expandedBundles) addPath(category, srcPath string) error {
 	switch category {
 	case "network":
 		b.Networks = append(b.Networks, srcPath)
@@ -196,36 +179,15 @@ func (b *expandedBundles) addPath(category, srcPath string) {
 		b.Kube = append(b.Kube, srcPath)
 	case "secret":
 		b.Secrets = append(b.Secrets, srcPath)
+	default:
+		return fmt.Errorf("resolver: unknown bundle category %q", category)
 	}
+	return nil
 }
 
 func (b *expandedBundles) fileCount() int {
 	return len(b.Networks) + len(b.Systemd) + len(b.Volumes) +
 		len(b.Containers) + len(b.Kube) + len(b.Secrets) + len(b.Manifests)
-}
-
-func (b *expandedBundles) validateConflicts() []error {
-	collisions := make(map[string][]string)
-	addCollisionPaths(collisions, "network", b.Networks)
-	addCollisionPaths(collisions, "systemd", b.Systemd)
-	addCollisionPaths(collisions, "volume", b.Volumes)
-	addCollisionPaths(collisions, "container", b.Containers)
-	addCollisionPaths(collisions, "kube", b.Kube)
-	addCollisionPaths(collisions, "secret", b.Secrets)
-	for _, manifest := range b.Manifests {
-		key := collisionKey(manifest.SrcPath, "manifest", manifest.LogicalPath)
-		collisions[key] = append(collisions[key], manifest.SrcPath)
-	}
-
-	var errs []error
-	for key, srcPaths := range collisions {
-		uniquePaths := sortedUniqueStrings(srcPaths)
-		if len(uniquePaths) < 2 {
-			continue
-		}
-		errs = append(errs, fmt.Errorf("bundle conflict for %s: %s", key, strings.Join(uniquePaths, ", ")))
-	}
-	return errs
 }
 
 func (b *expandedBundles) readSubdir(fsys fs.FS, service string, subdir bundleSubdir) error {
@@ -236,13 +198,6 @@ func (b *expandedBundles) readSubdir(fsys fs.FS, service string, subdir bundleSu
 	return b.readFlatSubdir(fsys, root, subdir.Category)
 }
 
-func addCollisionPaths(collisions map[string][]string, category string, srcPaths []string) {
-	for _, srcPath := range srcPaths {
-		key := collisionKey(srcPath, category, "")
-		collisions[key] = append(collisions[key], srcPath)
-	}
-}
-
 func (b *expandedBundles) readManifestSubdir(fsys fs.FS, root, service string) error {
 	return fs.WalkDir(fsys, root, func(walkPath string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -251,11 +206,8 @@ func (b *expandedBundles) readManifestSubdir(fsys fs.FS, root, service string) e
 		if walkPath == root || d.IsDir() {
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil {
-			return fmt.Errorf("stat %s: %w", walkPath, err)
-		}
-		if !info.Mode().IsRegular() {
+		// d.Type() returns only mode-type bits; a symlink has ModeSymlink set and fails IsRegular().
+		if !d.Type().IsRegular() {
 			return fmt.Errorf("%s: expected regular file", walkPath)
 		}
 		b.Manifests = append(b.Manifests, manifestRef{
@@ -278,16 +230,13 @@ func (b *expandedBundles) readFlatSubdir(fsys fs.FS, root, category string) erro
 			errs = append(errs, fmt.Errorf("%s: unsupported nesting", entryPath))
 			continue
 		}
-		info, err := entry.Info()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("stat %s: %w", entryPath, err))
-			continue
-		}
-		if !info.Mode().IsRegular() {
+		if !entry.Type().IsRegular() {
 			errs = append(errs, fmt.Errorf("%s: expected regular file", entryPath))
 			continue
 		}
-		b.addPath(category, entryPath)
+		if err := b.addPath(category, entryPath); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", entryPath, err))
+		}
 	}
 	return errors.Join(errs...)
 }

@@ -127,8 +127,9 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}
 
-	fileSet := r.cfg.Assignments.Resolve(host)
-	manifestRefs, err := r.expandFileSet(fileSet)
+	// Fail fast on destination collisions before paying for template rendering
+	// or 1Password SDK calls. DestPath is knowable from the file layout alone.
+	fileSet, manifestRefs, err := r.expandAndValidate(r.cfg.Assignments.Resolve(host))
 	if err != nil {
 		return nil, err
 	}
@@ -153,9 +154,6 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 	if err != nil {
 		return nil, err
 	}
-	if err := detectCollisions(files); err != nil {
-		return nil, err
-	}
 
 	return &ResolvedHost{
 		Hostname: hostname,
@@ -176,25 +174,123 @@ func (r *Resolver) ResolveAll(ctx context.Context) (map[string]*ResolvedHost, er
 	return results, nil
 }
 
-func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) ([]manifestRef, error) {
+// expandAndValidate expands service bundles into the file set and fails fast
+// if any two sources resolve to the same destination path.
+func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []manifestRef, error) {
+	merged, manifestRefs, err := r.expandFileSet(fileSet)
+	if err != nil {
+		return nil, nil, err
+	}
+	skeletons, err := r.buildFileSkeletons(merged, manifestRefs)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := detectCollisions(skeletons); err != nil {
+		return nil, nil, err
+	}
+	return merged, manifestRefs, nil
+}
+
+// expandFileSet returns a new ResolvedFileSet merged with any service bundles,
+// plus the full list of manifest refs (legacy + bundled). The input fileSet is
+// not mutated. The returned fileSet.Services is carried through unchanged but
+// has no semantic meaning after expansion — the expansion already flattened it
+// into the other category slices.
+func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []manifestRef, error) {
 	expanded, err := expandServiceBundles(r.fsys, fileSet.Services)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	fileSet.Networks = sortedUniqueStrings(append(fileSet.Networks, expanded.Networks...))
-	fileSet.Systemd = sortedUniqueStrings(append(fileSet.Systemd, expanded.Systemd...))
-	fileSet.Volumes = sortedUniqueStrings(append(fileSet.Volumes, expanded.Volumes...))
-	fileSet.Containers = sortedUniqueStrings(append(fileSet.Containers, expanded.Containers...))
-	fileSet.Kube = sortedUniqueStrings(append(fileSet.Kube, expanded.Kube...))
-	fileSet.Secrets = sortedUniqueStrings(append(fileSet.Secrets, expanded.Secrets...))
+	merged := &config.ResolvedFileSet{
+		Networks:   sortedUnique(slices.Concat(fileSet.Networks, expanded.Networks)),
+		Systemd:    sortedUnique(slices.Concat(fileSet.Systemd, expanded.Systemd)),
+		Volumes:    sortedUnique(slices.Concat(fileSet.Volumes, expanded.Volumes)),
+		Containers: sortedUnique(slices.Concat(fileSet.Containers, expanded.Containers)),
+		Kube:       sortedUnique(slices.Concat(fileSet.Kube, expanded.Kube)),
+		Secrets:    sortedUnique(slices.Concat(fileSet.Secrets, expanded.Secrets)),
+		Manifests:  fileSet.Manifests,
+		Services:   fileSet.Services,
+	}
 
 	manifestRefs := make([]manifestRef, 0, len(fileSet.Manifests)+len(expanded.Manifests))
 	for _, srcPath := range fileSet.Manifests {
 		manifestRefs = append(manifestRefs, manifestRef{SrcPath: srcPath, LogicalPath: srcPath})
 	}
 	manifestRefs = append(manifestRefs, expanded.Manifests...)
-	return uniqueManifestRefs(manifestRefs), nil
+	return merged, uniqueManifestRefs(manifestRefs), nil
+}
+
+// buildFileSkeletons returns SrcPath/Category/DestPath tuples for every file
+// the host will deploy. It does not render templates, read files, or call the
+// 1Password SDK, so it's safe (and cheap) to run before expensive operations.
+func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, manifestRefs []manifestRef) ([]ResolvedFile, error) {
+	total := len(fileSet.Networks) + len(fileSet.Systemd) + len(fileSet.Volumes) +
+		len(fileSet.Containers) + len(fileSet.Kube) + len(manifestRefs) + len(fileSet.Secrets)
+	skeletons := make([]ResolvedFile, 0, total)
+
+	quadletCats := []struct {
+		category string
+		paths    []string
+	}{
+		{"network", fileSet.Networks},
+		{"volume", fileSet.Volumes},
+		{"container", fileSet.Containers},
+		{"kube", fileSet.Kube},
+	}
+	for _, g := range quadletCats {
+		for _, srcPath := range g.paths {
+			skeletons = append(skeletons, ResolvedFile{
+				SrcPath: srcPath, Category: g.category, DestPath: r.quadletDestPath(srcPath),
+			})
+		}
+	}
+	for _, srcPath := range fileSet.Systemd {
+		skeletons = append(skeletons, ResolvedFile{
+			SrcPath: srcPath, Category: "systemd", DestPath: r.systemdDestPath(srcPath),
+		})
+	}
+	for _, ref := range manifestRefs {
+		skeletons = append(skeletons, ResolvedFile{
+			SrcPath: ref.SrcPath, Category: "manifest", DestPath: r.manifestDestPath(ref.LogicalPath),
+		})
+	}
+	for _, srcPath := range fileSet.Secrets {
+		dest, err := r.secretDestPath(srcPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolving secret %s: %w", srcPath, err)
+		}
+		skeletons = append(skeletons, ResolvedFile{
+			SrcPath: srcPath, Category: "secret", DestPath: dest,
+		})
+	}
+	return skeletons, nil
+}
+
+func (r *Resolver) quadletDestPath(srcPath string) string {
+	return filepath.Join(r.quadletDir, destFilename(srcPath))
+}
+
+func (r *Resolver) systemdDestPath(srcPath string) string {
+	return filepath.Join(r.systemdDir, destFilename(srcPath))
+}
+
+func (r *Resolver) manifestDestPath(logicalPath string) string {
+	return filepath.Join(r.dataDir, filepath.FromSlash(strings.TrimSuffix(logicalPath, ".tmpl")))
+}
+
+// secretDestPath returns the DestPath for either an op:// ref or a file-based
+// secret. ParseOpRef is pure — no network call.
+func (r *Resolver) secretDestPath(srcPath string) (string, error) {
+	if op.IsRef(srcPath) {
+		parsed, err := op.ParseOpRef(srcPath)
+		if err != nil {
+			return "", err
+		}
+		return "secret:" + parsed.PodmanSecretName(), nil
+	}
+	filename := destFilename(srcPath)
+	return "secret:" + strings.TrimSuffix(filename, filepath.Ext(filename)), nil
 }
 
 func uniqueManifestRefs(refs []manifestRef) []manifestRef {
@@ -255,22 +351,22 @@ func (r *Resolver) buildStandardFiles(
 	fileSet *config.ResolvedFileSet,
 ) ([]ResolvedFile, error) {
 	fileGroups := []struct {
-		paths   []string
-		cat     string
-		destDir string
-		quadlet bool
+		paths    []string
+		cat      string
+		destPath func(string) string
+		quadlet  bool
 	}{
-		{fileSet.Networks, "network", r.quadletDir, true},
-		{fileSet.Systemd, "systemd", r.systemdDir, false},
-		{fileSet.Volumes, "volume", r.quadletDir, true},
-		{fileSet.Containers, "container", r.quadletDir, true},
-		{fileSet.Kube, "kube", r.quadletDir, true},
+		{fileSet.Networks, "network", r.quadletDestPath, true},
+		{fileSet.Systemd, "systemd", r.systemdDestPath, false},
+		{fileSet.Volumes, "volume", r.quadletDestPath, true},
+		{fileSet.Containers, "container", r.quadletDestPath, true},
+		{fileSet.Kube, "kube", r.quadletDestPath, true},
 	}
 
 	var files []ResolvedFile
 	for _, g := range fileGroups {
 		for _, srcPath := range g.paths {
-			f, err := r.resolveFile(registry, tmplData, srcPath, g.cat, g.destDir, g.quadlet)
+			f, err := r.resolveFile(registry, tmplData, srcPath, g.cat, g.destPath(srcPath), g.quadlet)
 			if err != nil {
 				return nil, err
 			}
@@ -315,9 +411,15 @@ func detectCollisions(files []ResolvedFile) error {
 		collisions[file.DestPath] = append(collisions[file.DestPath], file.SrcPath)
 	}
 
+	destPaths := make([]string, 0, len(collisions))
+	for destPath := range collisions {
+		destPaths = append(destPaths, destPath)
+	}
+	slices.Sort(destPaths)
+
 	var errs []error
-	for destPath, srcPaths := range collisions {
-		uniquePaths := sortedUniqueStrings(srcPaths)
+	for _, destPath := range destPaths {
+		uniquePaths := sortedUnique(collisions[destPath])
 		if len(uniquePaths) < 2 {
 			continue
 		}
@@ -326,7 +428,7 @@ func detectCollisions(files []ResolvedFile) error {
 	return errors.Join(errs...)
 }
 
-func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateData, srcPath, category, destDir string, quadlet bool) (*ResolvedFile, error) {
+func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateData, srcPath, category, destPath string, quadlet bool) (*ResolvedFile, error) {
 	content, err := r.renderOrRead(registry, tmplData, srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving %s: %w", srcPath, err)
@@ -351,7 +453,7 @@ func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateDa
 
 	return &ResolvedFile{
 		SrcPath:     srcPath,
-		DestPath:    filepath.Join(destDir, filename),
+		DestPath:    destPath,
 		Content:     content,
 		Category:    category,
 		ParsedUnit:  parsedUnit,
@@ -380,31 +482,28 @@ func (r *Resolver) resolveManifestRef(registry *template.Template, tmplData *Tem
 		return nil, fmt.Errorf("resolving manifest %s: %w", ref.SrcPath, err)
 	}
 
-	// manifests/<app>/deployment.yml.tmpl → <dataDir>/manifests/<app>/deployment.yml
-	relPath := strings.TrimSuffix(ref.LogicalPath, ".tmpl")
-	destPath := filepath.Join(r.dataDir, filepath.FromSlash(relPath))
-
 	return &ResolvedFile{
 		SrcPath:  ref.SrcPath,
-		DestPath: destPath,
+		DestPath: r.manifestDestPath(ref.LogicalPath),
 		Content:  content,
 		Category: "manifest",
 	}, nil
 }
 
 func (r *Resolver) resolveSecret(registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {
-	// secrets/prometheus_config.yml.tmpl → secret name "prometheus_config"
 	filename := destFilename(srcPath)
-	secretName := strings.TrimSuffix(filename, filepath.Ext(filename))
-
 	content, err := r.secretContent(registry, tmplData, srcPath, filename)
+	if err != nil {
+		return nil, fmt.Errorf("resolving secret %s: %w", srcPath, err)
+	}
+	destPath, err := r.secretDestPath(srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving secret %s: %w", srcPath, err)
 	}
 
 	return &ResolvedFile{
 		SrcPath:  srcPath,
-		DestPath: "secret:" + secretName,
+		DestPath: destPath,
 		Content:  content,
 		Category: "secret",
 	}, nil
@@ -470,13 +569,13 @@ func (r *Resolver) collectOpTemplateRefs(
 
 // buildOpSecretFile creates a ResolvedFile for a pre-resolved op:// secret.
 func (r *Resolver) buildOpSecretFile(ref, content string) (*ResolvedFile, error) {
-	parsed, err := op.ParseOpRef(ref)
+	destPath, err := r.secretDestPath(ref)
 	if err != nil {
 		return nil, err
 	}
 	return &ResolvedFile{
 		SrcPath:  ref,
-		DestPath: "secret:" + parsed.PodmanSecretName(),
+		DestPath: destPath,
 		Content:  content,
 		Category: "secret",
 	}, nil

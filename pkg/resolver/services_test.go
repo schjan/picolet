@@ -9,51 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCollisionKey(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		srcPath     string
-		category    string
-		logicalPath string
-		want        string
-	}{
-		{
-			name:     "quadlet strips tmpl suffix",
-			srcPath:  "services/app/containers/web.container.tmpl",
-			category: "container",
-			want:     "quadlet/web.container",
-		},
-		{
-			name:     "systemd keeps namespace separate",
-			srcPath:  "services/app/systemd/http.socket",
-			category: "systemd",
-			want:     "systemd/http.socket",
-		},
-		{
-			name:        "manifest uses logical path",
-			srcPath:     "services/app/manifests/web/config.yml.tmpl",
-			category:    "manifest",
-			logicalPath: "manifests/web/config.yml.tmpl",
-			want:        "manifest/manifests/web/config.yml",
-		},
-		{
-			name:     "secret strips extension and tmpl suffix",
-			srcPath:  "services/app/secrets/config.yaml.tmpl",
-			category: "secret",
-			want:     "secret/config",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tt.want, collisionKey(tt.srcPath, tt.category, tt.logicalPath))
-		})
-	}
-}
-
 func TestExpandServiceBundlesHappyPath(t *testing.T) {
 	t.Parallel()
 
@@ -162,8 +117,10 @@ func TestExpandServiceBundlesUnknownRootEntry(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := expandServiceBundles(tt.fsys, []string{"web"})
-			require.Error(t, err)
-			assert.ErrorContains(t, err, "unknown entry")
+			require.ErrorContains(t, err, "unknown entry")
+			// With only junk at the root, the "empty bundle" error is suppressed —
+			// the unknown-entry error already explains why nothing was loaded.
+			assert.NotContains(t, err.Error(), "empty service bundle")
 		})
 	}
 }
@@ -211,7 +168,7 @@ func TestExpandServiceBundlesManifestNestingAllowed(t *testing.T) {
 	}, expanded.Manifests)
 }
 
-func TestExpandServiceBundlesWithinBundleConflict(t *testing.T) {
+func TestExpandServiceBundlesRejectsSymlink(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -220,36 +177,18 @@ func TestExpandServiceBundlesWithinBundleConflict(t *testing.T) {
 		want string
 	}{
 		{
-			name: "quadlet tmpl variant",
+			name: "flat subdir symlink",
 			fsys: fstest.MapFS{
-				"services/web/containers/web.container":      &fstest.MapFile{Data: []byte("a")},
-				"services/web/containers/web.container.tmpl": &fstest.MapFile{Data: []byte("b")},
+				"services/web/containers/web.container": &fstest.MapFile{Mode: fs.ModeSymlink},
 			},
-			want: "quadlet/web.container",
+			want: "services/web/containers/web.container: expected regular file",
 		},
 		{
-			name: "quadlet cross category",
+			name: "manifest symlink",
 			fsys: fstest.MapFS{
-				"services/web/containers/web.container": &fstest.MapFile{Data: []byte("a")},
-				"services/web/volumes/web.container":    &fstest.MapFile{Data: []byte("b")},
+				"services/web/manifests/app/deployment.yml": &fstest.MapFile{Mode: fs.ModeSymlink},
 			},
-			want: "quadlet/web.container",
-		},
-		{
-			name: "secret extension collision",
-			fsys: fstest.MapFS{
-				"services/web/secrets/config.yml":  &fstest.MapFile{Data: []byte("a")},
-				"services/web/secrets/config.yaml": &fstest.MapFile{Data: []byte("b")},
-			},
-			want: "secret/config",
-		},
-		{
-			name: "manifest tmpl variant",
-			fsys: fstest.MapFS{
-				"services/web/manifests/app/deployment.yml":      &fstest.MapFile{Data: []byte("a")},
-				"services/web/manifests/app/deployment.yml.tmpl": &fstest.MapFile{Data: []byte("b")},
-			},
-			want: "manifest/manifests/app/deployment.yml",
+			want: "services/web/manifests/app/deployment.yml: expected regular file",
 		},
 	}
 
@@ -257,10 +196,22 @@ func TestExpandServiceBundlesWithinBundleConflict(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := expandServiceBundles(tt.fsys, []string{"web"})
-			require.ErrorContains(t, err, "bundle conflict")
+			require.Error(t, err)
 			assert.ErrorContains(t, err, tt.want)
 		})
 	}
+}
+
+func TestAddPathUnknownCategory(t *testing.T) {
+	t.Parallel()
+
+	b := &expandedBundles{}
+	err := b.addPath("nonsense", "services/web/nonsense/x.yml")
+	require.ErrorContains(t, err, `unknown bundle category "nonsense"`)
+
+	// Valid category still works after an invalid one.
+	require.NoError(t, b.addPath("container", "services/web/containers/x.container"))
+	assert.Equal(t, []string{"services/web/containers/x.container"}, b.Containers)
 }
 
 func TestStripServicePrefix(t *testing.T) {

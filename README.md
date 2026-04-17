@@ -216,6 +216,11 @@ To migrate an explicit service, create `services/<name>/<category>/` directories
 move the files without renaming them, and replace the per-category lists in
 `assignments.yml` with `services: [<name>]`.
 
+**The cutover must be atomic per service.** The same file listed under both the
+legacy paths and a `services:` bundle resolves to the same on-disk destination,
+so Picolet fails the reconciliation with a destination collision. Remove the
+legacy paths in the same commit that introduces `services: [<name>]`.
+
 ### Templates
 
 Files ending in `.tmpl` are rendered with Go `text/template` (`missingkey=error`) plus Sprig's hermetic text helpers. Static files are deployed as-is.
