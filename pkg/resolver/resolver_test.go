@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -240,6 +241,489 @@ func TestRootlessPaths(t *testing.T) {
 
 	// Verify manifest goes to rootless data dir
 	assert.Equal(t, filepath.Join(home, ".local", "share", "picolet", "manifests", "app", "deployment.yml"), manifest.DestPath)
+}
+
+func TestResolveHostBundleEquivalentToExplicit(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte(`
+images:
+  app: "app:v1"
+ports:
+  http: 8080
+`)},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base: {}
+pi_types:
+  bundled:
+    services:
+      - web
+  explicit:
+    networks:
+      - quadlets/networks/internal.network
+    containers:
+      - quadlets/containers/web.container.tmpl
+    manifests:
+      - manifests/app/deployment.yml.tmpl
+features: {}
+`)},
+		"hosts/bundled/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: bundled
+external_hostname: bundled.example.net
+pi_type: bundled
+features: []
+`)},
+		"hosts/explicit/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: explicit
+external_hostname: explicit.example.net
+pi_type: explicit
+features: []
+`)},
+		"services/web/networks/internal.network": &fstest.MapFile{Data: []byte(`[Network]
+Internal=true
+`)},
+		"quadlets/networks/internal.network": &fstest.MapFile{Data: []byte(`[Network]
+Internal=true
+`)},
+		"services/web/containers/web.container.tmpl": &fstest.MapFile{Data: []byte(`[Container]
+Image={{index .Images "app"}}
+ContainerName=web
+Network=internal.network
+
+[Install]
+WantedBy=default.target
+`)},
+		"quadlets/containers/web.container.tmpl": &fstest.MapFile{Data: []byte(`[Container]
+Image={{index .Images "app"}}
+ContainerName=web
+Network=internal.network
+
+[Install]
+WantedBy=default.target
+`)},
+		"services/web/manifests/app/deployment.yml.tmpl": &fstest.MapFile{Data: []byte(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web
+data:
+  image: {{index .Images "app"}}
+`)},
+		"manifests/app/deployment.yml.tmpl": &fstest.MapFile{Data: []byte(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web
+data:
+  image: {{index .Images "app"}}
+`)},
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	bundled, err := r.ResolveHost(t.Context(), "bundled")
+	require.NoError(t, err)
+	explicit, err := r.ResolveHost(t.Context(), "explicit")
+	require.NoError(t, err)
+
+	assert.Equal(t, resolvedOutputs(explicit.Files), resolvedOutputs(bundled.Files))
+}
+
+func TestResolveHostBundleManifestTemplateRenders(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte(`
+images:
+  app: "app:v2"
+ports:
+  http: 8080
+`)},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base:
+  services:
+    - web
+pi_types: {}
+features: {}
+`)},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: test-host
+external_hostname: test-host.example.net
+pi_type: node
+features: []
+`)},
+		"services/web/manifests/app/deployment.yml.tmpl": &fstest.MapFile{Data: []byte(`kind: ConfigMap
+data:
+  image: {{index .Images "app"}}
+  host: {{.Host.Hostname}}
+`)},
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
+	require.NoError(t, err)
+
+	manifest := findByDest(t, resolved.Files, "/var/lib/picolet/manifests/app/deployment.yml")
+	assert.Equal(t, "services/web/manifests/app/deployment.yml.tmpl", manifest.SrcPath)
+	assert.Contains(t, manifest.Content, "image: app:v2")
+	assert.Contains(t, manifest.Content, "host: test-host")
+}
+
+func TestResolveHostBundleManifestNormalizesPath(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base:
+  services:
+    - web
+pi_types: {}
+features: {}
+`)},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: test-host
+external_hostname: test-host.example.net
+pi_type: node
+features: []
+`)},
+		"services/web/manifests/app/deployment.yml": &fstest.MapFile{Data: []byte("kind: ConfigMap\n")},
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
+	require.NoError(t, err)
+
+	manifest := findByDest(t, resolved.Files, "/var/lib/picolet/manifests/app/deployment.yml")
+	assert.Equal(t, "services/web/manifests/app/deployment.yml", manifest.SrcPath)
+	assert.NotContains(t, manifest.DestPath, "services/web")
+}
+
+func TestResolveHostBundleAndLegacyMixed(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte(`
+images:
+  app: "app:v1"
+ports: {}
+`)},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base:
+  services:
+    - web
+  systemd:
+    - systemd/http.socket
+pi_types: {}
+features: {}
+`)},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: test-host
+external_hostname: test-host.example.net
+pi_type: node
+features: []
+`)},
+		"services/web/containers/web.container.tmpl": &fstest.MapFile{Data: []byte(`[Container]
+Image={{index .Images "app"}}
+ContainerName=web
+
+[Install]
+WantedBy=default.target
+`)},
+		"systemd/http.socket": &fstest.MapFile{Data: []byte(`[Socket]
+ListenStream=8080
+`)},
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
+	require.NoError(t, err)
+
+	assert.Len(t, resolved.Files, 2)
+	findByDest(t, resolved.Files, "/etc/containers/systemd/picolet/web.container")
+	findByDest(t, resolved.Files, "/etc/systemd/system/http.socket")
+}
+
+func TestResolveHostCrossSourceCollision(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		assignmentsYAML string
+		files           fstest.MapFS
+		wantDest        string
+		wantSources     []string
+	}{
+		{
+			name: "quadlet",
+			assignmentsYAML: `
+base:
+  services:
+    - web
+  containers:
+    - quadlets/containers/web.container.tmpl
+pi_types: {}
+features: {}
+`,
+			files: fstest.MapFS{
+				"services/web/containers/web.container.tmpl": &fstest.MapFile{Data: []byte(`[Container]
+Image=app:v1
+ContainerName=web
+
+[Install]
+WantedBy=default.target
+`)},
+				"quadlets/containers/web.container.tmpl": &fstest.MapFile{Data: []byte(`[Container]
+Image=app:v2
+ContainerName=web
+
+[Install]
+WantedBy=default.target
+`)},
+			},
+			wantDest: "/etc/containers/systemd/picolet/web.container",
+			wantSources: []string{
+				"quadlets/containers/web.container.tmpl",
+				"services/web/containers/web.container.tmpl",
+			},
+		},
+		{
+			name: "systemd",
+			assignmentsYAML: `
+base:
+  services:
+    - web
+  systemd:
+    - systemd/http.socket
+pi_types: {}
+features: {}
+`,
+			files: fstest.MapFS{
+				"services/web/systemd/http.socket": &fstest.MapFile{Data: []byte("[Socket]\nListenStream=8080\n")},
+				"systemd/http.socket":              &fstest.MapFile{Data: []byte("[Socket]\nListenStream=9090\n")},
+			},
+			wantDest: "/etc/systemd/system/http.socket",
+			wantSources: []string{
+				"services/web/systemd/http.socket",
+				"systemd/http.socket",
+			},
+		},
+		{
+			name: "manifest",
+			assignmentsYAML: `
+base:
+  services:
+    - web
+  manifests:
+    - manifests/app/deployment.yml.tmpl
+pi_types: {}
+features: {}
+`,
+			files: fstest.MapFS{
+				"services/web/manifests/app/deployment.yml.tmpl": &fstest.MapFile{Data: []byte("kind: ConfigMap\n")},
+				"manifests/app/deployment.yml.tmpl":              &fstest.MapFile{Data: []byte("kind: Secret\n")},
+			},
+			wantDest: "/var/lib/picolet/manifests/app/deployment.yml",
+			wantSources: []string{
+				"manifests/app/deployment.yml.tmpl",
+				"services/web/manifests/app/deployment.yml.tmpl",
+			},
+		},
+		{
+			name: "secret",
+			assignmentsYAML: `
+base:
+  services:
+    - web
+  secrets:
+    - secrets/config.yaml
+pi_types: {}
+features: {}
+`,
+			files: fstest.MapFS{
+				"services/web/secrets/config.yml": &fstest.MapFile{Data: []byte("a: 1\n")},
+				"secrets/config.yaml":             &fstest.MapFile{Data: []byte("a: 2\n")},
+			},
+			wantDest: "secret:config",
+			wantSources: []string{
+				"secrets/config.yaml",
+				"services/web/secrets/config.yml",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fsys := fstest.MapFS{
+				"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+				"assignments.yml": &fstest.MapFile{Data: []byte(tt.assignmentsYAML)},
+				"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: test-host
+external_hostname: test-host.example.net
+pi_type: node
+features: []
+`)},
+			}
+			for name, file := range tt.files {
+				fsys[name] = file
+			}
+
+			cfg, err := config.LoadAll(fsys)
+			require.NoError(t, err)
+			r, err := New(Config{FS: fsys, Config: cfg})
+			require.NoError(t, err)
+
+			_, err = r.ResolveHost(t.Context(), "test-host")
+			require.Error(t, err)
+			assert.ErrorContains(t, err, tt.wantDest)
+			for _, src := range tt.wantSources {
+				assert.ErrorContains(t, err, src)
+			}
+		})
+	}
+}
+
+func TestResolveHostLegacyAssignmentsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	fsys := newTestFS()
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
+	require.NoError(t, err)
+
+	assert.Equal(t, []resolvedTuple{
+		{
+			SrcPath:  "quadlets/networks/internal.network",
+			DestPath: "/etc/containers/systemd/picolet/internal.network",
+			Category: "network",
+			Content:  "[Network]\nInternal=true\n",
+		},
+		{
+			SrcPath:  "quadlets/containers/test.container.tmpl",
+			DestPath: "/etc/containers/systemd/picolet/test.container",
+			Category: "container",
+			Content:  "[Container]\nContainerName=test\nImage=traefik:v3.6.9\nNetwork=internal.network\n\n[Install]\nWantedBy=default.target\n",
+		},
+		{
+			SrcPath:  "manifests/app/deployment.yml.tmpl",
+			DestPath: "/var/lib/picolet/manifests/app/deployment.yml",
+			Category: "manifest",
+			Content:  "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: test-app\n  labels:\n    app: test\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: test\n  template:\n    metadata:\n      labels:\n        app: test\n    spec:\n      containers:\n        - name: test\n          image: \"traefik:v3.6.9\"\n          ports:\n            - containerPort: 12345\n",
+		},
+	}, resolvedFileTuples(resolved.Files))
+}
+
+func TestResolveHostBundledManifestCollectsOpSecrets(t *testing.T) {
+	t.Parallel()
+
+	const ref = "op://vault/item/password"
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base:
+  services:
+    - web
+pi_types: {}
+features: {}
+`)},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: test-host
+external_hostname: test-host.example.net
+pi_type: node
+features: []
+`)},
+		"services/web/manifests/app/secret.yml.tmpl": &fstest.MapFile{Data: []byte(`kind: Secret
+stringData:
+  password: {{readOpSecret "` + ref + `"}}
+`)},
+	}
+
+	reader := func(_ context.Context, refs []string) (map[string]string, error) {
+		require.Equal(t, []string{ref}, refs)
+		return map[string]string{ref: "resolved-password"}, nil
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg, OpSecretReader: reader})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
+	require.NoError(t, err)
+
+	manifest := findByDest(t, resolved.Files, "/var/lib/picolet/manifests/app/secret.yml")
+	assert.Contains(t, manifest.Content, "password: resolved-password")
+}
+
+type resolvedTuple struct {
+	SrcPath  string
+	DestPath string
+	Category string
+	Content  string
+}
+
+type resolvedOutput struct {
+	DestPath string
+	Category string
+	Content  string
+}
+
+func resolvedFileTuples(files []ResolvedFile) []resolvedTuple {
+	tuples := make([]resolvedTuple, 0, len(files))
+	for _, file := range files {
+		tuples = append(tuples, resolvedTuple{
+			SrcPath:  file.SrcPath,
+			DestPath: file.DestPath,
+			Category: file.Category,
+			Content:  file.Content,
+		})
+	}
+	slices.SortFunc(tuples, func(a, b resolvedTuple) int {
+		if diff := strings.Compare(a.DestPath, b.DestPath); diff != 0 {
+			return diff
+		}
+		return strings.Compare(a.SrcPath, b.SrcPath)
+	})
+	return tuples
+}
+
+func resolvedOutputs(files []ResolvedFile) []resolvedOutput {
+	outputs := make([]resolvedOutput, 0, len(files))
+	for _, file := range files {
+		outputs = append(outputs, resolvedOutput{
+			DestPath: file.DestPath,
+			Category: file.Category,
+			Content:  file.Content,
+		})
+	}
+	slices.SortFunc(outputs, func(a, b resolvedOutput) int {
+		if diff := strings.Compare(a.DestPath, b.DestPath); diff != 0 {
+			return diff
+		}
+		return strings.Compare(a.Category, b.Category)
+	})
+	return outputs
 }
 
 func newSecretTestFS(tb testing.TB) (fstest.MapFS, *config.Config) {

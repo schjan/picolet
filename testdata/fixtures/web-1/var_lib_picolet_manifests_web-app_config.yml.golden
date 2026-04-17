@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-app
+data:
+  image: ghcr.io/example/web-app:v1.2.3
+  hostname: web-1

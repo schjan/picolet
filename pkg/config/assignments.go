@@ -21,6 +21,7 @@ type AssignmentGroup struct {
 	Kube       []string `yaml:"kube"`
 	Manifests  []string `yaml:"manifests"`
 	Secrets    []string `yaml:"secrets"`
+	Services   []string `yaml:"services"`
 }
 
 // ResolvedFileSet is the merged set of all files assigned to a host.
@@ -32,6 +33,7 @@ type ResolvedFileSet struct {
 	Kube       []string
 	Manifests  []string
 	Secrets    []string
+	Services   []string
 }
 
 // Resolve computes the complete file set for a host by merging
@@ -63,6 +65,7 @@ func (r *ResolvedFileSet) deduplicate() {
 	r.Kube = sortedUnique(r.Kube)
 	r.Manifests = sortedUnique(r.Manifests)
 	r.Secrets = sortedUnique(r.Secrets)
+	r.Services = sortedUnique(r.Services)
 }
 
 // sortedUnique returns a sorted copy with duplicates removed.
@@ -78,4 +81,5 @@ func (r *ResolvedFileSet) merge(g AssignmentGroup) {
 	r.Kube = append(r.Kube, g.Kube...)
 	r.Manifests = append(r.Manifests, g.Manifests...)
 	r.Secrets = append(r.Secrets, g.Secrets...)
+	r.Services = append(r.Services, g.Services...)
 }

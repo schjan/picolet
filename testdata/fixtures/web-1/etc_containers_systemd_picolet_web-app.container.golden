@@ -1,0 +1,7 @@
+[Container]
+Image=ghcr.io/example/web-app:v1.2.3
+ContainerName=web-app
+Network=web-app.network
+
+[Install]
+WantedBy=default.target

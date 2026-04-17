@@ -162,6 +162,60 @@ Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a co
 | `secrets/` | `.yml` | Podman secrets |
 | `systemd/` | `.socket` | `/etc/systemd/system/` |
 
+### Service Bundles
+
+Use `services:` in `assignments.yml` when one logical service spans several file
+categories. A bundle expands into the same per-category files Picolet already
+understands, so bundles and legacy explicit lists can coexist in the same repo.
+
+Bundle layout is typed by directory name. Only create the category directories a
+service actually uses.
+
+```text
+services/<name>/
+  containers/
+  volumes/
+  networks/
+  kube/
+  systemd/
+  secrets/
+  manifests/
+```
+
+`manifests/` may contain nested directories. The other six category directories
+must contain files directly.
+
+Strict bundle rules:
+
+| Rule | Behavior |
+|------|----------|
+| missing `services/<name>/` | error |
+| `services/<name>/` exists but is not a directory | error |
+| empty bundle | error |
+| unknown entry at bundle root | error |
+| category-named file at bundle root | error |
+| nested directory under non-`manifests/` category | error |
+| two sources resolving to the same destination | error |
+
+Dotfiles and loose files are not special-cased. Keep the bundle directory clean
+or ignore those files at the repo level before they land in the fleet repo.
+
+Bundled manifests keep their real repo path for template rendering, but Picolet
+strips the `services/<name>/` prefix when deriving the deployed destination. For
+example, `services/web/manifests/app/deployment.yml.tmpl` deploys to
+`/var/lib/picolet/manifests/app/deployment.yml`.
+
+Collision detection happens during `resolve` / `validate`. Picolet rejects:
+
+- quadlet files that would overwrite another file in the shared quadlet directory
+- manifest files that normalize to the same deployed path
+- secrets that normalize to the same `secret:<name>` destination, such as
+  `foo.yml` and `foo.yaml`
+
+To migrate an explicit service, create `services/<name>/<category>/` directories,
+move the files without renaming them, and replace the per-category lists in
+`assignments.yml` with `services: [<name>]`.
+
 ### Templates
 
 Files ending in `.tmpl` are rendered with Go `text/template` (`missingkey=error`) plus Sprig's hermetic text helpers. Static files are deployed as-is.
