@@ -193,9 +193,9 @@ func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*config.R
 
 // expandFileSet returns a new ResolvedFileSet merged with any service bundles,
 // plus the full list of manifest refs (legacy + bundled). The input fileSet is
-// not mutated. The returned fileSet.Services is carried through unchanged but
-// has no semantic meaning after expansion — the expansion already flattened it
-// into the other category slices.
+// not mutated. Manifests and Services are left nil: manifest paths flow through
+// manifestRefs, and Services is already flattened into the category slices.
+// Populating them would let a future caller miss bundle contents.
 func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []manifestRef, error) {
 	expanded, err := expandServiceBundles(r.fsys, fileSet.Services)
 	if err != nil {
@@ -209,16 +209,21 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.Resol
 		Containers: sortedUnique(slices.Concat(fileSet.Containers, expanded.Containers)),
 		Kube:       sortedUnique(slices.Concat(fileSet.Kube, expanded.Kube)),
 		Secrets:    sortedUnique(slices.Concat(fileSet.Secrets, expanded.Secrets)),
-		Manifests:  fileSet.Manifests,
-		Services:   fileSet.Services,
 	}
 
 	manifestRefs := make([]manifestRef, 0, len(fileSet.Manifests)+len(expanded.Manifests))
 	for _, srcPath := range fileSet.Manifests {
-		manifestRefs = append(manifestRefs, manifestRef{SrcPath: srcPath, LogicalPath: srcPath})
+		manifestRefs = append(manifestRefs, newLegacyManifestRef(srcPath))
 	}
 	manifestRefs = append(manifestRefs, expanded.Manifests...)
 	return merged, uniqueManifestRefs(manifestRefs), nil
+}
+
+// newLegacyManifestRef constructs a manifestRef for a legacy (non-bundled)
+// manifest path, where the source and logical paths are the same. Bundled
+// refs set a stripped LogicalPath and are built in readManifestSubdir.
+func newLegacyManifestRef(srcPath string) manifestRef {
+	return manifestRef{SrcPath: srcPath, LogicalPath: srcPath}
 }
 
 // buildFileSkeletons returns SrcPath/Category/DestPath tuples for every file
@@ -294,23 +299,15 @@ func (r *Resolver) secretDestPath(srcPath string) (string, error) {
 }
 
 func uniqueManifestRefs(refs []manifestRef) []manifestRef {
-	seen := make(map[string]struct{}, len(refs))
-	unique := make([]manifestRef, 0, len(refs))
-	for _, ref := range refs {
-		key := ref.SrcPath + "\x00" + ref.LogicalPath
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		unique = append(unique, ref)
-	}
-	slices.SortFunc(unique, func(a, b manifestRef) int {
+	slices.SortFunc(refs, func(a, b manifestRef) int {
 		if diff := strings.Compare(a.LogicalPath, b.LogicalPath); diff != 0 {
 			return diff
 		}
 		return strings.Compare(a.SrcPath, b.SrcPath)
 	})
-	return unique
+	return slices.CompactFunc(refs, func(a, b manifestRef) bool {
+		return a == b
+	})
 }
 
 func (r *Resolver) buildFiles(
