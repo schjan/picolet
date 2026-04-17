@@ -77,6 +77,7 @@ features: []
 	assert.Equal(t, "host-b", hostnames[1])
 }
 
+//nolint:funlen // table-driven coverage for assignment merge behavior
 func TestAssignmentsResolve(t *testing.T) {
 	t.Parallel()
 	assignments := &Assignments{

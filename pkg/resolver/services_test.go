@@ -1,7 +1,6 @@
 package resolver
 
 import (
-	"errors"
 	"io/fs"
 	"testing"
 	"testing/fstest"
@@ -94,9 +93,8 @@ func TestExpandServiceBundlesMissingBundle(t *testing.T) {
 	t.Parallel()
 
 	_, err := expandServiceBundles(fstest.MapFS{}, []string{"ghost"})
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "missing service bundle")
-	assert.True(t, errors.Is(err, fs.ErrNotExist))
+	require.ErrorContains(t, err, "missing service bundle")
+	assert.ErrorIs(t, err, fs.ErrNotExist)
 }
 
 func TestExpandServiceBundlesBundleRootNotDirectory(t *testing.T) {
@@ -259,8 +257,7 @@ func TestExpandServiceBundlesWithinBundleConflict(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := expandServiceBundles(tt.fsys, []string{"web"})
-			require.Error(t, err)
-			assert.ErrorContains(t, err, "bundle conflict")
+			require.ErrorContains(t, err, "bundle conflict")
 			assert.ErrorContains(t, err, tt.want)
 		})
 	}

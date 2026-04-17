@@ -100,43 +100,18 @@ func expandServiceBundles(fsys fs.FS, services []string) (*expandedBundles, erro
 
 func expandServiceBundle(fsys fs.FS, service string) (*expandedBundles, error) {
 	root := path.Join("services", service)
-	info, err := fs.Stat(fsys, root)
+	rootEntries, err := readBundleRoot(fsys, root)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("%s: missing service bundle: %w", root, err)
-		}
-		return nil, fmt.Errorf("stat %s: %w", root, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("%s: expected directory", root)
-	}
-
-	rootEntries, err := fs.ReadDir(fsys, root)
-	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", root, err)
+		return nil, err
 	}
 
 	bundle := &expandedBundles{}
-	validSubdirs := make(map[string]bundleSubdir, len(bundleSubdirs))
 	var errs []error
 
-	for _, entry := range rootEntries {
-		subdir, ok := bundleSubdirsByName[entry.Name()]
-		if !ok {
-			errs = append(errs, fmt.Errorf("%s/%s: unknown entry", root, entry.Name()))
-			continue
-		}
-		if !entry.IsDir() {
-			errs = append(errs, fmt.Errorf("%s/%s: expected directory", root, entry.Name()))
-			continue
-		}
-		validSubdirs[entry.Name()] = subdir
-	}
+	validSubdirs, rootErrs := collectBundleSubdirs(root, rootEntries)
+	errs = append(errs, rootErrs...)
 
-	for _, subdir := range bundleSubdirs {
-		if _, ok := validSubdirs[subdir.Subdir]; !ok {
-			continue
-		}
+	for _, subdir := range validSubdirs {
 		if err := bundle.readSubdir(fsys, service, subdir); err != nil {
 			errs = append(errs, err)
 		}
@@ -151,6 +126,50 @@ func expandServiceBundle(fsys fs.FS, service string) (*expandedBundles, error) {
 		return nil, errors.Join(errs...)
 	}
 	return bundle, nil
+}
+
+func readBundleRoot(fsys fs.FS, root string) ([]fs.DirEntry, error) {
+	info, err := fs.Stat(fsys, root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("%s: missing service bundle: %w", root, err)
+		}
+		return nil, fmt.Errorf("stat %s: %w", root, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%s: expected directory", root)
+	}
+
+	entries, err := fs.ReadDir(fsys, root)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", root, err)
+	}
+	return entries, nil
+}
+
+func collectBundleSubdirs(root string, entries []fs.DirEntry) ([]bundleSubdir, []error) {
+	var (
+		valid []bundleSubdir
+		errs  []error
+	)
+
+	for _, entry := range entries {
+		subdir, ok := bundleSubdirsByName[entry.Name()]
+		if !ok {
+			errs = append(errs, fmt.Errorf("%s/%s: unknown entry", root, entry.Name()))
+			continue
+		}
+		if !entry.IsDir() {
+			errs = append(errs, fmt.Errorf("%s/%s: expected directory", root, entry.Name()))
+			continue
+		}
+		valid = append(valid, subdir)
+	}
+
+	slices.SortFunc(valid, func(a, b bundleSubdir) int {
+		return cmp.Compare(a.Subdir, b.Subdir)
+	})
+	return valid, errs
 }
 
 func (b *expandedBundles) append(other *expandedBundles) {
@@ -187,25 +206,12 @@ func (b *expandedBundles) fileCount() int {
 
 func (b *expandedBundles) validateConflicts() []error {
 	collisions := make(map[string][]string)
-
-	for _, srcPath := range b.Networks {
-		collisions[collisionKey(srcPath, "network", "")] = append(collisions[collisionKey(srcPath, "network", "")], srcPath)
-	}
-	for _, srcPath := range b.Systemd {
-		collisions[collisionKey(srcPath, "systemd", "")] = append(collisions[collisionKey(srcPath, "systemd", "")], srcPath)
-	}
-	for _, srcPath := range b.Volumes {
-		collisions[collisionKey(srcPath, "volume", "")] = append(collisions[collisionKey(srcPath, "volume", "")], srcPath)
-	}
-	for _, srcPath := range b.Containers {
-		collisions[collisionKey(srcPath, "container", "")] = append(collisions[collisionKey(srcPath, "container", "")], srcPath)
-	}
-	for _, srcPath := range b.Kube {
-		collisions[collisionKey(srcPath, "kube", "")] = append(collisions[collisionKey(srcPath, "kube", "")], srcPath)
-	}
-	for _, srcPath := range b.Secrets {
-		collisions[collisionKey(srcPath, "secret", "")] = append(collisions[collisionKey(srcPath, "secret", "")], srcPath)
-	}
+	addCollisionPaths(collisions, "network", b.Networks)
+	addCollisionPaths(collisions, "systemd", b.Systemd)
+	addCollisionPaths(collisions, "volume", b.Volumes)
+	addCollisionPaths(collisions, "container", b.Containers)
+	addCollisionPaths(collisions, "kube", b.Kube)
+	addCollisionPaths(collisions, "secret", b.Secrets)
 	for _, manifest := range b.Manifests {
 		key := collisionKey(manifest.SrcPath, "manifest", manifest.LogicalPath)
 		collisions[key] = append(collisions[key], manifest.SrcPath)
@@ -225,31 +231,42 @@ func (b *expandedBundles) validateConflicts() []error {
 func (b *expandedBundles) readSubdir(fsys fs.FS, service string, subdir bundleSubdir) error {
 	root := path.Join("services", service, subdir.Subdir)
 	if subdir.AllowNesting {
-		return fs.WalkDir(fsys, root, func(walkPath string, d fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return fmt.Errorf("walking %s: %w", walkPath, walkErr)
-			}
-			if walkPath == root {
-				return nil
-			}
-			if d.IsDir() {
-				return nil
-			}
-			info, err := d.Info()
-			if err != nil {
-				return fmt.Errorf("stat %s: %w", walkPath, err)
-			}
-			if !info.Mode().IsRegular() {
-				return fmt.Errorf("%s: expected regular file", walkPath)
-			}
-			b.Manifests = append(b.Manifests, manifestRef{
-				SrcPath:     walkPath,
-				LogicalPath: stripServicePrefix(walkPath, service),
-			})
-			return nil
-		})
+		return b.readManifestSubdir(fsys, root, service)
 	}
+	return b.readFlatSubdir(fsys, root, subdir.Category)
+}
 
+func addCollisionPaths(collisions map[string][]string, category string, srcPaths []string) {
+	for _, srcPath := range srcPaths {
+		key := collisionKey(srcPath, category, "")
+		collisions[key] = append(collisions[key], srcPath)
+	}
+}
+
+func (b *expandedBundles) readManifestSubdir(fsys fs.FS, root, service string) error {
+	return fs.WalkDir(fsys, root, func(walkPath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("walking %s: %w", walkPath, walkErr)
+		}
+		if walkPath == root || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", walkPath, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s: expected regular file", walkPath)
+		}
+		b.Manifests = append(b.Manifests, manifestRef{
+			SrcPath:     walkPath,
+			LogicalPath: stripServicePrefix(walkPath, service),
+		})
+		return nil
+	})
+}
+
+func (b *expandedBundles) readFlatSubdir(fsys fs.FS, root, category string) error {
 	entries, err := fs.ReadDir(fsys, root)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", root, err)
@@ -270,7 +287,7 @@ func (b *expandedBundles) readSubdir(fsys fs.FS, service string, subdir bundleSu
 			errs = append(errs, fmt.Errorf("%s: expected regular file", entryPath))
 			continue
 		}
-		b.addPath(subdir.Category, entryPath)
+		b.addPath(category, entryPath)
 	}
 	return errors.Join(errs...)
 }

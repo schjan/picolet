@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -243,6 +244,7 @@ func TestRootlessPaths(t *testing.T) {
 	assert.Equal(t, filepath.Join(home, ".local", "share", "picolet", "manifests", "app", "deployment.yml"), manifest.DestPath)
 }
 
+//nolint:funlen // fixture setup is clearer inline for equivalence coverage
 func TestResolveHostBundleEquivalentToExplicit(t *testing.T) {
 	t.Parallel()
 
@@ -459,6 +461,7 @@ ListenStream=8080
 	findByDest(t, resolved.Files, "/etc/systemd/system/http.socket")
 }
 
+//nolint:funlen // table-driven collision matrix is intentionally explicit
 func TestResolveHostCrossSourceCollision(t *testing.T) {
 	t.Parallel()
 
@@ -580,9 +583,7 @@ pi_type: node
 features: []
 `)},
 			}
-			for name, file := range tt.files {
-				fsys[name] = file
-			}
+			maps.Copy(fsys, tt.files)
 
 			cfg, err := config.LoadAll(fsys)
 			require.NoError(t, err)
@@ -590,8 +591,7 @@ features: []
 			require.NoError(t, err)
 
 			_, err = r.ResolveHost(t.Context(), "test-host")
-			require.Error(t, err)
-			assert.ErrorContains(t, err, tt.wantDest)
+			require.ErrorContains(t, err, tt.wantDest)
 			for _, src := range tt.wantSources {
 				assert.ErrorContains(t, err, src)
 			}

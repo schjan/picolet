@@ -111,8 +111,6 @@ func ResolveDirs(rootless bool) (quadletDir, systemdDir, dataDir string, err err
 }
 
 // ResolveHost computes the complete desired state for a given hostname.
-//
-//nolint:cyclop,funlen // sequential resolution of file categories; splitting would obscure the flow
 func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedHost, error) {
 	host, ok := r.cfg.Hosts[hostname]
 	if !ok {
@@ -228,6 +226,34 @@ func (r *Resolver) buildFiles(
 ) ([]ResolvedFile, error) {
 	var files []ResolvedFile
 
+	standardFiles, err := r.buildStandardFiles(registry, tmplData, fileSet)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, standardFiles...)
+
+	for _, ref := range manifestRefs {
+		f, err := r.resolveManifestRef(registry, tmplData, ref)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, *f)
+	}
+
+	secretFiles, err := r.buildSecretFiles(registry, tmplData, fileSet.Secrets, opResolved)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, secretFiles...)
+
+	return files, nil
+}
+
+func (r *Resolver) buildStandardFiles(
+	registry *template.Template,
+	tmplData *TemplateData,
+	fileSet *config.ResolvedFileSet,
+) ([]ResolvedFile, error) {
 	fileGroups := []struct {
 		paths   []string
 		cat     string
@@ -240,6 +266,8 @@ func (r *Resolver) buildFiles(
 		{fileSet.Containers, "container", r.quadletDir, true},
 		{fileSet.Kube, "kube", r.quadletDir, true},
 	}
+
+	var files []ResolvedFile
 	for _, g := range fileGroups {
 		for _, srcPath := range g.paths {
 			f, err := r.resolveFile(registry, tmplData, srcPath, g.cat, g.destDir, g.quadlet)
@@ -249,16 +277,17 @@ func (r *Resolver) buildFiles(
 			files = append(files, *f)
 		}
 	}
+	return files, nil
+}
 
-	for _, ref := range manifestRefs {
-		f, err := r.resolveManifestRef(registry, tmplData, ref)
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, *f)
-	}
-
-	for _, srcPath := range fileSet.Secrets {
+func (r *Resolver) buildSecretFiles(
+	registry *template.Template,
+	tmplData *TemplateData,
+	secrets []string,
+	opResolved map[string]string,
+) ([]ResolvedFile, error) {
+	var files []ResolvedFile
+	for _, srcPath := range secrets {
 		if op.IsRef(srcPath) {
 			if opResolved == nil {
 				continue
@@ -270,13 +299,13 @@ func (r *Resolver) buildFiles(
 			files = append(files, *f)
 			continue
 		}
+
 		f, err := r.resolveSecret(registry, tmplData, srcPath)
 		if err != nil {
 			return nil, err
 		}
 		files = append(files, *f)
 	}
-
 	return files, nil
 }
 
