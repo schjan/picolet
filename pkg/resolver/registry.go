@@ -48,7 +48,7 @@ func (c *OpSecretCache) Resolve(ctx context.Context) error {
 		c.resolved = make(map[string]string)
 		return nil
 	}
-	unique := slices.Compact(slices.Sorted(slices.Values(c.collected)))
+	unique := sortedUnique(c.collected)
 	slog.Debug("batch-resolving template op:// secrets", "count", len(unique))
 	results, err := c.reader(ctx, unique)
 	if err != nil {

@@ -77,22 +77,26 @@ features: []
 	assert.Equal(t, "host-b", hostnames[1])
 }
 
+//nolint:funlen // table-driven coverage for assignment merge behavior
 func TestAssignmentsResolve(t *testing.T) {
 	t.Parallel()
 	assignments := &Assignments{
 		Base: AssignmentGroup{
 			Networks:   []string{"net1"},
 			Containers: []string{"base-container"},
+			Services:   []string{"base-service"},
 		},
 		PiTypes: map[string]AssignmentGroup{
 			"monitoring_server": {
 				Containers: []string{"prometheus"},
 				Volumes:    []string{"prom-vol"},
+				Services:   []string{"pi-service"},
 			},
 		},
 		Features: map[string]AssignmentGroup{
 			"mosquitto": {
-				Kube: []string{"mosquitto-stack"},
+				Kube:     []string{"mosquitto-stack"},
+				Services: []string{"feature-service", "base-service"},
 			},
 		},
 	}
@@ -104,6 +108,7 @@ func TestAssignmentsResolve(t *testing.T) {
 		wantConts int
 		wantKubes int
 		wantVols  int
+		wantSvcs  []string
 	}{
 		{
 			name:      "server with mosquitto",
@@ -111,6 +116,7 @@ func TestAssignmentsResolve(t *testing.T) {
 			wantNets:  1,
 			wantConts: 1,
 			wantKubes: 1,
+			wantSvcs:  []string{"base-service", "feature-service"},
 		},
 		{
 			name:      "monitoring_server no features",
@@ -118,12 +124,14 @@ func TestAssignmentsResolve(t *testing.T) {
 			wantNets:  1,
 			wantConts: 2,
 			wantVols:  1,
+			wantSvcs:  []string{"base-service", "pi-service"},
 		},
 		{
 			name:      "server no features",
 			host:      &HostConfig{PiType: "server"},
 			wantNets:  1,
 			wantConts: 1,
+			wantSvcs:  []string{"base-service"},
 		},
 	}
 
@@ -135,6 +143,7 @@ func TestAssignmentsResolve(t *testing.T) {
 			assert.Len(t, result.Containers, tt.wantConts)
 			assert.Len(t, result.Kube, tt.wantKubes)
 			assert.Len(t, result.Volumes, tt.wantVols)
+			assert.Equal(t, tt.wantSvcs, result.Services)
 		})
 	}
 }

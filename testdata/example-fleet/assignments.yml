@@ -18,6 +18,9 @@ pi_types:
   worker:
     containers:
       - quadlets/containers/exporter.container
+  web:
+    services:
+      - web-app
   e2e:
     containers:
       - quadlets/containers/simple.container.tmpl

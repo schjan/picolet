@@ -1,0 +1,4 @@
+hostname: web-1
+external_hostname: web-1.example.net
+pi_type: web
+features: []

@@ -1,0 +1,6 @@
+# Managed by picolet
+[Socket]
+ListenStream=8080
+
+[Install]
+WantedBy=sockets.target
