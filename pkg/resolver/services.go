@@ -54,6 +54,23 @@ func sortedUnique(values []string) []string {
 	return slices.Compact(slices.Sorted(slices.Values(values)))
 }
 
+// validateServiceName rejects bundle names that would resolve outside the
+// services/ namespace once joined to "services/" and cleaned. The repo FS is
+// already DirFS-scoped so there's no arbitrary-path read, but a name like
+// "../quadlets" would silently reroute the bundle root to the legacy quadlet
+// directory, contradicting the documented layout.
+func validateServiceName(service string) error {
+	switch {
+	case service == "":
+		return errors.New("service name must not be empty")
+	case service == "." || service == "..":
+		return fmt.Errorf("service name %q is reserved", service)
+	case strings.ContainsAny(service, `/\`):
+		return fmt.Errorf("service name %q must not contain path separators", service)
+	}
+	return nil
+}
+
 func expandServiceBundles(fsys fs.FS, services []string) (*expandedBundles, error) {
 	expanded := &expandedBundles{}
 	var errs []error
@@ -84,6 +101,9 @@ func expandServiceBundles(fsys fs.FS, services []string) (*expandedBundles, erro
 }
 
 func expandServiceBundle(fsys fs.FS, service string) (*expandedBundles, error) {
+	if err := validateServiceName(service); err != nil {
+		return nil, err
+	}
 	root := path.Join("services", service)
 	rootEntries, err := readBundleRoot(fsys, root)
 	if err != nil {

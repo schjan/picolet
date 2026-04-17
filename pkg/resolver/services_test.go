@@ -202,6 +202,38 @@ func TestExpandServiceBundlesRejectsSymlink(t *testing.T) {
 	}
 }
 
+func TestExpandServiceBundlesRejectsInvalidName(t *testing.T) {
+	t.Parallel()
+
+	// Prepare a filesystem that would be readable under a traversed path, to
+	// prove validation fails fast rather than silently loading from `quadlets/`.
+	fsys := fstest.MapFS{
+		"services/web/containers/web.container": &fstest.MapFile{Data: []byte("[Container]\nImage=a\n")},
+		"quadlets/containers/legacy.container":  &fstest.MapFile{Data: []byte("[Container]\nImage=b\n")},
+	}
+
+	tests := []struct {
+		name    string
+		service string
+		want    string
+	}{
+		{"empty", "", "must not be empty"},
+		{"dot", ".", `"." is reserved`},
+		{"dotdot", "..", `".." is reserved`},
+		{"forward slash", "a/b", "must not contain path separators"},
+		{"parent traversal", "../quadlets", "must not contain path separators"},
+		{"backslash", `a\b`, "must not contain path separators"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := expandServiceBundles(fsys, []string{tt.service})
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+}
+
 func TestAddPathUnknownCategory(t *testing.T) {
 	t.Parallel()
 
