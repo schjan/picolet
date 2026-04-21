@@ -9,7 +9,7 @@ import (
 	ghinstallation "github.com/bradleyfalzon/ghinstallation/v2"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
-	gogithub "github.com/google/go-github/v84/github"
+	gogithub "github.com/google/go-github/v85/github"
 )
 
 // Client wraps go-github with GitHub App auth.
