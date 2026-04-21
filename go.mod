@@ -11,7 +11,6 @@ require (
 	github.com/eclipse/paho.golang v0.23.0
 	github.com/go-git/go-git/v5 v5.18.0
 	github.com/godbus/dbus/v5 v5.2.2
-	github.com/google/go-github/v84 v84.0.0
 	github.com/google/go-github/v85 v85.0.0
 	github.com/mochi-mqtt/server/v2 v2.7.9
 	github.com/prometheus/client_golang v1.23.2
@@ -79,6 +78,7 @@ require (
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/go-containerregistry v0.20.7 // indirect
+	github.com/google/go-github/v84 v84.0.0 // indirect
 	github.com/google/go-intervals v0.0.2 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
