@@ -2,7 +2,9 @@ package onepassword
 
 import (
 	"context"
+	"runtime"
 	"testing"
+	"time"
 
 	op "github.com/1password/onepassword-sdk-go"
 	"github.com/stretchr/testify/assert"
@@ -41,7 +43,7 @@ func TestResolveAllPartialFailure(t *testing.T) {
 			}, nil
 		},
 	}
-	client := &Client{secrets: mock}
+	client := &Client{opClient: &op.Client{SecretsAPI: mock}}
 
 	results, err := client.ResolveAll(t.Context(), []string{goodRef, badRef})
 	require.ErrorContains(t, err, badRef)
@@ -69,7 +71,7 @@ func TestResolveAllAllSucceed(t *testing.T) {
 			}, nil
 		},
 	}
-	client := &Client{secrets: mock}
+	client := &Client{opClient: &op.Client{SecretsAPI: mock}}
 
 	results, err := client.ResolveAll(t.Context(), refs)
 	require.NoError(t, err)
@@ -79,9 +81,62 @@ func TestResolveAllAllSucceed(t *testing.T) {
 
 func TestResolveAllEmpty(t *testing.T) {
 	t.Parallel()
-	client := &Client{secrets: &mockSecretsAPI{}}
+	client := &Client{opClient: &op.Client{SecretsAPI: &mockSecretsAPI{}}}
 
 	results, err := client.ResolveAll(t.Context(), nil)
 	require.NoError(t, err)
 	assert.Nil(t, results)
+}
+
+// TestClientHasOpClientField is a compile-time structural assertion: if the
+// opClient field is removed or retyped, this test file fails to compile.
+// Guards against accidental removal of the lifetime-anchoring field, which
+// would silently re-introduce the "invalid client id" production bug.
+func TestClientHasOpClientField(t *testing.T) {
+	t.Parallel()
+	// The explicit *op.Client type is the assertion: if the field is renamed,
+	// removed, or retyped, this line fails to compile.
+	//nolint:staticcheck // QF1011: explicit type is intentional — this is a structural type assertion, not a regular declaration
+	var _ *op.Client = new(Client).opClient
+}
+
+// TestClientRetainsSDKClient verifies that Client holds a strong reference to
+// the underlying *op.Client, preventing the SDK's runtime finalizer from firing
+// while the wrapper is still in use.
+//
+// Strategy: attach a cleanup to a synthetic *op.Client (no network), wrap it,
+// drop the only other reference, force GC, and assert the cleanup did NOT run.
+// If Client.opClient ever stops anchoring the SDK client, the cleanup fires
+// and the test fails.
+func TestClientRetainsSDKClient(t *testing.T) {
+	t.Parallel()
+
+	wrapper, released := newClientForGCTest()
+
+	runtime.GC()
+	runtime.Gosched()
+
+	select {
+	case <-released:
+		t.Fatal("op.Client was reclaimed by GC while wrapper is still reachable; " +
+			"Client.opClient must hold a strong reference to prevent premature SDK finalizer execution")
+	case <-time.After(2 * time.Second):
+	}
+
+	// Ensures the compiler does not consider wrapper dead before the GC pass
+	// above, which would make the assertion vacuous.
+	runtime.KeepAlive(wrapper)
+}
+
+// newClientForGCTest constructs a Client around a synthetic *op.Client (no
+// network I/O) and returns a channel that is closed if the SDK client is
+// garbage-collected. Encapsulating construction here lets the local sdkClient
+// pointer go out of scope naturally — no explicit nil assignment required.
+func newClientForGCTest() (*Client, chan struct{}) {
+	sdkClient := &op.Client{SecretsAPI: &mockSecretsAPI{}}
+	released := make(chan struct{})
+	// The cleanup arg (the channel) must not equal the tracked pointer; using
+	// a chan satisfies that constraint and is goroutine-safe for close().
+	runtime.AddCleanup(sdkClient, func(ch chan struct{}) { close(ch) }, released)
+	return &Client{opClient: sdkClient}, released
 }

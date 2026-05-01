@@ -14,8 +14,15 @@ import (
 )
 
 // Client wraps the 1Password SDK for secret resolution.
+//
+// opClient is retained for the lifetime of this struct. The SDK registers a
+// runtime finalizer on *op.Client (onepassword-sdk-go client_builder.go) that
+// calls core.ReleaseClient and invalidates the underlying client ID. Storing
+// only the SecretsAPI interface — which does not back-reference *op.Client —
+// allows GC to reclaim the SDK client prematurely, producing "invalid client
+// id" errors on subsequent Resolve calls. Do not remove this field.
 type Client struct {
-	secrets op.SecretsAPI
+	opClient *op.Client
 }
 
 // onepassword-sdk-go v0.3.x initializes a shared global core without
@@ -27,19 +34,19 @@ func NewClient(ctx context.Context, token string) (*Client, error) {
 	newClientMu.Lock()
 	defer newClientMu.Unlock()
 
-	client, err := op.NewClient(ctx,
+	c, err := op.NewClient(ctx,
 		op.WithServiceAccountToken(token),
 		op.WithIntegrationInfo("picolet", version.Version),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating 1password client: %w", err)
 	}
-	return &Client{secrets: client.Secrets()}, nil
+	return &Client{opClient: c}, nil
 }
 
 // Resolve fetches a secret value by its 1Password reference (e.g. "op://vault/item/field").
 func (c *Client) Resolve(ctx context.Context, ref string) (string, error) {
-	val, err := c.secrets.Resolve(ctx, ref)
+	val, err := c.opClient.Secrets().Resolve(ctx, ref)
 	if err != nil {
 		return "", fmt.Errorf("resolving 1password secret %q: %w", ref, err)
 	}
@@ -54,7 +61,7 @@ func (c *Client) ResolveAll(ctx context.Context, refs []string) (map[string]stri
 	if len(refs) == 0 {
 		return nil, nil //nolint:nilnil // empty input → no work
 	}
-	resp, err := c.secrets.ResolveAll(ctx, refs)
+	resp, err := c.opClient.Secrets().ResolveAll(ctx, refs)
 	if err != nil {
 		return nil, fmt.Errorf("resolving 1password secrets: %w", err)
 	}
