@@ -260,6 +260,18 @@ func TestValidateSystemdUnit(t *testing.T) {
 	require.Error(t, validateSystemdUnit("test.socket", noSection))
 }
 
+func TestValidateFilesRejectsUnknownCategory(t *testing.T) {
+	t.Parallel()
+	err := ValidateFiles([]resolver.ResolvedFile{{
+		DestPath: "/tmp/file",
+		SrcPath:  "unknown/file",
+		Category: "unknown",
+		Content:  "content",
+	}}, false)
+	require.Error(t, err)
+	require.ErrorContains(t, err, `unknown file category "unknown"`)
+}
+
 func TestSplitYAMLDocumentsLeadingSeparator(t *testing.T) {
 	t.Parallel()
 	content := []byte("---\napiVersion: v1\nkind: Pod\nmetadata:\n  name: test\n")

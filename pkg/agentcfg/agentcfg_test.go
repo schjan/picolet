@@ -445,6 +445,19 @@ onepassword:
 	}
 }
 
+func TestLoadRejectsUnknownFields(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.yml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+hostname: rpi5-1
+repo_url: https://github.com/example/fleet.git
+not_a_field: true
+`), 0o600))
+	_, err := Load(path)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "not_a_field")
+}
+
 func TestLoadFileNotFound(t *testing.T) {
 	t.Parallel()
 	_, err := Load("/nonexistent/config.yml")

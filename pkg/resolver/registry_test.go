@@ -159,3 +159,20 @@ func TestGlobAndRenderTemplateWorkflow(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "first=node-1\nsecond=app:v1", out)
 }
+
+func TestBuildRegistrySkipsGitDirectory(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"main.tmpl":         &fstest.MapFile{Data: []byte("ok")},
+		".git/invalid.tmpl": &fstest.MapFile{Data: []byte(`{{`)},
+		".git/hooks/h.tmpl": &fstest.MapFile{Data: []byte(`{{`)},
+		"nested/valid.tmpl": &fstest.MapFile{Data: []byte("nested")},
+		"nested/plain.txt":  &fstest.MapFile{Data: []byte("ignored")},
+	}
+
+	registry, _, err := BuildRegistry(t.Context(), fsys, nil, nil)
+	require.NoError(t, err)
+	assert.NotNil(t, registry.Lookup("main.tmpl"))
+	assert.Nil(t, registry.Lookup(".git/invalid.tmpl"))
+}

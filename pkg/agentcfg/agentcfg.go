@@ -60,7 +60,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := yaml.Load(data, &cfg, yaml.WithKnownFields()); err != nil {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 	cfg.setDefaults()

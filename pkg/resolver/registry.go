@@ -72,6 +72,9 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 		if err != nil {
 			return err
 		}
+		if d.IsDir() && d.Name() == ".git" {
+			return fs.SkipDir
+		}
 		if d.IsDir() || !strings.HasSuffix(path, ".tmpl") {
 			return nil
 		}

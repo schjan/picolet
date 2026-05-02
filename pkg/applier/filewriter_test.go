@@ -1,4 +1,4 @@
-package applier
+package applier_test
 
 // memFileWriter records operations for testing.
 type memFileWriter struct {

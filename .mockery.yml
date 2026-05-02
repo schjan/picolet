@@ -15,9 +15,9 @@ template-schema: '{{.Template}}.schema.json'
 packages:
   github.com/schjan/picolet/pkg/applier:
     config:
-      dir: "{{.InterfaceDir}}"
-      filename: "mock_gen.go"
-      pkgname: "{{.SrcPackageName}}"
+      dir: "mocks/{{.SrcPackageName}}"
+      filename: "mocks.go"
+      pkgname: "mocks"
       structname: "Mock{{.InterfaceName}}"
     interfaces:
       SystemdManager: ~

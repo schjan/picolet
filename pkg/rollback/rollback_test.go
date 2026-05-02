@@ -11,18 +11,18 @@ import (
 	mock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	"github.com/schjan/picolet/pkg/applier"
+	appliermocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/reconciler"
 )
 
 func TestCreateAndRestore(t *testing.T) {
 	t.Parallel()
-	sys := applier.NewMockSystemdManager(t)
+	sys := appliermocks.NewMockSystemdManager(t)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 
 	written := make(map[string][]byte)
 	removed := []string{}
-	fw := applier.NewMockFileWriter(t)
+	fw := appliermocks.NewMockFileWriter(t)
 	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).RunAndReturn(func(path string, content []byte) error {
 		written[path] = content
 		return nil
@@ -32,8 +32,6 @@ func TestCreateAndRestore(t *testing.T) {
 		removed = append(removed, path)
 		return nil
 	})
-
-	mgr := New(fw, sys)
 
 	cs := &reconciler.Changeset{
 		Changes: []reconciler.Change{
@@ -51,7 +49,7 @@ func TestCreateAndRestore(t *testing.T) {
 		return nil, fmt.Errorf("not found: %s", path)
 	}
 
-	snap, err := mgr.Create(cs, diskReader)
+	snap, err := CreateSnapshot(cs, diskReader)
 	require.NoError(t, err)
 
 	// Secret should be skipped
@@ -66,7 +64,7 @@ func TestCreateAndRestore(t *testing.T) {
 	assert.Equal(t, []byte("original-content"), snap.Files["/etc/containers/systemd/old.container"])
 
 	// Now restore
-	require.NoError(t, mgr.Restore(context.Background(), snap))
+	require.NoError(t, Restore(context.Background(), snap, fw, sys))
 
 	// new.container should be removed
 	assert.Equal(t, []string{"/etc/containers/systemd/new.container"}, removed)
@@ -81,14 +79,12 @@ func TestSnapshotWithRealFilesystem(t *testing.T) {
 	existingPath := filepath.Join(dir, "existing.conf")
 	require.NoError(t, os.WriteFile(existingPath, []byte("existing"), 0o600))
 
-	sys := applier.NewMockSystemdManager(t)
+	sys := appliermocks.NewMockSystemdManager(t)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
-	fw := applier.NewMockFileWriter(t)
+	fw := appliermocks.NewMockFileWriter(t)
 	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(nil)
 	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
 	fw.EXPECT().Remove(mock.Anything).Return(nil).Maybe()
-
-	mgr := New(fw, sys)
 
 	cs := &reconciler.Changeset{
 		Changes: []reconciler.Change{
@@ -97,29 +93,24 @@ func TestSnapshotWithRealFilesystem(t *testing.T) {
 		},
 	}
 
-	snap, err := mgr.Create(cs, os.ReadFile)
+	snap, err := CreateSnapshot(cs, os.ReadFile)
 	require.NoError(t, err)
 
 	assert.Equal(t, []byte("existing"), snap.Files[existingPath])
 	assert.Nil(t, snap.Files[filepath.Join(dir, "new.conf")])
 
-	require.NoError(t, mgr.Restore(context.Background(), snap))
+	require.NoError(t, Restore(context.Background(), snap, fw, sys))
 }
 
 func TestCreateSkipsNoop(t *testing.T) {
 	t.Parallel()
-	sys := applier.NewMockSystemdManager(t)
-	fw := applier.NewMockFileWriter(t)
-	// No expectations — noop should not trigger any calls
-	mgr := New(fw, sys)
-
 	cs := &reconciler.Changeset{
 		Changes: []reconciler.Change{
 			{DestPath: "/etc/containers/systemd/noop.container", Action: reconciler.ActionNoop, Category: "container"},
 		},
 	}
 
-	snap, err := mgr.Create(cs, nil)
+	snap, err := CreateSnapshot(cs, nil)
 	require.NoError(t, err)
 	assert.Empty(t, snap.Files)
 }

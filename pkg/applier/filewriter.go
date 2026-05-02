@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 )
 
 // AtomicFileWriter writes files atomically using tmp + rename.
@@ -20,14 +21,34 @@ func NewAtomicFileWriter() *AtomicFileWriter {
 const filePerm = 0o644
 
 func (w *AtomicFileWriter) WriteFile(path string, content []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, content, filePerm); err != nil {
-		return fmt.Errorf("writing %s: %w", tmp, err)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file for %s: %w", path, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("renaming %s to %s: %w", tmp, path, err)
+	tmpName := tmp.Name()
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing %s: %w", tmpName, err)
 	}
+	if err := tmp.Chmod(filePerm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("setting permissions on %s: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing %s: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("renaming %s to %s: %w", tmpName, path, err)
+	}
+	removeTmp = false
 	return nil
 }
 

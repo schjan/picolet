@@ -86,10 +86,11 @@ func TestLoad_CorruptJSON_ReturnsFreshState(t *testing.T) {
 
 	store := NewStore(path)
 	st, err := store.Load()
-	require.NoError(t, err)
-	assert.Empty(t, st.AppliedSHA)
-	assert.NotNil(t, st.ManagedFiles)
-	assert.Empty(t, st.ManagedFiles)
+	require.ErrorIs(t, err, ErrCorrupt)
+	assert.Nil(t, st)
+	data, readErr := os.ReadFile(path)
+	require.NoError(t, readErr)
+	assert.Equal(t, []byte("not valid json{{{"), data)
 }
 
 func TestLoad_OldSchemaFormat_ReturnsFreshState(t *testing.T) {
@@ -101,9 +102,6 @@ func TestLoad_OldSchemaFormat_ReturnsFreshState(t *testing.T) {
 
 	store := NewStore(path)
 	st, err := store.Load()
-	require.NoError(t, err)
-	// Old format should cause unmarshal error → fresh state
-	assert.Empty(t, st.AppliedSHA)
-	assert.NotNil(t, st.ManagedFiles)
-	assert.Empty(t, st.ManagedFiles)
+	require.ErrorIs(t, err, ErrCorrupt)
+	assert.Nil(t, st)
 }

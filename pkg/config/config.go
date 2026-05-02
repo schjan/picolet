@@ -85,7 +85,7 @@ func loadYAML[T any](fsys fs.FS, path string) (*T, error) {
 		return nil, err
 	}
 	var v T
-	if err := yaml.Unmarshal(data, &v); err != nil {
+	if err := yaml.Load(data, &v, yaml.WithKnownFields()); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return &v, nil

@@ -154,3 +154,18 @@ func TestLoadAllMissingFleet(t *testing.T) {
 	_, err := LoadAll(fsys)
 	require.Error(t, err)
 }
+
+func TestLoadAllRejectsUnknownFields(t *testing.T) {
+	t.Parallel()
+	fsys := fstest.MapFS{
+		"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nnot_a_field: true\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\n")},
+		"hosts/host-a/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: host-a
+features: []
+`)},
+	}
+	_, err := LoadAll(fsys)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "not_a_field")
+}

@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
 )
+
+// ErrCorrupt is returned when the state file exists but cannot be decoded.
+var ErrCorrupt = errors.New("state file corrupt")
 
 // ManagedFile tracks a picolet-owned file's content hash and category.
 type ManagedFile struct {
@@ -69,8 +71,7 @@ func (s *Store) Load() (*State, error) {
 	}
 	var st State
 	if err := json.Unmarshal(data, &st); err != nil {
-		slog.Warn("state file unreadable (corrupt or schema change), starting fresh", "path", s.path, "error", err)
-		return NewState(), nil
+		return nil, fmt.Errorf("decoding state %s: %w: %w", s.path, ErrCorrupt, err)
 	}
 	if st.ManagedFiles == nil {
 		st.ManagedFiles = make(map[string]ManagedFile)
@@ -81,7 +82,7 @@ func (s *Store) Load() (*State, error) {
 	return &st, nil
 }
 
-// Save writes the state atomically using tmp + rename.
+// Save writes the state atomically using a unique temp file + rename.
 func (s *Store) Save(st *State) error {
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
@@ -93,13 +94,44 @@ func (s *Store) Save(st *State) error {
 		return fmt.Errorf("creating state directory: %w", err)
 	}
 
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	tmp, err := os.CreateTemp(dir, filepath.Base(s.path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp state: %w", err)
+	}
+	tmpName := tmp.Name()
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("writing temp state: %w", err)
 	}
-	if err := os.Rename(tmp, s.path); err != nil {
-		os.Remove(tmp)
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("syncing temp state: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp state: %w", err)
+	}
+	if err := os.Rename(tmpName, s.path); err != nil {
 		return fmt.Errorf("renaming state file: %w", err)
 	}
+	removeTmp = false
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("syncing state directory: %w", err)
+	}
 	return nil
+}
+
+func syncDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
 }

@@ -97,7 +97,7 @@ func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyRe
 	result := &ApplyResult{}
 	sorted := slices.Clone(cs.Changes)
 	slices.SortFunc(sorted, func(x, y reconciler.Change) int {
-		return cmp.Compare(categoryOrder[x.Category], categoryOrder[y.Category])
+		return cmp.Compare(categoryRank(x.Category), categoryRank(y.Category))
 	})
 
 	changedUnits, needsReload, err := a.applyPhase(ctx, sorted, result)
@@ -108,6 +108,14 @@ func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyRe
 		return result, nil
 	}
 	return result, a.restartUnits(ctx, changedUnits, needsReload, result)
+}
+
+func categoryRank(category string) int {
+	rank, ok := categoryOrder[category]
+	if !ok {
+		return categoryOrder["unknown"]
+	}
+	return rank
 }
 
 //nolint:cyclop // multiple early-continues are clearer than restructuring

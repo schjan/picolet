@@ -187,3 +187,21 @@ func TestPollerReopenExisting(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.HeadSHA)
 }
+
+func TestPollerCleansUntrackedFiles(t *testing.T) {
+	t.Parallel()
+	bareDir := initBareRepo(t)
+	localDir := filepath.Join(t.TempDir(), "clone")
+	ctx := context.Background()
+
+	p := New(bareDir, "master", localDir, anonymousAuth{})
+	require.NoError(t, p.Init(ctx))
+
+	stalePath := filepath.Join(localDir, "stale.tmpl")
+	require.NoError(t, os.WriteFile(stalePath, []byte("stale"), 0o600))
+	require.FileExists(t, stalePath)
+
+	_, err := p.Poll(ctx, "")
+	require.NoError(t, err)
+	require.NoFileExists(t, stalePath)
+}
