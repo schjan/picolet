@@ -20,6 +20,7 @@ import (
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
+	"github.com/schjan/picolet/pkg/dashboard"
 	"github.com/schjan/picolet/pkg/github"
 	"github.com/schjan/picolet/pkg/githubauth"
 	"github.com/schjan/picolet/pkg/metrics"
@@ -280,10 +281,26 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 	if err != nil {
 		return err
 	}
+	statePath := filepath.Join(dataDir, "state.json")
+
+	// Two state.Store instances over the same statePath is safe: writes are
+	// atomic (tmp+rename); concurrent reads always see a fully-formed file.
+	dashboardHandler, err := dashboard.NewHandler(
+		state.NewStore(statePath),
+		systemd,
+		cfg,
+		version.Version,
+		slog.Default(),
+	)
+	if err != nil {
+		return fmt.Errorf("dashboard handler: %w", err)
+	}
+
 	opts = append(opts,
 		agent.WithRepoPath(filepath.Join(dataDir, "repo")),
-		agent.WithStatePath(filepath.Join(dataDir, "state.json")),
+		agent.WithStatePath(statePath),
 		agent.WithLockPath(filepath.Join(dataDir, "reconciliation.lock")),
+		agent.WithDashboard(dashboardHandler),
 	)
 
 	opts, err = appendMQTTOptions(cfg, opts)
