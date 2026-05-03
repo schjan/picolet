@@ -99,7 +99,8 @@
   </main>
 
   <footer class="dashboard-footer">
-    <span>rendered {{ .RenderedAt.Format "2006-01-02 15:04:05 MST" }}<span class="stale-tag">· refresh stalled</span></span>
+    <span>rendered {{ .RenderedAt.Format "2006-01-02 15:04:05 MST" }}</span>
+    <span class="stale-tag" role="status" aria-live="polite">refresh stalled</span>
     {{- if .RefreshEnabled }}
     <span>auto-refreshes every {{ .RefreshSec }}s</span>
     {{- else }}

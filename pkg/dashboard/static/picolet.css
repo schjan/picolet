@@ -336,8 +336,9 @@ main {
   z-index: 1;
 }
 
-.stale-tag { display: none; color: var(--bad); margin-left: 0.75rem; }
+.stale-tag { display: none; color: var(--bad); }
 body.stale .stale-tag { display: inline; }
+#refresh-progress { transition: background-color 200ms ease, opacity 200ms ease; }
 body.stale #refresh-progress { background: var(--bad); opacity: 0.6; }
 
 @keyframes rise { to { opacity: 1; transform: translateY(0); } }
