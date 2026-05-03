@@ -107,4 +107,8 @@ Template data root: `.Host` (hostname, pi_type, features), `.Fleet` (full config
 
 ### Package Dependencies
 
-`pkg/state` and `pkg/gitpoll` are fully standalone. `pkg/metrics` has only global prometheus vars. Everything else flows through `pkg/agent` which orchestrates the pipeline.
+`pkg/state`, `pkg/gitpoll`, and `pkg/status` are fully standalone. `pkg/status` is a process-local in-memory runtime store consumed by `pkg/agent`, `pkg/dashboard`, and `pkg/metrics`.
+
+`pkg/metrics` exposes Prometheus collectors. Custom collectors that read runtime state accept a `*status.Store` at construction (`metrics.Register(store)`); no package-level mutable state. `pkg/metrics` imports `pkg/status` (one direction; no cycle).
+
+Everything else flows through `pkg/agent` which orchestrates the pipeline.

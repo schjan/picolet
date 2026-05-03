@@ -135,6 +135,99 @@ func TestValidateQuadletVolume(t *testing.T) {
 	require.NoError(t, validateQuadlet(unit, make(map[string]*quadlet.UnitInfo), false))
 }
 
+func TestAnalyzeFilesQuadletDependencies(t *testing.T) {
+	t.Parallel()
+	files := []resolver.ResolvedFile{
+		newParsedFile(t, "network", "/etc/containers/systemd/internal.network", "[Network]\n"),
+		newParsedFile(t, "container", "/etc/containers/systemd/web.container", `[Unit]
+Requires=custom.service
+After=internal.network
+
+[Container]
+Image=docker.io/library/nginx:latest
+Network=internal.network
+`),
+	}
+
+	depsByUnit, err := AnalyzeFiles(files, false)
+	require.NoError(t, err)
+
+	deps := depsByUnit["web.service"]
+	require.Contains(t, deps.Requires, "custom.service")
+	require.Contains(t, deps.After, "internal-network.service")
+	require.Contains(t, deps.Wants, "network-online.target")
+}
+
+// TestAnalyzeFiles_NoDoubleServiceSuffix is a regression test: an earlier
+// version of buildUnitInfo set ServiceName=base+".service", and Quadlet's
+// generator then ran ServiceFileName() (which appends ".service" again),
+// producing dependency targets like "internal-network.service.service".
+// The fix in pkg/validator/quadlet.go strips the suffix; this test pins it.
+func TestAnalyzeFiles_NoDoubleServiceSuffix(t *testing.T) {
+	t.Parallel()
+	files := []resolver.ResolvedFile{
+		newParsedFile(t, "network", "/etc/containers/systemd/internal.network", "[Network]\n"),
+		newParsedFile(t, "container", "/etc/containers/systemd/web.container", `[Container]
+Image=docker.io/library/nginx:latest
+Network=internal.network
+`),
+	}
+
+	depsByUnit, err := AnalyzeFiles(files, false)
+	require.NoError(t, err)
+
+	for unit, deps := range depsByUnit {
+		require.NotContains(t, unit, ".service.service",
+			"unit name must not contain doubled .service suffix")
+		for _, target := range deps.After {
+			require.NotContains(t, target, ".service.service",
+				"After dep target must not contain doubled .service suffix")
+		}
+		for _, target := range deps.Requires {
+			require.NotContains(t, target, ".service.service",
+				"Requires dep target must not contain doubled .service suffix")
+		}
+	}
+}
+
+func TestAnalyzeFilesRootlessDefaultDependencies(t *testing.T) {
+	t.Parallel()
+	files := []resolver.ResolvedFile{
+		newParsedFile(t, "container", "/etc/containers/systemd/web.container", `[Container]
+Image=docker.io/library/nginx:latest
+`),
+	}
+
+	depsByUnit, err := AnalyzeFiles(files, true)
+	require.NoError(t, err)
+
+	deps := depsByUnit["web.service"]
+	require.Contains(t, deps.After, "podman-user-wait-network-online.service")
+	require.Contains(t, deps.Wants, "podman-user-wait-network-online.service")
+}
+
+func TestAnalyzeFilesSystemdDependencies(t *testing.T) {
+	t.Parallel()
+	files := []resolver.ResolvedFile{{
+		DestPath: "/etc/systemd/system/custom.service",
+		Category: "systemd",
+		Content: `[Unit]
+Requires=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/bin/true
+`,
+	}}
+
+	depsByUnit, err := AnalyzeFiles(files, false)
+	require.NoError(t, err)
+
+	deps := depsByUnit["custom.service"]
+	require.Equal(t, []string{"network-online.target"}, deps.Requires)
+	require.Equal(t, []string{"network-online.target"}, deps.After)
+}
+
 //nolint:funlen // table-driven validation test
 func TestValidateManifest(t *testing.T) {
 	t.Parallel()

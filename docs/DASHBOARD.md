@@ -1,6 +1,14 @@
 # Picolet Dashboard
 
-Living document for the picolet dashboard. v1 ships in PR #69 (GitHub Issue #10) — a single-route, read-only HTML page served from the existing metrics HTTP server. This document tracks intended v2 follow-ups; nothing here is implemented yet.
+Living document for the picolet dashboard. v1 ships in PR #69 (GitHub Issue #10) — a single-route, read-only HTML page served from the existing metrics HTTP server.
+
+v2 implements the read-only runtime slice: dependency disclosure, host metadata, live verified-OK time, refresh accessibility, orphan cleanup results, recent in-memory events/issues, and Prometheus-safe summary metrics.
+
+## Status (v2)
+
+Shipped: #1 (dependency view), #10 (host metadata in header), #11 (`?refresh=0` accessibility), #12 (live verified-OK signal).
+Partially shipped: #6 (orphan view — panel renders only when something was cleaned up, full would-clean-up dry-run remains).
+Deferred: #2 (actions — needs auth/CSRF), #3 (persisted reconciliation history — current ring is in-memory, drops noops), #4 (per-unit drill-down), #5 (HTMX), #7 (recent apply errors — folded into the recent-events ring), #8 (configurability), #9 (font subsetting).
 
 ---
 

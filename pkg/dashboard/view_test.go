@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/state"
+	"github.com/schjan/picolet/pkg/status"
 )
 
 func TestShortHash(t *testing.T) {
@@ -116,7 +116,7 @@ var fixtureNow = time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
 // fixtureBuildViewModel returns the canonical "happy-path" inputs the
 // buildViewModel tests share. Tests mutate fields on the returned struct as
 // needed. Time anchor is the package-level fixtureNow.
-func fixtureBuildViewModel() (HeaderInput, map[string]state.ManagedFile, map[string]string, map[string]applier.UnitStatus) {
+func fixtureBuildViewModel() (HeaderInput, map[string]state.ManagedFile, map[string]string, map[string]status.UnitRuntimeStatus) {
 	// Git commit SHAs are NOT sha256-prefixed — that prefix is only on
 	// managed-file content hashes. shortSHA does not strip; shortHash does.
 	in := HeaderInput{
@@ -137,7 +137,7 @@ func fixtureBuildViewModel() (HeaderInput, map[string]state.ManagedFile, map[str
 		"/p/web.container": "web.service",
 		"/p/data.volume":   "data-volume.service",
 	}
-	statuses := map[string]applier.UnitStatus{
+	statuses := map[string]status.UnitRuntimeStatus{
 		"web.service":         {ActiveState: "active", SubState: "running"},
 		"data-volume.service": {ActiveState: "failed", SubState: "dead"},
 	}
@@ -147,7 +147,7 @@ func fixtureBuildViewModel() (HeaderInput, map[string]state.ManagedFile, map[str
 func TestBuildViewModel_Header(t *testing.T) {
 	t.Parallel()
 	in, files, services, statuses := fixtureBuildViewModel()
-	vm := buildViewModel(in, files, services, statuses, fixtureNow)
+	vm := buildViewModel(in, files, services, statuses, nil, status.OrphanScan{}, nil, fixtureNow, true)
 
 	if vm.Header.Hostname != "pi-edge-01" {
 		t.Errorf("hostname = %q", vm.Header.Hostname)
@@ -166,7 +166,7 @@ func TestBuildViewModel_Header(t *testing.T) {
 func TestBuildViewModel_BannerActive(t *testing.T) {
 	t.Parallel()
 	in, files, services, statuses := fixtureBuildViewModel()
-	vm := buildViewModel(in, files, services, statuses, fixtureNow)
+	vm := buildViewModel(in, files, services, statuses, nil, status.OrphanScan{}, nil, fixtureNow, true)
 
 	if vm.Banner == nil || !vm.Banner.Active {
 		t.Fatal("banner should be active when FailedCount >= 3 within failure window")
@@ -180,7 +180,7 @@ func TestBuildViewModel_BannerSuppressedBelowThreshold(t *testing.T) {
 	t.Parallel()
 	in, files, services, statuses := fixtureBuildViewModel()
 	in.FailedCount = 2
-	vm := buildViewModel(in, files, services, statuses, fixtureNow)
+	vm := buildViewModel(in, files, services, statuses, nil, status.OrphanScan{}, nil, fixtureNow, true)
 	if vm.Banner != nil && vm.Banner.Active {
 		t.Error("banner should be inactive when FailedCount < 3")
 	}
@@ -191,7 +191,7 @@ func TestBuildViewModel_BannerSuppressedAfterExpiry(t *testing.T) {
 	in, files, services, statuses := fixtureBuildViewModel()
 	in.FailedCount = 5
 	in.FailedAt = fixtureNow.Add(-2 * time.Hour) // mirrors agent failure-gate expiry
-	vm := buildViewModel(in, files, services, statuses, fixtureNow)
+	vm := buildViewModel(in, files, services, statuses, nil, status.OrphanScan{}, nil, fixtureNow, true)
 	if vm.Banner != nil && vm.Banner.Active {
 		t.Error("banner should be inactive when FailedAt > 1h ago")
 	}
@@ -200,7 +200,7 @@ func TestBuildViewModel_BannerSuppressedAfterExpiry(t *testing.T) {
 func TestBuildViewModel_Rows(t *testing.T) {
 	t.Parallel()
 	in, files, services, statuses := fixtureBuildViewModel()
-	vm := buildViewModel(in, files, services, statuses, fixtureNow)
+	vm := buildViewModel(in, files, services, statuses, nil, status.OrphanScan{}, nil, fixtureNow, true)
 
 	var web, manifest UnitRow
 	for _, g := range vm.Groups {
@@ -229,15 +229,41 @@ func TestBuildViewModel_SystemdBasenameDerivation(t *testing.T) {
 	files := map[string]state.ManagedFile{
 		"/etc/systemd/system/custom.timer": {Hash: "sha256:tttt1111", Category: "systemd"},
 	}
-	statuses := map[string]applier.UnitStatus{
+	statuses := map[string]status.UnitRuntimeStatus{
 		"custom.timer": {ActiveState: "active", SubState: "running"},
 	}
-	vm := buildViewModel(in, files, nil, statuses, fixtureNow)
+	vm := buildViewModel(in, files, nil, statuses, nil, status.OrphanScan{}, nil, fixtureNow, true)
 	row := vm.Groups[0].Rows[0]
 	if row.Status.Token != "active" {
 		t.Errorf("systemd basename derivation failed (status): %+v", row)
 	}
 	if row.Service != "custom.timer" {
 		t.Errorf("systemd basename should be written back to row.Service for template rendering, got %q", row.Service)
+	}
+}
+
+func TestBuildViewModel_Dependencies(t *testing.T) {
+	t.Parallel()
+	in, files, services, statuses := fixtureBuildViewModel()
+	vm := buildViewModel(in, files, services, statuses, map[string]status.UnitDependencies{
+		"web.service": {
+			Requires: []string{"internal-network.service"},
+			After:    []string{"network-online.target"},
+		},
+	}, status.OrphanScan{}, nil, fixtureNow, true)
+
+	var web UnitRow
+	for _, g := range vm.Groups {
+		for _, r := range g.Rows {
+			if r.Service == "web.service" {
+				web = r
+			}
+		}
+	}
+	if len(web.Dependencies) != 2 {
+		t.Fatalf("dependency groups = %+v", web.Dependencies)
+	}
+	if web.Dependencies[0].Relation != "requires" {
+		t.Errorf("first relation = %q", web.Dependencies[0].Relation)
 	}
 }

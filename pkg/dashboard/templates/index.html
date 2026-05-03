@@ -4,30 +4,62 @@
   <meta charset="utf-8">
   <title>{{ .Header.Hostname }} · picolet</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  {{- if .RefreshEnabled }}
   <meta http-equiv="refresh" content="{{ .RefreshSec }}">
+  {{- end }}
   <link rel="stylesheet" href="/static/picolet.css?v={{ .Header.Version }}">
 </head>
 <body>
+  {{- if .RefreshEnabled }}
   <div id="refresh-progress" aria-hidden="true" style="--refresh-duration: {{ .RefreshSec }}s"></div>
+  {{- end }}
 
   <header class="dashboard-header">
     <span class="logotype">picolet</span>
     <dl>
       <div><dt>host</dt><dd>{{ .Header.Hostname }}</dd></div>
+      {{- if .Header.ExternalHostname }}
+      <div><dt>external</dt><dd>{{ .Header.ExternalHostname }}</dd></div>
+      {{- end }}
+      {{- if .Header.PiType }}
+      <div><dt>type</dt><dd>{{ .Header.PiType }}</dd></div>
+      {{- end }}
+      {{- if .Header.Features }}
+      <div><dt>features</dt><dd>{{ .Header.Features }}</dd></div>
+      {{- end }}
       <div><dt>version</dt><dd>{{ .Header.Version }}</dd></div>
       <div><dt>sha</dt><dd>{{ .Header.AppliedSHAShort }}</dd></div>
       {{- if .Header.AppliedAgo }}
       <div><dt>applied</dt><dd>{{ .Header.AppliedAgo }}</dd></div>
+      {{- end }}
+      {{- if .Header.VerifiedAgo }}
+      <div><dt>verified</dt><dd>{{ .Header.VerifiedAgo }}</dd></div>
       {{- end }}
     </dl>
   </header>
 
   <main>
     {{- if and .Banner .Banner.Active }}
-    <aside class="banner" role="alert">
+    <aside class="banner" aria-live="polite">
       <strong>recent repeated failure</strong>
       on <code>{{ .Banner.FailedSHAShort }}</code> · {{ .Banner.FailedCount }} consecutive failures · last try {{ .Banner.FailedAgo }}
     </aside>
+    {{- end }}
+    {{- if .OrphanScan }}
+    <section class="panel">
+      <h2>orphan cleanup</h2>
+      <p>{{ .OrphanScan.FilesRemoved }} files · {{ .OrphanScan.SecretsRemoved }} secrets{{ if .OrphanScan.Error }} · {{ .OrphanScan.Error }}{{ end }}</p>
+    </section>
+    {{- end }}
+    {{- if .RecentEvents }}
+    <section class="panel">
+      <h2>recent events</h2>
+      <ol class="events">
+        {{- range .RecentEvents }}
+        <li><span class="event-result">{{ .Result }}</span>{{ if .SHA }} <code>{{ .SHA }}</code>{{ end }} <span>{{ .When }}</span>{{ if .Message }} <span class="event-message">{{ .Message }}</span>{{ end }}</li>
+        {{- end }}
+      </ol>
+    </section>
     {{- end }}
     {{- range .Groups }}
     <section class="category">
@@ -43,7 +75,15 @@
             <tr>
               <td title="{{ .Path }}">{{ .Basename }}</td>
               <td>{{ .HashShort }}</td>
-              <td>{{ if .Service }}{{ .Service }}{{ else }}—{{ end }}</td>
+              <td>{{ if .Service }}{{ .Service }}{{ else }}—{{ end }}{{ if .Dependencies }}
+                <details class="dependencies">
+                  <summary>dependencies</summary>
+                  <dl>
+                    {{- range .Dependencies }}
+                    <div><dt>{{ .Relation }}</dt><dd>{{ range $i, $target := .Targets }}{{ if $i }}, {{ end }}{{ $target }}{{ end }}</dd></div>
+                    {{- end }}
+                  </dl>
+                </details>{{ end }}</td>
               <td class="status status--{{ .Status.Class }}"><span class="glyph">{{ .Status.Glyph }}</span> {{ .Status.Token }}{{ if .SubState }}<span class="substate">· {{ .SubState }}</span>{{ end }}</td>
             </tr>
             {{- end }}
@@ -56,7 +96,11 @@
 
   <footer class="dashboard-footer">
     <span>rendered {{ .RenderedAt.Format "2006-01-02 15:04:05 MST" }}</span>
+    {{- if .RefreshEnabled }}
     <span>auto-refreshes every {{ .RefreshSec }}s</span>
+    {{- else }}
+    <span>auto-refresh paused</span>
+    {{- end }}
   </footer>
 </body>
 </html>

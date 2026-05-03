@@ -32,6 +32,7 @@ import (
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
+	"github.com/schjan/picolet/pkg/status"
 )
 
 // initTestRepo creates a git repo with picolet config files for a test host.
@@ -177,7 +178,7 @@ func TestAgentFullCycle(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "state")
 	statePath := filepath.Join(stateDir, "state.json")
 
-	metrics.Register()
+	metrics.Register(nil)
 
 	sys, pod, fw := newBareMocks(t)
 	written := setupApplyMocks(sys, pod, fw)
@@ -435,7 +436,7 @@ func TestAgentDeletionCycle(t *testing.T) { //nolint:funlen // three-phase test:
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
-	metrics.Register()
+	metrics.Register(nil)
 
 	sys, pod, fw := newBareMocks(t)
 	// Orphan scan at startup calls ListManagedSecrets
@@ -524,7 +525,7 @@ func TestAgentRollbackOnApplyFailure(t *testing.T) {
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
-	metrics.Register()
+	metrics.Register(nil)
 
 	sys, pod, fw := newBareMocks(t)
 	setupNoopMocks(sys, pod)
@@ -652,7 +653,7 @@ func TestHealthEndpoint_ReturnsOKAfterSuccessfulTick(t *testing.T) {
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
-	metrics.Register()
+	metrics.Register(nil)
 
 	sys, pod, fw := newBareMocks(t)
 	setupApplyMocks(sys, pod, fw)
@@ -726,7 +727,7 @@ func TestWebhookTriggersReconciliation(t *testing.T) {
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
-	metrics.Register()
+	metrics.Register(nil)
 
 	sys, pod, fw := newBareMocks(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
@@ -847,7 +848,7 @@ func TestScanOrphansAfterSchemaMigration(t *testing.T) {
 	store := state.NewStore(statePath)
 	require.NoError(t, store.Save(state.NewState()))
 
-	metrics.Register()
+	metrics.Register(nil)
 
 	sys, pod, fw := newBareMocks(t)
 	// Strict expectation (no .Maybe()): if scanOrphans skips the scan
@@ -880,7 +881,7 @@ func TestAgentPauseSkipsReconciliation(t *testing.T) {
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
-	metrics.Register()
+	metrics.Register(nil)
 
 	sys, pod, fw := newBareMocks(t)
 	// Health checks still run when paused; no writes expected.
@@ -932,7 +933,7 @@ func TestAgentMQTTStatusPublished(t *testing.T) {
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
-	metrics.Register()
+	metrics.Register(nil)
 
 	sys, pod, fw := newBareMocks(t)
 	setupApplyMocks(sys, pod, fw)
@@ -1001,7 +1002,7 @@ func TestLastSuccessfulReconciliationSeededFromState(t *testing.T) {
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
-	metrics.Register()
+	metrics.Register(nil)
 
 	// Pre-seed state with a known LastSuccessfulReconciliationAt timestamp.
 	seededTime := time.Now().Add(-1 * time.Hour).Truncate(time.Second)
@@ -1180,23 +1181,22 @@ func TestUpdateHealthFailures(t *testing.T) {
 
 func TestRecordHealthMetrics_ClearsStaleGauges(t *testing.T) {
 	t.Parallel()
-	metrics.Register()
-
-	// Seed a unit into the global collector (parallel-safe: unique unit name).
-	metrics.UnitHealth.Set("clear-test.service", "active", "running")
 
 	// D-Bus fully down: all errors, no statuses.
-	recordHealthMetrics(&health.CheckResult{
+	a := newTestAgent(t, &agentcfg.Config{Hostname: "test", RepoURL: "https://example.com/repo.git"})
+
+	// Seed a unit into the agent's status store (the metrics collector reads from it).
+	a.statusStore.SetUnit("clear-test.service", status.UnitRuntimeStatus{ActiveState: "active", SubState: "running"})
+
+	a.recordHealthMetrics(&health.CheckResult{
 		Errors:   []error{fmt.Errorf("dbus dead")},
 		Statuses: map[string]applier.UnitStatus{},
 	})
 
-	// After clearing, a fresh collector should emit nothing for our unit.
-	// We verify via a separate collector to avoid asserting on other tests' units.
-	collector := metrics.NewUnitHealthCollector()
-	collector.Set("verify.service", "active", "running")
-	collector.Clear()
+	// Status store is the single source of truth — collector scrapes from it.
+	assert.Empty(t, a.statusStore.Snapshot().Units, "store should clear stale unit state when D-Bus is down")
 
+	collector := metrics.NewUnitHealthCollector(a.statusStore)
 	ch := make(chan prometheus.Metric, 10)
 	collector.Collect(ch)
 	close(ch)
@@ -1207,9 +1207,73 @@ func TestRecordHealthMetrics_ClearsStaleGauges(t *testing.T) {
 	assert.Equal(t, 0, count, "cleared collector should emit no metrics")
 }
 
+// TestRefreshResolvedSnapshot_ValidationFailure verifies the contract
+// described in the dashboard v2 plan: when AnalyzeFiles fails during a noop
+// status refresh, the agent does NOT advance the dependency map (so the
+// dashboard keeps showing the previous good map) and does NOT bootstrap.
+// Validation failure here surfaces the bad repo state without blocking the
+// agent from continuing to verify the deployed state on subsequent ticks.
+func TestRefreshResolvedSnapshot_ValidationFailure(t *testing.T) {
+	t.Parallel()
+
+	// Build a minimal repo where the resolver succeeds but the validator fails.
+	// A network file with no [Network] section parses but quadlet conversion
+	// will produce no useful unit info; an empty .container file is a stronger
+	// failure path: parsing succeeds but quadlet rejects an unspecified Image.
+	repoDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "hosts/test-host"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "fleet.yml"), []byte("images: {}\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "assignments.yml"), []byte(`base:
+  containers:
+    - quadlets/broken.container
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "hosts/test-host/host.yml"), []byte(`hostname: test-host
+pi_type: server
+features: []
+`), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "quadlets"), 0o755))
+	// Container without Image= — quadlet.ConvertContainer rejects it.
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "quadlets/broken.container"), []byte(`[Container]
+ContainerName=broken
+`), 0o600))
+
+	store := status.NewStore()
+	a := New(&agentcfg.Config{Hostname: "test-host"},
+		WithLockPath(filepath.Join(t.TempDir(), "lock")),
+		WithStatusStore(store),
+		WithRepoPath(repoDir),
+	)
+
+	err := a.refreshResolvedSnapshot(context.Background())
+	require.Error(t, err, "validation should fail for container without Image")
+	require.Contains(t, err.Error(), "validation failed")
+
+	snap := store.Snapshot()
+	assert.False(t, snap.Bootstrapped, "validation failure must not bootstrap the store")
+	assert.Empty(t, snap.Dependencies, "deps must remain unset on validation failure")
+	// Host metadata IS recorded (recordHostMetadata happens before AnalyzeFiles).
+	assert.Equal(t, "server", snap.Host.PiType)
+}
+
+func TestRecordHealthMetrics_UpdatesStatusStore(t *testing.T) {
+	t.Parallel()
+	metrics.Register(nil)
+	a := newTestAgent(t, &agentcfg.Config{Hostname: "test", RepoURL: "https://example.com/repo.git"})
+
+	a.recordHealthMetrics(&health.CheckResult{
+		Statuses: map[string]applier.UnitStatus{
+			"web.service": {ActiveState: "active", SubState: "running"},
+		},
+	})
+
+	snap := a.statusStore.Snapshot()
+	assert.Equal(t, "active", snap.Units["web.service"].ActiveState)
+	assert.Equal(t, "running", snap.Units["web.service"].SubState)
+}
+
 func TestSetFilesManagedMetric(t *testing.T) {
 	t.Parallel()
-	metrics.Register()
+	metrics.Register(nil)
 
 	counts := map[string]float64{
 		"container": 3,
@@ -1291,7 +1355,7 @@ func TestOpRefreshDue(t *testing.T) {
 
 func TestCreateDeploymentContinuesWhenPendingStatusFails(t *testing.T) {
 	t.Parallel()
-	metrics.Register()
+	metrics.Register(nil)
 
 	cfg := &agentcfg.Config{Hostname: "test-host", RepoURL: "https://example.com/repo.git"}
 	reporter := agentmocks.NewMockDeploymentReporter(t)
@@ -1305,7 +1369,7 @@ func TestCreateDeploymentContinuesWhenPendingStatusFails(t *testing.T) {
 
 func TestReportDeploymentResultUsesErrorForRollback(t *testing.T) {
 	t.Parallel()
-	metrics.Register()
+	metrics.Register(nil)
 
 	beforeError := testutil.ToFloat64(metrics.DeploymentStatusTotal.WithLabelValues("error"))
 
@@ -1322,7 +1386,7 @@ func TestReportDeploymentResultUsesErrorForRollback(t *testing.T) {
 
 func TestReportDeploymentResultUsesDetachedContextOnSuccess(t *testing.T) {
 	t.Parallel()
-	metrics.Register()
+	metrics.Register(nil)
 
 	cfg := &agentcfg.Config{Hostname: "test-host", RepoURL: "https://example.com/repo.git"}
 	reporter := agentmocks.NewMockDeploymentReporter(t)
@@ -1366,7 +1430,7 @@ func TestTickDoesNotCreateDeploymentForUnchangedSHAOpRefresh(t *testing.T) {
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
-	metrics.Register()
+	metrics.Register(nil)
 
 	sys, pod, fw := newBareMocks(t)
 	setupApplyMocks(sys, pod, fw)

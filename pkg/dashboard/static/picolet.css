@@ -147,6 +147,54 @@ main {
   font-family: inherit;
 }
 
+.panel {
+  display: grid;
+  grid-template-columns: minmax(8rem, 12rem) 1fr;
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--rule);
+  opacity: 0;
+  transform: translateY(4px);
+  animation: rise 260ms cubic-bezier(0.2, 0.8, 0.2, 1) 60ms forwards;
+}
+
+.panel h2 {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--fg-dim);
+  margin: 0;
+}
+
+.panel p {
+  margin: 0;
+  color: var(--fg-dim);
+}
+
+.events {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.events li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.75rem;
+  padding: 0.25rem 0;
+  color: var(--fg-dim);
+}
+
+.event-result {
+  color: var(--fg);
+}
+
+.event-message {
+  color: var(--fg-dim);
+}
+
 .category {
   display: grid;
   grid-template-columns: minmax(8rem, 12rem) 1fr;
@@ -214,6 +262,51 @@ main {
 .status--unknown { color: var(--unknown); font-style: italic; }
 .status--muted   { color: var(--fg-mute); font-style: italic; }
 
+.dependencies {
+  margin-top: 0.35rem;
+  color: var(--fg-dim);
+}
+
+.dependencies summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--accent);
+  width: max-content;
+}
+
+.dependencies summary::-webkit-details-marker { display: none; }
+
+.dependencies summary::before {
+  content: "+";
+  display: inline-block;
+  width: 1ch;
+  margin-right: 0.5ch;
+}
+
+.dependencies[open] summary::before { content: "-"; }
+
+.dependencies dl {
+  margin: 0.35rem 0 0;
+}
+
+.dependencies dl > div {
+  display: grid;
+  grid-template-columns: minmax(5rem, max-content) minmax(10rem, 1fr);
+  gap: 0.75rem;
+  padding: 0.12rem 0;
+}
+
+.dependencies dt {
+  color: var(--fg-mute);
+  text-transform: uppercase;
+  font-size: 0.68rem;
+}
+
+.dependencies dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .dashboard-footer {
   border-top: 1px solid var(--rule);
   padding: 1rem clamp(1rem, 4vw, 3rem);
@@ -234,6 +327,7 @@ main {
   #refresh-progress { animation: none; transform: scaleX(0); }
   .dashboard-header,
   .banner,
+  .panel,
   .category {
     animation: none;
     opacity: 1;
@@ -243,6 +337,10 @@ main {
 
 @media (max-width: 1023px) {
   .category {
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+  }
+  .panel {
     grid-template-columns: 1fr;
     gap: 0.5rem;
   }

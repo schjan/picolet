@@ -50,7 +50,7 @@ func testLogger(t *testing.T) *slog.Logger {
 }
 
 func init() {
-	metrics.Register()
+	metrics.Register(nil)
 }
 
 // retainedPayload reads a retained message directly from the broker's topic

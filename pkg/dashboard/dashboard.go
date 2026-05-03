@@ -5,44 +5,44 @@ package dashboard
 
 import (
 	"bytes"
-	"context"
 	"html/template"
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/schjan/picolet/pkg/agentcfg"
-	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/state"
+	"github.com/schjan/picolet/pkg/status"
 )
-
-// statusCollectionTimeout caps the worst case if D-Bus stalls so the
-// dashboard cannot hang the browser. ~30 sequential GetUnitStatus calls on
-// a Pi take milliseconds; 2s is generous.
-const statusCollectionTimeout = 2 * time.Second
 
 // Handler serves the dashboard index page and its static assets.
 type Handler struct {
-	store   *state.Store
-	systemd applier.SystemdManager
-	cfg     *agentcfg.Config
-	version string
-	tpl     *template.Template
-	logger  *slog.Logger
-	now     func() time.Time
+	store       *state.Store
+	cfg         *agentcfg.Config
+	version     string
+	statusStore *status.Store
+	tpl         *template.Template
+	logger      *slog.Logger
+	now         func() time.Time
+}
+
+// Option configures a Handler.
+type Option func(*Handler)
+
+// WithStatusStore provides live in-memory agent status to the dashboard.
+func WithStatusStore(store *status.Store) Option {
+	return func(h *Handler) { h.statusStore = store }
 }
 
 // NewHandler builds a dashboard handler. All dependencies may be nil for
-// constrained test scenarios; nil store/systemd/cfg are tolerated and treated
-// as empty.
+// constrained test scenarios; nil store/cfg are tolerated and treated as empty.
 func NewHandler(
 	store *state.Store,
-	sm applier.SystemdManager,
 	cfg *agentcfg.Config,
 	version string,
 	logger *slog.Logger,
+	opts ...Option,
 ) (*Handler, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -51,15 +51,18 @@ func NewHandler(
 	if err != nil {
 		return nil, err
 	}
-	return &Handler{
+	h := &Handler{
 		store:   store,
-		systemd: sm,
 		cfg:     cfg,
 		version: version,
 		tpl:     tpl,
 		logger:  logger,
 		now:     time.Now,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h, nil
 }
 
 // SetNowForTest replaces the wall-clock for deterministic golden tests.
@@ -86,43 +89,27 @@ func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request) {
 
 	// Set no-store before any potential error path so 5xx responses cannot be
 	// cached by intermediaries during the 30s auto-refresh window.
-	// http.Error preserves this header (it only resets Content-Type and
-	// X-Content-Type-Options).
 	w.Header().Set("Cache-Control", "no-store")
 
-	// Tolerate nil store in tests; treat as zero-state.
-	st := &state.State{}
-	if h.store != nil {
-		loaded, err := h.store.Load()
-		if err != nil {
-			h.logger.Error("dashboard: state load failed", "err", err)
-			http.Error(w, "state unavailable", http.StatusInternalServerError)
-			return
-		}
-		if loaded != nil {
-			st = loaded
-		}
+	st, err := h.loadState()
+	if err != nil {
+		h.logger.Error("dashboard: state load failed", "err", err)
+		http.Error(w, "state unavailable", http.StatusInternalServerError)
+		return
 	}
+	snap := h.statusStore.Snapshot()
 
-	statusCtx, cancel := context.WithTimeout(r.Context(), statusCollectionTimeout)
-	defer cancel()
-	statuses := h.collectStatuses(statusCtx, st.ManagedFiles, st.ServiceNames)
-
-	var hostname string
-	if h.cfg != nil {
-		hostname = h.cfg.Hostname
-	}
-
-	in := HeaderInput{
-		Hostname:    hostname,
-		Version:     h.version,
-		AppliedSHA:  st.AppliedSHA,
-		AppliedAt:   st.AppliedAt,
-		FailedSHA:   st.FailedSHA,
-		FailedCount: st.FailedCount,
-		FailedAt:    st.FailedAt,
-	}
-	vm := buildViewModel(in, st.ManagedFiles, st.ServiceNames, statuses, h.now())
+	vm := buildViewModel(
+		h.buildHeaderInput(st, snap),
+		st.ManagedFiles,
+		st.ServiceNames,
+		snap.Units,
+		snap.Dependencies,
+		snap.OrphanScan,
+		snap.Events,
+		h.now(),
+		r.URL.Query().Get("refresh") != "0",
+	)
 
 	// Render into a buffer first so a template error never leaves the client
 	// with a partial response — we only commit headers + bytes on success.
@@ -137,41 +124,47 @@ func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(buf.Bytes())
 }
 
-// collectStatuses queries SystemdManager for each unique unit referenced by
-// managed files. Unit-name resolution lives in unitNameFor. Units are
-// queried in sorted order so that if the shared deadline truncates the loop
-// on a slow host, the same prefix of units is queried each refresh — without
-// this, randomized map iteration would cause rows to flip between real
-// statuses and "unknown" between renders.
-func (h *Handler) collectStatuses(
-	ctx context.Context,
-	files map[string]state.ManagedFile,
-	services map[string]string,
-) map[string]applier.UnitStatus {
-	out := map[string]applier.UnitStatus{}
-	if h.systemd == nil {
-		return out
+// loadState returns the persisted state, tolerating nil store as zero-state
+// (test scenarios). Returns an error only on disk/decode failure.
+func (h *Handler) loadState() (*state.State, error) {
+	if h.store == nil {
+		return &state.State{}, nil
 	}
-	seen := map[string]bool{}
-	units := make([]string, 0, len(files))
-	for path, mf := range files {
-		unit := unitNameFor(mf.Category, path, services[path])
-		if unit == "" || seen[unit] {
-			continue
-		}
-		seen[unit] = true
-		units = append(units, unit)
+	loaded, err := h.store.Load()
+	if err != nil {
+		return nil, err
 	}
-	slices.Sort(units)
-	for _, unit := range units {
-		st, err := h.systemd.GetUnitStatus(ctx, unit)
-		if err != nil {
-			h.logger.Debug("dashboard: GetUnitStatus failed", "unit", unit, "err", err)
-			continue // absent → buildViewModel renders unknown
-		}
-		out[unit] = st
+	if loaded == nil {
+		return &state.State{}, nil
 	}
-	return out
+	return loaded, nil
+}
+
+func (h *Handler) buildHeaderInput(st *state.State, snap status.Snapshot) HeaderInput {
+	var hostname string
+	if h.cfg != nil {
+		hostname = h.cfg.Hostname
+	}
+	return HeaderInput{
+		Hostname:         hostname,
+		Version:          h.version,
+		AppliedSHA:       st.AppliedSHA,
+		AppliedAt:        st.AppliedAt,
+		VerifiedAt:       liveVerifiedAt(st, snap),
+		PiType:           snap.Host.PiType,
+		Features:         snap.Host.Features,
+		ExternalHostname: snap.Host.ExternalHostname,
+		FailedSHA:        st.FailedSHA,
+		FailedCount:      st.FailedCount,
+		FailedAt:         st.FailedAt,
+	}
+}
+
+func liveVerifiedAt(st *state.State, snap status.Snapshot) time.Time {
+	if !snap.VerifiedAt.IsZero() {
+		return snap.VerifiedAt
+	}
+	return st.LastSuccessfulReconciliationAt
 }
 
 func staticCache(next http.Handler) http.Handler {
