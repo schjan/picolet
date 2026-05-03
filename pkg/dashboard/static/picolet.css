@@ -1,1 +1,275 @@
-/* picolet — replaced in Task 7 */
+/* picolet — bespoke dashboard stylesheet.
+ * Refined technical / late-night sysadmin aesthetic. System monospace stack. */
+
+:root {
+  --bg:        #0e1116;
+  --bg-elev:   #151920;
+  --fg:        #e6e1d3;
+  --fg-dim:    #8a8478;
+  --fg-mute:   #565049;
+  --accent:    #ffb454;
+  --ok:        #79dfc1;
+  --pending:   #ffd166;
+  --cold:      #6e7681;
+  --bad:       #ff6b6b;
+  --unknown:   #4a5058;
+  --rule:      rgba(230, 225, 211, 0.08);
+  --grain:     url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='3'/><feColorMatrix values='0 0 0 0 0.9  0 0 0 0 0.88  0 0 0 0 0.8  0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg:      #f3efe5;
+    --bg-elev: #ffffff;
+    --fg:      #1a1d24;
+    --fg-dim:  #5a5448;
+    --fg-mute: #a09885;
+    --rule:    rgba(26, 29, 36, 0.10);
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+
+body {
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--fg);
+  background: var(--bg);
+  font-variant-numeric: tabular-nums;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: var(--grain);
+  opacity: 0.03;
+  pointer-events: none;
+  z-index: 0;
+}
+
+main {
+  padding: 2.5rem clamp(1rem, 4vw, 3rem);
+  position: relative;
+  z-index: 1;
+}
+
+#refresh-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 1px;
+  width: 100%;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left;
+  animation: refresh-deplete 30s linear forwards;
+  z-index: 10;
+}
+
+@keyframes refresh-deplete { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+.dashboard-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.5rem 2rem;
+  padding: 2rem clamp(1rem, 4vw, 3rem) 1rem;
+  border-bottom: 1px solid var(--rule);
+  position: relative;
+  z-index: 1;
+  opacity: 0;
+  transform: translateY(4px);
+  animation: rise 260ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+.logotype {
+  font-size: 1.1rem;
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  color: var(--fg);
+  text-transform: lowercase;
+}
+
+.logotype::after {
+  content: "▪";
+  color: var(--accent);
+  margin-left: 0.4em;
+  font-size: 0.55em;
+  vertical-align: 0.15em;
+}
+
+.dashboard-header dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, max-content));
+  gap: 0.25rem 1.5rem;
+  margin: 0;
+}
+
+.dashboard-header dt {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.72rem;
+  color: var(--fg-dim);
+}
+
+.dashboard-header dd {
+  margin: 0 0 0.25rem 0;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.banner {
+  background: var(--bg-elev);
+  border-left: 2px solid var(--bad);
+  padding: 1rem 1.25rem;
+  color: var(--bad);
+  margin-bottom: 2rem;
+  opacity: 0;
+  transform: translateY(4px);
+  animation: rise 260ms cubic-bezier(0.2, 0.8, 0.2, 1) 40ms forwards;
+}
+
+.banner code {
+  font-weight: 500;
+  font-family: inherit;
+}
+
+.category {
+  display: grid;
+  grid-template-columns: minmax(8rem, 12rem) 1fr;
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+  opacity: 0;
+  transform: translateY(4px);
+  animation: rise 260ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+.category:nth-of-type(1) { animation-delay: 80ms; }
+.category:nth-of-type(2) { animation-delay: 120ms; }
+.category:nth-of-type(3) { animation-delay: 160ms; }
+.category:nth-of-type(4) { animation-delay: 200ms; }
+.category:nth-of-type(5) { animation-delay: 240ms; }
+.category:nth-of-type(6) { animation-delay: 280ms; }
+.category:nth-of-type(7) { animation-delay: 320ms; }
+
+.category h2 {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--fg-dim);
+  margin: 0;
+  padding-top: 0.5rem;
+}
+
+.table-wrap { overflow-x: auto; }
+
+.category table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.category thead th {
+  text-align: left;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--fg-dim);
+  padding: 0.55rem 0.9rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.category tbody td {
+  padding: 0.55rem 0.9rem;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+
+.category tbody tr:hover td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
+  transition: box-shadow 120ms ease;
+}
+
+.status .glyph { display: inline-block; width: 1ch; }
+.status .substate { color: var(--fg-dim); margin-left: 0.5rem; }
+.status--ok      { color: var(--ok); }
+.status--pending { color: var(--pending); }
+.status--cold    { color: var(--cold); }
+.status--bad     { color: var(--bad); }
+.status--unknown { color: var(--unknown); font-style: italic; }
+.status--muted   { color: var(--fg-mute); font-style: italic; }
+
+.dashboard-footer {
+  border-top: 1px solid var(--rule);
+  padding: 1rem clamp(1rem, 4vw, 3rem);
+  margin-top: 2rem;
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes rise { to { opacity: 1; transform: translateY(0); } }
+
+@media (prefers-reduced-motion: reduce) {
+  #refresh-progress { animation: none; transform: scaleX(0); }
+  .dashboard-header,
+  .banner,
+  .category {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (max-width: 1023px) {
+  .category {
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+  }
+  .category h2 { padding-top: 0; }
+}
+
+@media (max-width: 720px) {
+  main { padding: 1.5rem 1rem; }
+  .dashboard-header {
+    padding: 1.5rem 1rem 0.75rem;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .dashboard-header dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .dashboard-footer {
+    padding: 0.75rem 1rem;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
