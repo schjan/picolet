@@ -62,17 +62,27 @@ type ApplyResult struct {
 // Its presence in a create/update changeset triggers a self-restart via picolet.service.
 const selfContainerFile = "picolet.container"
 
-// categoryOrder defines the apply phase ordering.
-var categoryOrder = map[string]int{
-	"network":   0,
-	"volume":    1,
-	"secret":    2,
-	"systemd":   3,
-	"manifest":  4,
-	"container": 5,
-	"kube":      6,
-	"unknown":   7,
+// CategoryOrder is the canonical apply-phase ordering, exported so other
+// packages (e.g. pkg/dashboard) can group by the same sequence without
+// redefining it.
+var CategoryOrder = []string{
+	"network",
+	"volume",
+	"secret",
+	"systemd",
+	"manifest",
+	"container",
+	"kube",
 }
+
+var categoryRankMap = func() map[string]int {
+	m := make(map[string]int, len(CategoryOrder)+1)
+	for i, c := range CategoryOrder {
+		m[c] = i
+	}
+	m["unknown"] = len(CategoryOrder)
+	return m
+}()
 
 // Applier applies a changeset to the system.
 type Applier struct {
@@ -111,9 +121,9 @@ func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyRe
 }
 
 func categoryRank(category string) int {
-	rank, ok := categoryOrder[category]
+	rank, ok := categoryRankMap[category]
 	if !ok {
-		return categoryOrder["unknown"]
+		return categoryRankMap["unknown"]
 	}
 	return rank
 }

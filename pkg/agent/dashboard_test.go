@@ -8,9 +8,8 @@ import (
 	"github.com/schjan/picolet/pkg/agentcfg"
 )
 
-// fakeRegistrar is a minimal RouteRegistrar used purely to assert that the
-// agent calls Register on the supplied registrar. Importing pkg/dashboard here
-// would defeat the decoupling we just introduced.
+// fakeRegistrar is a minimal RouteRegistrar. Avoiding an import of
+// pkg/dashboard here is deliberate: it keeps pkg/agent UI-agnostic.
 type fakeRegistrar struct{ called bool }
 
 func (f *fakeRegistrar) Register(mux *http.ServeMux) {

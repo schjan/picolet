@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"path/filepath"
 	"time"
 
 	"github.com/schjan/picolet/pkg/agentcfg"
@@ -138,10 +137,7 @@ func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 // collectStatuses queries SystemdManager for each unique unit referenced by
-// managed files. Unit name resolution: prefer state.ServiceNames[path]; for
-// category=systemd files (which the resolver does not annotate with a
-// ServiceName), fall back to filepath.Base(path). manifest/secret categories
-// are skipped — they have no associated systemd unit.
+// managed files. Unit-name resolution lives in unitNameFor.
 func (h *Handler) collectStatuses(
 	ctx context.Context,
 	files map[string]state.ManagedFile,
@@ -153,13 +149,7 @@ func (h *Handler) collectStatuses(
 	}
 	seen := map[string]bool{}
 	for path, mf := range files {
-		if muteCategories[mf.Category] {
-			continue
-		}
-		unit := services[path]
-		if unit == "" && mf.Category == "systemd" {
-			unit = filepath.Base(path)
-		}
+		unit := unitNameFor(mf.Category, path, services[path])
 		if unit == "" || seen[unit] {
 			continue
 		}

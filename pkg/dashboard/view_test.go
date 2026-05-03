@@ -115,10 +115,8 @@ var fixtureNow = time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
 
 // fixtureBuildViewModel returns the canonical "happy-path" inputs the
 // buildViewModel tests share. Tests mutate fields on the returned struct as
-// needed.
-//
-//nolint:unparam // returned now is intentional — a future test may shift it
-func fixtureBuildViewModel() (HeaderInput, map[string]state.ManagedFile, map[string]string, map[string]applier.UnitStatus, time.Time) {
+// needed. Time anchor is the package-level fixtureNow.
+func fixtureBuildViewModel() (HeaderInput, map[string]state.ManagedFile, map[string]string, map[string]applier.UnitStatus) {
 	// Git commit SHAs are NOT sha256-prefixed — that prefix is only on
 	// managed-file content hashes. shortSHA does not strip; shortHash does.
 	in := HeaderInput{
@@ -143,13 +141,13 @@ func fixtureBuildViewModel() (HeaderInput, map[string]state.ManagedFile, map[str
 		"web.service":         {ActiveState: "active", SubState: "running"},
 		"data-volume.service": {ActiveState: "failed", SubState: "dead"},
 	}
-	return in, files, services, statuses, fixtureNow
+	return in, files, services, statuses
 }
 
 func TestBuildViewModel_Header(t *testing.T) {
 	t.Parallel()
-	in, files, services, statuses, now := fixtureBuildViewModel()
-	vm := buildViewModel(in, files, services, statuses, now)
+	in, files, services, statuses := fixtureBuildViewModel()
+	vm := buildViewModel(in, files, services, statuses, fixtureNow)
 
 	if vm.Header.Hostname != "pi-edge-01" {
 		t.Errorf("hostname = %q", vm.Header.Hostname)
@@ -167,8 +165,8 @@ func TestBuildViewModel_Header(t *testing.T) {
 
 func TestBuildViewModel_BannerActive(t *testing.T) {
 	t.Parallel()
-	in, files, services, statuses, now := fixtureBuildViewModel()
-	vm := buildViewModel(in, files, services, statuses, now)
+	in, files, services, statuses := fixtureBuildViewModel()
+	vm := buildViewModel(in, files, services, statuses, fixtureNow)
 
 	if vm.Banner == nil || !vm.Banner.Active {
 		t.Fatal("banner should be active when FailedCount >= 3 within failure window")
@@ -180,9 +178,9 @@ func TestBuildViewModel_BannerActive(t *testing.T) {
 
 func TestBuildViewModel_BannerSuppressedBelowThreshold(t *testing.T) {
 	t.Parallel()
-	in, files, services, statuses, now := fixtureBuildViewModel()
+	in, files, services, statuses := fixtureBuildViewModel()
 	in.FailedCount = 2
-	vm := buildViewModel(in, files, services, statuses, now)
+	vm := buildViewModel(in, files, services, statuses, fixtureNow)
 	if vm.Banner != nil && vm.Banner.Active {
 		t.Error("banner should be inactive when FailedCount < 3")
 	}
@@ -190,10 +188,10 @@ func TestBuildViewModel_BannerSuppressedBelowThreshold(t *testing.T) {
 
 func TestBuildViewModel_BannerSuppressedAfterExpiry(t *testing.T) {
 	t.Parallel()
-	in, files, services, statuses, now := fixtureBuildViewModel()
+	in, files, services, statuses := fixtureBuildViewModel()
 	in.FailedCount = 5
-	in.FailedAt = now.Add(-2 * time.Hour) // mirrors agent failure-gate expiry
-	vm := buildViewModel(in, files, services, statuses, now)
+	in.FailedAt = fixtureNow.Add(-2 * time.Hour) // mirrors agent failure-gate expiry
+	vm := buildViewModel(in, files, services, statuses, fixtureNow)
 	if vm.Banner != nil && vm.Banner.Active {
 		t.Error("banner should be inactive when FailedAt > 1h ago")
 	}
@@ -201,8 +199,8 @@ func TestBuildViewModel_BannerSuppressedAfterExpiry(t *testing.T) {
 
 func TestBuildViewModel_Rows(t *testing.T) {
 	t.Parallel()
-	in, files, services, statuses, now := fixtureBuildViewModel()
-	vm := buildViewModel(in, files, services, statuses, now)
+	in, files, services, statuses := fixtureBuildViewModel()
+	vm := buildViewModel(in, files, services, statuses, fixtureNow)
 
 	var web, manifest UnitRow
 	for _, g := range vm.Groups {
@@ -225,7 +223,7 @@ func TestBuildViewModel_Rows(t *testing.T) {
 
 func TestBuildViewModel_SystemdBasenameDerivation(t *testing.T) {
 	t.Parallel()
-	in, _, _, _, now := fixtureBuildViewModel()
+	in, _, _, _ := fixtureBuildViewModel()
 	in.FailedCount = 0
 
 	files := map[string]state.ManagedFile{
@@ -234,7 +232,7 @@ func TestBuildViewModel_SystemdBasenameDerivation(t *testing.T) {
 	statuses := map[string]applier.UnitStatus{
 		"custom.timer": {ActiveState: "active", SubState: "running"},
 	}
-	vm := buildViewModel(in, files, nil, statuses, now)
+	vm := buildViewModel(in, files, nil, statuses, fixtureNow)
 	row := vm.Groups[0].Rows[0]
 	if row.Status.Token != "active" {
 		t.Errorf("systemd basename derivation failed (status): %+v", row)

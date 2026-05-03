@@ -34,7 +34,6 @@ type Header struct {
 	Hostname        string
 	Version         string
 	AppliedSHAShort string
-	AppliedAt       time.Time
 	AppliedAgo      string
 }
 
@@ -43,7 +42,6 @@ type Banner struct {
 	Active         bool
 	FailedSHAShort string
 	FailedCount    int
-	FailedAt       time.Time
 	FailedAgo      string
 }
 
@@ -55,9 +53,6 @@ type ViewModel struct {
 	RenderedAt time.Time
 	RefreshSec int
 }
-
-// muteCategories are managed-file categories that legitimately have no systemd unit.
-var muteCategories = map[string]bool{"manifest": true, "secret": true}
 
 // Status describes the visual treatment of a unit's runtime state.
 type Status struct {
@@ -137,9 +132,6 @@ func statusFromActiveState(s string) Status {
 	}
 }
 
-// categoryOrder mirrors pkg/applier so the dashboard groups follow the apply order.
-var categoryOrder = []string{"network", "volume", "secret", "systemd", "manifest", "container", "kube"}
-
 func groupByCategory(files map[string]state.ManagedFile, services map[string]string) []CategoryGroup {
 	buckets := map[string][]UnitRow{}
 	for path, mf := range files {
@@ -151,7 +143,7 @@ func groupByCategory(files map[string]state.ManagedFile, services map[string]str
 		})
 	}
 	var out []CategoryGroup
-	for _, cat := range categoryOrder {
+	for _, cat := range applier.CategoryOrder {
 		if rows, ok := buckets[cat]; ok {
 			slices.SortFunc(rows, func(a, b UnitRow) int { return cmp.Compare(a.Basename, b.Basename) })
 			out = append(out, CategoryGroup{Category: cat, Rows: rows})
@@ -189,7 +181,6 @@ func buildViewModel(
 			Hostname:        in.Hostname,
 			Version:         in.Version,
 			AppliedSHAShort: shortSHA(in.AppliedSHA),
-			AppliedAt:       in.AppliedAt,
 			AppliedAgo:      relativeTime(in.AppliedAt, now),
 		},
 		Banner:     buildBanner(in, now),
@@ -199,27 +190,36 @@ func buildViewModel(
 	}
 }
 
-// resolveRowStatus mutates row in-place, deriving the unit name (with
-// systemd-category basename fallback) and status from the per-unit map.
 var mutedStatus = Status{Glyph: "·", Token: "—", Class: "muted"}
 
+// unitNameFor returns the systemd unit name for a managed file, or "" for
+// categories that legitimately have no associated unit (manifest, secret).
+// Mirrors applier.unitNameForDelete; kept private here to avoid exporting
+// applier internals just for the dashboard.
+func unitNameFor(category, path, mappedService string) string {
+	switch category {
+	case "container", "network", "volume", "kube":
+		return mappedService
+	case "systemd":
+		if mappedService != "" {
+			return mappedService
+		}
+		return filepath.Base(path)
+	default:
+		return ""
+	}
+}
+
 func resolveRowStatus(row *UnitRow, category string, statuses map[string]applier.UnitStatus) {
-	if muteCategories[category] {
+	unit := unitNameFor(category, row.Path, row.Service)
+	if unit == "" {
 		row.Status = mutedStatus
 		return
 	}
-	// Derive unit name: prefer state's ServiceName mapping; for raw systemd
-	// files (which resolver does not annotate), fall back to the file basename.
-	// Write the derived name back onto row.Service so the template's "unit"
-	// column shows the derived name, not "—".
-	if row.Service == "" && category == "systemd" {
-		row.Service = row.Basename
-	}
-	if row.Service == "" {
-		row.Status = mutedStatus
-		return
-	}
-	st, ok := statuses[row.Service]
+	// Write the derived name back so the template's "unit" column shows it
+	// for raw systemd files where the resolver does not populate ServiceName.
+	row.Service = unit
+	st, ok := statuses[unit]
 	if !ok {
 		row.Status = statusFromActiveState("")
 		return
@@ -238,7 +238,6 @@ func buildBanner(in HeaderInput, now time.Time) *Banner {
 		Active:         true,
 		FailedSHAShort: shortSHA(in.FailedSHA),
 		FailedCount:    in.FailedCount,
-		FailedAt:       in.FailedAt,
 		FailedAgo:      relativeTime(in.FailedAt, now),
 	}
 }
