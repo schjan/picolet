@@ -14,17 +14,28 @@
   --bad:       #ff6b6b;
   --unknown:   #4a5058;
   --rule:      rgba(230, 225, 211, 0.08);
+  --row-hover: rgba(230, 225, 211, 0.04);
   --grain:     url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='3'/><feColorMatrix values='0 0 0 0 0.9  0 0 0 0 0.88  0 0 0 0 0.8  0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
 }
 
+/* Light-mode semantic colors are darkened to clear WCAG AA body-text
+   contrast (>= 4.5:1) against the cream background. Verified with the
+   sRGB luminance formula. */
 @media (prefers-color-scheme: light) {
   :root {
-    --bg:      #f3efe5;
-    --bg-elev: #ffffff;
-    --fg:      #1a1d24;
-    --fg-dim:  #5a5448;
-    --fg-mute: #a09885;
-    --rule:    rgba(26, 29, 36, 0.10);
+    --bg:        #f3efe5;
+    --bg-elev:   #ffffff;
+    --fg:        #1a1d24;
+    --fg-dim:   #5a5448;
+    --fg-mute:  #a09885;
+    --accent:   #8a4d00;
+    --ok:       #006650;
+    --pending:  #8a5a00;
+    --cold:     #4a525a;
+    --bad:      #a01818;
+    --unknown:  #5a5f66;
+    --rule:     rgba(26, 29, 36, 0.10);
+    --row-hover: rgba(26, 29, 36, 0.035);
   }
 }
 
@@ -94,6 +105,7 @@ main {
   letter-spacing: 0.18em;
   color: var(--fg);
   text-transform: lowercase;
+  margin: 0;
 }
 
 .logotype::after {
@@ -227,9 +239,15 @@ main {
 
 .category table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.82rem;
 }
+
+/* Shared column geometry across every category table so the eye can
+   trust a vertical line through the page. col-status is fixed; the
+   remaining file/unit columns split the rest equally. */
+.category col.col-status { width: 26ch; }
 
 .category thead th {
   text-align: left;
@@ -246,12 +264,21 @@ main {
   padding: 0.55rem 0.9rem;
   border-bottom: 1px solid var(--rule);
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
-.category tbody tr:hover td:first-child {
-  box-shadow: inset 2px 0 0 var(--accent);
-  transition: box-shadow 120ms ease;
-}
+/* Persistent status indicator on the row's left edge — turns the table
+   into a glanceable status strip. Status td is the first cell. */
+.category tbody tr.row--ok      td:first-child { box-shadow: inset 2px 0 0 var(--ok); }
+.category tbody tr.row--pending td:first-child { box-shadow: inset 2px 0 0 var(--pending); }
+.category tbody tr.row--bad     td:first-child { box-shadow: inset 2px 0 0 var(--bad); }
+.category tbody tr.row--cold    td:first-child { box-shadow: inset 2px 0 0 var(--cold); }
+.category tbody tr.row--unknown td:first-child { box-shadow: inset 2px 0 0 var(--unknown); }
+.category tbody tr.row--muted   td:first-child { box-shadow: inset 2px 0 0 transparent; }
+
+/* Hover affordance: subtle row-wide tint that doesn't fight the
+   persistent status bar on the first cell. */
+.category tbody tr:hover td { background-color: var(--row-hover); }
 
 .status .glyph { display: inline-block; width: 1ch; }
 .status .substate { color: var(--fg-dim); margin-left: 0.5rem; }
@@ -321,7 +348,28 @@ main {
   z-index: 1;
 }
 
+/* Stale indicator: surfaced by the partial-refresh script when two or
+   more consecutive fetches fail. Hidden by default; the script flips
+   body.stale on/off based on lastSuccess timestamp. */
+.stale-tag { display: none; color: var(--bad); margin-left: 0.75rem; }
+body.stale .stale-tag { display: inline; }
+body.stale #refresh-progress { background: var(--bad); opacity: 0.6; }
+
 @keyframes rise { to { opacity: 1; transform: translateY(0); } }
+
+/* After first paint, the inline script sets body.settled. Subsequent
+   partial-refresh swaps replace these elements with fresh DOM nodes,
+   which would otherwise re-trigger their entrance animations every
+   30s. The override below keeps the rise effect on initial page load
+   only. */
+body.settled .dashboard-header,
+body.settled .banner,
+body.settled .panel,
+body.settled .category {
+  animation: none;
+  opacity: 1;
+  transform: none;
+}
 
 @media (prefers-reduced-motion: reduce) {
   #refresh-progress { animation: none; transform: scaleX(0); }
