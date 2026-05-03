@@ -167,6 +167,62 @@ func TestServeIndex_FailureGateBanner(t *testing.T) {
 	}
 }
 
+func TestServeIndex_SystemdCategoryDerivesUnitName(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{Hostname: "pi-edge-01"}
+	store := newTestStore(t, state.State{
+		ManagedFiles: map[string]state.ManagedFile{
+			"/etc/systemd/system/custom.timer": {Hash: "sha256:tttt", Category: "systemd"},
+		},
+		// No ServiceNames mapping — handler must fall back to filepath.Base(path).
+	})
+
+	sm := mockapplier.NewMockSystemdManager(t)
+	sm.EXPECT().GetUnitStatus(mock.Anything, "custom.timer").
+		Return(applier.UnitStatus{ActiveState: "active", SubState: "waiting"}, nil)
+
+	h, _ := dashboard.NewHandler(store, sm, cfg, "0.0.0", nil)
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"custom.timer", "active", "waiting", "█"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestServeIndex_NoStoreOnLoadError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(p, []byte("{not valid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewStore(p)
+
+	cfg := &agentcfg.Config{Hostname: "pi-edge-01"}
+	sm := mockapplier.NewMockSystemdManager(t)
+	h, _ := dashboard.NewHandler(store, sm, cfg, "0.0.0", nil)
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control on 500 = %q, want no-store (errors must not be cached during 30s auto-refresh window)", got)
+	}
+}
+
 func TestServeIndex_PerUnitErrorIsTolerant(t *testing.T) {
 	t.Parallel()
 	cfg := &agentcfg.Config{Hostname: "pi-edge-01"}

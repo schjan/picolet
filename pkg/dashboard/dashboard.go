@@ -84,6 +84,12 @@ func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set no-store before any potential error path so 5xx responses cannot be
+	// cached by intermediaries during the 30s auto-refresh window.
+	// http.Error preserves this header (it only resets Content-Type and
+	// X-Content-Type-Options).
+	w.Header().Set("Cache-Control", "no-store")
+
 	// Tolerate nil store in tests; treat as zero-state.
 	st := &state.State{}
 	if h.store != nil {
@@ -127,7 +133,6 @@ func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(buf.Bytes())
 }

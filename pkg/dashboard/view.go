@@ -1,9 +1,10 @@
 package dashboard
 
 import (
+	"cmp"
 	"fmt"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -152,7 +153,7 @@ func groupByCategory(files map[string]state.ManagedFile, services map[string]str
 	var out []CategoryGroup
 	for _, cat := range categoryOrder {
 		if rows, ok := buckets[cat]; ok {
-			sort.Slice(rows, func(i, j int) bool { return rows[i].Basename < rows[j].Basename })
+			slices.SortFunc(rows, func(a, b UnitRow) int { return cmp.Compare(a.Basename, b.Basename) })
 			out = append(out, CategoryGroup{Category: cat, Rows: rows})
 			delete(buckets, cat)
 		}
@@ -162,7 +163,7 @@ func groupByCategory(files map[string]state.ManagedFile, services map[string]str
 		for _, rows := range buckets {
 			leftovers = append(leftovers, rows...)
 		}
-		sort.Slice(leftovers, func(i, j int) bool { return leftovers[i].Basename < leftovers[j].Basename })
+		slices.SortFunc(leftovers, func(a, b UnitRow) int { return cmp.Compare(a.Basename, b.Basename) })
 		out = append(out, CategoryGroup{Category: "other", Rows: leftovers})
 	}
 	return out
