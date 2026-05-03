@@ -5,6 +5,7 @@ package dashboard
 
 import (
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"net/http"
 
@@ -53,6 +54,13 @@ func NewHandler(
 // Register attaches the dashboard's routes to mux.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/", h.serveIndex)
+
+	staticFS, err := fs.Sub(assets, "static")
+	if err != nil {
+		// Embedded FS uses a constant subdir — fs.Sub cannot fail outside of programmer error.
+		panic(err)
+	}
+	mux.Handle("/static/", http.StripPrefix("/static/", staticCache(http.FileServerFS(staticFS))))
 }
 
 func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request) {
@@ -60,8 +68,16 @@ func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.tpl.ExecuteTemplate(w, "index.html", map[string]string{"Version": h.version}); err != nil {
 		h.logger.Error("dashboard render failed", "err", err)
 	}
+}
+
+func staticCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		next.ServeHTTP(w, r)
+	})
 }

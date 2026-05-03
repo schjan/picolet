@@ -49,3 +49,33 @@ func TestHandler_404OnNonRoot(t *testing.T) {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
+
+func TestHandler_HTMLCacheControl(t *testing.T) {
+	t.Parallel()
+	h, _ := dashboard.NewHandler(nil, nil, nil, "0.0.0", nil)
+	mux := http.NewServeMux()
+	h.Register(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("HTML Cache-Control = %q, want no-store", got)
+	}
+}
+
+func TestHandler_StaticAssetServed(t *testing.T) {
+	t.Parallel()
+	h, _ := dashboard.NewHandler(nil, nil, nil, "0.0.0", nil)
+	mux := http.NewServeMux()
+	h.Register(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/picolet.css", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/css") {
+		t.Errorf("content-type = %q", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=86400" {
+		t.Errorf("static Cache-Control = %q", got)
+	}
+}
