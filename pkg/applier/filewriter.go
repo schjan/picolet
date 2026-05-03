@@ -42,6 +42,10 @@ func (w *AtomicFileWriter) WriteFile(path string, content []byte) error {
 		_ = tmp.Close()
 		return fmt.Errorf("setting permissions on %s: %w", tmpName, err)
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("syncing %s: %w", tmpName, err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("closing %s: %w", tmpName, err)
 	}
@@ -49,7 +53,19 @@ func (w *AtomicFileWriter) WriteFile(path string, content []byte) error {
 		return fmt.Errorf("renaming %s to %s: %w", tmpName, path, err)
 	}
 	removeTmp = false
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("syncing directory %s: %w", dir, err)
+	}
 	return nil
+}
+
+func syncDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
 }
 
 func (w *AtomicFileWriter) MkdirAll(path string) error {

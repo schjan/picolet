@@ -110,7 +110,15 @@ func TestCreateSkipsNoop(t *testing.T) {
 		},
 	}
 
-	snap, err := CreateSnapshot(cs, nil)
+	snap, err := CreateSnapshot(cs, os.ReadFile)
 	require.NoError(t, err)
 	assert.Empty(t, snap.Files)
+}
+
+func TestCreateSnapshotNilReaderReturnsError(t *testing.T) {
+	t.Parallel()
+
+	snap, err := CreateSnapshot(&reconciler.Changeset{}, nil)
+	require.ErrorContains(t, err, "disk reader is nil")
+	assert.Nil(t, snap)
 }

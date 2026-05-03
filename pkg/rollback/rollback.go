@@ -23,6 +23,10 @@ type DiskReader func(path string) ([]byte, error)
 // CreateSnapshot captures the current state of files that will be changed.
 // Secrets (secret:*) are skipped since Podman secrets have no versioning.
 func CreateSnapshot(cs *reconciler.Changeset, diskReader DiskReader) (*Snapshot, error) {
+	if diskReader == nil {
+		return nil, errors.New("rollback snapshot disk reader is nil")
+	}
+
 	snap := &Snapshot{Files: make(map[string][]byte)}
 
 	for _, change := range cs.Changes {
