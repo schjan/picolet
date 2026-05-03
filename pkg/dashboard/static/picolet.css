@@ -65,7 +65,9 @@ main {
   background: var(--accent);
   transform: scaleX(0);
   transform-origin: left;
-  animation: refresh-deplete 30s linear forwards;
+  /* --refresh-duration is set inline by the template from ViewModel.RefreshSec
+     so the indicator stays in sync with the actual <meta refresh> interval. */
+  animation: refresh-deplete var(--refresh-duration, 30s) linear forwards;
   z-index: 10;
 }
 

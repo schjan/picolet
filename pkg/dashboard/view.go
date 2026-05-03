@@ -121,8 +121,12 @@ func statusFromActiveState(s string) Status {
 	switch s {
 	case "active":
 		return Status{Glyph: "█", Token: "active", Class: "ok"}
-	case "activating", "reloading":
+	case "activating":
 		return Status{Glyph: "▚", Token: "activating", Class: "pending"}
+	case "reloading":
+		return Status{Glyph: "▚", Token: "reloading", Class: "pending"}
+	case "deactivating":
+		return Status{Glyph: "▚", Token: "deactivating", Class: "pending"}
 	case "inactive":
 		return Status{Glyph: "░", Token: "inactive", Class: "cold"}
 	case "failed":
@@ -143,7 +147,7 @@ func groupByCategory(files map[string]state.ManagedFile, services map[string]str
 		})
 	}
 	var out []CategoryGroup
-	for _, cat := range applier.CategoryOrder {
+	for _, cat := range applier.CategoryOrder() {
 		if rows, ok := buckets[cat]; ok {
 			slices.SortFunc(rows, func(a, b UnitRow) int { return cmp.Compare(a.Basename, b.Basename) })
 			out = append(out, CategoryGroup{Category: cat, Rows: rows})

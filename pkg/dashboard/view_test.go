@@ -64,11 +64,11 @@ func TestStatusFromActiveState(t *testing.T) {
 	cases := map[string]Status{
 		"active":       {Glyph: "█", Token: "active", Class: "ok"},
 		"activating":   {Glyph: "▚", Token: "activating", Class: "pending"},
-		"reloading":    {Glyph: "▚", Token: "activating", Class: "pending"},
+		"reloading":    {Glyph: "▚", Token: "reloading", Class: "pending"},
+		"deactivating": {Glyph: "▚", Token: "deactivating", Class: "pending"},
 		"inactive":     {Glyph: "░", Token: "inactive", Class: "cold"},
 		"failed":       {Glyph: "▌", Token: "failed", Class: "bad"},
 		"":             {Glyph: "?", Token: "unknown", Class: "unknown"},
-		"deactivating": {Glyph: "?", Token: "unknown", Class: "unknown"},
 	}
 	for in, want := range cases {
 		if got := statusFromActiveState(in); got != want {

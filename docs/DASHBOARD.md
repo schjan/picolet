@@ -1,6 +1,6 @@
 # Picolet Dashboard
 
-Living document for the picolet dashboard. v1 ships in PR #N (GitHub Issue #10) — a single-route, read-only HTML page served from the existing metrics HTTP server. This document tracks intended v2 follow-ups; nothing here is implemented yet.
+Living document for the picolet dashboard. v1 ships in PR #69 (GitHub Issue #10) — a single-route, read-only HTML page served from the existing metrics HTTP server. This document tracks intended v2 follow-ups; nothing here is implemented yet.
 
 ---
 
@@ -70,6 +70,15 @@ v1 ships with the system monospace stack (SF Mono / Cascadia Code / Liberation M
 
 Surface the resolved `HostConfig` (`pkg/config/host.go`: `PiType`, `Features`) in the dashboard header. Requires either (a) re-resolving fleet config on each dashboard request (cheap, repo is local — but couples dashboard to resolver) or (b) caching the last-resolved `*HostConfig` on the `Agent` and exposing it to the dashboard via the same `WithDashboard` wiring. (b) is cleaner.
 
-### 11. Live in-memory liveness signal
+### 11. Accessibility — refresh control
+
+The 30-second `<meta http-equiv="refresh">` reloads the entire page on a fixed cadence with no way for the user to pause it. For keyboard- and screen-reader users, full-page navigations every 30 s interrupt reading and re-announce content (notably the failure-gate banner, which uses `role="alert"`). Possible v2 directions:
+
+- Honor a `?refresh=0` query parameter (server-side) to suppress the meta-refresh tag entirely. No JS required.
+- Add a small "Pause auto-refresh" toggle once the page lifts to HTMX (#5) — set a session cookie or hash fragment, swap the meta tag accordingly.
+- Audit `aria-live` regions: convert the failure banner from `role="alert"` to a non-live region with explicit `aria-live="polite"` to soften re-announcement on each load.
+- Respect `prefers-reduced-motion` for the progress-bar indicator (already done) but extend the principle to the meta-refresh: a server-side hint via `Sec-CH-Prefers-Reduced-Motion` could lengthen the interval automatically.
+
+### 12. Live in-memory liveness signal
 
 `state.LastSuccessfulReconciliationAt` is only persisted on apply; the noop fast path updates it in memory only. The dashboard reads `state.json` and so can lag the actual last-OK by minutes. Expose an in-memory snapshot via the `Agent` (or a tiny new "status" pkg) so the dashboard can show a true "last verified OK" timestamp distinct from "last applied". Pairs naturally with #10 since both involve the agent exposing live state.

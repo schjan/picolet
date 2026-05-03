@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/schjan/picolet/pkg/agentcfg"
@@ -137,7 +138,11 @@ func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 // collectStatuses queries SystemdManager for each unique unit referenced by
-// managed files. Unit-name resolution lives in unitNameFor.
+// managed files. Unit-name resolution lives in unitNameFor. Units are
+// queried in sorted order so that if the shared deadline truncates the loop
+// on a slow host, the same prefix of units is queried each refresh — without
+// this, randomized map iteration would cause rows to flip between real
+// statuses and "unknown" between renders.
 func (h *Handler) collectStatuses(
 	ctx context.Context,
 	files map[string]state.ManagedFile,
@@ -148,12 +153,17 @@ func (h *Handler) collectStatuses(
 		return out
 	}
 	seen := map[string]bool{}
+	units := make([]string, 0, len(files))
 	for path, mf := range files {
 		unit := unitNameFor(mf.Category, path, services[path])
 		if unit == "" || seen[unit] {
 			continue
 		}
 		seen[unit] = true
+		units = append(units, unit)
+	}
+	slices.Sort(units)
+	for _, unit := range units {
 		st, err := h.systemd.GetUnitStatus(ctx, unit)
 		if err != nil {
 			h.logger.Debug("dashboard: GetUnitStatus failed", "unit", unit, "err", err)
