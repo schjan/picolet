@@ -18,23 +18,23 @@ func AcquireLock(path string) (func() error, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("creating lock directory: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	fd, err := unix.Open(path, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("opening lock file: %w", err)
 	}
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil { //nolint:gosec // file descriptors are small non-negative ints from the OS.
-		_ = f.Close()
-		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
+	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = unix.Close(fd)
+		if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EWOULDBLOCK) {
 			return nil, fmt.Errorf("%w: %s", ErrLocked, path)
 		}
 		return nil, fmt.Errorf("locking %s: %w", path, err)
 	}
 	return func() error {
 		var errs []error
-		if err := unix.Flock(int(f.Fd()), unix.LOCK_UN); err != nil { //nolint:gosec // file descriptors are small non-negative ints from the OS.
+		if err := unix.Flock(fd, unix.LOCK_UN); err != nil {
 			errs = append(errs, fmt.Errorf("unlocking %s: %w", path, err))
 		}
-		if err := f.Close(); err != nil {
+		if err := unix.Close(fd); err != nil {
 			errs = append(errs, fmt.Errorf("closing %s: %w", path, err))
 		}
 		return errors.Join(errs...)

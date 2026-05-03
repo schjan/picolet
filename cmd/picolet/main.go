@@ -276,6 +276,15 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 		agent.WithPodman(podman),
 		agent.WithFileWriter(applier.NewAtomicFileWriter()),
 	}
+	dataDir, err := dataDirFromConfig(cfg)
+	if err != nil {
+		return err
+	}
+	opts = append(opts,
+		agent.WithRepoPath(filepath.Join(dataDir, "repo")),
+		agent.WithStatePath(filepath.Join(dataDir, "state.json")),
+		agent.WithLockPath(filepath.Join(dataDir, "reconciliation.lock")),
+	)
 
 	opts, err = appendMQTTOptions(cfg, opts)
 	if err != nil {
@@ -550,14 +559,23 @@ func effectiveRepoDir(repoDir, subDir string) string {
 	return repoDir
 }
 
-// stateStoreFromConfig returns a state store using the config's DataDir or a rootless-aware default.
-func stateStoreFromConfig(cfg *agentcfg.Config) (*state.Store, error) {
+// dataDirFromConfig returns the runtime data directory using data_dir or a rootless-aware default.
+func dataDirFromConfig(cfg *agentcfg.Config) (string, error) {
 	if cfg.DataDir != "" {
-		return state.NewStore(filepath.Join(cfg.DataDir, "state.json")), nil
+		return cfg.DataDir, nil
 	}
 	_, _, dataDir, err := resolver.ResolveDirs(cfg.Rootless)
 	if err != nil {
-		return nil, fmt.Errorf("resolving data directory: %w", err)
+		return "", fmt.Errorf("resolving data directory: %w", err)
+	}
+	return dataDir, nil
+}
+
+// stateStoreFromConfig returns a state store using the config's data directory.
+func stateStoreFromConfig(cfg *agentcfg.Config) (*state.Store, error) {
+	dataDir, err := dataDirFromConfig(cfg)
+	if err != nil {
+		return nil, err
 	}
 	return state.NewStore(filepath.Join(dataDir, "state.json")), nil
 }
@@ -599,7 +617,11 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	if err != nil {
 		return err
 	}
-	releaseLock, err := agent.AcquireLock(lockPathFromConfig(cfg))
+	lockPath, err := lockPathFromConfig(cfg)
+	if err != nil {
+		return err
+	}
+	releaseLock, err := agent.AcquireLock(lockPath)
 	if err != nil {
 		return err
 	}
@@ -672,7 +694,11 @@ func runDown(ctx context.Context, configPath string) error { //nolint:cyclop // 
 	if err != nil {
 		return err
 	}
-	releaseLock, err := agent.AcquireLock(lockPathFromConfig(cfg))
+	lockPath, err := lockPathFromConfig(cfg)
+	if err != nil {
+		return err
+	}
+	releaseLock, err := agent.AcquireLock(lockPath)
 	if err != nil {
 		return err
 	}
@@ -723,11 +749,12 @@ func runDown(ctx context.Context, configPath string) error { //nolint:cyclop // 
 	return store.Save(state.NewState())
 }
 
-func lockPathFromConfig(cfg *agentcfg.Config) string {
-	if cfg.DataDir != "" {
-		return filepath.Join(cfg.DataDir, "reconciliation.lock")
+func lockPathFromConfig(cfg *agentcfg.Config) (string, error) {
+	dataDir, err := dataDirFromConfig(cfg)
+	if err != nil {
+		return "", err
 	}
-	return agent.DefaultLockPath
+	return filepath.Join(dataDir, "reconciliation.lock"), nil
 }
 
 func runHealthcheck(_ context.Context, configPath string) error {

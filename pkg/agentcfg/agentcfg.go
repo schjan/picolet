@@ -45,7 +45,7 @@ type Config struct {
 	PodmanSocket         string             `yaml:"podman_socket"`
 	WebhookSecretPath    string             `yaml:"webhook_secret_path"`
 	RepoSubDir           string             `yaml:"repo_sub_dir"` // optional subdirectory within the repo to use as fleet root (monorepo support)
-	DataDir              string             `yaml:"data_dir"`     // optional override for state file directory; used by apply/down commands
+	DataDir              string             `yaml:"data_dir"`     // optional override for repo, state, and lock files
 	MQTT                 *MQTTConfig        `yaml:"mqtt"`
 	OnePassword          *OnePasswordConfig `yaml:"onepassword"`
 	GitHubAppID          int64              `yaml:"github_app_id"`

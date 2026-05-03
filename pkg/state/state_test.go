@@ -79,7 +79,7 @@ func TestSaveRoundtripWithFailedSHA(t *testing.T) {
 	assert.True(t, got.FailedAt.Equal(failedAt))
 }
 
-func TestLoad_CorruptJSON_ReturnsFreshState(t *testing.T) {
+func TestLoad_CorruptJSON_ReturnsErrCorrupt(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.json")
 	require.NoError(t, os.WriteFile(path, []byte("not valid json{{{"), 0o600))
@@ -93,7 +93,7 @@ func TestLoad_CorruptJSON_ReturnsFreshState(t *testing.T) {
 	assert.Equal(t, []byte("not valid json{{{"), data)
 }
 
-func TestLoad_OldSchemaFormat_ReturnsFreshState(t *testing.T) {
+func TestLoad_OldSchemaFormat_ReturnsErrCorrupt(t *testing.T) {
 	t.Parallel()
 	// Old schema: ManagedFiles was map[string]string
 	oldJSON := `{"applied_sha":"abc","managed_files":{"/etc/foo":"sha256:deadbeef"}}`
