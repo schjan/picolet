@@ -77,7 +77,7 @@
           </thead>
           <tbody>
             {{- range .Rows }}
-            <tr class="row--{{ .Status.Class }}" data-row-key="{{ .Path }}">
+            <tr data-row-key="{{ .Path }}">
               <td class="status status--{{ .Status.Class }}"><span class="glyph">{{ .Status.Glyph }}</span> {{ .Status.Token }}{{ if .SubState }}<span class="substate">· {{ .SubState }}</span>{{ end }}</td>
               <td title="{{ .Path }} · sha256: {{ .HashShort }}">{{ .Basename }}</td>
               <td>{{ if .Service }}{{ .Service }}{{ else }}—{{ end }}{{ if .Dependencies }}
@@ -129,6 +129,7 @@
 
       function captureOpen() {
         var keys = new Set();
+        if (!document.querySelector('details[open]')) return keys;
         document.querySelectorAll('tr[data-row-key]').forEach(function (row) {
           if (row.querySelector('details[open]')) keys.add(row.getAttribute('data-row-key'));
         });

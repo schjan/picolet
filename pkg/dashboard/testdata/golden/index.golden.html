@@ -35,7 +35,7 @@
             <tr><th scope="col">status</th><th scope="col">file</th><th scope="col">unit</th></tr>
           </thead>
           <tbody>
-            <tr class="row--ok" data-row-key="/etc/containers/systemd/picolet/lan.network">
+            <tr data-row-key="/etc/containers/systemd/picolet/lan.network">
               <td class="status status--ok"><span class="glyph">█</span> active<span class="substate">· running</span></td>
               <td title="/etc/containers/systemd/picolet/lan.network · sha256: cccccccc">lan.network</td>
               <td>lan-network.service</td>
@@ -58,7 +58,7 @@
             <tr><th scope="col">status</th><th scope="col">file</th><th scope="col">unit</th></tr>
           </thead>
           <tbody>
-            <tr class="row--ok" data-row-key="/etc/containers/systemd/picolet/data.volume">
+            <tr data-row-key="/etc/containers/systemd/picolet/data.volume">
               <td class="status status--ok"><span class="glyph">█</span> active<span class="substate">· running</span></td>
               <td title="/etc/containers/systemd/picolet/data.volume · sha256: dddddddd">data.volume</td>
               <td>data-volume.service</td>
@@ -81,7 +81,7 @@
             <tr><th scope="col">status</th><th scope="col">file</th><th scope="col">unit</th></tr>
           </thead>
           <tbody>
-            <tr class="row--muted" data-row-key="/etc/containers/systemd/picolet/app.yml">
+            <tr data-row-key="/etc/containers/systemd/picolet/app.yml">
               <td class="status status--muted"><span class="glyph">·</span> —</td>
               <td title="/etc/containers/systemd/picolet/app.yml · sha256: eeeeeeee">app.yml</td>
               <td>—</td>
@@ -104,12 +104,12 @@
             <tr><th scope="col">status</th><th scope="col">file</th><th scope="col">unit</th></tr>
           </thead>
           <tbody>
-            <tr class="row--bad" data-row-key="/etc/containers/systemd/picolet/db.container">
+            <tr data-row-key="/etc/containers/systemd/picolet/db.container">
               <td class="status status--bad"><span class="glyph">▌</span> failed<span class="substate">· dead</span></td>
               <td title="/etc/containers/systemd/picolet/db.container · sha256: bbbbbbbb">db.container</td>
               <td>db.service</td>
             </tr>
-            <tr class="row--ok" data-row-key="/etc/containers/systemd/picolet/web.container">
+            <tr data-row-key="/etc/containers/systemd/picolet/web.container">
               <td class="status status--ok"><span class="glyph">█</span> active<span class="substate">· running</span></td>
               <td title="/etc/containers/systemd/picolet/web.container · sha256: aaaaaaaa">web.container</td>
               <td>web.service</td>
@@ -138,6 +138,7 @@
 
       function captureOpen() {
         var keys = new Set();
+        if (!document.querySelector('details[open]')) return keys;
         document.querySelectorAll('tr[data-row-key]').forEach(function (row) {
           if (row.querySelector('details[open]')) keys.add(row.getAttribute('data-row-key'));
         });
