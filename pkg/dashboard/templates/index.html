@@ -13,22 +13,23 @@
   <header class="dashboard-header">
     <span class="logotype">picolet</span>
     <dl>
-      <dt>host</dt><dd>{{ .Header.Hostname }}</dd>
-      <dt>version</dt><dd>{{ .Header.Version }}</dd>
-      <dt>sha</dt><dd>{{ .Header.AppliedSHAShort }}</dd>
-      {{ if .Header.AppliedAgo }}<dt>applied</dt><dd>{{ .Header.AppliedAgo }}</dd>{{ end }}
+      <div><dt>host</dt><dd>{{ .Header.Hostname }}</dd></div>
+      <div><dt>version</dt><dd>{{ .Header.Version }}</dd></div>
+      <div><dt>sha</dt><dd>{{ .Header.AppliedSHAShort }}</dd></div>
+      {{- if .Header.AppliedAgo }}
+      <div><dt>applied</dt><dd>{{ .Header.AppliedAgo }}</dd></div>
+      {{- end }}
     </dl>
   </header>
 
   <main>
-    {{ if and .Banner .Banner.Active }}
+    {{- if and .Banner .Banner.Active }}
     <aside class="banner" role="alert">
       <strong>recent repeated failure</strong>
       on <code>{{ .Banner.FailedSHAShort }}</code> · {{ .Banner.FailedCount }} consecutive failures · last try {{ .Banner.FailedAgo }}
     </aside>
-    {{ end }}
-
-    {{ range .Groups }}
+    {{- end }}
+    {{- range .Groups }}
     <section class="category">
       <h2>{{ .Category }}</h2>
       <div class="table-wrap">
@@ -38,19 +39,19 @@
             <tr><th scope="col">file</th><th scope="col">hash</th><th scope="col">unit</th><th scope="col">status</th></tr>
           </thead>
           <tbody>
-          {{ range .Rows }}
+            {{- range .Rows }}
             <tr>
               <td title="{{ .Path }}">{{ .Basename }}</td>
               <td>{{ .HashShort }}</td>
               <td>{{ if .Service }}{{ .Service }}{{ else }}—{{ end }}</td>
               <td class="status status--{{ .Status.Class }}"><span class="glyph">{{ .Status.Glyph }}</span> {{ .Status.Token }}{{ if .SubState }}<span class="substate">· {{ .SubState }}</span>{{ end }}</td>
             </tr>
-          {{ end }}
+            {{- end }}
           </tbody>
         </table>
       </div>
     </section>
-    {{ end }}
+    {{- end }}
   </main>
 
   <footer class="dashboard-footer">

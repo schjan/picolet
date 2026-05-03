@@ -13,17 +13,14 @@
   <header class="dashboard-header">
     <span class="logotype">picolet</span>
     <dl>
-      <dt>host</dt><dd>pi-edge-01</dd>
-      <dt>version</dt><dd>0.7.2-test</dd>
-      <dt>sha</dt><dd>0123456</dd>
-      <dt>applied</dt><dd>5 minutes ago</dd>
+      <div><dt>host</dt><dd>pi-edge-01</dd></div>
+      <div><dt>version</dt><dd>0.7.2-test</dd></div>
+      <div><dt>sha</dt><dd>0123456</dd></div>
+      <div><dt>applied</dt><dd>5 minutes ago</dd></div>
     </dl>
   </header>
 
   <main>
-    
-
-    
     <section class="category">
       <h2>network</h2>
       <div class="table-wrap">
@@ -33,19 +30,16 @@
             <tr><th scope="col">file</th><th scope="col">hash</th><th scope="col">unit</th><th scope="col">status</th></tr>
           </thead>
           <tbody>
-          
             <tr>
               <td title="/etc/containers/systemd/picolet/lan.network">lan.network</td>
               <td>cccccccc</td>
               <td>lan-network.service</td>
               <td class="status status--ok"><span class="glyph">█</span> active<span class="substate">· running</span></td>
             </tr>
-          
           </tbody>
         </table>
       </div>
     </section>
-    
     <section class="category">
       <h2>volume</h2>
       <div class="table-wrap">
@@ -55,19 +49,16 @@
             <tr><th scope="col">file</th><th scope="col">hash</th><th scope="col">unit</th><th scope="col">status</th></tr>
           </thead>
           <tbody>
-          
             <tr>
               <td title="/etc/containers/systemd/picolet/data.volume">data.volume</td>
               <td>dddddddd</td>
               <td>data-volume.service</td>
               <td class="status status--ok"><span class="glyph">█</span> active<span class="substate">· running</span></td>
             </tr>
-          
           </tbody>
         </table>
       </div>
     </section>
-    
     <section class="category">
       <h2>manifest</h2>
       <div class="table-wrap">
@@ -77,19 +68,16 @@
             <tr><th scope="col">file</th><th scope="col">hash</th><th scope="col">unit</th><th scope="col">status</th></tr>
           </thead>
           <tbody>
-          
             <tr>
               <td title="/etc/containers/systemd/picolet/app.yml">app.yml</td>
               <td>eeeeeeee</td>
               <td>—</td>
               <td class="status status--muted"><span class="glyph">·</span> —</td>
             </tr>
-          
           </tbody>
         </table>
       </div>
     </section>
-    
     <section class="category">
       <h2>container</h2>
       <div class="table-wrap">
@@ -99,26 +87,22 @@
             <tr><th scope="col">file</th><th scope="col">hash</th><th scope="col">unit</th><th scope="col">status</th></tr>
           </thead>
           <tbody>
-          
             <tr>
               <td title="/etc/containers/systemd/picolet/db.container">db.container</td>
               <td>bbbbbbbb</td>
               <td>db.service</td>
               <td class="status status--bad"><span class="glyph">▌</span> failed<span class="substate">· dead</span></td>
             </tr>
-          
             <tr>
               <td title="/etc/containers/systemd/picolet/web.container">web.container</td>
               <td>aaaaaaaa</td>
               <td>web.service</td>
               <td class="status status--ok"><span class="glyph">█</span> active<span class="substate">· running</span></td>
             </tr>
-          
           </tbody>
         </table>
       </div>
     </section>
-    
   </main>
 
   <footer class="dashboard-footer">

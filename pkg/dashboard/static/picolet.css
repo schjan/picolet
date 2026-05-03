@@ -103,13 +103,19 @@ main {
 }
 
 .dashboard-header dl {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(8rem, max-content));
-  gap: 0.25rem 1.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.75rem;
   margin: 0;
 }
 
+.dashboard-header dl > div {
+  display: block;
+  min-width: 0;
+}
+
 .dashboard-header dt {
+  display: block;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   font-size: 0.72rem;
@@ -117,7 +123,8 @@ main {
 }
 
 .dashboard-header dd {
-  margin: 0 0 0.25rem 0;
+  display: block;
+  margin: 0;
   font-size: 0.82rem;
   font-weight: 500;
 }
@@ -248,7 +255,7 @@ main {
     align-items: flex-start;
   }
   .dashboard-header dl {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem 1.5rem;
   }
   .dashboard-footer {
     padding: 0.75rem 1rem;
