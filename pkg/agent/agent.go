@@ -88,6 +88,14 @@ type Agent struct {
 	deployReporter            DeploymentReporter   // nil when GitHub App not configured
 	authProvider              gitpoll.AuthProvider // nil = use default SSH/token logic
 	consecutiveHealthFailures atomic.Int32
+	routeRegistrar            RouteRegistrar // nil = no extra HTTP routes
+}
+
+// RouteRegistrar is implemented by anything that wants to add routes to the
+// agent's HTTP mux. Defined here (not in pkg/dashboard) so pkg/agent stays
+// independent of UI implementation.
+type RouteRegistrar interface {
+	Register(*http.ServeMux)
 }
 
 // Option configures the Agent.
@@ -141,6 +149,13 @@ func WithDeploymentReporter(r DeploymentReporter) Option {
 // WithAuthProvider sets the git auth provider.
 func WithAuthProvider(p gitpoll.AuthProvider) Option {
 	return func(a *Agent) { a.authProvider = p }
+}
+
+// WithDashboard registers an additional RouteRegistrar (typically the
+// dashboard handler) onto the agent's HTTP mux alongside /metrics, /health,
+// and /webhook.
+func WithDashboard(r RouteRegistrar) Option {
+	return func(a *Agent) { a.routeRegistrar = r }
 }
 
 // New creates a new Agent.
@@ -770,6 +785,9 @@ func (a *Agent) newMux() *http.ServeMux {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 	mux.Handle("/webhook", webhookHandler(a.triggerReconcile, a.cfg.WebhookSecretPath))
+	if a.routeRegistrar != nil {
+		a.routeRegistrar.Register(mux)
+	}
 	return mux
 }
 

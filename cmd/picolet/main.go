@@ -20,6 +20,7 @@ import (
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
+	"github.com/schjan/picolet/pkg/dashboard"
 	"github.com/schjan/picolet/pkg/github"
 	"github.com/schjan/picolet/pkg/githubauth"
 	"github.com/schjan/picolet/pkg/metrics"
@@ -280,10 +281,18 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 	if err != nil {
 		return err
 	}
+	statePath := filepath.Join(dataDir, "state.json")
+
+	dashboardHandler, err := newDashboardHandler(cfg, systemd, statePath)
+	if err != nil {
+		return err
+	}
+
 	opts = append(opts,
 		agent.WithRepoPath(filepath.Join(dataDir, "repo")),
-		agent.WithStatePath(filepath.Join(dataDir, "state.json")),
+		agent.WithStatePath(statePath),
 		agent.WithLockPath(filepath.Join(dataDir, "reconciliation.lock")),
+		agent.WithDashboard(dashboardHandler),
 	)
 
 	opts, err = appendMQTTOptions(cfg, opts)
@@ -298,6 +307,23 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 
 	a := agent.New(cfg, opts...)
 	return a.Run(ctx)
+}
+
+// newDashboardHandler builds a dashboard handler over the shared state file.
+// Two state.Store instances over the same statePath is safe: writes are atomic
+// (tmp+rename), so concurrent reads always see a fully-formed file.
+func newDashboardHandler(cfg *agentcfg.Config, systemd applier.SystemdManager, statePath string) (*dashboard.Handler, error) {
+	h, err := dashboard.NewHandler(
+		state.NewStore(statePath),
+		systemd,
+		cfg,
+		version.Version,
+		slog.Default(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("dashboard handler: %w", err)
+	}
+	return h, nil
 }
 
 func appendMQTTOptions(cfg *agentcfg.Config, opts []agent.Option) ([]agent.Option, error) {
