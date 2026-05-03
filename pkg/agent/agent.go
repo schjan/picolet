@@ -526,7 +526,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	changeset := reconciler.Diff(files, st)
 
 	if !changeset.HasChanges() {
-		return a.reconcileNoChanges(headSHA, files, changeset, st, opCount)
+		return a.reconcileNoChanges(headSHA, files, changeset, st, store, opCount)
 	}
 
 	slog.Info("changes detected",
@@ -574,12 +574,20 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	}, nil
 }
 
-// reconcileNoChanges handles the OP-refresh-induced reconcile that found no
-// file changes: validate the desired state (so the dashboard's dep map is
-// fresh) and bump verify timestamps in-memory only. Mirrors the outer-tick
-// noop fast path — AppliedAt and AppliedSHA are NOT touched because no apply
-// happened, and persisted state is left alone.
-func (a *Agent) reconcileNoChanges(headSHA string, files []resolver.ResolvedFile, changeset *reconciler.Changeset, st *state.State, opCount int) (*ReconcileResult, error) {
+// reconcileNoChanges handles a reconcile that found no file changes.
+// When the git SHA is new, it still marks that SHA as applied and persists it:
+// a host can legitimately receive a fleet commit that changes only docs or
+// other hosts. When the SHA is unchanged (e.g. OP refresh), it only bumps the
+// verified-OK timestamp in memory.
+//
+// Note on validation failure: this path treats it as a hard failure and
+// surfaces it through the failure-event/failed-SHA pipeline. The outer-tick
+// noop fast path (no_git_changes) is more lenient: validation errors there
+// during refreshResolvedSnapshot are logged and recorded as status_error
+// without aborting the verify-OK signal, because nothing triggered the tick.
+// Here, something *did* trigger the tick (OP refresh or git change that
+// rendered identically), so a bad render is actionable.
+func (a *Agent) reconcileNoChanges(headSHA string, files []resolver.ResolvedFile, changeset *reconciler.Changeset, st *state.State, store *state.Store, opCount int) (*ReconcileResult, error) {
 	deps, err := validator.AnalyzeFiles(files, a.cfg.Rootless)
 	if err != nil {
 		a.recordEvent("failure", headSHA, fmt.Sprintf("validation failed: %v", err))
@@ -587,6 +595,14 @@ func (a *Agent) reconcileNoChanges(headSHA string, files []resolver.ResolvedFile
 	}
 	a.statusStore.SetDependencies(deps)
 	slog.Info("no changes to apply", "sha", headSHA)
+	if headSHA != st.AppliedSHA {
+		markAppliedWithMetrics(st, headSHA)
+		a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
+		if err := store.Save(st); err != nil {
+			return nil, fmt.Errorf("saving state: %w", err)
+		}
+		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: opCount}, nil
+	}
 	now := time.Now()
 	st.LastSuccessfulReconciliationAt = now
 	metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))

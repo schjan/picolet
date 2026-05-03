@@ -519,6 +519,50 @@ func TestAgentDeletionCycle(t *testing.T) { //nolint:funlen // three-phase test:
 	assert.Empty(t, st2.ManagedFiles, "state should have no managed files after deleting all")
 }
 
+func TestReconcileNoChangesNewSHAMarksApplied(t *testing.T) {
+	t.Parallel()
+	repoDir := t.TempDir()
+	writeTestFile(t, repoDir, "fleet.yml", `images: {}
+ports: {}
+`)
+	writeTestFile(t, repoDir, "assignments.yml", `base:
+  networks:
+    - quadlets/networks/internal.network
+`)
+	writeTestFile(t, repoDir, "hosts/test-host/host.yml", `hostname: test-host
+pi_type: server
+features: []
+`)
+	writeTestFile(t, repoDir, "quadlets/networks/internal.network", `[Network]
+Internal=true
+`)
+
+	cfg := &agentcfg.Config{
+		Hostname:   "test-host",
+		SecretsDir: t.TempDir(),
+	}
+	files, err := LoadAndResolve(t.Context(), repoDir, cfg.Hostname, cfg.SecretsDir, false, nil)
+	require.NoError(t, err)
+
+	st := state.NewState()
+	UpdateState(st, reconciler.Diff(files, st))
+	st.MarkApplied("old-sha")
+
+	store := state.NewStore(filepath.Join(t.TempDir(), "state.json"))
+	require.NoError(t, store.Save(st))
+
+	a := newTestAgent(t, cfg, WithRepoPath(repoDir))
+	result, err := a.ReconcileOnce(t.Context(), "new-sha", st, store)
+	require.NoError(t, err)
+	require.False(t, result.HasChanges)
+
+	loaded, err := store.Load()
+	require.NoError(t, err)
+	assert.Equal(t, "new-sha", loaded.AppliedSHA)
+	assert.False(t, loaded.AppliedAt.IsZero(), "new no-op SHA should be persisted as applied")
+	assert.True(t, a.statusStore.Snapshot().Bootstrapped)
+}
+
 func TestAgentRollbackOnApplyFailure(t *testing.T) {
 	t.Parallel()
 	bareDir := initTestRepo(t)
