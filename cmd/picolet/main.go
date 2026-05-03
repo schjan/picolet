@@ -283,17 +283,9 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 	}
 	statePath := filepath.Join(dataDir, "state.json")
 
-	// Two state.Store instances over the same statePath is safe: writes are
-	// atomic (tmp+rename); concurrent reads always see a fully-formed file.
-	dashboardHandler, err := dashboard.NewHandler(
-		state.NewStore(statePath),
-		systemd,
-		cfg,
-		version.Version,
-		slog.Default(),
-	)
+	dashboardHandler, err := newDashboardHandler(cfg, systemd, statePath)
 	if err != nil {
-		return fmt.Errorf("dashboard handler: %w", err)
+		return err
 	}
 
 	opts = append(opts,
@@ -315,6 +307,23 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 
 	a := agent.New(cfg, opts...)
 	return a.Run(ctx)
+}
+
+// newDashboardHandler builds a dashboard handler over the shared state file.
+// Two state.Store instances over the same statePath is safe: writes are atomic
+// (tmp+rename), so concurrent reads always see a fully-formed file.
+func newDashboardHandler(cfg *agentcfg.Config, systemd applier.SystemdManager, statePath string) (*dashboard.Handler, error) {
+	h, err := dashboard.NewHandler(
+		state.NewStore(statePath),
+		systemd,
+		cfg,
+		version.Version,
+		slog.Default(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("dashboard handler: %w", err)
+	}
+	return h, nil
 }
 
 func appendMQTTOptions(cfg *agentcfg.Config, opts []agent.Option) ([]agent.Option, error) {

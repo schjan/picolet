@@ -12,10 +12,10 @@ import (
 func TestShortHash(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		"":                                                                      "",
-		"abc":                                                                   "abc",
-		"0123456789abcdef":                                                      "01234567",
-		"fffffffffffffffffffffffffffffffff":                                     "ffffffff",
+		"":                                  "",
+		"abc":                               "abc",
+		"0123456789abcdef":                  "01234567",
+		"fffffffffffffffffffffffffffffffff": "ffffffff",
 		"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd": "01234567",
 		"sha256:abcd": "abcd",
 	}
@@ -109,21 +109,27 @@ func TestGroupByCategory(t *testing.T) {
 	}
 }
 
-func TestBuildViewModel(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
-	// Git commit SHAs are NOT sha256-prefixed — that prefix is only on managed-file content
-	// hashes (pkg/reconciler/reconciler.go:107). shortSHA does not strip; shortHash does.
+// fixtureNow is the reference clock used by the buildViewModel tests below so
+// each focused test stays small.
+var fixtureNow = time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+
+// fixtureBuildViewModel returns the canonical "happy-path" inputs the
+// buildViewModel tests share. Tests mutate fields on the returned struct as
+// needed.
+//
+//nolint:unparam // returned now is intentional — a future test may shift it
+func fixtureBuildViewModel() (HeaderInput, map[string]state.ManagedFile, map[string]string, map[string]applier.UnitStatus, time.Time) {
+	// Git commit SHAs are NOT sha256-prefixed — that prefix is only on
+	// managed-file content hashes. shortSHA does not strip; shortHash does.
 	in := HeaderInput{
 		Hostname:    "pi-edge-01",
 		Version:     "0.7.2",
 		AppliedSHA:  "1a2b3c4d5e6f7g8",
-		AppliedAt:   now.Add(-3 * time.Minute),
+		AppliedAt:   fixtureNow.Add(-3 * time.Minute),
 		FailedSHA:   "deadbeefcafe",
 		FailedCount: 4,
-		FailedAt:    now.Add(-30 * time.Second),
+		FailedAt:    fixtureNow.Add(-30 * time.Second),
 	}
-	// ManagedFile.Hash is "sha256:<hex>" per pkg/reconciler/reconciler.go:107.
 	files := map[string]state.ManagedFile{
 		"/p/web.container": {Hash: "sha256:abc12345aaaa", Category: "container"},
 		"/p/data.volume":   {Hash: "sha256:vvvv1111aaaa", Category: "volume"},
@@ -137,7 +143,12 @@ func TestBuildViewModel(t *testing.T) {
 		"web.service":         {ActiveState: "active", SubState: "running"},
 		"data-volume.service": {ActiveState: "failed", SubState: "dead"},
 	}
+	return in, files, services, statuses, fixtureNow
+}
 
+func TestBuildViewModel_Header(t *testing.T) {
+	t.Parallel()
+	in, files, services, statuses, now := fixtureBuildViewModel()
 	vm := buildViewModel(in, files, services, statuses, now)
 
 	if vm.Header.Hostname != "pi-edge-01" {
@@ -149,17 +160,50 @@ func TestBuildViewModel(t *testing.T) {
 	if vm.Header.AppliedAgo != "3 minutes ago" {
 		t.Errorf("applied ago = %q", vm.Header.AppliedAgo)
 	}
+	if vm.RefreshSec != 30 {
+		t.Errorf("refresh = %d", vm.RefreshSec)
+	}
+}
+
+func TestBuildViewModel_BannerActive(t *testing.T) {
+	t.Parallel()
+	in, files, services, statuses, now := fixtureBuildViewModel()
+	vm := buildViewModel(in, files, services, statuses, now)
+
 	if vm.Banner == nil || !vm.Banner.Active {
 		t.Fatal("banner should be active when FailedCount >= 3 within failure window")
 	}
 	if vm.Banner.FailedSHAShort != "deadbee" {
 		t.Errorf("failed sha = %q", vm.Banner.FailedSHAShort)
 	}
-	if vm.RefreshSec != 30 {
-		t.Errorf("refresh = %d", vm.RefreshSec)
-	}
+}
 
-	// Verify per-row status mapping.
+func TestBuildViewModel_BannerSuppressedBelowThreshold(t *testing.T) {
+	t.Parallel()
+	in, files, services, statuses, now := fixtureBuildViewModel()
+	in.FailedCount = 2
+	vm := buildViewModel(in, files, services, statuses, now)
+	if vm.Banner != nil && vm.Banner.Active {
+		t.Error("banner should be inactive when FailedCount < 3")
+	}
+}
+
+func TestBuildViewModel_BannerSuppressedAfterExpiry(t *testing.T) {
+	t.Parallel()
+	in, files, services, statuses, now := fixtureBuildViewModel()
+	in.FailedCount = 5
+	in.FailedAt = now.Add(-2 * time.Hour) // mirrors agent failure-gate expiry
+	vm := buildViewModel(in, files, services, statuses, now)
+	if vm.Banner != nil && vm.Banner.Active {
+		t.Error("banner should be inactive when FailedAt > 1h ago")
+	}
+}
+
+func TestBuildViewModel_Rows(t *testing.T) {
+	t.Parallel()
+	in, files, services, statuses, now := fixtureBuildViewModel()
+	vm := buildViewModel(in, files, services, statuses, now)
+
 	var web, manifest UnitRow
 	for _, g := range vm.Groups {
 		for _, r := range g.Rows {
@@ -177,34 +221,25 @@ func TestBuildViewModel(t *testing.T) {
 	if manifest.Status.Class != "muted" {
 		t.Errorf("manifest entry (no service) should be muted, got %+v", manifest.Status)
 	}
+}
 
-	// Banner suppressed below threshold
-	in.FailedCount = 2
-	if vm2 := buildViewModel(in, files, services, statuses, now); vm2.Banner != nil && vm2.Banner.Active {
-		t.Error("banner should be inactive when FailedCount < 3")
-	}
+func TestBuildViewModel_SystemdBasenameDerivation(t *testing.T) {
+	t.Parallel()
+	in, _, _, _, now := fixtureBuildViewModel()
+	in.FailedCount = 0
 
-	// Banner suppressed when failure is older than 1h (mirrors agent.go gate expiry)
-	in.FailedCount = 5
-	in.FailedAt = now.Add(-2 * time.Hour)
-	if vm3 := buildViewModel(in, files, services, statuses, now); vm3.Banner != nil && vm3.Banner.Active {
-		t.Error("banner should be inactive when FailedAt > 1h ago")
-	}
-
-	// Systemd-category file with no ServiceName is rendered with derived unit
-	sysFiles := map[string]state.ManagedFile{
+	files := map[string]state.ManagedFile{
 		"/etc/systemd/system/custom.timer": {Hash: "sha256:tttt1111", Category: "systemd"},
 	}
-	sysStatuses := map[string]applier.UnitStatus{
+	statuses := map[string]applier.UnitStatus{
 		"custom.timer": {ActiveState: "active", SubState: "running"},
 	}
-	in.FailedCount = 0
-	sysVM := buildViewModel(in, sysFiles, nil, sysStatuses, now)
-	sysRow := sysVM.Groups[0].Rows[0]
-	if sysRow.Status.Token != "active" {
-		t.Errorf("systemd basename derivation failed (status): %+v", sysRow)
+	vm := buildViewModel(in, files, nil, statuses, now)
+	row := vm.Groups[0].Rows[0]
+	if row.Status.Token != "active" {
+		t.Errorf("systemd basename derivation failed (status): %+v", row)
 	}
-	if sysRow.Service != "custom.timer" {
-		t.Errorf("systemd basename should be written back to row.Service for template rendering, got %q", sysRow.Service)
+	if row.Service != "custom.timer" {
+		t.Errorf("systemd basename should be written back to row.Service for template rendering, got %q", row.Service)
 	}
 }

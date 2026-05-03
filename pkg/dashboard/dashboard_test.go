@@ -15,12 +15,11 @@ import (
 	"github.com/sebdah/goldie/v2"
 	"github.com/stretchr/testify/mock"
 
+	mockapplier "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/dashboard"
 	"github.com/schjan/picolet/pkg/state"
-
-	mockapplier "github.com/schjan/picolet/mocks/applier"
 )
 
 var fixedNow = time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)

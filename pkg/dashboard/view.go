@@ -179,42 +179,7 @@ func buildViewModel(
 	for gi := range groups {
 		cat := groups[gi].Category
 		for ri := range groups[gi].Rows {
-			row := &groups[gi].Rows[ri]
-			if muteCategories[cat] {
-				row.Status = Status{Glyph: "·", Token: "—", Class: "muted"}
-				continue
-			}
-			// Derive unit name: prefer state's ServiceName mapping; for raw systemd
-			// files (which resolver does not annotate), fall back to the file basename.
-			// Write the derived name back onto row.Service so the template's "unit"
-			// column shows the derived name, not "—".
-			if row.Service == "" && cat == "systemd" {
-				row.Service = row.Basename
-			}
-			if row.Service == "" {
-				row.Status = Status{Glyph: "·", Token: "—", Class: "muted"}
-				continue
-			}
-			st, ok := statuses[row.Service]
-			if !ok {
-				row.Status = statusFromActiveState("")
-				continue
-			}
-			row.Status = statusFromActiveState(st.ActiveState)
-			row.SubState = st.SubState
-		}
-	}
-
-	var banner *Banner
-	if in.FailedCount >= failureGateThreshold &&
-		!in.FailedAt.IsZero() &&
-		now.Sub(in.FailedAt) < failureGateExpiry {
-		banner = &Banner{
-			Active:         true,
-			FailedSHAShort: shortSHA(in.FailedSHA),
-			FailedCount:    in.FailedCount,
-			FailedAt:       in.FailedAt,
-			FailedAgo:      relativeTime(in.FailedAt, now),
+			resolveRowStatus(&groups[gi].Rows[ri], cat, statuses)
 		}
 	}
 
@@ -226,9 +191,53 @@ func buildViewModel(
 			AppliedAt:       in.AppliedAt,
 			AppliedAgo:      relativeTime(in.AppliedAt, now),
 		},
-		Banner:     banner,
+		Banner:     buildBanner(in, now),
 		Groups:     groups,
 		RenderedAt: now,
 		RefreshSec: refreshSeconds,
+	}
+}
+
+// resolveRowStatus mutates row in-place, deriving the unit name (with
+// systemd-category basename fallback) and status from the per-unit map.
+var mutedStatus = Status{Glyph: "·", Token: "—", Class: "muted"}
+
+func resolveRowStatus(row *UnitRow, category string, statuses map[string]applier.UnitStatus) {
+	if muteCategories[category] {
+		row.Status = mutedStatus
+		return
+	}
+	// Derive unit name: prefer state's ServiceName mapping; for raw systemd
+	// files (which resolver does not annotate), fall back to the file basename.
+	// Write the derived name back onto row.Service so the template's "unit"
+	// column shows the derived name, not "—".
+	if row.Service == "" && category == "systemd" {
+		row.Service = row.Basename
+	}
+	if row.Service == "" {
+		row.Status = mutedStatus
+		return
+	}
+	st, ok := statuses[row.Service]
+	if !ok {
+		row.Status = statusFromActiveState("")
+		return
+	}
+	row.Status = statusFromActiveState(st.ActiveState)
+	row.SubState = st.SubState
+}
+
+func buildBanner(in HeaderInput, now time.Time) *Banner {
+	if in.FailedCount < failureGateThreshold ||
+		in.FailedAt.IsZero() ||
+		now.Sub(in.FailedAt) >= failureGateExpiry {
+		return nil
+	}
+	return &Banner{
+		Active:         true,
+		FailedSHAShort: shortSHA(in.FailedSHA),
+		FailedCount:    in.FailedCount,
+		FailedAt:       in.FailedAt,
+		FailedAgo:      relativeTime(in.FailedAt, now),
 	}
 }
