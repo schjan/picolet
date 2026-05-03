@@ -21,7 +21,7 @@ func TestLoadMissing(t *testing.T) {
 
 func TestSaveAndLoad(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "state.json")
+	path := filepath.Join(t.TempDir(), "subdir", "state.json")
 	store := NewStore(path)
 
 	now := time.Now().Truncate(time.Second)
@@ -42,19 +42,6 @@ func TestSaveAndLoad(t *testing.T) {
 	assert.True(t, got.AppliedAt.Equal(want.AppliedAt))
 	require.Len(t, got.ManagedFiles, 1)
 	assert.Equal(t, ManagedFile{Hash: "sha256:deadbeef", Category: "container"}, got.ManagedFiles["/etc/containers/systemd/foo.container"])
-}
-
-func TestSaveCreatesDirectory(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "subdir", "state.json")
-	store := NewStore(path)
-
-	st := &State{AppliedSHA: "test", ManagedFiles: make(map[string]ManagedFile)}
-	require.NoError(t, store.Save(st))
-
-	got, err := store.Load()
-	require.NoError(t, err)
-	assert.Equal(t, "test", got.AppliedSHA)
 }
 
 func TestSaveRoundtripWithFailedSHA(t *testing.T) {
@@ -79,20 +66,21 @@ func TestSaveRoundtripWithFailedSHA(t *testing.T) {
 	assert.True(t, got.FailedAt.Equal(failedAt))
 }
 
-func TestLoad_CorruptJSON_ReturnsFreshState(t *testing.T) {
+func TestLoad_CorruptJSON_ReturnsErrCorrupt(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.json")
 	require.NoError(t, os.WriteFile(path, []byte("not valid json{{{"), 0o600))
 
 	store := NewStore(path)
 	st, err := store.Load()
-	require.NoError(t, err)
-	assert.Empty(t, st.AppliedSHA)
-	assert.NotNil(t, st.ManagedFiles)
-	assert.Empty(t, st.ManagedFiles)
+	require.ErrorIs(t, err, ErrCorrupt)
+	assert.Nil(t, st)
+	data, readErr := os.ReadFile(path)
+	require.NoError(t, readErr)
+	assert.Equal(t, []byte("not valid json{{{"), data)
 }
 
-func TestLoad_OldSchemaFormat_ReturnsFreshState(t *testing.T) {
+func TestLoad_OldSchemaFormat_ReturnsErrCorrupt(t *testing.T) {
 	t.Parallel()
 	// Old schema: ManagedFiles was map[string]string
 	oldJSON := `{"applied_sha":"abc","managed_files":{"/etc/foo":"sha256:deadbeef"}}`
@@ -101,9 +89,6 @@ func TestLoad_OldSchemaFormat_ReturnsFreshState(t *testing.T) {
 
 	store := NewStore(path)
 	st, err := store.Load()
-	require.NoError(t, err)
-	// Old format should cause unmarshal error → fresh state
-	assert.Empty(t, st.AppliedSHA)
-	assert.NotNil(t, st.ManagedFiles)
-	assert.Empty(t, st.ManagedFiles)
+	require.ErrorIs(t, err, ErrCorrupt)
+	assert.Nil(t, st)
 }

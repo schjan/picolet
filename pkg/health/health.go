@@ -31,7 +31,8 @@ func (r *CheckResult) AllFailed() bool {
 
 // Checker enforces that managed systemd units are active.
 type Checker struct {
-	systemd     applier.SystemdManager
+	systemd applier.SystemdManager
+	// Accessed only by the agent tick loop, which runs serially.
 	lastRestart map[string]time.Time
 }
 
@@ -53,6 +54,11 @@ func (c *Checker) Enforce(ctx context.Context, st *state.State) (*CheckResult, e
 	for _, unitName := range st.ServiceNames {
 		if unitName != "" {
 			units[unitName] = true
+		}
+	}
+	for unit := range c.lastRestart {
+		if !units[unit] {
+			delete(c.lastRestart, unit)
 		}
 	}
 

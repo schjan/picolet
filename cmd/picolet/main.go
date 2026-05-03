@@ -276,6 +276,15 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 		agent.WithPodman(podman),
 		agent.WithFileWriter(applier.NewAtomicFileWriter()),
 	}
+	dataDir, err := dataDirFromConfig(cfg)
+	if err != nil {
+		return err
+	}
+	opts = append(opts,
+		agent.WithRepoPath(filepath.Join(dataDir, "repo")),
+		agent.WithStatePath(filepath.Join(dataDir, "state.json")),
+		agent.WithLockPath(filepath.Join(dataDir, "reconciliation.lock")),
+	)
 
 	opts, err = appendMQTTOptions(cfg, opts)
 	if err != nil {
@@ -419,8 +428,7 @@ func runDryRun(ctx context.Context, repoDir, hostname, configPath string) error 
 
 	st, err := store.Load()
 	if err != nil {
-		slog.Warn("could not load state, using empty state", "error", err)
-		st = state.NewState()
+		return fmt.Errorf("loading state: %w", err)
 	}
 
 	changeset := reconciler.Diff(files, st)
@@ -551,14 +559,23 @@ func effectiveRepoDir(repoDir, subDir string) string {
 	return repoDir
 }
 
-// stateStoreFromConfig returns a state store using the config's DataDir or a rootless-aware default.
-func stateStoreFromConfig(cfg *agentcfg.Config) (*state.Store, error) {
+// dataDirFromConfig returns the runtime data directory using data_dir or a rootless-aware default.
+func dataDirFromConfig(cfg *agentcfg.Config) (string, error) {
 	if cfg.DataDir != "" {
-		return state.NewStore(filepath.Join(cfg.DataDir, "state.json")), nil
+		return cfg.DataDir, nil
 	}
 	_, _, dataDir, err := resolver.ResolveDirs(cfg.Rootless)
 	if err != nil {
-		return nil, fmt.Errorf("resolving data directory: %w", err)
+		return "", fmt.Errorf("resolving data directory: %w", err)
+	}
+	return dataDir, nil
+}
+
+// stateStoreFromConfig returns a state store using the config's data directory.
+func stateStoreFromConfig(cfg *agentcfg.Config) (*state.Store, error) {
+	dataDir, err := dataDirFromConfig(cfg)
+	if err != nil {
+		return nil, err
 	}
 	return state.NewStore(filepath.Join(dataDir, "state.json")), nil
 }
@@ -571,8 +588,7 @@ func applyWithRollback(
 	podman applier.PodmanClient,
 ) (*applier.ApplyResult, error) {
 	writer := applier.NewAtomicFileWriter()
-	rollbackMgr := rollback.New(writer, systemd)
-	snap, err := rollbackMgr.Create(changeset, os.ReadFile)
+	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile)
 	if err != nil {
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
@@ -583,7 +599,7 @@ func applyWithRollback(
 		slog.Error("apply failed, rolling back", "error", err)
 		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		if rbErr := rollbackMgr.Restore(rollbackCtx, snap); rbErr != nil {
+		if rbErr := rollback.Restore(rollbackCtx, snap, writer, systemd); rbErr != nil {
 			slog.Error("rollback failed", "error", rbErr)
 		}
 		return nil, fmt.Errorf("apply failed: %w", err)
@@ -601,6 +617,11 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	if err != nil {
 		return err
 	}
+	releaseLock, err := acquireConfigLock(cfg)
+	if err != nil {
+		return err
+	}
+	defer releaseLock()
 
 	opReader, err := opReaderFromConfig(ctx, cfg)
 	if err != nil {
@@ -660,11 +681,16 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	return store.Save(st)
 }
 
-func runDown(ctx context.Context, configPath string) error {
+func runDown(ctx context.Context, configPath string) error { //nolint:cyclop // sequential teardown with lock, state, system clients, and apply result handling.
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
 		return err
 	}
+	releaseLock, err := acquireConfigLock(cfg)
+	if err != nil {
+		return err
+	}
+	defer releaseLock()
 
 	store, err := stateStoreFromConfig(cfg)
 	if err != nil {
@@ -705,6 +731,30 @@ func runDown(ctx context.Context, configPath string) error {
 
 	slog.Info("down complete", "deleted", changeset.Summary[reconciler.ActionDelete])
 	return store.Save(state.NewState())
+}
+
+func lockPathFromConfig(cfg *agentcfg.Config) (string, error) {
+	dataDir, err := dataDirFromConfig(cfg)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dataDir, "reconciliation.lock"), nil
+}
+
+func acquireConfigLock(cfg *agentcfg.Config) (func(), error) {
+	lockPath, err := lockPathFromConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	releaseLock, err := agent.AcquireLock(lockPath)
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		if err := releaseLock(); err != nil {
+			slog.Warn("releasing process lock failed", "path", lockPath, "error", err)
+		}
+	}, nil
 }
 
 func runHealthcheck(_ context.Context, configPath string) error {

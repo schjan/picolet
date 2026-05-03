@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -46,8 +47,10 @@ type DeploymentReporter interface {
 
 const (
 	defaultRepoPath         = "/var/lib/picolet/repo"
-	defaultLockPath         = "/var/lib/picolet/reconciliation.lock"
 	deploymentReportTimeout = 10 * time.Second
+
+	// DefaultLockPath is the default cross-process lock for mutating commands.
+	DefaultLockPath = "/var/lib/picolet/reconciliation.lock"
 
 	// DefaultStatePath is the default location for the reconciliation state file.
 	// Exported so that CLI subcommands (e.g. dry-run) can read from the same path.
@@ -73,8 +76,9 @@ type Agent struct {
 	statePath string
 	lockPath  string
 
-	opReader      resolver.OpSecretReader // nil when 1Password not configured; initialized in Run
-	lastOPRefresh time.Time               // zero = never refreshed; in-memory only (restart always re-fetches)
+	opReader resolver.OpSecretReader // nil when 1Password not configured; initialized in Run
+	// Accessed only by the agent tick loop, which runs serially.
+	lastOPRefresh time.Time // zero = never refreshed; in-memory only (restart always re-fetches)
 
 	webhookCh                 chan struct{}
 	ready                     atomic.Bool
@@ -145,7 +149,7 @@ func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 		cfg:       cfg,
 		repoPath:  defaultRepoPath,
 		statePath: DefaultStatePath,
-		lockPath:  defaultLockPath,
+		lockPath:  DefaultLockPath,
 		webhookCh: make(chan struct{}, 1),
 	}
 	for _, opt := range opts {
@@ -156,8 +160,22 @@ func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 
 //nolint:cyclop,funlen // sequential startup steps + select loop; splitting reduces readability
 func (a *Agent) Run(ctx context.Context) error {
+	releaseLock, err := AcquireLock(a.lockPath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := releaseLock(); err != nil {
+			slog.Warn("releasing process lock failed", "path", a.lockPath, "error", err)
+		}
+	}()
+
 	// Start HTTP server (metrics, health, webhook)
-	go a.serveHTTP(ctx)
+	shutdownHTTP, err := a.startHTTP()
+	if err != nil {
+		return err
+	}
+	defer shutdownHTTP(ctx)
 
 	// Start MQTT client if configured
 	if a.mqttClient != nil {
@@ -171,14 +189,6 @@ func (a *Agent) Run(ctx context.Context) error {
 			defer closeCancel()
 			a.mqttClient.Close(closeCtx)
 		}()
-	}
-
-	// Check for stale lock (unclean shutdown)
-	if _, err := os.Stat(a.lockPath); err == nil {
-		slog.Warn("stale reconciliation lock found, will force full reconciliation")
-		if err := os.Remove(a.lockPath); err != nil {
-			slog.Warn("removing stale lock failed", "path", a.lockPath, "error", err)
-		}
 	}
 
 	// Initialize 1Password client (if configured)
@@ -509,14 +519,9 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 }
 
 func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset) (*applier.ApplyResult, error) {
-	rollbackMgr := rollback.New(a.writer, a.systemd)
-	snap, err := rollbackMgr.Create(changeset, os.ReadFile)
+	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile)
 	if err != nil {
 		return nil, fmt.Errorf("creating snapshot: %w", err)
-	}
-
-	if err := os.WriteFile(a.lockPath, []byte(headSHA), 0o600); err != nil {
-		slog.Warn("writing reconciliation lock failed", "path", a.lockPath, "error", err)
 	}
 
 	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun)
@@ -530,7 +535,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer rollbackCancel()
 
-		if rbErr := rollbackMgr.Restore(rollbackCtx, snap); rbErr != nil {
+		if rbErr := rollback.Restore(rollbackCtx, snap, a.writer, a.systemd); rbErr != nil {
 			slog.Error("rollback failed", "error", rbErr)
 		} else {
 			slog.Warn("rollback complete", "sha", headSHA)
@@ -553,10 +558,6 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		"restarted", result.RestartedUnits,
 		"dry_run", a.dryRun,
 	)
-
-	if err := os.Remove(a.lockPath); err != nil {
-		slog.Warn("removing reconciliation lock failed", "path", a.lockPath, "error", err)
-	}
 
 	return result, nil
 }
@@ -772,26 +773,32 @@ func (a *Agent) newMux() *http.ServeMux {
 	return mux
 }
 
-func (a *Agent) serveHTTP(ctx context.Context) {
+func (a *Agent) startHTTP() (func(context.Context), error) {
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", a.cfg.MetricsPort),
 		Handler:           a.newMux(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	ln, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("starting http listener on %s: %w", srv.Addr, err)
+	}
+
+	slog.Info("http server starting", "port", a.cfg.MetricsPort)
 	go func() {
-		<-ctx.Done()
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			slog.Error("http server error", "error", err)
+		}
+	}()
+
+	return func(ctx context.Context) {
 		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			slog.Warn("http server shutdown error", "error", err)
 		}
-	}()
-
-	slog.Info("http server starting", "port", a.cfg.MetricsPort)
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		slog.Error("http server error", "error", err)
-	}
+	}, nil
 }
 
 func boolToFloat(b bool) float64 {

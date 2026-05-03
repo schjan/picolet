@@ -17,23 +17,16 @@ type Snapshot struct {
 	Files map[string][]byte
 }
 
-// Manager creates and restores snapshots.
-type Manager struct {
-	writer  applier.FileWriter
-	systemd applier.SystemdManager
-}
-
-// New creates a new rollback Manager.
-func New(writer applier.FileWriter, systemd applier.SystemdManager) *Manager {
-	return &Manager{writer: writer, systemd: systemd}
-}
-
 // DiskReader reads a file from disk. Returns content or error (os.ErrNotExist if missing).
 type DiskReader func(path string) ([]byte, error)
 
-// Create captures the current state of files that will be changed.
+// CreateSnapshot captures the current state of files that will be changed.
 // Secrets (secret:*) are skipped since Podman secrets have no versioning.
-func (m *Manager) Create(cs *reconciler.Changeset, diskReader DiskReader) (*Snapshot, error) {
+func CreateSnapshot(cs *reconciler.Changeset, diskReader DiskReader) (*Snapshot, error) {
+	if diskReader == nil {
+		return nil, errors.New("rollback snapshot disk reader is nil")
+	}
+
 	snap := &Snapshot{Files: make(map[string][]byte)}
 
 	for _, change := range cs.Changes {
@@ -67,12 +60,12 @@ func (m *Manager) Create(cs *reconciler.Changeset, diskReader DiskReader) (*Snap
 
 // Restore reverts files to their snapshot state and runs daemon-reload.
 // Collects all errors instead of aborting on first failure to maximize recovery.
-func (m *Manager) Restore(ctx context.Context, snap *Snapshot) error {
+func Restore(ctx context.Context, snap *Snapshot, writer applier.FileWriter, systemd applier.SystemdManager) error {
 	var errs []error
 	for path, content := range snap.Files {
 		if content == nil {
 			slog.Info("rollback: removing", "path", path)
-			if err := m.writer.Remove(path); err != nil {
+			if err := writer.Remove(path); err != nil {
 				slog.Error("rollback: remove failed", "path", path, "error", err)
 				errs = append(errs, fmt.Errorf("removing %s: %w", path, err))
 			}
@@ -80,14 +73,14 @@ func (m *Manager) Restore(ctx context.Context, snap *Snapshot) error {
 		}
 
 		slog.Info("rollback: restoring", "path", path)
-		if err := m.writer.WriteFile(path, content); err != nil {
+		if err := writer.WriteFile(path, content); err != nil {
 			slog.Error("rollback: restore failed", "path", path, "error", err)
 			errs = append(errs, fmt.Errorf("restoring %s: %w", path, err))
 		}
 	}
 
 	slog.Info("rollback: running daemon-reload")
-	if err := m.systemd.DaemonReload(ctx); err != nil {
+	if err := systemd.DaemonReload(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("daemon-reload: %w", err))
 	}
 

@@ -2,9 +2,10 @@ package applier
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
+
+	"github.com/schjan/picolet/internal/atomicfile"
 )
 
 // AtomicFileWriter writes files atomically using tmp + rename.
@@ -20,15 +21,7 @@ func NewAtomicFileWriter() *AtomicFileWriter {
 const filePerm = 0o644
 
 func (w *AtomicFileWriter) WriteFile(path string, content []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, content, filePerm); err != nil {
-		return fmt.Errorf("writing %s: %w", tmp, err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("renaming %s to %s: %w", tmp, path, err)
-	}
-	return nil
+	return atomicfile.WriteFile(path, content, filePerm)
 }
 
 func (w *AtomicFileWriter) MkdirAll(path string) error {

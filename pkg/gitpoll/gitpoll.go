@@ -219,6 +219,9 @@ func (p *Poller) fetch(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("resetting to remote HEAD: %w", err)
 	}
+	if err := wt.Clean(&git.CleanOptions{Dir: true}); err != nil {
+		return fmt.Errorf("cleaning untracked files: %w", err)
+	}
 
 	return nil
 }

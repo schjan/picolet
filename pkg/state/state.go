@@ -5,11 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/schjan/picolet/internal/atomicfile"
 )
+
+// ErrCorrupt is returned when the state file exists but cannot be decoded.
+var ErrCorrupt = errors.New("state file corrupt")
 
 // ManagedFile tracks a picolet-owned file's content hash and category.
 type ManagedFile struct {
@@ -69,8 +73,7 @@ func (s *Store) Load() (*State, error) {
 	}
 	var st State
 	if err := json.Unmarshal(data, &st); err != nil {
-		slog.Warn("state file unreadable (corrupt or schema change), starting fresh", "path", s.path, "error", err)
-		return NewState(), nil
+		return nil, fmt.Errorf("decoding state %s: %w: %w", s.path, ErrCorrupt, err)
 	}
 	if st.ManagedFiles == nil {
 		st.ManagedFiles = make(map[string]ManagedFile)
@@ -81,7 +84,7 @@ func (s *Store) Load() (*State, error) {
 	return &st, nil
 }
 
-// Save writes the state atomically using tmp + rename.
+// Save writes the state atomically using a unique temp file + rename.
 func (s *Store) Save(st *State) error {
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
@@ -93,13 +96,5 @@ func (s *Store) Save(st *State) error {
 		return fmt.Errorf("creating state directory: %w", err)
 	}
 
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("writing temp state: %w", err)
-	}
-	if err := os.Rename(tmp, s.path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("renaming state file: %w", err)
-	}
-	return nil
+	return atomicfile.WriteFile(s.path, data, 0o600)
 }

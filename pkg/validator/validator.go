@@ -72,8 +72,7 @@ func validateFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInf
 	case "secret":
 		return validateSecret(f)
 	default:
-		slog.Warn("unknown file category, skipping validation", "category", f.Category, "path", f.SrcPath)
-		return nil
+		return fmt.Errorf("%s: unknown file category %q", f.DestPath, f.Category)
 	}
 }
 

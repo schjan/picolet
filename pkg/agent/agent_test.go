@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	agentmocks "github.com/schjan/picolet/mocks/agent"
+	appliermocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/gitpoll"
@@ -92,14 +93,53 @@ func writeTestFile(t *testing.T, root, path, content string) {
 	require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
 }
 
-func newBareMocks(t *testing.T) (*applier.MockSystemdManager, *applier.MockPodmanClient, *applier.MockFileWriter) {
+func newBareMocks(t *testing.T) (*appliermocks.MockSystemdManager, *appliermocks.MockPodmanClient, *appliermocks.MockFileWriter) {
 	t.Helper()
-	return applier.NewMockSystemdManager(t), applier.NewMockPodmanClient(t), applier.NewMockFileWriter(t)
+	return appliermocks.NewMockSystemdManager(t), appliermocks.NewMockPodmanClient(t), appliermocks.NewMockFileWriter(t)
+}
+
+func newTestAgent(t *testing.T, cfg *agentcfg.Config, opts ...Option) *Agent {
+	t.Helper()
+	opts = append(opts, WithLockPath(filepath.Join(t.TempDir(), "reconciliation.lock")))
+	return New(cfg, opts...)
+}
+
+func TestAcquireLockContentionAndRelease(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "picolet.lock")
+	release, err := AcquireLock(path)
+	require.NoError(t, err)
+
+	_, err = AcquireLock(path)
+	require.ErrorIs(t, err, ErrLocked)
+
+	require.NoError(t, release())
+	release, err = AcquireLock(path)
+	require.NoError(t, err)
+	require.NoError(t, release())
+}
+
+func TestStartHTTPBindFailure(t *testing.T) {
+	t.Parallel()
+	a := newTestAgent(t, &agentcfg.Config{MetricsPort: 70000})
+	shutdown, err := a.startHTTP()
+	require.Error(t, err)
+	assert.Nil(t, shutdown)
+}
+
+func TestScanOrphansSkipsCorruptState(t *testing.T) {
+	t.Parallel()
+	_, pod, fw := newBareMocks(t)
+	a := newTestAgent(t, &agentcfg.Config{}, WithPodman(pod), WithFileWriter(fw))
+	path := filepath.Join(t.TempDir(), "state.json")
+	require.NoError(t, os.WriteFile(path, []byte("{"), 0o600))
+
+	a.scanOrphans(context.Background(), state.NewStore(path))
 }
 
 // setupApplyMocks configures mocks for a test that expects a successful apply
 // (health check + write files + daemon-reload + restart units).
-func setupApplyMocks(sys *applier.MockSystemdManager, pod *applier.MockPodmanClient, fw *applier.MockFileWriter) map[string][]byte {
+func setupApplyMocks(sys *appliermocks.MockSystemdManager, pod *appliermocks.MockPodmanClient, fw *appliermocks.MockFileWriter) map[string][]byte {
 	// Orphan scan at startup calls ListManagedSecrets
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
 	// Health check
@@ -123,7 +163,7 @@ func setupApplyMocks(sys *applier.MockSystemdManager, pod *applier.MockPodmanCli
 
 // setupNoopMocks configures mocks for a test that should NOT write any files.
 // Only health checks are expected.
-func setupNoopMocks(sys *applier.MockSystemdManager, pod *applier.MockPodmanClient) {
+func setupNoopMocks(sys *appliermocks.MockSystemdManager, pod *appliermocks.MockPodmanClient) {
 	sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
 		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
 	// Orphan scan at startup calls ListManagedSecrets (not in dry-run)
@@ -151,7 +191,7 @@ func TestAgentFullCycle(t *testing.T) {
 		SecretsDir:   t.TempDir(),
 	}
 
-	a := New(cfg,
+	a := newTestAgent(t, cfg,
 		WithSystemd(sys),
 		WithPodman(pod),
 		WithFileWriter(fw),
@@ -198,7 +238,7 @@ func TestAgentDryRun(t *testing.T) {
 		SecretsDir:   t.TempDir(),
 	}
 
-	a := New(cfg,
+	a := newTestAgent(t, cfg,
 		WithDryRun(true),
 		WithSystemd(sys),
 		WithPodman(pod),
@@ -242,7 +282,7 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 		SecretsDir:   t.TempDir(),
 	}
 
-	a := New(cfg,
+	a := newTestAgent(t, cfg,
 		WithSystemd(sys),
 		WithPodman(pod),
 		WithFileWriter(fw),
@@ -297,7 +337,7 @@ func TestAgentRetriesExpiredFailedSHA(t *testing.T) {
 		SecretsDir:   t.TempDir(),
 	}
 
-	a := New(cfg,
+	a := newTestAgent(t, cfg,
 		WithSystemd(sys),
 		WithPodman(pod),
 		WithFileWriter(fw),
@@ -353,7 +393,7 @@ func TestAgentRetriesFailedSHA(t *testing.T) {
 		SecretsDir:   t.TempDir(),
 	}
 
-	a := New(cfg,
+	a := newTestAgent(t, cfg,
 		WithSystemd(sys),
 		WithPodman(pod),
 		WithFileWriter(fw),
@@ -428,7 +468,7 @@ func TestAgentDeletionCycle(t *testing.T) { //nolint:funlen // three-phase test:
 		SecretsDir:   t.TempDir(),
 	}
 
-	a := New(cfg,
+	a := newTestAgent(t, cfg,
 		WithSystemd(sys),
 		WithPodman(pod),
 		WithFileWriter(fw),
@@ -506,7 +546,7 @@ func TestAgentRollbackOnApplyFailure(t *testing.T) {
 		SecretsDir:   t.TempDir(),
 	}
 
-	a := New(cfg,
+	a := newTestAgent(t, cfg,
 		WithSystemd(sys),
 		WithPodman(pod),
 		WithFileWriter(fw),
@@ -539,7 +579,7 @@ func TestTriggerReconcileChannel(t *testing.T) {
 		Hostname: "test",
 		RepoURL:  "https://example.com/repo.git",
 	}
-	a := New(cfg)
+	a := newTestAgent(t, cfg)
 
 	// First send should succeed
 	a.triggerReconcile()
@@ -570,7 +610,7 @@ func TestWebhookOnHTTPServer(t *testing.T) {
 		Hostname: "test",
 		RepoURL:  "https://example.com/repo.git",
 	}
-	a := New(cfg)
+	a := newTestAgent(t, cfg)
 
 	srv := httptest.NewServer(a.newMux())
 	defer srv.Close()
@@ -595,7 +635,7 @@ func TestHealthEndpoint_ReturnsUnavailableBeforeFirstTick(t *testing.T) {
 		Hostname: "test",
 		RepoURL:  "https://example.com/repo.git",
 	}
-	a := New(cfg)
+	a := newTestAgent(t, cfg)
 
 	srv := httptest.NewServer(a.newMux())
 	defer srv.Close()
@@ -626,7 +666,7 @@ func TestHealthEndpoint_ReturnsOKAfterSuccessfulTick(t *testing.T) {
 		SecretsDir:   t.TempDir(),
 	}
 
-	a := New(cfg,
+	a := newTestAgent(t, cfg,
 		WithSystemd(sys),
 		WithPodman(pod),
 		WithFileWriter(fw),
@@ -720,7 +760,7 @@ func TestWebhookTriggersReconciliation(t *testing.T) {
 		WebhookSecretPath: secretFile,
 	}
 
-	a := New(cfg,
+	a := newTestAgent(t, cfg,
 		WithSystemd(sys),
 		WithPodman(pod),
 		WithFileWriter(fw),
@@ -824,7 +864,7 @@ func TestScanOrphansAfterSchemaMigration(t *testing.T) {
 		RepoURL:  "https://example.com/repo.git",
 	}
 
-	a := New(cfg,
+	a := newTestAgent(t, cfg,
 		WithSystemd(sys),
 		WithPodman(pod),
 		WithFileWriter(fw),
@@ -860,7 +900,7 @@ func TestAgentPauseSkipsReconciliation(t *testing.T) {
 		SecretsDir:   t.TempDir(),
 	}
 
-	a := New(cfg,
+	a := newTestAgent(t, cfg,
 		WithSystemd(sys),
 		WithPodman(pod),
 		WithFileWriter(fw),
@@ -923,7 +963,7 @@ func TestAgentMQTTStatusPublished(t *testing.T) {
 		SecretsDir:   t.TempDir(),
 	}
 
-	a := New(cfg,
+	a := newTestAgent(t, cfg,
 		WithSystemd(sys),
 		WithPodman(pod),
 		WithFileWriter(fw),
@@ -983,7 +1023,7 @@ func TestLastSuccessfulReconciliationSeededFromState(t *testing.T) {
 		SecretsDir:   t.TempDir(),
 	}
 
-	a := New(cfg,
+	a := newTestAgent(t, cfg,
 		WithSystemd(sys),
 		WithPodman(pod),
 		WithFileWriter(fw),
@@ -1056,7 +1096,7 @@ func TestHealthEndpoint_Returns503AfterConsecutiveDBusFailures(t *testing.T) {
 		Hostname: "test",
 		RepoURL:  "https://example.com/repo.git",
 	}
-	a := New(cfg)
+	a := newTestAgent(t, cfg)
 	a.ready.Store(true)
 
 	srv := httptest.NewServer(a.newMux())
@@ -1090,7 +1130,7 @@ func TestHealthEndpoint_Returns200WhenPausedEvenWithDBusDown(t *testing.T) {
 		Hostname: "test",
 		RepoURL:  "https://example.com/repo.git",
 	}
-	a := New(cfg)
+	a := newTestAgent(t, cfg)
 	a.ready.Store(true)
 	a.paused.Store(true)
 	a.consecutiveHealthFailures.Store(5) // well above threshold
@@ -1109,7 +1149,7 @@ func TestUpdateHealthFailures(t *testing.T) {
 
 	t.Run("all errors increments counter", func(t *testing.T) {
 		t.Parallel()
-		a := New(&agentcfg.Config{Hostname: "test", RepoURL: "https://example.com/repo.git"})
+		a := newTestAgent(t, &agentcfg.Config{Hostname: "test", RepoURL: "https://example.com/repo.git"})
 
 		a.updateHealthFailures(&health.CheckResult{
 			Errors: []error{fmt.Errorf("dbus dead"), fmt.Errorf("dbus dead")},
@@ -1119,7 +1159,7 @@ func TestUpdateHealthFailures(t *testing.T) {
 
 	t.Run("mixed results resets counter", func(t *testing.T) {
 		t.Parallel()
-		a := New(&agentcfg.Config{Hostname: "test", RepoURL: "https://example.com/repo.git"})
+		a := newTestAgent(t, &agentcfg.Config{Hostname: "test", RepoURL: "https://example.com/repo.git"})
 		a.consecutiveHealthFailures.Store(5)
 
 		a.updateHealthFailures(&health.CheckResult{
@@ -1131,7 +1171,7 @@ func TestUpdateHealthFailures(t *testing.T) {
 
 	t.Run("zero managed units stays at zero", func(t *testing.T) {
 		t.Parallel()
-		a := New(&agentcfg.Config{Hostname: "test", RepoURL: "https://example.com/repo.git"})
+		a := newTestAgent(t, &agentcfg.Config{Hostname: "test", RepoURL: "https://example.com/repo.git"})
 
 		a.updateHealthFailures(&health.CheckResult{})
 		assert.Equal(t, int32(0), a.consecutiveHealthFailures.Load())
@@ -1258,7 +1298,7 @@ func TestCreateDeploymentContinuesWhenPendingStatusFails(t *testing.T) {
 	reporter.EXPECT().CreateDeployment(mock.Anything, "abc123").Return(int64(42), errors.New("pending status failed"))
 	reporter.EXPECT().ReportInProgress(mock.Anything, int64(42)).Return(nil)
 
-	a := New(cfg, WithDeploymentReporter(reporter))
+	a := newTestAgent(t, cfg, WithDeploymentReporter(reporter))
 	got := a.createDeployment(context.Background(), "abc123")
 	assert.Equal(t, int64(42), got)
 }
@@ -1273,7 +1313,7 @@ func TestReportDeploymentResultUsesErrorForRollback(t *testing.T) {
 	reporter := agentmocks.NewMockDeploymentReporter(t)
 	reporter.EXPECT().ReportError(mock.Anything, int64(7), mock.Anything).Return(nil)
 
-	a := New(cfg, WithDeploymentReporter(reporter))
+	a := newTestAgent(t, cfg, WithDeploymentReporter(reporter))
 	a.reportDeploymentResult(context.Background(), 7, fmt.Errorf("%w: apply failed", errRollbackPerformed))
 
 	afterError := testutil.ToFloat64(metrics.DeploymentStatusTotal.WithLabelValues("error"))
@@ -1291,7 +1331,7 @@ func TestReportDeploymentResultUsesDetachedContextOnSuccess(t *testing.T) {
 		return nil
 	})
 
-	a := New(cfg, WithDeploymentReporter(reporter))
+	a := newTestAgent(t, cfg, WithDeploymentReporter(reporter))
 
 	parentCtx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -1344,7 +1384,7 @@ func TestTickDoesNotCreateDeploymentForUnchangedSHAOpRefresh(t *testing.T) {
 	}
 
 	reporter := agentmocks.NewMockDeploymentReporter(t)
-	a := New(cfg,
+	a := newTestAgent(t, cfg,
 		WithSystemd(sys),
 		WithPodman(pod),
 		WithFileWriter(fw),

@@ -45,7 +45,7 @@ type Config struct {
 	PodmanSocket         string             `yaml:"podman_socket"`
 	WebhookSecretPath    string             `yaml:"webhook_secret_path"`
 	RepoSubDir           string             `yaml:"repo_sub_dir"` // optional subdirectory within the repo to use as fleet root (monorepo support)
-	DataDir              string             `yaml:"data_dir"`     // optional override for state file directory; used by apply/down commands
+	DataDir              string             `yaml:"data_dir"`     // optional override for repo, state, and lock files
 	MQTT                 *MQTTConfig        `yaml:"mqtt"`
 	OnePassword          *OnePasswordConfig `yaml:"onepassword"`
 	GitHubAppID          int64              `yaml:"github_app_id"`
@@ -60,7 +60,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := yaml.Load(data, &cfg, yaml.WithKnownFields()); err != nil {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 	cfg.setDefaults()

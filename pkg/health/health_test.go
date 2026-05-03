@@ -3,18 +3,20 @@ package health
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	appliermocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/state"
 )
 
 func TestEnforceAllHealthy(t *testing.T) {
 	t.Parallel()
-	sys := applier.NewMockSystemdManager(t)
+	sys := appliermocks.NewMockSystemdManager(t)
 	sys.EXPECT().GetUnitStatus(mock.Anything, mock.MatchedBy(func(s string) bool {
 		return s == "foo.service" || s == "bar-network.service"
 	})).Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Times(2)
@@ -42,7 +44,7 @@ func TestEnforceAllHealthy(t *testing.T) {
 
 func TestEnforceRestartsUnhealthy(t *testing.T) {
 	t.Parallel()
-	sys := applier.NewMockSystemdManager(t)
+	sys := appliermocks.NewMockSystemdManager(t)
 	sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{ActiveState: "failed", SubState: "auto-restart"}, nil)
 	sys.EXPECT().RestartUnit(mock.Anything, "foo.service").Return(nil)
 
@@ -65,7 +67,7 @@ func TestEnforceRestartsUnhealthy(t *testing.T) {
 
 func TestEnforceOneshotExitedIsHealthy(t *testing.T) {
 	t.Parallel()
-	sys := applier.NewMockSystemdManager(t)
+	sys := appliermocks.NewMockSystemdManager(t)
 	sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "exited"}, nil)
 
 	c := New(sys)
@@ -87,7 +89,7 @@ func TestEnforceOneshotExitedIsHealthy(t *testing.T) {
 
 func TestEnforceInactiveSkipped(t *testing.T) {
 	t.Parallel()
-	sys := applier.NewMockSystemdManager(t)
+	sys := appliermocks.NewMockSystemdManager(t)
 	sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{ActiveState: "inactive", SubState: "dead"}, nil)
 
 	c := New(sys)
@@ -112,7 +114,7 @@ func TestEnforceInactiveSkipped(t *testing.T) {
 
 func TestEnforceSkipsSecretsAndManifests(t *testing.T) {
 	t.Parallel()
-	sys := applier.NewMockSystemdManager(t)
+	sys := appliermocks.NewMockSystemdManager(t)
 	// No expectations — no units should be checked
 	c := New(sys)
 
@@ -129,7 +131,7 @@ func TestEnforceSkipsSecretsAndManifests(t *testing.T) {
 
 func TestEnforceHandlesCheckError(t *testing.T) {
 	t.Parallel()
-	sys := applier.NewMockSystemdManager(t)
+	sys := appliermocks.NewMockSystemdManager(t)
 	sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{}, assert.AnError)
 
 	c := New(sys)
@@ -149,7 +151,7 @@ func TestEnforceHandlesCheckError(t *testing.T) {
 
 func TestEnforceRestartCooldown(t *testing.T) {
 	t.Parallel()
-	sys := applier.NewMockSystemdManager(t)
+	sys := appliermocks.NewMockSystemdManager(t)
 	// GetUnitStatus called twice (two Enforce calls), unit is unhealthy both times
 	sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{ActiveState: "failed", SubState: "auto-restart"}, nil).Times(2)
 	// RestartUnit should only be called once (cooldown prevents second restart)
@@ -184,7 +186,7 @@ func TestEnforceRestartCooldown(t *testing.T) {
 
 func TestEnforceFailedUnitPopulatesStatus(t *testing.T) {
 	t.Parallel()
-	sys := applier.NewMockSystemdManager(t)
+	sys := appliermocks.NewMockSystemdManager(t)
 	sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{ActiveState: "failed", SubState: "failed"}, nil)
 	sys.EXPECT().RestartUnit(mock.Anything, "foo.service").Return(nil)
 
@@ -204,6 +206,26 @@ func TestEnforceFailedUnitPopulatesStatus(t *testing.T) {
 	require.True(t, ok, "status should be populated for queried unit")
 	assert.Equal(t, "failed", status.ActiveState)
 	assert.Equal(t, "failed", status.SubState)
+}
+
+func TestEnforcePrunesRemovedUnitCooldowns(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+
+	c := New(sys)
+	c.lastRestart["foo.service"] = time.Now()
+	c.lastRestart["removed.service"] = time.Now()
+
+	st := &state.State{
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
+		},
+	}
+	_, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.Contains(t, c.lastRestart, "foo.service")
+	assert.NotContains(t, c.lastRestart, "removed.service")
 }
 
 func TestAllFailed(t *testing.T) {
