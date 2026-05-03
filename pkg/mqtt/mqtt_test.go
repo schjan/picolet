@@ -64,6 +64,52 @@ func retainedPayload(srv *mqttserver.Server, topic string) string {
 	return string(pk.Payload)
 }
 
+func brokerClientExpiresOnDisconnect(cl *mqttserver.Client) bool {
+	return (cl.Properties.ProtocolVersion == 5 && cl.Properties.Props.SessionExpiryInterval == 0) ||
+		(cl.Properties.ProtocolVersion < 5 && cl.Properties.Clean)
+}
+
+func drainTestBrokerClients(srv *mqttserver.Server, listenerID string) bool {
+	drained := true
+	for _, cl := range srv.Clients.GetAll() {
+		if cl.Net.Listener != listenerID {
+			continue
+		}
+		if !cl.Closed() {
+			cl.Stop(context.Canceled)
+			drained = false
+			continue
+		}
+		if brokerClientExpiresOnDisconnect(cl) {
+			drained = false
+		}
+	}
+	return drained
+}
+
+func closeTestBroker(t *testing.T, srv *mqttserver.Server, tcp *listeners.TCP) {
+	t.Helper()
+
+	// mochi-mqtt v2.7.9 can deadlock in Server.Close when CloseAll calls
+	// GetByListener while a clean-session client is concurrently deleting itself.
+	// Close the listener first without enumerating clients, then stop and drain
+	// the test clients before invoking Server.Close.
+	tcp.Close(func(string) {})
+
+	require.Eventually(t, func() bool {
+		return drainTestBrokerClients(srv, tcp.ID())
+	}, 3*time.Second, 10*time.Millisecond, "test broker clients should stop before broker shutdown")
+
+	done := make(chan error, 1)
+	go func() { done <- srv.Close() }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out closing test broker")
+	}
+}
+
 func startTestBroker(t *testing.T) (string, *mqttserver.Server) {
 	t.Helper()
 	server := mqttserver.New(&mqttserver.Options{
@@ -76,7 +122,7 @@ func startTestBroker(t *testing.T) (string, *mqttserver.Server) {
 	require.NoError(t, server.AddListener(tcp))
 
 	go func() { _ = server.Serve() }()
-	t.Cleanup(func() { _ = server.Close() })
+	t.Cleanup(func() { closeTestBroker(t, server, tcp) })
 
 	return "tcp://" + tcp.Address(), server
 }
