@@ -1,14 +1,40 @@
 package dashboard_test
 
 import (
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/mock"
+
+	"github.com/schjan/picolet/pkg/agentcfg"
+	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/dashboard"
+	"github.com/schjan/picolet/pkg/state"
+
+	mockapplier "github.com/schjan/picolet/mocks/applier"
 )
+
+func newTestStore(t *testing.T, st state.State) *state.Store {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "state.json")
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return state.NewStore(p)
+}
 
 func TestHandler_ServesPlaceholder(t *testing.T) {
 	t.Parallel()
@@ -77,5 +103,91 @@ func TestHandler_StaticAssetServed(t *testing.T) {
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=86400" {
 		t.Errorf("static Cache-Control = %q", got)
+	}
+}
+
+func TestServeIndex_RendersUnitsAndStatuses(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{Hostname: "pi-edge-01"}
+	store := newTestStore(t, state.State{
+		AppliedSHA: "abc1234abc1234",
+		AppliedAt:  time.Now().Add(-2 * time.Minute),
+		ManagedFiles: map[string]state.ManagedFile{
+			"/p/web.container": {Hash: "sha256:h-web-aaaa", Category: "container"},
+		},
+		ServiceNames: map[string]string{"/p/web.container": "web.service"},
+	})
+
+	sm := mockapplier.NewMockSystemdManager(t)
+	sm.EXPECT().GetUnitStatus(mock.Anything, "web.service").
+		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+
+	h, err := dashboard.NewHandler(store, sm, cfg, "0.0.0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"pi-edge-01", "abc1234", "web.container", "active", "running", "█"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestServeIndex_FailureGateBanner(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{Hostname: "pi-edge-01"}
+	store := newTestStore(t, state.State{
+		FailedSHA: "deadbeefcafe", FailedCount: 4, FailedAt: time.Now(),
+	})
+	sm := mockapplier.NewMockSystemdManager(t)
+	h, _ := dashboard.NewHandler(store, sm, cfg, "0.0.0", nil)
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "deadbee") {
+		t.Errorf("banner missing failed-sha short form; body=%s", body)
+	}
+	if !strings.Contains(body, "recent repeated failure") {
+		t.Errorf("banner missing softened phrasing; body=%s", body)
+	}
+}
+
+func TestServeIndex_PerUnitErrorIsTolerant(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{Hostname: "pi-edge-01"}
+	store := newTestStore(t, state.State{
+		ManagedFiles: map[string]state.ManagedFile{
+			"/p/web.container": {Hash: "sha256:h-web", Category: "container"},
+		},
+		ServiceNames: map[string]string{"/p/web.container": "web.service"},
+	})
+	sm := mockapplier.NewMockSystemdManager(t)
+	sm.EXPECT().GetUnitStatus(mock.Anything, "web.service").
+		Return(applier.UnitStatus{}, errors.New("dbus borked"))
+
+	h, _ := dashboard.NewHandler(store, sm, cfg, "0.0.0", nil)
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (must not 500 on per-unit failure)", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "unknown") {
+		t.Errorf("expected 'unknown' status fallback")
 	}
 }

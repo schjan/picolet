@@ -1,5 +1,28 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>picolet</title></head>
-<body><h1>picolet</h1><p>v{{ .Version }}</p></body>
-</html>
+<head><meta charset="utf-8"><title>{{ .Header.Hostname }} · picolet</title></head>
+<body>
+<header><h1>picolet</h1>
+  <dl>
+    <dt>host</dt><dd>{{ .Header.Hostname }}</dd>
+    <dt>sha</dt><dd>{{ .Header.AppliedSHAShort }}</dd>
+  </dl>
+</header>
+{{ if and .Banner .Banner.Active }}
+<aside role="alert">recent repeated failure on {{ .Banner.FailedSHAShort }} ({{ .Banner.FailedCount }} fails)</aside>
+{{ end }}
+{{ range .Groups }}
+<section><h2>{{ .Category }}</h2>
+  <table>
+  {{ range .Rows }}
+    <tr>
+      <td>{{ .Basename }}</td>
+      <td>{{ .HashShort }}</td>
+      <td>{{ .Service }}</td>
+      <td class="status status--{{ .Status.Class }}">{{ .Status.Glyph }} {{ .Status.Token }}{{ if .SubState }} · {{ .SubState }}{{ end }}</td>
+    </tr>
+  {{ end }}
+  </table>
+</section>
+{{ end }}
+</body></html>
