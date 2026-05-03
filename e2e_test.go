@@ -161,7 +161,7 @@ func TestE2EPipeline(t *testing.T) {
 	})
 
 	// Agent and store are shared between reconcile and idempotent sub-tests
-	metrics.Register()
+	metrics.Register(nil)
 
 	agentCfg := &agentcfg.Config{
 		Hostname:     "e2e-host",

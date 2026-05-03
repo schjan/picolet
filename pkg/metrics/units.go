@@ -2,35 +2,27 @@ package metrics
 
 import (
 	"log/slog"
-	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/schjan/picolet/pkg/status"
 )
 
-// unitStatus is the internal collector map entry.
-type unitStatus struct {
-	activeState string
-	subState    string
-}
-
 // UnitHealthCollector emits picolet_unit_active and picolet_unit_state_info for
-// all managed units on each Prometheus scrape. Stale series are impossible by
-// construction — Collect() only emits what is currently in the map.
+// all managed units on each Prometheus scrape, reading from the injected
+// *status.Store. Stale series are impossible by construction — Collect emits
+// only what the store currently holds.
 type UnitHealthCollector struct {
-	mu    sync.RWMutex
-	units map[string]unitStatus
-
+	store      *status.Store
 	descActive *prometheus.Desc
 	descInfo   *prometheus.Desc
 }
 
-// UnitHealth is the package-level collector instance registered at startup.
-var UnitHealth = NewUnitHealthCollector()
-
-// NewUnitHealthCollector creates a new UnitHealthCollector. Exported for testing.
-func NewUnitHealthCollector() *UnitHealthCollector {
+// NewUnitHealthCollector constructs a UnitHealthCollector reading from store.
+// The store is the single source of truth for unit runtime status.
+func NewUnitHealthCollector(store *status.Store) *UnitHealthCollector {
 	return &UnitHealthCollector{
-		units: make(map[string]unitStatus),
+		store: store,
 		descActive: prometheus.NewDesc(
 			"picolet_unit_active",
 			"1 if the managed unit is active, 0 if failed. Absent for inactive/oneshot units.",
@@ -44,8 +36,7 @@ func NewUnitHealthCollector() *UnitHealthCollector {
 	}
 }
 
-// Describe implements prometheus.Collector. Always emits both descriptors
-// unconditionally — required by the Prometheus collector contract.
+// Describe implements prometheus.Collector.
 func (c *UnitHealthCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.descActive
 	ch <- c.descInfo
@@ -53,11 +44,12 @@ func (c *UnitHealthCollector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect implements prometheus.Collector.
 func (c *UnitHealthCollector) Collect(ch chan<- prometheus.Metric) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	for unit, s := range c.units {
+	if c.store == nil {
+		return
+	}
+	for unit, s := range c.store.Snapshot().Units {
 		var activeVal float64
-		switch s.activeState {
+		switch s.ActiveState {
 		case "active", "activating":
 			activeVal = 1
 		case "failed":
@@ -72,7 +64,7 @@ func (c *UnitHealthCollector) Collect(ch chan<- prometheus.Metric) {
 			slog.Debug("skipping unit active metric", "unit", unit, "error", err)
 			continue
 		}
-		mInfo, err := prometheus.NewConstMetric(c.descInfo, prometheus.GaugeValue, 1, unit, s.activeState, s.subState)
+		mInfo, err := prometheus.NewConstMetric(c.descInfo, prometheus.GaugeValue, 1, unit, s.ActiveState, s.SubState)
 		if err != nil {
 			slog.Debug("skipping unit info metric", "unit", unit, "error", err)
 			continue
@@ -80,25 +72,4 @@ func (c *UnitHealthCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- mActive
 		ch <- mInfo
 	}
-}
-
-// Set updates the status for a unit. Called from the health check loop each tick.
-func (c *UnitHealthCollector) Set(unit, activeState, subState string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.units[unit] = unitStatus{activeState: activeState, subState: subState}
-}
-
-// Delete removes a unit from the collector. Called when a unit leaves management.
-func (c *UnitHealthCollector) Delete(unit string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.units, unit)
-}
-
-// Clear drops all units so stale gauges disappear from scrapes (absent, not 0).
-func (c *UnitHealthCollector) Clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	clear(c.units)
 }

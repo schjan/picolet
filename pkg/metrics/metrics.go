@@ -7,6 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/schjan/picolet/pkg/status"
 	"github.com/schjan/picolet/pkg/version"
 )
 
@@ -166,8 +167,9 @@ var (
 var registerOnce sync.Once
 
 // Register registers all metrics with the default Prometheus registry.
-// Safe to call multiple times (e.g. in tests).
-func Register() {
+// Custom collectors that read runtime state are constructed against the
+// provided *status.Store. Safe to call multiple times (e.g. in tests).
+func Register(store *status.Store) {
 	registerOnce.Do(func() {
 		prometheus.MustRegister(
 			ReconciliationTotal,
@@ -192,7 +194,9 @@ func Register() {
 			OpDirectSecretsCount,
 			OpSyncTotal,
 			OpLastSyncTimestamp,
-			UnitHealth,
+			NewUnitHealthCollector(store),
+			NewUnitDependencyCollector(store),
+			NewHostInfoCollector(store),
 		)
 		BuildInfo.WithLabelValues(version.Version, version.GitSHA).Set(1)
 	})

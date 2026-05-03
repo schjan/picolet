@@ -30,6 +30,7 @@ import (
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/rollback"
 	"github.com/schjan/picolet/pkg/state"
+	"github.com/schjan/picolet/pkg/status"
 	"github.com/schjan/picolet/pkg/validator"
 	"github.com/schjan/picolet/pkg/version"
 )
@@ -256,7 +257,8 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 		return errors.New("repo_url is required for the run command")
 	}
 
-	metrics.Register()
+	statusStore := status.NewStore()
+	metrics.Register(statusStore)
 
 	// Connect to systemd D-Bus
 	systemd, err := applier.NewDBusSystemdManager(ctx, cfg.UseSystemdUser())
@@ -283,7 +285,7 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 	}
 	statePath := filepath.Join(dataDir, "state.json")
 
-	dashboardHandler, err := newDashboardHandler(cfg, systemd, statePath)
+	dashboardHandler, err := newDashboardHandler(cfg, statePath, statusStore)
 	if err != nil {
 		return err
 	}
@@ -293,6 +295,7 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 		agent.WithStatePath(statePath),
 		agent.WithLockPath(filepath.Join(dataDir, "reconciliation.lock")),
 		agent.WithDashboard(dashboardHandler),
+		agent.WithStatusStore(statusStore),
 	)
 
 	opts, err = appendMQTTOptions(cfg, opts)
@@ -312,13 +315,13 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 // newDashboardHandler builds a dashboard handler over the shared state file.
 // Two state.Store instances over the same statePath is safe: writes are atomic
 // (tmp+rename), so concurrent reads always see a fully-formed file.
-func newDashboardHandler(cfg *agentcfg.Config, systemd applier.SystemdManager, statePath string) (*dashboard.Handler, error) {
+func newDashboardHandler(cfg *agentcfg.Config, statePath string, statusStore *status.Store) (*dashboard.Handler, error) {
 	h, err := dashboard.NewHandler(
 		state.NewStore(statePath),
-		systemd,
 		cfg,
 		version.Version,
 		slog.Default(),
+		dashboard.WithStatusStore(statusStore),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard handler: %w", err)

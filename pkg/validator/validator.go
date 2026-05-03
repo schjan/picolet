@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 
+	"github.com/containers/podman/v5/pkg/systemd/parser"
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
 	"go.yaml.in/yaml/v4"
 
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/resolver"
+	"github.com/schjan/picolet/pkg/status"
 )
 
 const unresolvedSecretPlaceholder = "<secret>"
@@ -21,14 +24,29 @@ const unresolvedSecretPlaceholder = "<secret>"
 // rootless must match the target host's Podman mode so that quadlet conversion
 // generates correct systemd unit dependencies (user vs system session).
 func ValidateFiles(files []resolver.ResolvedFile, rootless bool) error {
+	_, err := AnalyzeFiles(files, rootless)
+	return err
+}
+
+// AnalyzeFiles validates resolved files and returns the generated systemd
+// dependency map keyed by unit name. If validation fails, the returned map
+// is partial and the error describes all validation failures.
+func AnalyzeFiles(files []resolver.ResolvedFile, rootless bool) (map[string]status.UnitDependencies, error) {
 	unitsInfo := buildUnitsInfoFromFiles(files, rootless)
+	deps := make(map[string]status.UnitDependencies)
 	var errs []error
 	for _, f := range files {
-		if err := validateFile(f, unitsInfo, rootless); err != nil {
+		d, err := analyzeFile(f, unitsInfo, rootless)
+		if !d.IsEmpty() {
+			if unit := unitNameForAnalysis(f); unit != "" {
+				deps[unit] = d
+			}
+		}
+		if err != nil {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	return deps, errors.Join(errs...)
 }
 
 // ValidateHost resolves and validates files for a single host.
@@ -57,22 +75,29 @@ func ValidateAll(ctx context.Context, r *resolver.Resolver, cfg *config.Config) 
 	return errors.Join(errs...)
 }
 
-func validateFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo, rootless bool) error {
+func analyzeFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo, rootless bool) (status.UnitDependencies, error) {
 	slog.Debug("validating file", "path", f.DestPath, "category", f.Category)
 	switch f.Category {
 	case "network", "volume", "container", "kube":
 		if f.ParsedUnit == nil {
-			return fmt.Errorf("%s: quadlet unit could not be parsed (invalid INI syntax)", f.DestPath)
+			return status.UnitDependencies{}, fmt.Errorf("%s: quadlet unit could not be parsed (invalid INI syntax)", f.DestPath)
 		}
-		return validateQuadlet(f.ParsedUnit, unitsInfo, rootless)
+		generated, err := convertQuadlet(f.ParsedUnit, unitsInfo, rootless)
+		if err != nil {
+			return status.UnitDependencies{}, err
+		}
+		return dependenciesFromUnit(generated), nil
 	case "manifest":
-		return validateManifest(f.DestPath, []byte(f.Content))
+		return status.UnitDependencies{}, validateManifest(f.DestPath, []byte(f.Content))
 	case "systemd":
-		return validateSystemdUnit(f.DestPath, f.Content)
+		if err := validateSystemdUnit(f.DestPath, f.Content); err != nil {
+			return status.UnitDependencies{}, err
+		}
+		return dependenciesFromSystemd(f), nil
 	case "secret":
-		return validateSecret(f)
+		return status.UnitDependencies{}, validateSecret(f)
 	default:
-		return fmt.Errorf("%s: unknown file category %q", f.DestPath, f.Category)
+		return status.UnitDependencies{}, fmt.Errorf("%s: unknown file category %q", f.DestPath, f.Category)
 	}
 }
 
@@ -133,6 +158,50 @@ func validateSystemdUnit(path, content string) error {
 		return fmt.Errorf("%s: no section headers found in systemd unit", path)
 	}
 	return nil
+}
+
+func dependenciesFromSystemd(f resolver.ResolvedFile) status.UnitDependencies {
+	unit := parser.NewUnitFile()
+	unit.Filename = filepath.Base(f.DestPath)
+	if err := unit.Parse(f.Content); err != nil {
+		return status.UnitDependencies{}
+	}
+	return dependenciesFromUnit(unit)
+}
+
+func dependenciesFromUnit(unit *parser.UnitFile) status.UnitDependencies {
+	return status.UnitDependencies{
+		Requires: lookupDependency(unit, "Requires"),
+		Wants:    lookupDependency(unit, "Wants"),
+		After:    lookupDependency(unit, "After"),
+		Before:   lookupDependency(unit, "Before"),
+		BindsTo:  lookupDependency(unit, "BindsTo"),
+		PartOf:   lookupDependency(unit, "PartOf"),
+	}
+}
+
+func lookupDependency(unit *parser.UnitFile, key string) []string {
+	values := unit.LookupAllStrv("Unit", key)
+	if len(values) == 0 {
+		return nil
+	}
+	slices.Sort(values)
+	return slices.Compact(values)
+}
+
+func unitNameForAnalysis(f resolver.ResolvedFile) string {
+	if f.ServiceName != "" {
+		return f.ServiceName
+	}
+	if f.ParsedUnit != nil {
+		if info := buildUnitInfo(f.ParsedUnit); info != nil {
+			return info.ServiceFileName()
+		}
+	}
+	if f.Category == "systemd" {
+		return filepath.Base(f.DestPath)
+	}
+	return ""
 }
 
 func validateSecret(f resolver.ResolvedFile) error {

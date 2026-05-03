@@ -11,7 +11,7 @@
   <div id="refresh-progress" aria-hidden="true" style="--refresh-duration: 30s"></div>
 
   <header class="dashboard-header">
-    <span class="logotype">picolet</span>
+    <h1 class="logotype">picolet</h1>
     <dl>
       <div><dt>host</dt><dd>pi-edge-01</dd></div>
       <div><dt>version</dt><dd>0.7.2-test</dd></div>
@@ -25,16 +25,20 @@
       <h2>network</h2>
       <div class="table-wrap">
         <table>
+          <colgroup>
+            <col class="col-status">
+            <col class="col-file">
+            <col class="col-unit">
+          </colgroup>
           <caption class="visually-hidden">network units</caption>
           <thead>
-            <tr><th scope="col">file</th><th scope="col">hash</th><th scope="col">unit</th><th scope="col">status</th></tr>
+            <tr><th scope="col">status</th><th scope="col">file</th><th scope="col">unit</th></tr>
           </thead>
           <tbody>
-            <tr>
-              <td title="/etc/containers/systemd/picolet/lan.network">lan.network</td>
-              <td>cccccccc</td>
-              <td>lan-network.service</td>
+            <tr data-row-key="/etc/containers/systemd/picolet/lan.network">
               <td class="status status--ok"><span class="glyph">█</span> active<span class="substate">· running</span></td>
+              <td title="/etc/containers/systemd/picolet/lan.network · sha256: cccccccc">lan.network</td>
+              <td>lan-network.service</td>
             </tr>
           </tbody>
         </table>
@@ -44,16 +48,20 @@
       <h2>volume</h2>
       <div class="table-wrap">
         <table>
+          <colgroup>
+            <col class="col-status">
+            <col class="col-file">
+            <col class="col-unit">
+          </colgroup>
           <caption class="visually-hidden">volume units</caption>
           <thead>
-            <tr><th scope="col">file</th><th scope="col">hash</th><th scope="col">unit</th><th scope="col">status</th></tr>
+            <tr><th scope="col">status</th><th scope="col">file</th><th scope="col">unit</th></tr>
           </thead>
           <tbody>
-            <tr>
-              <td title="/etc/containers/systemd/picolet/data.volume">data.volume</td>
-              <td>dddddddd</td>
-              <td>data-volume.service</td>
+            <tr data-row-key="/etc/containers/systemd/picolet/data.volume">
               <td class="status status--ok"><span class="glyph">█</span> active<span class="substate">· running</span></td>
+              <td title="/etc/containers/systemd/picolet/data.volume · sha256: dddddddd">data.volume</td>
+              <td>data-volume.service</td>
             </tr>
           </tbody>
         </table>
@@ -63,16 +71,20 @@
       <h2>manifest</h2>
       <div class="table-wrap">
         <table>
+          <colgroup>
+            <col class="col-status">
+            <col class="col-file">
+            <col class="col-unit">
+          </colgroup>
           <caption class="visually-hidden">manifest units</caption>
           <thead>
-            <tr><th scope="col">file</th><th scope="col">hash</th><th scope="col">unit</th><th scope="col">status</th></tr>
+            <tr><th scope="col">status</th><th scope="col">file</th><th scope="col">unit</th></tr>
           </thead>
           <tbody>
-            <tr>
-              <td title="/etc/containers/systemd/picolet/app.yml">app.yml</td>
-              <td>eeeeeeee</td>
-              <td>—</td>
+            <tr data-row-key="/etc/containers/systemd/picolet/app.yml">
               <td class="status status--muted"><span class="glyph">·</span> —</td>
+              <td title="/etc/containers/systemd/picolet/app.yml · sha256: eeeeeeee">app.yml</td>
+              <td>—</td>
             </tr>
           </tbody>
         </table>
@@ -82,22 +94,25 @@
       <h2>container</h2>
       <div class="table-wrap">
         <table>
+          <colgroup>
+            <col class="col-status">
+            <col class="col-file">
+            <col class="col-unit">
+          </colgroup>
           <caption class="visually-hidden">container units</caption>
           <thead>
-            <tr><th scope="col">file</th><th scope="col">hash</th><th scope="col">unit</th><th scope="col">status</th></tr>
+            <tr><th scope="col">status</th><th scope="col">file</th><th scope="col">unit</th></tr>
           </thead>
           <tbody>
-            <tr>
-              <td title="/etc/containers/systemd/picolet/db.container">db.container</td>
-              <td>bbbbbbbb</td>
-              <td>db.service</td>
+            <tr data-row-key="/etc/containers/systemd/picolet/db.container">
               <td class="status status--bad"><span class="glyph">▌</span> failed<span class="substate">· dead</span></td>
+              <td title="/etc/containers/systemd/picolet/db.container · sha256: bbbbbbbb">db.container</td>
+              <td>db.service</td>
             </tr>
-            <tr>
-              <td title="/etc/containers/systemd/picolet/web.container">web.container</td>
-              <td>aaaaaaaa</td>
-              <td>web.service</td>
+            <tr data-row-key="/etc/containers/systemd/picolet/web.container">
               <td class="status status--ok"><span class="glyph">█</span> active<span class="substate">· running</span></td>
+              <td title="/etc/containers/systemd/picolet/web.container · sha256: aaaaaaaa">web.container</td>
+              <td>web.service</td>
             </tr>
           </tbody>
         </table>
@@ -106,8 +121,69 @@
   </main>
 
   <footer class="dashboard-footer">
-    <span>rendered 2026-05-03 12:00:00 UTC</span>
+    <span>rendered 2026-05-03 12:00:00 UTC<span class="stale-tag">· refresh stalled</span></span>
     <span>auto-refreshes every 30s</span>
   </footer>
+  
+  <script>
+    (function () {
+      var meta = document.querySelector('meta[http-equiv="refresh"]');
+      if (!meta) return;
+      meta.parentNode.removeChild(meta);
+      window.setTimeout(function () { document.body.classList.add('settled'); }, 800);
+
+      var intervalMs =  30  * 1000;
+      var inFlight = false;
+      var lastSuccess = Date.now();
+
+      function captureOpen() {
+        var keys = new Set();
+        if (!document.querySelector('details[open]')) return keys;
+        document.querySelectorAll('tr[data-row-key]').forEach(function (row) {
+          if (row.querySelector('details[open]')) keys.add(row.getAttribute('data-row-key'));
+        });
+        return keys;
+      }
+
+      function applyOpen(root, keys) {
+        if (!keys.size) return;
+        root.querySelectorAll('tr[data-row-key]').forEach(function (row) {
+          if (!keys.has(row.getAttribute('data-row-key'))) return;
+          var d = row.querySelector('details');
+          if (d) d.open = true;
+        });
+      }
+
+      function markStale() {
+        if (Date.now() - lastSuccess > intervalMs * 1.75) document.body.classList.add('stale');
+      }
+
+      window.setInterval(function () {
+        if (inFlight || document.hidden) return;
+        inFlight = true;
+        fetch(window.location.pathname + '?refresh=0', { cache: 'no-store', credentials: 'same-origin' })
+          .then(function (res) { return res.ok ? res.text() : null; })
+          .then(function (html) {
+            if (!html) { markStale(); return; }
+            var doc = new DOMParser().parseFromString(html, 'text/html');
+            var openKeys = captureOpen();
+            applyOpen(doc, openKeys);
+            var nextTitle = doc.querySelector('title');
+            if (nextTitle && nextTitle.textContent !== document.title) document.title = nextTitle.textContent;
+            ['header.dashboard-header', 'main', 'footer.dashboard-footer'].forEach(function (sel) {
+              var current = document.querySelector(sel);
+              var next = doc.querySelector(sel);
+              if (current && next) current.replaceWith(next);
+            });
+            var bar = document.getElementById('refresh-progress');
+            if (bar) bar.replaceWith(bar.cloneNode());
+            lastSuccess = Date.now();
+            document.body.classList.remove('stale');
+          })
+          .catch(function () { markStale(); })
+          .then(function () { inFlight = false; });
+      }, intervalMs);
+    })();
+  </script>
 </body>
 </html>

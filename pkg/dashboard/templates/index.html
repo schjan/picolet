@@ -4,47 +4,91 @@
   <meta charset="utf-8">
   <title>{{ .Header.Hostname }} · picolet</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  {{- if .RefreshEnabled }}
   <meta http-equiv="refresh" content="{{ .RefreshSec }}">
+  {{- end }}
   <link rel="stylesheet" href="/static/picolet.css?v={{ .Header.Version }}">
 </head>
 <body>
+  {{- if .RefreshEnabled }}
   <div id="refresh-progress" aria-hidden="true" style="--refresh-duration: {{ .RefreshSec }}s"></div>
+  {{- end }}
 
   <header class="dashboard-header">
-    <span class="logotype">picolet</span>
+    <h1 class="logotype">picolet</h1>
     <dl>
       <div><dt>host</dt><dd>{{ .Header.Hostname }}</dd></div>
+      {{- if .Header.ExternalHostname }}
+      <div><dt>external</dt><dd>{{ .Header.ExternalHostname }}</dd></div>
+      {{- end }}
+      {{- if .Header.PiType }}
+      <div><dt>type</dt><dd>{{ .Header.PiType }}</dd></div>
+      {{- end }}
+      {{- if .Header.Features }}
+      <div><dt>features</dt><dd>{{ .Header.Features }}</dd></div>
+      {{- end }}
       <div><dt>version</dt><dd>{{ .Header.Version }}</dd></div>
       <div><dt>sha</dt><dd>{{ .Header.AppliedSHAShort }}</dd></div>
       {{- if .Header.AppliedAgo }}
       <div><dt>applied</dt><dd>{{ .Header.AppliedAgo }}</dd></div>
+      {{- end }}
+      {{- if .Header.VerifiedAgo }}
+      <div><dt>verified</dt><dd>{{ .Header.VerifiedAgo }}</dd></div>
       {{- end }}
     </dl>
   </header>
 
   <main>
     {{- if and .Banner .Banner.Active }}
-    <aside class="banner" role="alert">
+    <aside class="banner" aria-live="polite">
       <strong>recent repeated failure</strong>
       on <code>{{ .Banner.FailedSHAShort }}</code> · {{ .Banner.FailedCount }} consecutive failures · last try {{ .Banner.FailedAgo }}
     </aside>
+    {{- end }}
+    {{- if .OrphanScan }}
+    <section class="panel">
+      <h2>orphan cleanup</h2>
+      <p>{{ .OrphanScan.FilesRemoved }} files · {{ .OrphanScan.SecretsRemoved }} secrets{{ if .OrphanScan.Error }} · {{ .OrphanScan.Error }}{{ end }}</p>
+    </section>
+    {{- end }}
+    {{- if .RecentEvents }}
+    <section class="panel">
+      <h2>recent events</h2>
+      <ol class="events">
+        {{- range .RecentEvents }}
+        <li><span class="event-result">{{ .Result }}</span>{{ if .SHA }} <code>{{ .SHA }}</code>{{ end }} <span>{{ .When }}</span>{{ if .Message }} <span class="event-message">{{ .Message }}</span>{{ end }}</li>
+        {{- end }}
+      </ol>
+    </section>
     {{- end }}
     {{- range .Groups }}
     <section class="category">
       <h2>{{ .Category }}</h2>
       <div class="table-wrap">
         <table>
+          <colgroup>
+            <col class="col-status">
+            <col class="col-file">
+            <col class="col-unit">
+          </colgroup>
           <caption class="visually-hidden">{{ .Category }} units</caption>
           <thead>
-            <tr><th scope="col">file</th><th scope="col">hash</th><th scope="col">unit</th><th scope="col">status</th></tr>
+            <tr><th scope="col">status</th><th scope="col">file</th><th scope="col">unit</th></tr>
           </thead>
           <tbody>
             {{- range .Rows }}
-            <tr>
-              <td title="{{ .Path }}">{{ .Basename }}</td>
-              <td>{{ .HashShort }}</td>
-              <td>{{ if .Service }}{{ .Service }}{{ else }}—{{ end }}</td>
+            <tr data-row-key="{{ .Path }}">
               <td class="status status--{{ .Status.Class }}"><span class="glyph">{{ .Status.Glyph }}</span> {{ .Status.Token }}{{ if .SubState }}<span class="substate">· {{ .SubState }}</span>{{ end }}</td>
+              <td title="{{ .Path }} · sha256: {{ .HashShort }}">{{ .Basename }}</td>
+              <td>{{ if .Service }}{{ .Service }}{{ else }}—{{ end }}{{ if .Dependencies }}
+                <details class="dependencies">
+                  <summary>dependencies</summary>
+                  <dl>
+                    {{- range .Dependencies }}
+                    <div><dt>{{ .Relation }}</dt><dd>{{ range $i, $target := .Targets }}{{ if $i }}, {{ end }}{{ $target }}{{ end }}</dd></div>
+                    {{- end }}
+                  </dl>
+                </details>{{ end }}</td>
             </tr>
             {{- end }}
           </tbody>
@@ -55,8 +99,83 @@
   </main>
 
   <footer class="dashboard-footer">
-    <span>rendered {{ .RenderedAt.Format "2006-01-02 15:04:05 MST" }}</span>
+    <span>rendered {{ .RenderedAt.Format "2006-01-02 15:04:05 MST" }}<span class="stale-tag">· refresh stalled</span></span>
+    {{- if .RefreshEnabled }}
     <span>auto-refreshes every {{ .RefreshSec }}s</span>
+    {{- else }}
+    <span>auto-refresh paused</span>
+    {{- end }}
   </footer>
+  {{- if .RefreshEnabled }}
+  {{/*
+    Partial-refresh shim. Cancels the <meta http-equiv="refresh"> hard
+    reload and swaps header/main/footer via fetch. Preserves scroll
+    position and re-applies the open state of any <details> the user
+    has expanded. Sets body.settled after first paint so the rise
+    animations don't replay on subsequent swaps. Tracks lastSuccess
+    and surfaces a stale indicator after two consecutive failed ticks.
+    JS-disabled clients fall back to the meta tag's hard reload.
+  */}}
+  <script>
+    (function () {
+      var meta = document.querySelector('meta[http-equiv="refresh"]');
+      if (!meta) return;
+      meta.parentNode.removeChild(meta);
+      window.setTimeout(function () { document.body.classList.add('settled'); }, 800);
+
+      var intervalMs = {{ .RefreshSec }} * 1000;
+      var inFlight = false;
+      var lastSuccess = Date.now();
+
+      function captureOpen() {
+        var keys = new Set();
+        if (!document.querySelector('details[open]')) return keys;
+        document.querySelectorAll('tr[data-row-key]').forEach(function (row) {
+          if (row.querySelector('details[open]')) keys.add(row.getAttribute('data-row-key'));
+        });
+        return keys;
+      }
+
+      function applyOpen(root, keys) {
+        if (!keys.size) return;
+        root.querySelectorAll('tr[data-row-key]').forEach(function (row) {
+          if (!keys.has(row.getAttribute('data-row-key'))) return;
+          var d = row.querySelector('details');
+          if (d) d.open = true;
+        });
+      }
+
+      function markStale() {
+        if (Date.now() - lastSuccess > intervalMs * 1.75) document.body.classList.add('stale');
+      }
+
+      window.setInterval(function () {
+        if (inFlight || document.hidden) return;
+        inFlight = true;
+        fetch(window.location.pathname + '?refresh=0', { cache: 'no-store', credentials: 'same-origin' })
+          .then(function (res) { return res.ok ? res.text() : null; })
+          .then(function (html) {
+            if (!html) { markStale(); return; }
+            var doc = new DOMParser().parseFromString(html, 'text/html');
+            var openKeys = captureOpen();
+            applyOpen(doc, openKeys);
+            var nextTitle = doc.querySelector('title');
+            if (nextTitle && nextTitle.textContent !== document.title) document.title = nextTitle.textContent;
+            ['header.dashboard-header', 'main', 'footer.dashboard-footer'].forEach(function (sel) {
+              var current = document.querySelector(sel);
+              var next = doc.querySelector(sel);
+              if (current && next) current.replaceWith(next);
+            });
+            var bar = document.getElementById('refresh-progress');
+            if (bar) bar.replaceWith(bar.cloneNode());
+            lastSuccess = Date.now();
+            document.body.classList.remove('stale');
+          })
+          .catch(function () { markStale(); })
+          .then(function () { inFlight = false; });
+      }, intervalMs);
+    })();
+  </script>
+  {{- end }}
 </body>
 </html>

@@ -10,16 +10,19 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/pkg/metrics"
+	"github.com/schjan/picolet/pkg/status"
 )
 
-// newTestRegistry creates a fresh UnitHealthCollector registered in its own registry,
-// so tests are isolated from each other and from the global registry.
-func newTestRegistry(t *testing.T) (*metrics.UnitHealthCollector, *prometheus.Registry) {
+// newTestRegistry creates a fresh status store + UnitHealthCollector pair
+// registered in its own registry, so tests are isolated from each other and
+// from the global registry.
+func newTestRegistry(t *testing.T) (*status.Store, *prometheus.Registry) {
 	t.Helper()
-	c := metrics.NewUnitHealthCollector()
+	store := status.NewStore()
+	c := metrics.NewUnitHealthCollector(store)
 	reg := prometheus.NewRegistry()
 	require.NoError(t, reg.Register(c))
-	return c, reg
+	return store, reg
 }
 
 func TestUnitHealthCollector_Empty(t *testing.T) {
@@ -33,8 +36,8 @@ func TestUnitHealthCollector_Empty(t *testing.T) {
 
 func TestUnitHealthCollector_ActiveEmitsOne(t *testing.T) {
 	t.Parallel()
-	c, reg := newTestRegistry(t)
-	c.Set("foo.service", "active", "running")
+	store, reg := newTestRegistry(t)
+	store.SetUnit("foo.service", status.UnitRuntimeStatus{ActiveState: "active", SubState: "running"})
 
 	expected := `
 # HELP picolet_unit_active 1 if the managed unit is active, 0 if failed. Absent for inactive/oneshot units.
@@ -49,8 +52,8 @@ picolet_unit_state_info{active_state="active",sub_state="running",unit="foo.serv
 
 func TestUnitHealthCollector_FailedEmitsZero(t *testing.T) {
 	t.Parallel()
-	c, reg := newTestRegistry(t)
-	c.Set("foo.service", "failed", "auto-restart")
+	store, reg := newTestRegistry(t)
+	store.SetUnit("foo.service", status.UnitRuntimeStatus{ActiveState: "failed", SubState: "auto-restart"})
 
 	expected := `
 # HELP picolet_unit_active 1 if the managed unit is active, 0 if failed. Absent for inactive/oneshot units.
@@ -65,8 +68,8 @@ picolet_unit_state_info{active_state="failed",sub_state="auto-restart",unit="foo
 
 func TestUnitHealthCollector_InactiveAbsent(t *testing.T) {
 	t.Parallel()
-	c, reg := newTestRegistry(t)
-	c.Set("foo.service", "inactive", "dead")
+	store, reg := newTestRegistry(t)
+	store.SetUnit("foo.service", status.UnitRuntimeStatus{ActiveState: "inactive", SubState: "dead"})
 
 	count, err := testutil.GatherAndCount(reg)
 	require.NoError(t, err)
@@ -75,9 +78,9 @@ func TestUnitHealthCollector_InactiveAbsent(t *testing.T) {
 
 func TestUnitHealthCollector_DeleteRemovesMetrics(t *testing.T) {
 	t.Parallel()
-	c, reg := newTestRegistry(t)
-	c.Set("foo.service", "active", "running")
-	c.Delete("foo.service")
+	store, reg := newTestRegistry(t)
+	store.SetUnit("foo.service", status.UnitRuntimeStatus{ActiveState: "active", SubState: "running"})
+	store.DeleteUnit("foo.service")
 
 	count, err := testutil.GatherAndCount(reg)
 	require.NoError(t, err)
@@ -86,22 +89,19 @@ func TestUnitHealthCollector_DeleteRemovesMetrics(t *testing.T) {
 
 func TestUnitHealthCollector_StateTransition(t *testing.T) {
 	t.Parallel()
-	c, reg := newTestRegistry(t)
+	store, reg := newTestRegistry(t)
 
-	// active → check active=1
-	c.Set("foo.service", "active", "running")
+	store.SetUnit("foo.service", status.UnitRuntimeStatus{ActiveState: "active", SubState: "running"})
 	active, err := testutil.GatherAndCount(reg)
 	require.NoError(t, err)
 	assert.Equal(t, 2, active) // unit_active + unit_state_info
 
-	// failed → check active=0, no stale series
-	c.Set("foo.service", "failed", "auto-restart")
+	store.SetUnit("foo.service", status.UnitRuntimeStatus{ActiveState: "failed", SubState: "auto-restart"})
 	failed, err := testutil.GatherAndCount(reg)
 	require.NoError(t, err)
-	assert.Equal(t, 2, failed) // still 2 metrics, but different values
+	assert.Equal(t, 2, failed)
 
-	// active again → verify recovery
-	c.Set("foo.service", "active", "running")
+	store.SetUnit("foo.service", status.UnitRuntimeStatus{ActiveState: "active", SubState: "running"})
 	recovered, err := testutil.GatherAndCount(reg)
 	require.NoError(t, err)
 	assert.Equal(t, 2, recovered)
@@ -109,14 +109,14 @@ func TestUnitHealthCollector_StateTransition(t *testing.T) {
 
 func TestUnitHealthCollector_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
-	c, reg := newTestRegistry(t)
+	store, reg := newTestRegistry(t)
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for range 100 {
-			c.Set("foo.service", "active", "running")
-			c.Delete("foo.service")
+			store.SetUnit("foo.service", status.UnitRuntimeStatus{ActiveState: "active", SubState: "running"})
+			store.DeleteUnit("foo.service")
 		}
 	}()
 

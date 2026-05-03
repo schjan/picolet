@@ -16,6 +16,11 @@
 | `picolet_health_enforcement_total` | Counter | `unit`, `action` (restart/skip_cooldown) | Health enforcement actions by unit |
 | `picolet_applied_git_sha_info` | Gauge | `sha` | Currently applied git SHA (value=1) |
 | `picolet_orphans_removed_total` | Counter | `type` (file/secret) | Orphaned resources removed at startup |
+| `picolet_unit_dependency_count` | Gauge | `unit`, `relation` | Current generated systemd dependency count by managed unit and relation |
+| `picolet_host_info` | Gauge | `pi_type` | Resolved host metadata (value=1) |
+| `picolet_host_feature_info` | Gauge | `feature` | Resolved host feature metadata (value=1) |
+
+Dependency targets, file paths, hashes, recent error strings, and dashboard event history are intentionally not exported as labels to avoid high-cardinality or churn-heavy series.
 
 > **Self-update monitoring:** use node-exporter's `systemd_unit_start_time_seconds` for `picolet.service` to detect restart failures.
 

@@ -47,6 +47,7 @@ type ResolvedFile struct {
 // ResolvedHost is the complete desired state for a single host.
 type ResolvedHost struct {
 	Hostname string
+	Host     *config.HostConfig
 	Files    []ResolvedFile
 }
 
@@ -157,6 +158,7 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 
 	return &ResolvedHost{
 		Hostname: hostname,
+		Host:     host,
 		Files:    files,
 	}, nil
 }

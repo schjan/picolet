@@ -11,7 +11,8 @@ import (
 )
 
 // buildUnitInfo mirrors Podman's generateUnitsInfoMap logic exactly.
-// GetUnitServiceName returns the base service name without ".service" suffix; we add it here.
+// GetUnitServiceName returns the base service name without ".service" suffix;
+// quadlet.UnitInfo.ServiceFileName appends the suffix when needed.
 // ResourceName must be pre-filled for .container (network reuse resolution via GetContainerResourceName).
 // Convert* fills ResourceName for all other types (.network, .volume, .kube).
 func buildUnitInfo(unit *parser.UnitFile) *quadlet.UnitInfo {
@@ -19,7 +20,7 @@ func buildUnitInfo(unit *parser.UnitFile) *quadlet.UnitInfo {
 	if err != nil {
 		return nil
 	}
-	info := &quadlet.UnitInfo{ServiceName: serviceName + ".service"}
+	info := &quadlet.UnitInfo{ServiceName: serviceName}
 	if strings.HasSuffix(unit.Filename, ".container") {
 		info.ResourceName = quadlet.GetContainerResourceName(unit)
 	}
@@ -35,6 +36,11 @@ func buildUnitInfo(unit *parser.UnitFile) *quadlet.UnitInfo {
 // systemd dependency generation (e.g. podman-user-wait-network-online.service vs
 // network-online.target).
 func validateQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.UnitInfo, rootless bool) error {
+	_, err := convertQuadlet(unit, unitsInfoMap, rootless)
+	return err
+}
+
+func convertQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.UnitInfo, rootless bool) (*parser.UnitFile, error) {
 	// Ensure the unit's own entry is in the map. In the ValidateFiles path this is
 	// pre-populated by buildUnitsInfoFromFiles; this handles direct calls (e.g. tests).
 	if _, ok := unitsInfoMap[unit.Filename]; !ok {
@@ -47,24 +53,25 @@ func validateQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.Uni
 
 	var warn error
 	var convertErr error
+	var service *parser.UnitFile
 	switch ext {
 	case ".container":
-		_, warn, convertErr = quadlet.ConvertContainer(unit, unitsInfoMap, rootless)
+		service, warn, convertErr = quadlet.ConvertContainer(unit, unitsInfoMap, rootless)
 	case ".network":
-		_, warn, convertErr = quadlet.ConvertNetwork(unit, unitsInfoMap, rootless)
+		service, warn, convertErr = quadlet.ConvertNetwork(unit, unitsInfoMap, rootless)
 	case ".volume":
-		_, warn, convertErr = quadlet.ConvertVolume(unit, unitsInfoMap, rootless)
+		service, warn, convertErr = quadlet.ConvertVolume(unit, unitsInfoMap, rootless)
 	case ".kube":
-		_, convertErr = quadlet.ConvertKube(unit, unitsInfoMap, rootless)
+		service, convertErr = quadlet.ConvertKube(unit, unitsInfoMap, rootless)
 	default:
-		return fmt.Errorf("%s: unknown quadlet extension %q", unit.Filename, ext)
+		return nil, fmt.Errorf("%s: unknown quadlet extension %q", unit.Filename, ext)
 	}
 
 	if warn != nil {
 		slog.Warn("quadlet warning", "file", unit.Filename, "warning", warn)
 	}
 	if convertErr != nil {
-		return fmt.Errorf("%s: %w", unit.Filename, convertErr)
+		return nil, fmt.Errorf("%s: %w", unit.Filename, convertErr)
 	}
-	return nil
+	return service, nil
 }

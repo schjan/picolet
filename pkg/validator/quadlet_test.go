@@ -17,7 +17,7 @@ func TestBuildUnitInfoContainer(t *testing.T) {
 
 	info := buildUnitInfo(unit)
 	require.NotNil(t, info)
-	assert.Equal(t, "app.service", info.ServiceName)
+	assert.Equal(t, "app", info.ServiceName)
 	// GetContainerResourceName returns "systemd-<name>" (Podman's naming convention)
 	assert.Equal(t, "systemd-app", info.ResourceName, "container ResourceName must be pre-filled")
 }
@@ -31,7 +31,7 @@ func TestBuildUnitInfoNetwork(t *testing.T) {
 
 	info := buildUnitInfo(unit)
 	require.NotNil(t, info)
-	assert.Equal(t, "internal-network.service", info.ServiceName)
+	assert.Equal(t, "internal-network", info.ServiceName)
 	assert.Empty(t, info.ResourceName, "network ResourceName is set by Convert*, not pre-filled")
 }
 
@@ -44,7 +44,7 @@ func TestBuildUnitInfoVolume(t *testing.T) {
 
 	info := buildUnitInfo(unit)
 	require.NotNil(t, info)
-	assert.Equal(t, "data-volume.service", info.ServiceName)
+	assert.Equal(t, "data-volume", info.ServiceName)
 	assert.Empty(t, info.ResourceName)
 }
 
@@ -57,7 +57,7 @@ func TestBuildUnitInfoKube(t *testing.T) {
 
 	info := buildUnitInfo(unit)
 	require.NotNil(t, info)
-	assert.Equal(t, "stack.service", info.ServiceName)
+	assert.Equal(t, "stack", info.ServiceName)
 	assert.Empty(t, info.ResourceName)
 }
 
@@ -70,5 +70,5 @@ func TestBuildUnitInfoServiceNameOverride(t *testing.T) {
 
 	info := buildUnitInfo(unit)
 	require.NotNil(t, info)
-	assert.Equal(t, "custom.service", info.ServiceName)
+	assert.Equal(t, "custom", info.ServiceName)
 }

@@ -2,7 +2,6 @@ package dashboard_test
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,13 +12,11 @@ import (
 	"time"
 
 	"github.com/sebdah/goldie/v2"
-	"github.com/stretchr/testify/mock"
 
-	mockapplier "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/agentcfg"
-	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/dashboard"
 	"github.com/schjan/picolet/pkg/state"
+	"github.com/schjan/picolet/pkg/status"
 )
 
 var fixedNow = time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
@@ -41,7 +38,7 @@ func newTestStore(t *testing.T, st state.State) *state.Store {
 func TestHandler_ServesPlaceholder(t *testing.T) {
 	t.Parallel()
 
-	h, err := dashboard.NewHandler(nil, nil, nil, "0.0.0-test", nil)
+	h, err := dashboard.NewHandler(nil, nil, "0.0.0-test", nil)
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -67,7 +64,7 @@ func TestHandler_ServesPlaceholder(t *testing.T) {
 
 func TestHandler_404OnNonRoot(t *testing.T) {
 	t.Parallel()
-	h, _ := dashboard.NewHandler(nil, nil, nil, "0.0.0-test", nil)
+	h, _ := dashboard.NewHandler(nil, nil, "0.0.0-test", nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -80,7 +77,7 @@ func TestHandler_404OnNonRoot(t *testing.T) {
 
 func TestHandler_HTMLCacheControl(t *testing.T) {
 	t.Parallel()
-	h, _ := dashboard.NewHandler(nil, nil, nil, "0.0.0", nil)
+	h, _ := dashboard.NewHandler(nil, nil, "0.0.0", nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 	rec := httptest.NewRecorder()
@@ -92,7 +89,7 @@ func TestHandler_HTMLCacheControl(t *testing.T) {
 
 func TestHandler_StaticAssetServed(t *testing.T) {
 	t.Parallel()
-	h, _ := dashboard.NewHandler(nil, nil, nil, "0.0.0", nil)
+	h, _ := dashboard.NewHandler(nil, nil, "0.0.0", nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 	rec := httptest.NewRecorder()
@@ -120,11 +117,10 @@ func TestServeIndex_RendersUnitsAndStatuses(t *testing.T) {
 		ServiceNames: map[string]string{"/p/web.container": "web.service"},
 	})
 
-	sm := mockapplier.NewMockSystemdManager(t)
-	sm.EXPECT().GetUnitStatus(mock.Anything, "web.service").
-		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+	statusStore := status.NewStore()
+	statusStore.SetUnit("web.service", status.UnitRuntimeStatus{ActiveState: "active", SubState: "running"})
 
-	h, err := dashboard.NewHandler(store, sm, cfg, "0.0.0", nil)
+	h, err := dashboard.NewHandler(store, cfg, "0.0.0", nil, dashboard.WithStatusStore(statusStore))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,8 +146,7 @@ func TestServeIndex_FailureGateBanner(t *testing.T) {
 	store := newTestStore(t, state.State{
 		FailedSHA: "deadbeefcafe", FailedCount: 4, FailedAt: time.Now(),
 	})
-	sm := mockapplier.NewMockSystemdManager(t)
-	h, _ := dashboard.NewHandler(store, sm, cfg, "0.0.0", nil)
+	h, _ := dashboard.NewHandler(store, cfg, "0.0.0", nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -177,11 +172,10 @@ func TestServeIndex_SystemdCategoryDerivesUnitName(t *testing.T) {
 		// No ServiceNames mapping — handler must fall back to filepath.Base(path).
 	})
 
-	sm := mockapplier.NewMockSystemdManager(t)
-	sm.EXPECT().GetUnitStatus(mock.Anything, "custom.timer").
-		Return(applier.UnitStatus{ActiveState: "active", SubState: "waiting"}, nil)
+	statusStore := status.NewStore()
+	statusStore.SetUnit("custom.timer", status.UnitRuntimeStatus{ActiveState: "active", SubState: "waiting"})
 
-	h, _ := dashboard.NewHandler(store, sm, cfg, "0.0.0", nil)
+	h, _ := dashboard.NewHandler(store, cfg, "0.0.0", nil, dashboard.WithStatusStore(statusStore))
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -208,8 +202,7 @@ func TestServeIndex_NoStoreOnLoadError(t *testing.T) {
 	store := state.NewStore(p)
 
 	cfg := &agentcfg.Config{Hostname: "pi-edge-01"}
-	sm := mockapplier.NewMockSystemdManager(t)
-	h, _ := dashboard.NewHandler(store, sm, cfg, "0.0.0", nil)
+	h, _ := dashboard.NewHandler(store, cfg, "0.0.0", nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -223,7 +216,7 @@ func TestServeIndex_NoStoreOnLoadError(t *testing.T) {
 	}
 }
 
-func TestServeIndex_PerUnitErrorIsTolerant(t *testing.T) {
+func TestServeIndex_UnknownStatusForMissingSnapshotEntry(t *testing.T) {
 	t.Parallel()
 	cfg := &agentcfg.Config{Hostname: "pi-edge-01"}
 	store := newTestStore(t, state.State{
@@ -232,21 +225,110 @@ func TestServeIndex_PerUnitErrorIsTolerant(t *testing.T) {
 		},
 		ServiceNames: map[string]string{"/p/web.container": "web.service"},
 	})
-	sm := mockapplier.NewMockSystemdManager(t)
-	sm.EXPECT().GetUnitStatus(mock.Anything, "web.service").
-		Return(applier.UnitStatus{}, errors.New("dbus borked"))
-
-	h, _ := dashboard.NewHandler(store, sm, cfg, "0.0.0", nil)
+	// Status store has no entry for web.service — exercises the unknown-status branch.
+	h, _ := dashboard.NewHandler(store, cfg, "0.0.0", nil, dashboard.WithStatusStore(status.NewStore()))
 	mux := http.NewServeMux()
 	h.Register(mux)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d (must not 500 on per-unit failure)", rec.Code)
+		t.Fatalf("status = %d", rec.Code)
 	}
 	if !strings.Contains(rec.Body.String(), "unknown") {
 		t.Errorf("expected 'unknown' status fallback")
+	}
+}
+
+func TestServeIndex_UsesStatusSnapshot(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{Hostname: "pi-edge-01"}
+	store := newTestStore(t, state.State{
+		AppliedSHA: "abc1234abc1234",
+		AppliedAt:  fixedNow.Add(-5 * time.Minute),
+		ManagedFiles: map[string]state.ManagedFile{
+			"/p/web.container": {Hash: "sha256:h-web", Category: "container"},
+		},
+		ServiceNames: map[string]string{"/p/web.container": "web.service"},
+	})
+	statusStore := status.NewStore()
+	statusStore.SetUnits(map[string]status.UnitRuntimeStatus{
+		"web.service": {ActiveState: "active", SubState: "running"},
+	})
+	statusStore.SetDependencies(map[string]status.UnitDependencies{
+		"web.service": {Requires: []string{"internal-network.service"}},
+	})
+	statusStore.SetHost(status.HostMetadata{
+		PiType:           "server",
+		Features:         []string{"mqtt"},
+		ExternalHostname: "edge.example.net",
+	})
+	statusStore.SetVerifiedAt(fixedNow.Add(-30 * time.Second))
+	statusStore.SetOrphanScan(status.OrphanScan{Ran: true, FilesRemoved: 1})
+	statusStore.AddEvent(status.ReconcileEvent{At: fixedNow.Add(-time.Minute), Result: "failure", SHA: "abc1234abc1234", Message: "validation failed"})
+
+	h, _ := dashboard.NewHandler(store, cfg, "0.0.0", nil, dashboard.WithStatusStore(statusStore))
+	h.SetNowForTest(func() time.Time { return fixedNow })
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?refresh=0", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"edge.example.net",
+		"server",
+		"mqtt",
+		"verified",
+		"dependencies",
+		"internal-network.service",
+		"orphan cleanup",
+		"recent events",
+		"auto-refresh paused",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+	if strings.Contains(body, `http-equiv="refresh"`) {
+		t.Errorf("refresh meta should be suppressed when refresh=0")
+	}
+}
+
+func TestServeIndex_OrphanPanelHiddenWhenEmpty(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{Hostname: "pi-edge-01"}
+	store := newTestStore(t, state.State{})
+	statusStore := status.NewStore()
+	// Scan ran but found nothing — panel must not render.
+	statusStore.SetOrphanScan(status.OrphanScan{Ran: true})
+
+	h, _ := dashboard.NewHandler(store, cfg, "0.0.0", nil, dashboard.WithStatusStore(statusStore))
+	mux := http.NewServeMux()
+	h.Register(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if strings.Contains(rec.Body.String(), "orphan cleanup") {
+		t.Errorf("orphan panel should be hidden when nothing was cleaned up")
+	}
+}
+
+func TestServeIndex_RecentEventsHiddenWhenEmpty(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{Hostname: "pi-edge-01"}
+	store := newTestStore(t, state.State{})
+	h, _ := dashboard.NewHandler(store, cfg, "0.0.0", nil, dashboard.WithStatusStore(status.NewStore()))
+	mux := http.NewServeMux()
+	h.Register(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if strings.Contains(rec.Body.String(), "recent events") {
+		t.Errorf("recent-events panel should be hidden when ring is empty")
 	}
 }
 
@@ -273,17 +355,15 @@ func TestServeIndex_Goldie(t *testing.T) {
 		},
 	})
 
-	sm := mockapplier.NewMockSystemdManager(t)
-	sm.EXPECT().GetUnitStatus(mock.Anything, "web.service").
-		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
-	sm.EXPECT().GetUnitStatus(mock.Anything, "db.service").
-		Return(applier.UnitStatus{ActiveState: "failed", SubState: "dead"}, nil)
-	sm.EXPECT().GetUnitStatus(mock.Anything, "lan-network.service").
-		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
-	sm.EXPECT().GetUnitStatus(mock.Anything, "data-volume.service").
-		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+	statusStore := status.NewStore()
+	statusStore.SetUnits(map[string]status.UnitRuntimeStatus{
+		"web.service":         {ActiveState: "active", SubState: "running"},
+		"db.service":          {ActiveState: "failed", SubState: "dead"},
+		"lan-network.service": {ActiveState: "active", SubState: "running"},
+		"data-volume.service": {ActiveState: "active", SubState: "running"},
+	})
 
-	h, err := dashboard.NewHandler(store, sm, cfg, "0.7.2-test", nil)
+	h, err := dashboard.NewHandler(store, cfg, "0.7.2-test", nil, dashboard.WithStatusStore(statusStore))
 	if err != nil {
 		t.Fatal(err)
 	}

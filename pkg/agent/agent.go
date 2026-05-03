@@ -25,6 +25,7 @@ import (
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/rollback"
 	"github.com/schjan/picolet/pkg/state"
+	"github.com/schjan/picolet/pkg/status"
 	"github.com/schjan/picolet/pkg/validator"
 	"github.com/schjan/picolet/pkg/version"
 )
@@ -89,6 +90,7 @@ type Agent struct {
 	authProvider              gitpoll.AuthProvider // nil = use default SSH/token logic
 	consecutiveHealthFailures atomic.Int32
 	routeRegistrar            RouteRegistrar // nil = no extra HTTP routes
+	statusStore               *status.Store
 }
 
 // RouteRegistrar is implemented by anything that wants to add routes to the
@@ -158,14 +160,24 @@ func WithDashboard(r RouteRegistrar) Option {
 	return func(a *Agent) { a.routeRegistrar = r }
 }
 
+// WithStatusStore sets the shared in-memory runtime status store.
+func WithStatusStore(store *status.Store) Option {
+	return func(a *Agent) {
+		if store != nil {
+			a.statusStore = store
+		}
+	}
+}
+
 // New creates a new Agent.
 func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 	a := &Agent{
-		cfg:       cfg,
-		repoPath:  defaultRepoPath,
-		statePath: DefaultStatePath,
-		lockPath:  DefaultLockPath,
-		webhookCh: make(chan struct{}, 1),
+		cfg:         cfg,
+		repoPath:    defaultRepoPath,
+		statePath:   DefaultStatePath,
+		lockPath:    DefaultLockPath,
+		webhookCh:   make(chan struct{}, 1),
+		statusStore: status.NewStore(),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -301,7 +313,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if err != nil {
 		slog.Error("health enforcement error", "error", err)
 	} else {
-		recordHealthMetrics(hr)
+		a.recordHealthMetrics(hr)
 	}
 
 	// Track consecutive D-Bus failures for /health endpoint.
@@ -316,6 +328,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if a.paused.Load() {
 		slog.Debug("reconciliation paused via MQTT")
 		metrics.ReconciliationTotal.WithLabelValues("paused").Inc()
+		a.recordEvent("paused", st.AppliedSHA, "reconciliation paused via MQTT")
 		return nil
 	}
 
@@ -323,6 +336,9 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	pollResult, err := poller.Poll(ctx, st.AppliedSHA)
 	if err != nil {
 		metrics.GitPollTotal.WithLabelValues("error").Inc()
+		// SHA intentionally empty: the failure is about the upstream poll, not
+		// about the currently-applied SHA, which would be misleading.
+		a.recordEvent("git_error", "", err.Error())
 		return fmt.Errorf("polling git: %w", err)
 	}
 
@@ -330,6 +346,12 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		metrics.GitPollTotal.WithLabelValues("noop").Inc()
 		slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
+		if a.statusNeedsResolvedSnapshot() {
+			if err := a.refreshResolvedSnapshot(ctx); err != nil {
+				slog.Warn("refreshing runtime status snapshot failed", "error", err)
+				a.recordEvent("status_error", pollResult.HeadSHA, err.Error())
+			}
+		}
 		// A noop is a successful reconciliation — the agent confirmed the
 		// desired state matches. Update the timestamp so dashboards and MQTT
 		// reflect "last time we verified everything is OK", not just "last
@@ -338,6 +360,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		now := time.Now()
 		st.LastSuccessfulReconciliationAt = now
 		metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
+		a.statusStore.SetVerifiedAt(now)
 		return nil
 	}
 
@@ -360,6 +383,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		if a.opReader != nil {
 			a.lastOPRefresh = time.Now()
 		}
+		a.recordEvent("failed_sha_gate", pollResult.HeadSHA, "skipped after repeated failures")
 		return nil
 	}
 
@@ -393,6 +417,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		}
 		st.FailedAt = time.Now()
 		metrics.RecordFailedSHA(st.FailedCount)
+		a.recordEvent("failure", pollResult.HeadSHA, err.Error())
 		if saveErr := store.Save(st); saveErr != nil {
 			slog.Error("saving failed state", "error", saveErr)
 		}
@@ -407,6 +432,9 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		}
 	}
 	metrics.ReconciliationTotal.WithLabelValues("success").Inc()
+	if result.HasChanges {
+		a.recordEvent("success", pollResult.HeadSHA, "reconciliation complete")
+	}
 	slog.Info("reconciliation complete", "sha", pollResult.HeadSHA, "result", "success", "duration", elapsed.Round(time.Millisecond))
 	return nil
 }
@@ -414,6 +442,15 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 // LoadAndResolve loads fleet config from repoPath and resolves the desired state for the given host.
 // It is the shared implementation behind Agent.loadAndResolve and CLI subcommands (apply, dry-run).
 func LoadAndResolve(ctx context.Context, repoPath, hostname, secretsDir string, rootless bool, opSecretReader resolver.OpSecretReader) ([]resolver.ResolvedFile, error) {
+	resolved, err := LoadAndResolveHost(ctx, repoPath, hostname, secretsDir, rootless, opSecretReader)
+	if err != nil {
+		return nil, err
+	}
+	return resolved.Files, nil
+}
+
+// LoadAndResolveHost loads fleet config from repoPath and resolves the desired state plus host metadata.
+func LoadAndResolveHost(ctx context.Context, repoPath, hostname, secretsDir string, rootless bool, opSecretReader resolver.OpSecretReader) (*resolver.ResolvedHost, error) {
 	slog.Debug("loading fleet config", "repo", repoPath)
 	repoFS := os.DirFS(repoPath)
 	cfg, err := config.LoadAll(repoFS)
@@ -452,15 +489,15 @@ func LoadAndResolve(ctx context.Context, repoPath, hostname, secretsDir string, 
 		return nil, fmt.Errorf("resolving host %s: %w", hostname, err)
 	}
 	slog.Debug("host resolved", "hostname", hostname, "files", len(resolved.Files), "duration", time.Since(loadStart).Round(time.Millisecond))
-	return resolved.Files, nil
+	return resolved, nil
 }
 
-func (a *Agent) loadAndResolve(ctx context.Context) ([]resolver.ResolvedFile, error) {
+func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, error) {
 	fleetPath := a.repoPath
 	if a.cfg.RepoSubDir != "" {
 		fleetPath = filepath.Join(a.repoPath, a.cfg.RepoSubDir)
 	}
-	return LoadAndResolve(ctx, fleetPath, a.cfg.Hostname, a.cfg.SecretsDir, a.cfg.Rootless, a.opReader)
+	return LoadAndResolveHost(ctx, fleetPath, a.cfg.Hostname, a.cfg.SecretsDir, a.cfg.Rootless, a.opReader)
 }
 
 // ReconcileResult contains the outcome of a single reconciliation cycle.
@@ -477,22 +514,19 @@ type ReconcileResult struct {
 
 // ReconcileOnce runs a single reconciliation cycle: load config, resolve, diff, validate, apply, save state.
 func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.State, store *state.Store) (*ReconcileResult, error) {
-	files, err := a.loadAndResolve(ctx)
+	resolved, err := a.loadAndResolve(ctx)
 	if err != nil {
 		return nil, err
 	}
+	files := resolved.Files
+	a.recordHostMetadata(resolved.Host)
 
 	opCount := a.recordOpSecretsCount(files)
 
 	changeset := reconciler.Diff(files, st)
 
 	if !changeset.HasChanges() {
-		slog.Info("no changes to apply", "sha", headSHA)
-		markAppliedWithMetrics(st, headSHA)
-		if err := store.Save(st); err != nil {
-			return nil, fmt.Errorf("saving state: %w", err)
-		}
-		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: opCount}, nil
+		return a.reconcileNoChanges(headSHA, files, changeset, st, store, opCount)
 	}
 
 	slog.Info("changes detected",
@@ -501,8 +535,10 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		"delete", changeset.Summary[reconciler.ActionDelete],
 	)
 
-	if err := validator.ValidateFiles(files, a.cfg.Rootless); err != nil {
+	deps, err := validator.AnalyzeFiles(files, a.cfg.Rootless)
+	if err != nil {
 		slog.Warn("validation failed", "error", err)
+		a.recordEvent("failure", headSHA, fmt.Sprintf("validation failed: %v", err))
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -510,11 +546,16 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	if err != nil {
 		return nil, err
 	}
+	// Set deps after a successful apply so the dashboard's dep map matches the
+	// deployed state. On apply failure (rollback) we keep the previous good
+	// map rather than advertising deps for a state we couldn't reach.
+	a.statusStore.SetDependencies(deps)
 	for _, e := range applyResult.Errors {
 		slog.Warn("non-fatal apply error", "error", e)
 	}
 
 	markAppliedWithMetrics(st, headSHA)
+	a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
 	UpdateState(st, changeset)
 
 	if err := store.Save(st); err != nil {
@@ -531,6 +572,42 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		ApplyResult:    applyResult,
 		OpSecretsCount: opCount,
 	}, nil
+}
+
+// reconcileNoChanges handles a reconcile that found no file changes.
+// When the git SHA is new, it still marks that SHA as applied and persists it:
+// a host can legitimately receive a fleet commit that changes only docs or
+// other hosts. When the SHA is unchanged (e.g. OP refresh), it only bumps the
+// verified-OK timestamp in memory.
+//
+// Note on validation failure: this path treats it as a hard failure and
+// surfaces it through the failure-event/failed-SHA pipeline. The outer-tick
+// noop fast path (no_git_changes) is more lenient: validation errors there
+// during refreshResolvedSnapshot are logged and recorded as status_error
+// without aborting the verify-OK signal, because nothing triggered the tick.
+// Here, something *did* trigger the tick (OP refresh or git change that
+// rendered identically), so a bad render is actionable.
+func (a *Agent) reconcileNoChanges(headSHA string, files []resolver.ResolvedFile, changeset *reconciler.Changeset, st *state.State, store *state.Store, opCount int) (*ReconcileResult, error) {
+	deps, err := validator.AnalyzeFiles(files, a.cfg.Rootless)
+	if err != nil {
+		a.recordEvent("failure", headSHA, fmt.Sprintf("validation failed: %v", err))
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+	a.statusStore.SetDependencies(deps)
+	slog.Info("no changes to apply", "sha", headSHA)
+	if headSHA != st.AppliedSHA {
+		markAppliedWithMetrics(st, headSHA)
+		a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
+		if err := store.Save(st); err != nil {
+			return nil, fmt.Errorf("saving state: %w", err)
+		}
+		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: opCount}, nil
+	}
+	now := time.Now()
+	st.LastSuccessfulReconciliationAt = now
+	metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
+	a.statusStore.SetVerifiedAt(now)
+	return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: opCount}, nil
 }
 
 func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset) (*applier.ApplyResult, error) {
@@ -562,9 +639,10 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		if change.Action != reconciler.ActionNoop {
 			metrics.FilesAppliedTotal.WithLabelValues(string(change.Action), change.Category).Inc()
 		}
-		// Remove health metrics for units leaving management.
+		// Remove status for units leaving management. The metrics collector
+		// reads from the status store, so a single delete is sufficient.
 		if change.Action == reconciler.ActionDelete && change.ServiceName != "" {
-			metrics.UnitHealth.Delete(change.ServiceName)
+			a.statusStore.DeleteUnit(change.ServiceName)
 		}
 	}
 
@@ -646,7 +724,7 @@ func (a *Agent) updateHealthFailures(hr *health.CheckResult) {
 	}
 }
 
-func recordHealthMetrics(hr *health.CheckResult) {
+func (a *Agent) recordHealthMetrics(hr *health.CheckResult) {
 	for _, u := range hr.Healthy {
 		metrics.HealthCheckTotal.WithLabelValues(u, "healthy").Inc()
 	}
@@ -662,15 +740,23 @@ func recordHealthMetrics(hr *health.CheckResult) {
 	for _, u := range hr.Skipped {
 		metrics.HealthEnforcementTotal.WithLabelValues(u, "skip_cooldown").Inc()
 	}
-	for unit, s := range hr.Statuses {
-		metrics.UnitHealth.Set(unit, s.ActiveState, s.SubState)
-	}
+	// Status store is the single source of truth for per-unit health.
+	// metrics.NewUnitHealthCollector reads its scrape data from the store.
+	a.statusStore.SetUnits(unitStatusesFromHealth(hr.Statuses))
 
 	metrics.HealthCheckErrorsTotal.Add(float64(len(hr.Errors)))
 
 	if hr.AllFailed() {
-		metrics.UnitHealth.Clear()
+		a.statusStore.ClearUnits()
 	}
+}
+
+func unitStatusesFromHealth(statuses map[string]applier.UnitStatus) map[string]status.UnitRuntimeStatus {
+	out := make(map[string]status.UnitRuntimeStatus, len(statuses))
+	for unit, st := range statuses {
+		out[unit] = status.UnitRuntimeStatus{ActiveState: st.ActiveState, SubState: st.SubState}
+	}
+	return out
 }
 
 func countCategoriesFromState(managed map[string]state.ManagedFile) map[string]float64 {
@@ -690,11 +776,13 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	quadletDir, systemdDir, dataDir, err := resolver.ResolveDirs(a.cfg.Rootless)
 	if err != nil {
 		slog.Warn("resolving dirs for orphan scan failed", "error", err)
+		a.statusStore.SetOrphanScan(status.OrphanScan{Ran: true, Error: err.Error()})
 		return
 	}
 	st, err := store.Load()
 	if err != nil {
 		slog.Warn("loading state for orphan scan failed", "error", err)
+		a.statusStore.SetOrphanScan(status.OrphanScan{Ran: true, Error: err.Error()})
 		return
 	}
 	scanner := orphan.New(a.writer, a.podman, quadletDir, systemdDir, dataDir)
@@ -702,6 +790,15 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	if err != nil {
 		slog.Warn("orphan scan error", "error", err)
 	}
+	scan := status.OrphanScan{
+		Ran:            true,
+		FilesRemoved:   result.FilesRemoved,
+		SecretsRemoved: result.SecretsRemoved,
+	}
+	if err != nil {
+		scan.Error = err.Error()
+	}
+	a.statusStore.SetOrphanScan(scan)
 	if result.FilesRemoved > 0 || result.SecretsRemoved > 0 {
 		slog.Info("orphan scan complete", "removed_files", result.FilesRemoved, "removed_secrets", result.SecretsRemoved)
 		metrics.OrphansRemovedTotal.WithLabelValues("file").Add(float64(result.FilesRemoved))
@@ -727,6 +824,50 @@ func (a *Agent) recordOpSecretsCount(files []resolver.ResolvedFile) int {
 	}
 	metrics.OpDirectSecretsCount.Set(float64(count))
 	return count
+}
+
+func (a *Agent) recordHostMetadata(host *config.HostConfig) {
+	if host == nil {
+		return
+	}
+	a.statusStore.SetHost(status.HostMetadata{
+		PiType:           host.PiType,
+		Features:         host.Features,
+		ExternalHostname: host.ExternalHostname,
+	})
+}
+
+func (a *Agent) statusNeedsResolvedSnapshot() bool {
+	return !a.statusStore.Snapshot().Bootstrapped
+}
+
+func (a *Agent) refreshResolvedSnapshot(ctx context.Context) error {
+	resolved, err := a.loadAndResolve(ctx)
+	if err != nil {
+		return err
+	}
+	a.recordHostMetadata(resolved.Host)
+	deps, err := validator.AnalyzeFiles(resolved.Files, a.cfg.Rootless)
+	if err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+	a.statusStore.SetDependencies(deps)
+	return nil
+}
+
+// recordEvent appends a state-changing event to the in-memory ring rendered
+// by the dashboard. Steady-state heartbeats (noop ticks, snapshot refreshes)
+// are NOT recorded — they are conveyed by LastSuccessfulReconciliationAt and
+// Snapshot.VerifiedAt. The ring is reserved for events an operator would
+// want to see in a panel: success, failure, paused, git_error,
+// failed_sha_gate, status_error.
+func (a *Agent) recordEvent(result, sha, message string) {
+	a.statusStore.AddEvent(status.ReconcileEvent{
+		At:      time.Now(),
+		Result:  result,
+		SHA:     sha,
+		Message: message,
+	})
 }
 
 // opRefreshDue reports whether op:// secrets should be re-fetched.
