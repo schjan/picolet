@@ -7,8 +7,56 @@ import (
 	"strings"
 	"time"
 
+	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/state"
 )
+
+const (
+	failureGateThreshold = 3
+	failureGateExpiry    = time.Hour // mirrors pkg/agent failure-gate window
+	refreshSeconds       = 30
+)
+
+// HeaderInput is the raw set of fields the handler hands to buildViewModel.
+type HeaderInput struct {
+	Hostname    string
+	Version     string
+	AppliedSHA  string
+	AppliedAt   time.Time
+	FailedSHA   string
+	FailedCount int
+	FailedAt    time.Time
+}
+
+// Header is the rendered header data.
+type Header struct {
+	Hostname        string
+	Version         string
+	AppliedSHAShort string
+	AppliedAt       time.Time
+	AppliedAgo      string
+}
+
+// Banner describes the failure-gate banner state.
+type Banner struct {
+	Active         bool
+	FailedSHAShort string
+	FailedCount    int
+	FailedAt       time.Time
+	FailedAgo      string
+}
+
+// ViewModel is the value passed to the index template.
+type ViewModel struct {
+	Header     Header
+	Banner     *Banner
+	Groups     []CategoryGroup
+	RenderedAt time.Time
+	RefreshSec int
+}
+
+// muteCategories are managed-file categories that legitimately have no systemd unit.
+var muteCategories = map[string]bool{"manifest": true, "secret": true}
 
 // Status describes the visual treatment of a unit's runtime state.
 type Status struct {
@@ -118,4 +166,69 @@ func groupByCategory(files map[string]state.ManagedFile, services map[string]str
 		out = append(out, CategoryGroup{Category: "other", Rows: leftovers})
 	}
 	return out
+}
+
+func buildViewModel(
+	in HeaderInput,
+	files map[string]state.ManagedFile,
+	services map[string]string,
+	statuses map[string]applier.UnitStatus,
+	now time.Time,
+) ViewModel {
+	groups := groupByCategory(files, services)
+	for gi := range groups {
+		cat := groups[gi].Category
+		for ri := range groups[gi].Rows {
+			row := &groups[gi].Rows[ri]
+			if muteCategories[cat] {
+				row.Status = Status{Glyph: "·", Token: "—", Class: "muted"}
+				continue
+			}
+			// Derive unit name: prefer state's ServiceName mapping; for raw systemd
+			// files (which resolver does not annotate), fall back to the file basename.
+			// Write the derived name back onto row.Service so the template's "unit"
+			// column shows the derived name, not "—".
+			if row.Service == "" && cat == "systemd" {
+				row.Service = row.Basename
+			}
+			if row.Service == "" {
+				row.Status = Status{Glyph: "·", Token: "—", Class: "muted"}
+				continue
+			}
+			st, ok := statuses[row.Service]
+			if !ok {
+				row.Status = statusFromActiveState("")
+				continue
+			}
+			row.Status = statusFromActiveState(st.ActiveState)
+			row.SubState = st.SubState
+		}
+	}
+
+	var banner *Banner
+	if in.FailedCount >= failureGateThreshold &&
+		!in.FailedAt.IsZero() &&
+		now.Sub(in.FailedAt) < failureGateExpiry {
+		banner = &Banner{
+			Active:         true,
+			FailedSHAShort: shortSHA(in.FailedSHA),
+			FailedCount:    in.FailedCount,
+			FailedAt:       in.FailedAt,
+			FailedAgo:      relativeTime(in.FailedAt, now),
+		}
+	}
+
+	return ViewModel{
+		Header: Header{
+			Hostname:        in.Hostname,
+			Version:         in.Version,
+			AppliedSHAShort: shortSHA(in.AppliedSHA),
+			AppliedAt:       in.AppliedAt,
+			AppliedAgo:      relativeTime(in.AppliedAt, now),
+		},
+		Banner:     banner,
+		Groups:     groups,
+		RenderedAt: now,
+		RefreshSec: refreshSeconds,
+	}
 }
