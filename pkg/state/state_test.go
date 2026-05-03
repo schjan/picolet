@@ -21,7 +21,7 @@ func TestLoadMissing(t *testing.T) {
 
 func TestSaveAndLoad(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "state.json")
+	path := filepath.Join(t.TempDir(), "subdir", "state.json")
 	store := NewStore(path)
 
 	now := time.Now().Truncate(time.Second)
@@ -42,19 +42,6 @@ func TestSaveAndLoad(t *testing.T) {
 	assert.True(t, got.AppliedAt.Equal(want.AppliedAt))
 	require.Len(t, got.ManagedFiles, 1)
 	assert.Equal(t, ManagedFile{Hash: "sha256:deadbeef", Category: "container"}, got.ManagedFiles["/etc/containers/systemd/foo.container"])
-}
-
-func TestSaveCreatesDirectory(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "subdir", "state.json")
-	store := NewStore(path)
-
-	st := &State{AppliedSHA: "test", ManagedFiles: make(map[string]ManagedFile)}
-	require.NoError(t, store.Save(st))
-
-	got, err := store.Load()
-	require.NoError(t, err)
-	assert.Equal(t, "test", got.AppliedSHA)
 }
 
 func TestSaveRoundtripWithFailedSHA(t *testing.T) {

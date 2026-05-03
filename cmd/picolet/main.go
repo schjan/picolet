@@ -617,19 +617,11 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	if err != nil {
 		return err
 	}
-	lockPath, err := lockPathFromConfig(cfg)
+	releaseLock, err := acquireConfigLock(cfg)
 	if err != nil {
 		return err
 	}
-	releaseLock, err := agent.AcquireLock(lockPath)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := releaseLock(); err != nil {
-			slog.Warn("releasing process lock failed", "error", err)
-		}
-	}()
+	defer releaseLock()
 
 	opReader, err := opReaderFromConfig(ctx, cfg)
 	if err != nil {
@@ -694,19 +686,11 @@ func runDown(ctx context.Context, configPath string) error { //nolint:cyclop // 
 	if err != nil {
 		return err
 	}
-	lockPath, err := lockPathFromConfig(cfg)
+	releaseLock, err := acquireConfigLock(cfg)
 	if err != nil {
 		return err
 	}
-	releaseLock, err := agent.AcquireLock(lockPath)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := releaseLock(); err != nil {
-			slog.Warn("releasing process lock failed", "error", err)
-		}
-	}()
+	defer releaseLock()
 
 	store, err := stateStoreFromConfig(cfg)
 	if err != nil {
@@ -755,6 +739,22 @@ func lockPathFromConfig(cfg *agentcfg.Config) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dataDir, "reconciliation.lock"), nil
+}
+
+func acquireConfigLock(cfg *agentcfg.Config) (func(), error) {
+	lockPath, err := lockPathFromConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	releaseLock, err := agent.AcquireLock(lockPath)
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		if err := releaseLock(); err != nil {
+			slog.Warn("releasing process lock failed", "path", lockPath, "error", err)
+		}
+	}, nil
 }
 
 func runHealthcheck(_ context.Context, configPath string) error {

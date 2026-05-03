@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/schjan/picolet/internal/atomicfile"
 )
 
 // ErrCorrupt is returned when the state file exists but cannot be decoded.
@@ -94,44 +96,5 @@ func (s *Store) Save(st *State) error {
 		return fmt.Errorf("creating state directory: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(dir, filepath.Base(s.path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("creating temp state: %w", err)
-	}
-	tmpName := tmp.Name()
-	removeTmp := true
-	defer func() {
-		if removeTmp {
-			_ = os.Remove(tmpName)
-		}
-	}()
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("writing temp state: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("syncing temp state: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing temp state: %w", err)
-	}
-	if err := os.Rename(tmpName, s.path); err != nil {
-		return fmt.Errorf("renaming state file: %w", err)
-	}
-	removeTmp = false
-	if err := syncDir(dir); err != nil {
-		return fmt.Errorf("syncing state directory: %w", err)
-	}
-	return nil
-}
-
-func syncDir(dir string) error {
-	f, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return f.Sync()
+	return atomicfile.WriteFile(s.path, data, 0o600)
 }

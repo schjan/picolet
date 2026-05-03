@@ -10,41 +10,31 @@ import (
 	"github.com/schjan/picolet/pkg/agentcfg"
 )
 
-func TestDataDirFromConfigUsesConfiguredDataDir(t *testing.T) {
-	dataDir := filepath.Join(t.TempDir(), "picolet-data")
-	cfg := &agentcfg.Config{DataDir: dataDir, Rootless: true}
-
-	got, err := dataDirFromConfig(cfg)
-	require.NoError(t, err)
-	assert.Equal(t, dataDir, got)
-
-	lockPath, err := lockPathFromConfig(cfg)
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(dataDir, "reconciliation.lock"), lockPath)
-}
-
-func TestDataDirFromConfigUsesRootfulDefault(t *testing.T) {
-	cfg := &agentcfg.Config{}
-
-	got, err := dataDirFromConfig(cfg)
-	require.NoError(t, err)
-	assert.Equal(t, "/var/lib/picolet", got)
-
-	lockPath, err := lockPathFromConfig(cfg)
-	require.NoError(t, err)
-	assert.Equal(t, "/var/lib/picolet/reconciliation.lock", lockPath)
-}
-
-func TestDataDirFromConfigUsesRootlessDefault(t *testing.T) {
+func TestDataDirAndLockPathFromConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	cfg := &agentcfg.Config{Rootless: true}
 
-	got, err := dataDirFromConfig(cfg)
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(home, ".local", "share", "picolet"), got)
+	configuredDataDir := filepath.Join(t.TempDir(), "picolet-data")
+	rootlessDataDir := filepath.Join(home, ".local", "share", "picolet")
 
-	lockPath, err := lockPathFromConfig(cfg)
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(home, ".local", "share", "picolet", "reconciliation.lock"), lockPath)
+	tests := map[string]struct {
+		cfg         agentcfg.Config
+		wantDataDir string
+	}{
+		"configured data dir": {cfg: agentcfg.Config{DataDir: configuredDataDir, Rootless: true}, wantDataDir: configuredDataDir},
+		"rootful default":     {cfg: agentcfg.Config{}, wantDataDir: "/var/lib/picolet"},
+		"rootless default":    {cfg: agentcfg.Config{Rootless: true}, wantDataDir: rootlessDataDir},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := dataDirFromConfig(&tc.cfg)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantDataDir, got)
+
+			lockPath, err := lockPathFromConfig(&tc.cfg)
+			require.NoError(t, err)
+			assert.Equal(t, filepath.Join(tc.wantDataDir, "reconciliation.lock"), lockPath)
+		})
+	}
 }
