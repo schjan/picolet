@@ -54,8 +54,10 @@ type FileWriter interface {
 
 // ApplyResult contains the outcome of an apply operation.
 type ApplyResult struct {
-	Applied          int
-	Errors           []error
+	Applied         int
+	Errors          []error
+	RetryableErrors []error
+
 	NeedsSelfRestart bool
 	RestartedUnits   []string
 }
@@ -295,22 +297,39 @@ func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets map[string]
 	restartUnits := make(map[string]bool)
 	executed := make(map[string]bool)
 	for _, hook := range a.secretHooks {
-		if executed[hook.Name] || !hookMatchesChangedSecret(hook, changedSecrets) {
+		key := hookExecutionKey(hook)
+		if executed[key] || !hookMatchesChangedSecret(hook, changedSecrets) {
 			continue
 		}
-		executed[hook.Name] = true
+		executed[key] = true
 		restartSet := make(map[string]bool, len(restartScheduled)+len(restartUnits))
 		mergeUnitSet(restartSet, restartScheduled)
 		mergeUnitSet(restartSet, restartUnits)
 		shouldRestart, err := a.reloader.Run(ctx, hook, restartSet)
 		if err != nil {
 			result.Errors = append(result.Errors, err)
+			if !shouldRestart {
+				result.RetryableErrors = append(result.RetryableErrors, err)
+			}
 		}
 		if shouldRestart {
 			restartUnits[hook.Unit] = true
 		}
 	}
 	return restartUnits
+}
+
+func hookExecutionKey(hook config.SecretHook) string {
+	switch hook.Action {
+	case config.HookActionHTTP:
+		return hook.Action + "\x00" + hook.Method + "\x00" + hook.URL
+	case config.HookActionSignal:
+		return hook.Action + "\x00" + hook.Container + "\x00" + hook.Signal
+	case config.HookActionRestart:
+		return hook.Action + "\x00" + hook.Unit
+	default:
+		return hook.Name
+	}
 }
 
 func hookMatchesChangedSecret(hook config.SecretHook, changedSecrets map[string]bool) bool {

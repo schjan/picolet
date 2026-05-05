@@ -60,8 +60,11 @@ func (r *SecretHookReloader) Run(ctx context.Context, hook config.SecretHook, re
 		return true, nil
 	}
 	active, err := r.unitActive(ctx, hook)
-	if err != nil || !active {
-		return false, err
+	if err != nil {
+		return hook.OnFailure == config.HookOnFailureRestart, err
+	}
+	if !active {
+		return false, nil
 	}
 	switch hook.Action {
 	case config.HookActionHTTP:

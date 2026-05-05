@@ -278,6 +278,8 @@ func TestApplyHTTPSecretHookFailureKeepsRunningByDefault(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Errors, 1)
 	assert.Contains(t, result.Errors[0].Error(), "reload request")
+	require.Len(t, result.RetryableErrors, 1)
+	assert.Contains(t, result.RetryableErrors[0].Error(), "reload request")
 	assert.Empty(t, result.RestartedUnits)
 }
 
@@ -309,6 +311,36 @@ func TestApplyHTTPSecretHookFailureCanRestart(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, result.Errors, 1)
+	assert.Empty(t, result.RetryableErrors)
+	assert.Equal(t, []string{"app.service"}, result.RestartedUnits)
+}
+
+func TestApplySecretHookStatusFailureCanRestart(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{}, assert.AnError)
+	sys.EXPECT().RestartUnit(mock.Anything, "app.service").Return(nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
+	fw := newMemFileWriter()
+	hook := config.SecretHook{
+		Name:      "app-reload",
+		Secrets:   []string{"app_config"},
+		Unit:      "app.service",
+		Action:    config.HookActionHTTP,
+		Method:    http.MethodPost,
+		URL:       "http://example.test/reload",
+		OnFailure: config.HookOnFailureRestart,
+	}
+	a := applier.New(sys, pod, fw, false, applier.WithSecretHooks([]config.SecretHook{hook}))
+
+	result, err := a.Apply(context.Background(), &reconciler.Changeset{
+		Changes: []reconciler.Change{{DestPath: "secret:app_config", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"}},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Errors, 1)
+	assert.Empty(t, result.RetryableErrors)
 	assert.Equal(t, []string{"app.service"}, result.RestartedUnits)
 }
 
@@ -377,6 +409,55 @@ func TestApplySecretHookSkipsReloadWhenUnitAlreadyRestarting(t *testing.T) {
 	assert.Empty(t, result.Errors)
 	assert.Equal(t, int32(0), reloads.Load())
 	assert.Equal(t, []string{"app.service"}, result.RestartedUnits)
+}
+
+func TestApplyDeduplicatesHTTPSecretHooksByTarget(t *testing.T) {
+	t.Parallel()
+	var reloads atomic.Int32
+	client := testHTTPClient(func(_ *http.Request) int {
+		reloads.Add(1)
+		return http.StatusOK
+	})
+
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_rules", []byte("new"), true).Return(nil)
+	fw := newMemFileWriter()
+	hooks := []config.SecretHook{
+		{
+			Name:      "app-config-reload",
+			Secrets:   []string{"app_config"},
+			Unit:      "app.service",
+			Action:    config.HookActionHTTP,
+			Method:    http.MethodPost,
+			URL:       "http://example.test/reload",
+			OnFailure: config.HookOnFailureKeepRunning,
+		},
+		{
+			Name:      "app-rules-reload",
+			Secrets:   []string{"app_rules"},
+			Unit:      "app.service",
+			Action:    config.HookActionHTTP,
+			Method:    http.MethodPost,
+			URL:       "http://example.test/reload",
+			OnFailure: config.HookOnFailureKeepRunning,
+		},
+	}
+	reloader := applier.NewSecretHookReloader(sys, pod).WithHTTPClient(client).WithHealthDelay(0)
+	a := applier.New(sys, pod, fw, false, applier.WithSecretHooks(hooks), applier.WithSecretHookReloader(reloader))
+
+	result, err := a.Apply(context.Background(), &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "secret:app_config", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"},
+			{DestPath: "secret:app_rules", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 2},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Errors)
+	assert.Equal(t, int32(1), reloads.Load())
 }
 
 func TestApplyRestartSecretHook(t *testing.T) {

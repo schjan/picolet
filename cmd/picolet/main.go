@@ -637,6 +637,9 @@ func applyWithRollback(
 	for _, e := range result.Errors {
 		slog.Warn("non-fatal apply error", "error", e)
 	}
+	if len(result.RetryableErrors) > 0 {
+		return result, fmt.Errorf("apply incomplete: %w", errors.Join(result.RetryableErrors...))
+	}
 
 	return result, nil
 }

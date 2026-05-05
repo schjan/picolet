@@ -645,6 +645,11 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 			a.statusStore.DeleteUnit(change.ServiceName)
 		}
 	}
+	if len(result.RetryableErrors) > 0 {
+		err := errors.Join(result.RetryableErrors...)
+		slog.Warn("apply incomplete, keeping state unchanged for retry", "error", err)
+		return result, fmt.Errorf("apply incomplete: %w", err)
+	}
 
 	slog.Info("apply complete",
 		"applied", result.Applied,

@@ -25,6 +25,7 @@ import (
 	appliermocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
+	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/gitpoll"
 	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
@@ -103,6 +104,38 @@ func newTestAgent(t *testing.T, cfg *agentcfg.Config, opts ...Option) *Agent {
 	t.Helper()
 	opts = append(opts, WithLockPath(filepath.Join(t.TempDir(), "reconciliation.lock")))
 	return New(cfg, opts...)
+}
+
+func TestApplyWithRollbackReturnsRetryableHookErrorsWithoutRollback(t *testing.T) {
+	t.Parallel()
+	sys, pod, fw := newBareMocks(t)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+	pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(assert.AnError)
+
+	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
+	result, err := a.applyWithRollback(t.Context(), "sha", &reconciler.Changeset{
+		Changes: []reconciler.Change{{
+			DestPath:   "secret:app_config",
+			Category:   "secret",
+			Action:     reconciler.ActionUpdate,
+			NewContent: "new",
+		}},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	}, []config.SecretHook{{
+		Name:      "app-sighup",
+		Secrets:   []string{"app_config"},
+		Unit:      "app.service",
+		Action:    config.HookActionSignal,
+		Container: "app",
+		Signal:    "HUP",
+		OnFailure: config.HookOnFailureKeepRunning,
+	}})
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "apply incomplete")
+	require.NotNil(t, result)
+	require.Len(t, result.RetryableErrors, 1)
 }
 
 func TestAcquireLockContentionAndRelease(t *testing.T) {
