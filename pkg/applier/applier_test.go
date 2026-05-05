@@ -732,6 +732,10 @@ func TestRunPendingHooksDropsStaleHookNames(t *testing.T) {
 	result := a.RunPendingHooks(context.Background(), []string{"removed-hook"})
 	assert.Empty(t, result.Errors)
 	assert.Empty(t, result.PendingHookNames)
+	// AttemptedHookNames must list every pending name even when no hooks are
+	// configured, otherwise mergePendingHooks keeps stale entries forever after
+	// the operator removes all hooks from config.
+	assert.Equal(t, []string{"removed-hook"}, result.AttemptedHookNames)
 }
 
 func TestRunPendingHooksFallbackRestartRestartsUnit(t *testing.T) {

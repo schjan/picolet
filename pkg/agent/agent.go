@@ -365,9 +365,16 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return nil
 	}
 
-	if pollResult.Changed {
+	switch {
+	case pollResult.Changed:
 		metrics.GitPollTotal.WithLabelValues("changed").Inc()
-	} else {
+	case len(st.PendingSecretHooks) > 0:
+		// Pending-hook retry takes priority over OP refresh in the label even
+		// when both apply: the retry is the actionable reason this tick ran,
+		// and ReconcileOnce will refresh op:// secrets regardless.
+		slog.Info("forcing reconciliation for pending secret hook retry", "sha", pollResult.HeadSHA, "pending", st.PendingSecretHooks)
+		metrics.GitPollTotal.WithLabelValues("pending_hook_retry").Inc()
+	default:
 		slog.Info("forcing reconciliation for 1password secret refresh", "sha", pollResult.HeadSHA)
 		metrics.GitPollTotal.WithLabelValues("op_refresh").Inc()
 	}
@@ -388,14 +395,12 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return nil
 	}
 
-	// Report deployments only for new git SHAs; forced OP refresh runs on the same SHA
-	// are reconciliations, not deployments.
+	// Report deployments only for new git SHAs; forced reconciliations on the
+	// same SHA (OP refresh, pending hook retry) are not deployments.
 	var deploymentID int64
 	if pollResult.Changed {
 		slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
 		deploymentID = a.createDeployment(ctx, pollResult.HeadSHA)
-	} else {
-		slog.Info("reconciling unchanged git commit for 1password secret refresh", "sha", pollResult.HeadSHA)
 	}
 
 	start := time.Now()
@@ -562,7 +567,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 
 	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset, resolved.SecretHooks)
 	if errors.Is(err, applier.ErrApplyIncomplete) {
-		a.savePartialStateOnHookFailure(st, store, changeset, applyResult, deps)
+		a.savePartialStateOnHookFailure(headSHA, st, store, changeset, applyResult, deps)
 		return nil, err
 	}
 	if err != nil {
@@ -637,11 +642,15 @@ func (a *Agent) reconcileNoChanges(headSHA string, files []resolver.ResolvedFile
 
 // savePartialStateOnHookFailure persists state after a successful apply that
 // only failed at the keep_running hook stage. Files and secrets are recorded
-// (so the next tick does not re-write them) and the pending hook list is saved
-// so retry survives an agent restart.
-func (a *Agent) savePartialStateOnHookFailure(st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies) {
+// (so the next tick does not re-write them), the SHA is marked applied (so
+// gitpoll stops reporting "Changed" on every retry tick — which would otherwise
+// produce duplicate deployment reports for the same SHA), and the pending hook
+// list is saved so retry survives an agent restart.
+func (a *Agent) savePartialStateOnHookFailure(headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies) {
 	UpdateState(st, changeset)
 	st.PendingSecretHooks = mergePendingHooks(st.PendingSecretHooks, applyResult)
+	markAppliedWithMetrics(st, headSHA)
+	a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
 	if saveErr := store.Save(st); saveErr != nil {
 		slog.Error("saving partial state after hook failure", "error", saveErr)
 	}

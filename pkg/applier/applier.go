@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"slices"
 	"time"
@@ -193,7 +194,7 @@ func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyRe
 		return result, nil
 	}
 	hookRestartUnits := a.runSecretHooks(ctx, changedSecrets, changedUnits, result)
-	mergeUnitSet(changedUnits, hookRestartUnits)
+	maps.Copy(changedUnits, hookRestartUnits)
 	return result, a.restartUnits(ctx, changedUnits, needsReload, result)
 }
 
@@ -206,9 +207,9 @@ func categoryRank(category string) int {
 }
 
 //nolint:cyclop // multiple early-continues are clearer than restructuring
-func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (changedUnits map[string]bool, changedSecrets map[string]bool, needsReload bool, err error) {
-	changedUnits = make(map[string]bool)
-	changedSecrets = make(map[string]bool)
+func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (changedUnits map[string]struct{}, changedSecrets map[string]struct{}, needsReload bool, err error) {
+	changedUnits = make(map[string]struct{})
+	changedSecrets = make(map[string]struct{})
 	for _, change := range sorted {
 		if change.Action == reconciler.ActionNoop {
 			continue
@@ -239,7 +240,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		result.Applied++
 		if change.Category == "secret" {
 			if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
-				changedSecrets[reconciler.SecretNameFromPath(change.DestPath)] = true
+				changedSecrets[reconciler.SecretNameFromPath(change.DestPath)] = struct{}{}
 			}
 			continue
 		}
@@ -251,7 +252,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			continue
 		}
 		if change.ServiceName != "" {
-			changedUnits[change.ServiceName] = true
+			changedUnits[change.ServiceName] = struct{}{}
 		}
 		if filepath.Base(change.DestPath) == selfContainerFile {
 			result.NeedsSelfRestart = true
@@ -286,7 +287,7 @@ func (a *Applier) applyChange(ctx context.Context, change reconciler.Change) err
 	}
 }
 
-func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]bool, needsReload bool, result *ApplyResult) error {
+func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]struct{}, needsReload bool, result *ApplyResult) error {
 	if len(changedUnits) == 0 && !needsReload {
 		return nil
 	}
@@ -307,7 +308,7 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]bool
 			result.RestartedUnits = append(result.RestartedUnits, unit)
 		}
 	}
-	if changedUnits["picolet.service"] {
+	if _, ok := changedUnits["picolet.service"]; ok {
 		slog.Info("restarting picolet (self-update), state will be saved before shutdown")
 		result.RestartedUnits = append(result.RestartedUnits, "picolet.service")
 		// Fire-and-forget: detached context so Apply() returns promptly, allowing
@@ -327,28 +328,28 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]bool
 	return nil
 }
 
-func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets map[string]bool, restartScheduled map[string]bool, result *ApplyResult) map[string]bool {
+func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets, restartScheduled map[string]struct{}, result *ApplyResult) map[string]struct{} {
 	if len(changedSecrets) == 0 || len(a.secretHooks) == 0 {
 		return nil
 	}
-	restartUnits := make(map[string]bool)
-	executed := make(map[string]bool)
+	restartUnits := make(map[string]struct{})
+	executed := make(map[string]struct{})
 	for _, hook := range a.secretHooks {
 		if !hookMatchesChangedSecret(hook, changedSecrets) {
 			continue
 		}
 		key := hookExecutionKey(hook)
-		if executed[key] {
+		if _, ran := executed[key]; ran {
 			// Another hook with the same dedup key already ran this tick —
 			// its outcome covers this hook too. Mark attempted so a stale
 			// pending entry for this hook gets cleared by mergePendingHooks.
 			result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
 			continue
 		}
-		executed[key] = true
-		restartSet := make(map[string]bool, len(restartScheduled)+len(restartUnits))
-		mergeUnitSet(restartSet, restartScheduled)
-		mergeUnitSet(restartSet, restartUnits)
+		executed[key] = struct{}{}
+		restartSet := make(map[string]struct{}, len(restartScheduled)+len(restartUnits))
+		maps.Copy(restartSet, restartScheduled)
+		maps.Copy(restartSet, restartUnits)
 		shouldRestart, err := a.reloader.Run(ctx, hook, restartSet)
 		dispatchHookResult(hook, shouldRestart, err, restartUnits, result)
 	}
@@ -358,7 +359,7 @@ func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets map[string]
 // dispatchHookResult records a hook's outcome on result and updates restartUnits.
 // Shared by runSecretHooks and RunPendingHooks so error classification, attempt
 // tracking, and restart-set updates stay consistent across both paths.
-func dispatchHookResult(hook config.SecretHook, shouldRestart bool, err error, restartUnits map[string]bool, result *ApplyResult) {
+func dispatchHookResult(hook config.SecretHook, shouldRestart bool, err error, restartUnits map[string]struct{}, result *ApplyResult) {
 	result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
 	if err != nil {
 		if shouldRestart {
@@ -371,7 +372,7 @@ func dispatchHookResult(hook config.SecretHook, shouldRestart bool, err error, r
 		}
 	}
 	if shouldRestart {
-		restartUnits[hook.Unit] = true
+		restartUnits[hook.Unit] = struct{}{}
 	}
 }
 
@@ -382,15 +383,18 @@ func dispatchHookResult(hook config.SecretHook, shouldRestart bool, err error, r
 // the file system already matches state, only the unit config changed).
 func (a *Applier) RunPendingHooks(ctx context.Context, pendingNames []string) *ApplyResult {
 	result := &ApplyResult{}
-	if len(pendingNames) == 0 || len(a.secretHooks) == 0 {
+	if len(pendingNames) == 0 {
 		return result
 	}
+	// byName may be empty if the operator removed all hooks from config since
+	// the last failure — the loop below still marks every pending name attempted
+	// so mergePendingHooks can drop them.
 	byName := make(map[string]config.SecretHook, len(a.secretHooks))
 	for _, h := range a.secretHooks {
 		byName[h.Name] = h
 	}
 
-	restartUnits := make(map[string]bool)
+	restartUnits := make(map[string]struct{})
 	for _, name := range pendingNames {
 		hook, ok := byName[name]
 		if !ok {
@@ -410,7 +414,7 @@ func (a *Applier) RunPendingHooks(ctx context.Context, pendingNames []string) *A
 	return result
 }
 
-func (a *Applier) restartFallbackUnits(ctx context.Context, restartUnits map[string]bool, result *ApplyResult) {
+func (a *Applier) restartFallbackUnits(ctx context.Context, restartUnits map[string]struct{}, result *ApplyResult) {
 	for unit := range restartUnits {
 		slog.Info("restarting unit after secret hook retry", "unit", unit)
 		if err := a.systemd.RestartUnit(ctx, unit); err != nil {
@@ -434,21 +438,13 @@ func hookExecutionKey(hook config.SecretHook) string {
 	}
 }
 
-func hookMatchesChangedSecret(hook config.SecretHook, changedSecrets map[string]bool) bool {
+func hookMatchesChangedSecret(hook config.SecretHook, changedSecrets map[string]struct{}) bool {
 	for _, secret := range hook.Secrets {
-		if changedSecrets[secret] {
+		if _, ok := changedSecrets[secret]; ok {
 			return true
 		}
 	}
 	return false
-}
-
-func mergeUnitSet(dst, src map[string]bool) {
-	for k, v := range src {
-		if v {
-			dst[k] = true
-		}
-	}
 }
 
 func (a *Applier) applyCreateOrUpdate(ctx context.Context, change reconciler.Change) error {

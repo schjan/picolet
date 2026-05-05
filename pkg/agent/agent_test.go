@@ -230,6 +230,10 @@ features: []
 	require.NoError(t, err)
 	assert.Equal(t, []string{"app-sighup"}, loaded.PendingSecretHooks, "failed hook name persisted for retry")
 	assert.NotEmpty(t, loaded.ManagedFiles, "successfully-applied secret recorded so next tick does not re-write it")
+	// Files applied successfully — mark the SHA so gitpoll stops reporting
+	// "Changed" on every retry tick (which would otherwise produce duplicate
+	// deployment records and "new git commit detected" log spam).
+	assert.Equal(t, "head-sha", loaded.AppliedSHA, "SHA must be marked applied even on partial-apply paths")
 }
 
 func TestRetryPendingHooksClearsListOnSuccess(t *testing.T) {
@@ -1835,6 +1839,12 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 	st.PendingSecretHooks = []string{"app-sighup"}
 	require.NoError(t, store.Save(st))
 
+	// The reason this tick ran was a pending-hook retry, not an OP refresh.
+	// Snapshot the counter before the tick and assert it advanced by at least
+	// one — other parallel tests may also exercise this label, so a strict
+	// equality assertion would be racy under -count or t.Parallel.
+	beforeRetryLabel := testutil.ToFloat64(metrics.GitPollTotal.WithLabelValues("pending_hook_retry"))
+
 	healthChecker := health.New(sys)
 	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
 
@@ -1842,6 +1852,9 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, loaded.PendingSecretHooks, "successful retry should clear pending list")
 	assert.Equal(t, 0, loaded.FailedCount, "FailedCount must not be touched on successful retry")
+
+	afterRetryLabel := testutil.ToFloat64(metrics.GitPollTotal.WithLabelValues("pending_hook_retry"))
+	assert.GreaterOrEqual(t, afterRetryLabel, beforeRetryLabel+1, "pending-hook retries must increment the pending_hook_retry label, not op_refresh")
 }
 
 // TestTickDropsStalePendingHookNameOnRetry exercises the retryPendingHooks path
@@ -1952,4 +1965,5 @@ func TestTickDoesNotIncrementFailedCountOnRetryableHookError(t *testing.T) {
 	assert.Empty(t, loaded.FailedSHA, "FailedSHA must not be set for retryable hook errors")
 	assert.Equal(t, []string{"app-sighup"}, loaded.PendingSecretHooks)
 	assert.NotEmpty(t, loaded.ManagedFiles, "successfully-applied secret must be recorded in state")
+	assert.NotEmpty(t, loaded.AppliedSHA, "files were applied — SHA must be marked so gitpoll quiets between retry ticks")
 }

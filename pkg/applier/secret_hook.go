@@ -50,8 +50,8 @@ func (r *SecretHookReloader) WithHealthDelay(delay time.Duration) *SecretHookRel
 
 // Run executes a hook. The bool return indicates whether the caller should
 // restart hook.Unit after hook execution.
-func (r *SecretHookReloader) Run(ctx context.Context, hook config.SecretHook, restartScheduled map[string]bool) (bool, error) {
-	if hook.Action != config.HookActionRestart && restartScheduled[hook.Unit] {
+func (r *SecretHookReloader) Run(ctx context.Context, hook config.SecretHook, restartScheduled map[string]struct{}) (bool, error) {
+	if _, scheduled := restartScheduled[hook.Unit]; scheduled && hook.Action != config.HookActionRestart {
 		slog.Info("skipping secret hook, unit already scheduled for restart", "hook", hook.Name, "unit", hook.Unit)
 		return false, nil
 	}
