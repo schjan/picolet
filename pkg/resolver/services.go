@@ -207,10 +207,6 @@ func collectBundleHookRefs(root, service string, entries []fs.DirEntry) ([]hookR
 			continue
 		}
 		path := path.Join(root, entry.Name())
-		if entry.IsDir() {
-			errs = append(errs, fmt.Errorf("%s: expected regular file", path))
-			continue
-		}
 		if !entry.Type().IsRegular() {
 			errs = append(errs, fmt.Errorf("%s: expected regular file", path))
 			continue

@@ -334,6 +334,11 @@ func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets, restartSch
 	}
 	restartUnits := make(map[string]struct{})
 	executed := make(map[string]struct{})
+	// restartSet starts as the Apply-phase scheduled units and grows as each
+	// hook schedules an additional restart. Hoisted out of the loop so we
+	// allocate once instead of N+1 times per hook batch.
+	restartSet := make(map[string]struct{}, len(restartScheduled))
+	maps.Copy(restartSet, restartScheduled)
 	for _, hook := range a.secretHooks {
 		if !hookMatchesChangedSecret(hook, changedSecrets) {
 			continue
@@ -347,11 +352,11 @@ func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets, restartSch
 			continue
 		}
 		executed[key] = struct{}{}
-		restartSet := make(map[string]struct{}, len(restartScheduled)+len(restartUnits))
-		maps.Copy(restartSet, restartScheduled)
-		maps.Copy(restartSet, restartUnits)
 		shouldRestart, err := a.reloader.Run(ctx, hook, restartSet)
 		dispatchHookResult(hook, shouldRestart, err, restartUnits, result)
+		if shouldRestart {
+			restartSet[hook.Unit] = struct{}{}
+		}
 	}
 	return restartUnits
 }

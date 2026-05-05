@@ -61,7 +61,7 @@ func (r *SecretHookReloader) Run(ctx context.Context, hook config.SecretHook, re
 	}
 	active, err := r.unitActive(ctx, hook)
 	if err != nil {
-		return hook.OnFailure == config.HookOnFailureRestart, err
+		return hook.FallbackToRestart(), err
 	}
 	if !active {
 		return false, nil
@@ -98,7 +98,7 @@ func (r *SecretHookReloader) unitActive(ctx context.Context, hook config.SecretH
 func (r *SecretHookReloader) runHTTP(ctx context.Context, hook config.SecretHook) (bool, error) {
 	slog.Info("running HTTP secret hook", "hook", hook.Name, "method", hook.Method, "url", hook.URL, "unit", hook.Unit)
 	if err := r.doHTTP(ctx, hook.Method, hook.URL); err != nil {
-		return hook.OnFailure == config.HookOnFailureRestart, fmt.Errorf("secret hook %s: reload request: %w", hook.Name, err)
+		return hook.FallbackToRestart(), fmt.Errorf("secret hook %s: reload request: %w", hook.Name, err)
 	}
 	if hook.HealthURL != "" {
 		if r.healthDelay > 0 {
@@ -107,11 +107,11 @@ func (r *SecretHookReloader) runHTTP(ctx context.Context, hook config.SecretHook
 			case <-timer.C:
 			case <-ctx.Done():
 				timer.Stop()
-				return hook.OnFailure == config.HookOnFailureRestart, fmt.Errorf("secret hook %s: waiting for health check: %w", hook.Name, ctx.Err())
+				return hook.FallbackToRestart(), fmt.Errorf("secret hook %s: waiting for health check: %w", hook.Name, ctx.Err())
 			}
 		}
 		if err := r.doHTTP(ctx, http.MethodGet, hook.HealthURL); err != nil {
-			return hook.OnFailure == config.HookOnFailureRestart, fmt.Errorf("secret hook %s: health check: %w", hook.Name, err)
+			return hook.FallbackToRestart(), fmt.Errorf("secret hook %s: health check: %w", hook.Name, err)
 		}
 	}
 	return false, nil
@@ -120,7 +120,7 @@ func (r *SecretHookReloader) runHTTP(ctx context.Context, hook config.SecretHook
 func (r *SecretHookReloader) runSignal(ctx context.Context, hook config.SecretHook) (bool, error) {
 	slog.Info("running signal secret hook", "hook", hook.Name, "container", hook.Container, "signal", hook.Signal, "unit", hook.Unit)
 	if err := r.podman.ContainerKill(ctx, hook.Container, hook.Signal); err != nil {
-		return hook.OnFailure == config.HookOnFailureRestart, fmt.Errorf("secret hook %s: signal container %s: %w", hook.Name, hook.Container, err)
+		return hook.FallbackToRestart(), fmt.Errorf("secret hook %s: signal container %s: %w", hook.Name, hook.Container, err)
 	}
 	return false, nil
 }

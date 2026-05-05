@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net/http"
@@ -31,6 +32,13 @@ type SecretHook struct {
 	OnFailure string   `yaml:"on_failure"`
 }
 
+// FallbackToRestart reports whether a hook execution failure should fall back
+// to restarting hook.Unit (rather than leaving the unit running and retrying
+// the hook on the next tick).
+func (h SecretHook) FallbackToRestart() bool {
+	return h.OnFailure == HookOnFailureRestart
+}
+
 // SecretHooksFile is the service-bundle metadata file schema.
 type SecretHooksFile struct {
 	SecretHooks []SecretHook `yaml:"secret_hooks"`
@@ -55,9 +63,7 @@ func (h *SecretHook) Normalize() error {
 	if h.Action == "" {
 		return fmt.Errorf("%s: action is required", h.Name)
 	}
-	if h.OnFailure == "" {
-		h.OnFailure = HookOnFailureKeepRunning
-	}
+	h.OnFailure = cmp.Or(h.OnFailure, HookOnFailureKeepRunning)
 	for i, secret := range h.Secrets {
 		name := strings.TrimPrefix(secret, "secret:")
 		if name == "" {
@@ -91,9 +97,7 @@ func (h *SecretHook) normalizeHTTPAction() error {
 	); ok {
 		return fmt.Errorf("%s: %s cannot be set for http hooks", h.Name, field)
 	}
-	if h.Method == "" {
-		h.Method = http.MethodPost
-	}
+	h.Method = cmp.Or(h.Method, http.MethodPost)
 	if h.Method != http.MethodGet && h.Method != http.MethodPost {
 		return fmt.Errorf("%s: method must be GET or POST", h.Name)
 	}
@@ -136,9 +140,7 @@ func (h *SecretHook) normalizeSignalAction() error {
 	if h.Container == "" {
 		return fmt.Errorf("%s: container is required for signal hooks", h.Name)
 	}
-	if h.Signal == "" {
-		h.Signal = "HUP"
-	}
+	h.Signal = cmp.Or(h.Signal, "HUP")
 	return nil
 }
 
