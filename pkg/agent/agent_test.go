@@ -280,7 +280,13 @@ func TestMergePendingHooksKeepsUnattemptedAndAddsFailures(t *testing.T) {
 			name:   "attempted+succeeded removed",
 			old:    []string{"hook-a"},
 			result: &applier.ApplyResult{AttemptedHookNames: []string{"hook-a"}},
-			want:   []string{},
+			want:   nil,
+		},
+		{
+			name:   "empty inputs return nil (not [] — omitempty must omit)",
+			old:    nil,
+			result: &applier.ApplyResult{},
+			want:   nil,
 		},
 		{
 			name: "attempted+failed_keep_running stays",
@@ -313,7 +319,7 @@ func TestMergePendingHooksKeepsUnattemptedAndAddsFailures(t *testing.T) {
 			name:   "attempted+fallback_restart removed (restart already scheduled)",
 			old:    []string{"hook-a"},
 			result: &applier.ApplyResult{AttemptedHookNames: []string{"hook-a"}, FallbackRestartedUnits: []string{"app.service"}},
-			want:   []string{},
+			want:   nil,
 		},
 	}
 

@@ -339,26 +339,33 @@ func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets map[string]
 			continue
 		}
 		executed[key] = true
-		result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
 		restartSet := make(map[string]bool, len(restartScheduled)+len(restartUnits))
 		mergeUnitSet(restartSet, restartScheduled)
 		mergeUnitSet(restartSet, restartUnits)
 		shouldRestart, err := a.reloader.Run(ctx, hook, restartSet)
-		if err != nil {
-			if shouldRestart {
-				result.Errors = append(result.Errors, &HookFallbackError{Unit: hook.Unit, Err: err})
-				result.FallbackRestartedUnits = append(result.FallbackRestartedUnits, hook.Unit)
-			} else {
-				result.Errors = append(result.Errors, err)
-				result.RetryableErrors = append(result.RetryableErrors, err)
-				result.PendingHookNames = append(result.PendingHookNames, hook.Name)
-			}
-		}
-		if shouldRestart {
-			restartUnits[hook.Unit] = true
-		}
+		dispatchHookResult(hook, shouldRestart, err, restartUnits, result)
 	}
 	return restartUnits
+}
+
+// dispatchHookResult records a hook's outcome on result and updates restartUnits.
+// Shared by runSecretHooks and RunPendingHooks so error classification, attempt
+// tracking, and restart-set updates stay consistent across both paths.
+func dispatchHookResult(hook config.SecretHook, shouldRestart bool, err error, restartUnits map[string]bool, result *ApplyResult) {
+	result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
+	if err != nil {
+		if shouldRestart {
+			result.Errors = append(result.Errors, &HookFallbackError{Unit: hook.Unit, Err: err})
+			result.FallbackRestartedUnits = append(result.FallbackRestartedUnits, hook.Unit)
+		} else {
+			result.Errors = append(result.Errors, err)
+			result.RetryableErrors = append(result.RetryableErrors, err)
+			result.PendingHookNames = append(result.PendingHookNames, hook.Name)
+		}
+	}
+	if shouldRestart {
+		restartUnits[hook.Unit] = true
+	}
 }
 
 // RunPendingHooks re-executes hooks named in pendingNames without a changeset.
@@ -380,38 +387,20 @@ func (a *Applier) RunPendingHooks(ctx context.Context, pendingNames []string) *A
 	for _, name := range pendingNames {
 		hook, ok := byName[name]
 		if !ok {
-			// Hook removed from config since it was first scheduled. Mark it
-			// "processed" so mergePendingHooks drops it instead of carrying it
-			// forward forever.
+			// Mark stale names as attempted so mergePendingHooks drops them
+			// instead of carrying them forward forever.
 			slog.Info("pending secret hook no longer in config, dropping", "hook", name)
 			result.AttemptedHookNames = append(result.AttemptedHookNames, name)
 			continue
 		}
-		a.runPendingHook(ctx, hook, restartUnits, result)
+		shouldRestart, err := a.reloader.Run(ctx, hook, restartUnits)
+		dispatchHookResult(hook, shouldRestart, err, restartUnits, result)
 	}
 
 	if !a.dryRun {
 		a.restartFallbackUnits(ctx, restartUnits, result)
 	}
 	return result
-}
-
-func (a *Applier) runPendingHook(ctx context.Context, hook config.SecretHook, restartUnits map[string]bool, result *ApplyResult) {
-	result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
-	shouldRestart, err := a.reloader.Run(ctx, hook, restartUnits)
-	if err != nil {
-		if shouldRestart {
-			result.Errors = append(result.Errors, &HookFallbackError{Unit: hook.Unit, Err: err})
-			result.FallbackRestartedUnits = append(result.FallbackRestartedUnits, hook.Unit)
-		} else {
-			result.Errors = append(result.Errors, err)
-			result.RetryableErrors = append(result.RetryableErrors, err)
-			result.PendingHookNames = append(result.PendingHookNames, hook.Name)
-		}
-	}
-	if shouldRestart {
-		restartUnits[hook.Unit] = true
-	}
 }
 
 func (a *Applier) restartFallbackUnits(ctx context.Context, restartUnits map[string]bool, result *ApplyResult) {

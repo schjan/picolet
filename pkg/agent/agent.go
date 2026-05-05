@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -652,7 +653,13 @@ func (a *Agent) savePartialStateOnHookFailure(st *state.State, store *state.Stor
 // did not run in this apply (its secret was not in the changeset). A hook is
 // added to pending if it ran and failed under keep_running. Hooks that ran and
 // succeeded — or fell back to a unit restart — are removed.
+//
+// Returns nil (not []string{}) when empty so the omitempty tag on
+// state.State.PendingSecretHooks omits the field from the on-disk JSON.
 func mergePendingHooks(old []string, result *applier.ApplyResult) []string {
+	if len(old) == 0 && len(result.PendingHookNames) == 0 {
+		return nil
+	}
 	attempted := make(map[string]bool, len(result.AttemptedHookNames))
 	for _, name := range result.AttemptedHookNames {
 		attempted[name] = true
@@ -673,6 +680,9 @@ func mergePendingHooks(old []string, result *applier.ApplyResult) []string {
 		merged = append(merged, name)
 		seen[name] = true
 	}
+	if len(merged) == 0 {
+		return nil
+	}
 	return merged
 }
 
@@ -686,12 +696,12 @@ func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.Resolv
 
 	logNonRetryableApplyErrors(result)
 
-	// retryPendingHooks attempts every name in st.PendingSecretHooks, so the
-	// merge is equivalent to "those that failed again". Use mergePendingHooks
-	// for symmetry with the apply path so behavior stays consistent.
-	st.PendingSecretHooks = mergePendingHooks(st.PendingSecretHooks, result)
-	if err := store.Save(st); err != nil {
-		return nil, fmt.Errorf("saving state after hook retry: %w", err)
+	newPending := mergePendingHooks(st.PendingSecretHooks, result)
+	if !slices.Equal(st.PendingSecretHooks, newPending) {
+		st.PendingSecretHooks = newPending
+		if err := store.Save(st); err != nil {
+			return nil, fmt.Errorf("saving state after hook retry: %w", err)
+		}
 	}
 
 	out := &ReconcileResult{
@@ -761,8 +771,15 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 }
 
 func logNonRetryableApplyErrors(result *applier.ApplyResult) {
+	// runSecretHooks appends the same error pointer to both Errors and
+	// RetryableErrors, so pointer-identity lookup is sufficient and avoids the
+	// quadratic errors.Is walk per error.
+	retryable := make(map[error]struct{}, len(result.RetryableErrors))
+	for _, e := range result.RetryableErrors {
+		retryable[e] = struct{}{}
+	}
 	for _, err := range result.Errors {
-		if isRetryableApplyError(err, result.RetryableErrors) {
+		if _, ok := retryable[err]; ok {
 			continue
 		}
 		if fallback, ok := errors.AsType[*applier.HookFallbackError](err); ok {
@@ -771,15 +788,6 @@ func logNonRetryableApplyErrors(result *applier.ApplyResult) {
 		}
 		slog.Warn("non-fatal apply error", "error", err)
 	}
-}
-
-func isRetryableApplyError(err error, retryableErrors []error) bool {
-	for _, retryableErr := range retryableErrors {
-		if errors.Is(err, retryableErr) {
-			return true
-		}
-	}
-	return false
 }
 
 func (a *Agent) resolvePollerAuth(ctx context.Context) (gitpoll.AuthProvider, error) {
