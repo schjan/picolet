@@ -132,7 +132,7 @@ func (r *SecretHookReloader) doHTTP(ctx context.Context, method, url string) err
 	}
 	resp, err := r.httpClient.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("performing %s %s: %w", method, url, err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)

@@ -322,9 +322,9 @@ func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets map[string]
 func hookExecutionKey(hook config.SecretHook) string {
 	switch hook.Action {
 	case config.HookActionHTTP:
-		return hook.Action + "\x00" + hook.Method + "\x00" + hook.URL
+		return hook.Action + "\x00" + hook.Unit + "\x00" + hook.Method + "\x00" + hook.URL
 	case config.HookActionSignal:
-		return hook.Action + "\x00" + hook.Container + "\x00" + hook.Signal
+		return hook.Action + "\x00" + hook.Unit + "\x00" + hook.Container + "\x00" + hook.Signal
 	case config.HookActionRestart:
 		return hook.Action + "\x00" + hook.Unit
 	default:

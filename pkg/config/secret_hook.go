@@ -35,6 +35,11 @@ type SecretHooksFile struct {
 	SecretHooks []SecretHook `yaml:"secret_hooks"`
 }
 
+type hookField struct {
+	name  string
+	value string
+}
+
 // Normalize applies defaults and validates the hook.
 func (h *SecretHook) Normalize() error {
 	if h.Name == "" {
@@ -72,14 +77,19 @@ func (h *SecretHook) normalizeAction() error {
 	case HookActionSignal:
 		return h.normalizeSignalAction()
 	case HookActionRestart:
-		// unit is already required for every hook.
-		return nil
+		return h.normalizeRestartAction()
 	default:
 		return fmt.Errorf("%s: action must be one of http, signal, restart", h.Name)
 	}
 }
 
 func (h *SecretHook) normalizeHTTPAction() error {
+	if field, ok := firstSetField(
+		hookField{name: "container", value: h.Container},
+		hookField{name: "signal", value: h.Signal},
+	); ok {
+		return fmt.Errorf("%s: %s cannot be set for http hooks", h.Name, field)
+	}
 	if h.Method == "" {
 		h.Method = http.MethodPost
 	}
@@ -93,6 +103,13 @@ func (h *SecretHook) normalizeHTTPAction() error {
 }
 
 func (h *SecretHook) normalizeSignalAction() error {
+	if field, ok := firstSetField(
+		hookField{name: "method", value: h.Method},
+		hookField{name: "url", value: h.URL},
+		hookField{name: "health_url", value: h.HealthURL},
+	); ok {
+		return fmt.Errorf("%s: %s cannot be set for signal hooks", h.Name, field)
+	}
 	if h.Container == "" {
 		return fmt.Errorf("%s: container is required for signal hooks", h.Name)
 	}
@@ -100,6 +117,28 @@ func (h *SecretHook) normalizeSignalAction() error {
 		h.Signal = "HUP"
 	}
 	return nil
+}
+
+func (h *SecretHook) normalizeRestartAction() error {
+	if field, ok := firstSetField(
+		hookField{name: "method", value: h.Method},
+		hookField{name: "url", value: h.URL},
+		hookField{name: "health_url", value: h.HealthURL},
+		hookField{name: "container", value: h.Container},
+		hookField{name: "signal", value: h.Signal},
+	); ok {
+		return fmt.Errorf("%s: %s cannot be set for restart hooks", h.Name, field)
+	}
+	return nil
+}
+
+func firstSetField(fields ...hookField) (string, bool) {
+	for _, field := range fields {
+		if field.value != "" {
+			return field.name, true
+		}
+	}
+	return "", false
 }
 
 func (h *SecretHook) normalizeOnFailure() error {

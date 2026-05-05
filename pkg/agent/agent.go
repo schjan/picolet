@@ -646,6 +646,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		}
 	}
 	if len(result.RetryableErrors) > 0 {
+		logNonRetryableApplyErrors(result)
 		err := errors.Join(result.RetryableErrors...)
 		slog.Warn("apply incomplete, keeping state unchanged for retry", "error", err)
 		return result, fmt.Errorf("apply incomplete: %w", err)
@@ -658,6 +659,24 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	)
 
 	return result, nil
+}
+
+func logNonRetryableApplyErrors(result *applier.ApplyResult) {
+	for _, err := range result.Errors {
+		if isRetryableApplyError(err, result.RetryableErrors) {
+			continue
+		}
+		slog.Warn("non-fatal apply error", "error", err)
+	}
+}
+
+func isRetryableApplyError(err error, retryableErrors []error) bool {
+	for _, retryableErr := range retryableErrors {
+		if errors.Is(err, retryableErr) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Agent) resolvePollerAuth(ctx context.Context) (gitpoll.AuthProvider, error) {

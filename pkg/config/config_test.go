@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/http"
 	"testing"
 	"testing/fstest"
 
@@ -168,4 +169,107 @@ features: []
 	_, err := LoadAll(fsys)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "not_a_field")
+}
+
+//nolint:funlen // table-driven mismatched-field coverage is clearer inline.
+func TestSecretHookNormalizeRejectsMismatchedFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		hook    SecretHook
+		wantErr string
+	}{
+		{
+			name: "http container",
+			hook: SecretHook{
+				Name:      "hook",
+				Secrets:   []string{"cfg"},
+				Unit:      "app.service",
+				Action:    HookActionHTTP,
+				URL:       "http://example.test/reload",
+				Container: "app",
+			},
+			wantErr: "container cannot be set for http hooks",
+		},
+		{
+			name: "http signal",
+			hook: SecretHook{
+				Name:    "hook",
+				Secrets: []string{"cfg"},
+				Unit:    "app.service",
+				Action:  HookActionHTTP,
+				URL:     "http://example.test/reload",
+				Signal:  "HUP",
+			},
+			wantErr: "signal cannot be set for http hooks",
+		},
+		{
+			name: "signal method",
+			hook: SecretHook{
+				Name:      "hook",
+				Secrets:   []string{"cfg"},
+				Unit:      "app.service",
+				Action:    HookActionSignal,
+				Method:    http.MethodPost,
+				Container: "app",
+			},
+			wantErr: "method cannot be set for signal hooks",
+		},
+		{
+			name: "signal url",
+			hook: SecretHook{
+				Name:      "hook",
+				Secrets:   []string{"cfg"},
+				Unit:      "app.service",
+				Action:    HookActionSignal,
+				URL:       "http://example.test/reload",
+				Container: "app",
+			},
+			wantErr: "url cannot be set for signal hooks",
+		},
+		{
+			name: "signal health url",
+			hook: SecretHook{
+				Name:      "hook",
+				Secrets:   []string{"cfg"},
+				Unit:      "app.service",
+				Action:    HookActionSignal,
+				HealthURL: "http://example.test/health",
+				Container: "app",
+			},
+			wantErr: "health_url cannot be set for signal hooks",
+		},
+		{
+			name: "restart health url",
+			hook: SecretHook{
+				Name:      "hook",
+				Secrets:   []string{"cfg"},
+				Unit:      "app.service",
+				Action:    HookActionRestart,
+				HealthURL: "http://example.test/health",
+			},
+			wantErr: "health_url cannot be set for restart hooks",
+		},
+		{
+			name: "restart container",
+			hook: SecretHook{
+				Name:      "hook",
+				Secrets:   []string{"cfg"},
+				Unit:      "app.service",
+				Action:    HookActionRestart,
+				Container: "app",
+			},
+			wantErr: "container cannot be set for restart hooks",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.hook.Normalize()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }
