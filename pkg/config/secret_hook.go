@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -98,6 +99,28 @@ func (h *SecretHook) normalizeHTTPAction() error {
 	}
 	if h.URL == "" {
 		return fmt.Errorf("%s: url is required for http hooks", h.Name)
+	}
+	if err := validateHookHTTPURL(h.Name, "url", h.URL); err != nil {
+		return err
+	}
+	if h.HealthURL != "" {
+		if err := validateHookHTTPURL(h.Name, "health_url", h.HealthURL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateHookHTTPURL(hookName, field, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%s: %s is not a valid URL: %w", hookName, field, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%s: %s must use http or https scheme", hookName, field)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%s: %s must include an explicit host", hookName, field)
 	}
 	return nil
 }

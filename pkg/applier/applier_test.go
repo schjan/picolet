@@ -2,6 +2,7 @@ package applier_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"sync/atomic"
@@ -587,6 +588,228 @@ func TestApplyRestartSecretHook(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, result.Errors)
 	assert.Equal(t, []string{"app.service"}, result.RestartedUnits)
+}
+
+func TestApplyDoesNotDeduplicateHTTPHooksByDifferentHealthURL(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	client := testHTTPClient(func(req *http.Request) int {
+		// Both reload (POST) and health (GET) calls hit the test transport;
+		// counting all of them is the simplest way to assert "both hooks ran".
+		_ = req
+		calls.Add(1)
+		return http.StatusOK
+	})
+
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
+	pod := appliermocks.NewMockPodmanClient(t)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_rules", []byte("new"), true).Return(nil)
+	fw := newMemFileWriter()
+	hooks := []config.SecretHook{
+		{
+			Name:      "app-config-reload",
+			Secrets:   []string{"app_config"},
+			Unit:      "app.service",
+			Action:    config.HookActionHTTP,
+			Method:    http.MethodPost,
+			URL:       "http://example.test/reload",
+			HealthURL: "http://example.test/health/config",
+			OnFailure: config.HookOnFailureKeepRunning,
+		},
+		{
+			Name:      "app-rules-reload",
+			Secrets:   []string{"app_rules"},
+			Unit:      "app.service",
+			Action:    config.HookActionHTTP,
+			Method:    http.MethodPost,
+			URL:       "http://example.test/reload",
+			HealthURL: "http://example.test/health/rules",
+			OnFailure: config.HookOnFailureKeepRunning,
+		},
+	}
+	reloader := applier.NewSecretHookReloader(sys, pod).WithHTTPClient(client).WithHealthDelay(0)
+	a := applier.New(sys, pod, fw, false, applier.WithSecretHooks(hooks), applier.WithSecretHookReloader(reloader))
+
+	result, err := a.Apply(context.Background(), &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "secret:app_config", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"},
+			{DestPath: "secret:app_rules", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 2},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Errors)
+	// Two reloads + two health checks = 4 HTTP calls. If HealthURL had been
+	// excluded from the dedup key, only one hook would fire (2 calls total).
+	assert.Equal(t, int32(4), calls.Load())
+}
+
+func TestApplyMarksFallbackRestartAsHookFallbackError(t *testing.T) {
+	t.Parallel()
+	client := testHTTPClient(func(_ *http.Request) int { return http.StatusInternalServerError })
+
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+	sys.EXPECT().RestartUnit(mock.Anything, "app.service").Return(nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
+	fw := newMemFileWriter()
+	hook := config.SecretHook{
+		Name:      "app-reload",
+		Secrets:   []string{"app_config"},
+		Unit:      "app.service",
+		Action:    config.HookActionHTTP,
+		Method:    http.MethodPost,
+		URL:       "http://example.test/reload",
+		OnFailure: config.HookOnFailureRestart,
+	}
+	reloader := applier.NewSecretHookReloader(sys, pod).WithHTTPClient(client).WithHealthDelay(0)
+	a := applier.New(sys, pod, fw, false, applier.WithSecretHooks([]config.SecretHook{hook}), applier.WithSecretHookReloader(reloader))
+
+	result, err := a.Apply(context.Background(), &reconciler.Changeset{
+		Changes: []reconciler.Change{{DestPath: "secret:app_config", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"}},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Errors, 1)
+	if fallback, ok := errors.AsType[*applier.HookFallbackError](result.Errors[0]); ok {
+		assert.Equal(t, "app.service", fallback.Unit)
+	} else {
+		t.Fatalf("expected HookFallbackError, got %T: %v", result.Errors[0], result.Errors[0])
+	}
+	assert.Equal(t, []string{"app.service"}, result.FallbackRestartedUnits)
+	assert.Empty(t, result.RetryableErrors)
+	assert.Empty(t, result.PendingHookNames)
+	assert.Equal(t, []string{"app.service"}, result.RestartedUnits)
+}
+
+func TestApplyKeepRunningHookFailureSetsPendingHookNames(t *testing.T) {
+	t.Parallel()
+	client := testHTTPClient(func(_ *http.Request) int { return http.StatusInternalServerError })
+
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
+	fw := newMemFileWriter()
+	hook := config.SecretHook{
+		Name:      "app-reload",
+		Secrets:   []string{"app_config"},
+		Unit:      "app.service",
+		Action:    config.HookActionHTTP,
+		Method:    http.MethodPost,
+		URL:       "http://example.test/reload",
+		OnFailure: config.HookOnFailureKeepRunning,
+	}
+	reloader := applier.NewSecretHookReloader(sys, pod).WithHTTPClient(client).WithHealthDelay(0)
+	a := applier.New(sys, pod, fw, false, applier.WithSecretHooks([]config.SecretHook{hook}), applier.WithSecretHookReloader(reloader))
+
+	result, err := a.Apply(context.Background(), &reconciler.Changeset{
+		Changes: []reconciler.Change{{DestPath: "secret:app_config", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"}},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	})
+	require.NoError(t, err)
+	assert.Len(t, result.RetryableErrors, 1)
+	assert.Equal(t, []string{"app-reload"}, result.PendingHookNames)
+	assert.Empty(t, result.FallbackRestartedUnits)
+}
+
+func TestRunPendingHooksRetriesNamedHooks(t *testing.T) {
+	t.Parallel()
+	var reloads atomic.Int32
+	client := testHTTPClient(func(_ *http.Request) int {
+		reloads.Add(1)
+		return http.StatusOK
+	})
+
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	hook := config.SecretHook{
+		Name:      "app-reload",
+		Secrets:   []string{"app_config"},
+		Unit:      "app.service",
+		Action:    config.HookActionHTTP,
+		Method:    http.MethodPost,
+		URL:       "http://example.test/reload",
+		OnFailure: config.HookOnFailureKeepRunning,
+	}
+	reloader := applier.NewSecretHookReloader(sys, pod).WithHTTPClient(client).WithHealthDelay(0)
+	a := applier.New(sys, pod, fw, false, applier.WithSecretHooks([]config.SecretHook{hook}), applier.WithSecretHookReloader(reloader))
+
+	result := a.RunPendingHooks(context.Background(), []string{"app-reload"})
+	assert.Empty(t, result.Errors)
+	assert.Empty(t, result.RetryableErrors)
+	assert.Empty(t, result.PendingHookNames)
+	assert.Equal(t, int32(1), reloads.Load())
+}
+
+func TestRunPendingHooksDropsStaleHookNames(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	a := applier.New(sys, pod, fw, false, applier.WithSecretHooks(nil))
+
+	result := a.RunPendingHooks(context.Background(), []string{"removed-hook"})
+	assert.Empty(t, result.Errors)
+	assert.Empty(t, result.PendingHookNames)
+}
+
+func TestRunPendingHooksFallbackRestartRestartsUnit(t *testing.T) {
+	t.Parallel()
+	client := testHTTPClient(func(_ *http.Request) int { return http.StatusInternalServerError })
+
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+	sys.EXPECT().RestartUnit(mock.Anything, "app.service").Return(nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	hook := config.SecretHook{
+		Name:      "app-reload",
+		Secrets:   []string{"app_config"},
+		Unit:      "app.service",
+		Action:    config.HookActionHTTP,
+		Method:    http.MethodPost,
+		URL:       "http://example.test/reload",
+		OnFailure: config.HookOnFailureRestart,
+	}
+	reloader := applier.NewSecretHookReloader(sys, pod).WithHTTPClient(client).WithHealthDelay(0)
+	a := applier.New(sys, pod, fw, false, applier.WithSecretHooks([]config.SecretHook{hook}), applier.WithSecretHookReloader(reloader))
+
+	result := a.RunPendingHooks(context.Background(), []string{"app-reload"})
+	assert.Equal(t, []string{"app.service"}, result.FallbackRestartedUnits)
+	assert.Equal(t, []string{"app.service"}, result.RestartedUnits)
+	assert.Empty(t, result.RetryableErrors)
+	assert.Empty(t, result.PendingHookNames)
+}
+
+func TestRunPendingHooksKeepsFailedHookInPending(t *testing.T) {
+	t.Parallel()
+	client := testHTTPClient(func(_ *http.Request) int { return http.StatusInternalServerError })
+
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	hook := config.SecretHook{
+		Name:      "app-reload",
+		Secrets:   []string{"app_config"},
+		Unit:      "app.service",
+		Action:    config.HookActionHTTP,
+		Method:    http.MethodPost,
+		URL:       "http://example.test/reload",
+		OnFailure: config.HookOnFailureKeepRunning,
+	}
+	reloader := applier.NewSecretHookReloader(sys, pod).WithHTTPClient(client).WithHealthDelay(0)
+	a := applier.New(sys, pod, fw, false, applier.WithSecretHooks([]config.SecretHook{hook}), applier.WithSecretHookReloader(reloader))
+
+	result := a.RunPendingHooks(context.Background(), []string{"app-reload"})
+	assert.Len(t, result.RetryableErrors, 1)
+	assert.Equal(t, []string{"app-reload"}, result.PendingHookNames)
 }
 
 func TestSecretHookReloaderHonorsHealthDelayCancellation(t *testing.T) {

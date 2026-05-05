@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 
@@ -429,6 +430,108 @@ secret_hooks:
 	_, err = r.ResolveHost(t.Context(), "server")
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "url is required")
+}
+
+func TestResolveHostBatchesOpRefsFromHookTemplates(t *testing.T) {
+	t.Parallel()
+
+	hookOpRef := "op://vault/app/reload-token"
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base: {}
+pi_types:
+  server:
+    services: [app]
+features: {}
+`)},
+		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: server
+pi_type: server
+features: []
+`)},
+		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
+		// Hook URL embeds an op:// reference. Phase 1 must collect this ref so
+		// the OpSecretReader sees it on the (single) batch call.
+		"services/app/picolet.yml.tmpl": &fstest.MapFile{Data: []byte(`
+secret_hooks:
+  - name: app-reload
+    secrets: [app_config]
+    unit: app.service
+    action: http
+    method: POST
+    url: "http://example.test/reload?token={{readOpSecret "` + hookOpRef + `"}}"
+`)},
+	}
+
+	var calls atomic.Int32
+	reader := func(_ context.Context, refs []string) (map[string]string, error) {
+		calls.Add(1)
+		assert.Contains(t, refs, hookOpRef, "hook template's op:// ref must appear in Phase 1 batch")
+		return map[string]string{hookOpRef: "tok"}, nil
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg, OpSecretReader: reader})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "server")
+	require.NoError(t, err)
+	require.Len(t, resolved.SecretHooks, 1)
+	assert.Equal(t, "http://example.test/reload?token=tok", resolved.SecretHooks[0].URL)
+	assert.Equal(t, int32(1), calls.Load(), "OpSecretReader should be called exactly once for the batch")
+}
+
+func TestResolveHostHookNameUniquenessErrorIncludesService(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base: {}
+pi_types:
+  server:
+    services: [app, api]
+features: {}
+`)},
+		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: server
+pi_type: server
+features: []
+`)},
+		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
+		"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
+secret_hooks:
+  - name: shared
+    secrets: [cfg]
+    unit: app.service
+    action: http
+    url: "http://example.test/reload"
+`)},
+		"services/api/containers/api.container": &fstest.MapFile{Data: []byte("[Container]\nImage=api\n")},
+		"services/api/picolet.yml": &fstest.MapFile{Data: []byte(`
+secret_hooks:
+  - name: shared
+    secrets: [cfg]
+    unit: api.service
+    action: http
+    url: "http://example.test/reload"
+`)},
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	_, err = r.ResolveHost(t.Context(), "server")
+	require.ErrorContains(t, err, `duplicate secret hook name "shared"`)
+	// The error must name the previously-defining service so the operator can
+	// find both files. Hook refs are sorted by service name during bundle
+	// expansion, so "api" is processed first and "app" reports the duplicate.
+	require.ErrorContains(t, err, `service "api"`)
 }
 
 func TestResolveHostBundleManifestTemplateRenders(t *testing.T) {

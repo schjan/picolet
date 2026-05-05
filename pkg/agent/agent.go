@@ -342,7 +342,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return fmt.Errorf("polling git: %w", err)
 	}
 
-	if !pollResult.Changed && !a.opRefreshDue() {
+	if !pollResult.Changed && !a.opRefreshDue() && len(st.PendingSecretHooks) == 0 {
 		metrics.GitPollTotal.WithLabelValues("noop").Inc()
 		slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
@@ -401,6 +401,20 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	result, err := a.ReconcileOnce(ctx, pollResult.HeadSHA, st, store)
 	elapsed := time.Since(start)
 	metrics.ReconciliationDuration.Observe(elapsed.Seconds())
+
+	if errors.Is(err, applier.ErrApplyIncomplete) {
+		// Files were applied; only hook retry is pending. This is not a
+		// reconciliation failure: do not increment FailedCount, do not arm the
+		// failed-SHA gate, do not report a failed deployment.
+		a.reportDeploymentResult(ctx, deploymentID, nil)
+		if a.opReader != nil {
+			a.lastOPRefresh = time.Now()
+		}
+		slog.Warn("apply incomplete, hooks will retry on next tick", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
+		metrics.ReconciliationTotal.WithLabelValues("retry_pending").Inc()
+		a.recordEvent("retry_pending", pollResult.HeadSHA, err.Error())
+		return nil
+	}
 
 	a.reportDeploymentResult(ctx, deploymentID, err)
 
@@ -526,6 +540,9 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	changeset := reconciler.Diff(files, st)
 
 	if !changeset.HasChanges() {
+		if len(st.PendingSecretHooks) > 0 {
+			return a.retryPendingHooks(ctx, resolved, st, store, changeset, opCount)
+		}
 		return a.reconcileNoChanges(headSHA, files, changeset, st, store, opCount)
 	}
 
@@ -543,16 +560,23 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	}
 
 	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset, resolved.SecretHooks)
+	if errors.Is(err, applier.ErrApplyIncomplete) {
+		a.savePartialStateOnHookFailure(st, store, changeset, applyResult, deps)
+		return nil, err
+	}
 	if err != nil {
 		return nil, err
 	}
+	return a.finalizeApply(headSHA, st, store, changeset, applyResult, deps, opCount)
+}
+
+func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, opCount int) (*ReconcileResult, error) {
 	// Set deps after a successful apply so the dashboard's dep map matches the
 	// deployed state. On apply failure (rollback) we keep the previous good
 	// map rather than advertising deps for a state we couldn't reach.
 	a.statusStore.SetDependencies(deps)
-	for _, e := range applyResult.Errors {
-		slog.Warn("non-fatal apply error", "error", e)
-	}
+	st.PendingSecretHooks = mergePendingHooks(st.PendingSecretHooks, applyResult)
+	logNonRetryableApplyErrors(applyResult)
 
 	markAppliedWithMetrics(st, headSHA)
 	a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
@@ -610,6 +634,81 @@ func (a *Agent) reconcileNoChanges(headSHA string, files []resolver.ResolvedFile
 	return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: opCount}, nil
 }
 
+// savePartialStateOnHookFailure persists state after a successful apply that
+// only failed at the keep_running hook stage. Files and secrets are recorded
+// (so the next tick does not re-write them) and the pending hook list is saved
+// so retry survives an agent restart.
+func (a *Agent) savePartialStateOnHookFailure(st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies) {
+	UpdateState(st, changeset)
+	st.PendingSecretHooks = mergePendingHooks(st.PendingSecretHooks, applyResult)
+	if saveErr := store.Save(st); saveErr != nil {
+		slog.Error("saving partial state after hook failure", "error", saveErr)
+	}
+	a.statusStore.SetDependencies(deps)
+}
+
+// mergePendingHooks computes the new PendingSecretHooks list given the previous
+// list and the apply result. A hook stays pending if it was pending before and
+// did not run in this apply (its secret was not in the changeset). A hook is
+// added to pending if it ran and failed under keep_running. Hooks that ran and
+// succeeded — or fell back to a unit restart — are removed.
+func mergePendingHooks(old []string, result *applier.ApplyResult) []string {
+	attempted := make(map[string]bool, len(result.AttemptedHookNames))
+	for _, name := range result.AttemptedHookNames {
+		attempted[name] = true
+	}
+	merged := make([]string, 0, len(old)+len(result.PendingHookNames))
+	seen := make(map[string]bool, len(old)+len(result.PendingHookNames))
+	for _, name := range old {
+		if attempted[name] || seen[name] {
+			continue
+		}
+		merged = append(merged, name)
+		seen[name] = true
+	}
+	for _, name := range result.PendingHookNames {
+		if seen[name] {
+			continue
+		}
+		merged = append(merged, name)
+		seen[name] = true
+	}
+	return merged
+}
+
+// retryPendingHooks runs pending secret hooks on a tick where the diff is
+// otherwise empty. It does NOT call UpdateState — that would wipe ManagedFiles
+// from an empty changeset. State is saved with the (possibly trimmed) pending
+// list. Returns ErrApplyIncomplete when hooks still fail under keep_running.
+func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.ResolvedHost, st *state.State, store *state.Store, changeset *reconciler.Changeset, opCount int) (*ReconcileResult, error) {
+	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, applier.WithSecretHooks(resolved.SecretHooks))
+	result := app.RunPendingHooks(ctx, st.PendingSecretHooks)
+
+	logNonRetryableApplyErrors(result)
+
+	// retryPendingHooks attempts every name in st.PendingSecretHooks, so the
+	// merge is equivalent to "those that failed again". Use mergePendingHooks
+	// for symmetry with the apply path so behavior stays consistent.
+	st.PendingSecretHooks = mergePendingHooks(st.PendingSecretHooks, result)
+	if err := store.Save(st); err != nil {
+		return nil, fmt.Errorf("saving state after hook retry: %w", err)
+	}
+
+	out := &ReconcileResult{
+		HasChanges:     len(result.RestartedUnits) > 0 || len(result.FallbackRestartedUnits) > 0,
+		Summary:        changeset.Summary,
+		ApplyResult:    result,
+		OpSecretsCount: opCount,
+	}
+
+	if len(result.RetryableErrors) > 0 {
+		return out, fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(result.RetryableErrors...))
+	}
+
+	slog.Info("pending secret hooks retried", "restarted", result.RestartedUnits)
+	return out, nil
+}
+
 func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset, hooks []config.SecretHook) (*applier.ApplyResult, error) {
 	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile)
 	if err != nil {
@@ -647,9 +746,9 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	}
 	if len(result.RetryableErrors) > 0 {
 		logNonRetryableApplyErrors(result)
-		err := errors.Join(result.RetryableErrors...)
-		slog.Warn("apply incomplete, keeping state unchanged for retry", "error", err)
-		return result, fmt.Errorf("apply incomplete: %w", err)
+		joined := errors.Join(result.RetryableErrors...)
+		slog.Warn("apply incomplete, hooks will retry on next tick", "error", joined)
+		return result, fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, joined)
 	}
 
 	slog.Info("apply complete",
@@ -664,6 +763,10 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 func logNonRetryableApplyErrors(result *applier.ApplyResult) {
 	for _, err := range result.Errors {
 		if isRetryableApplyError(err, result.RetryableErrors) {
+			continue
+		}
+		if fallback, ok := errors.AsType[*applier.HookFallbackError](err); ok {
+			slog.Warn("hook failed, fallback restart scheduled", "unit", fallback.Unit, "error", fallback.Err)
 			continue
 		}
 		slog.Warn("non-fatal apply error", "error", err)

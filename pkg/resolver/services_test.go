@@ -261,6 +261,37 @@ func TestExpandServiceBundlesRejectsInvalidName(t *testing.T) {
 	}
 }
 
+func TestExpandServiceBundlesRejectsBothHookMetadataFiles(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"services/web/picolet.yml":              &fstest.MapFile{Data: []byte("secret_hooks: []\n")},
+		"services/web/picolet.yml.tmpl":         &fstest.MapFile{Data: []byte("secret_hooks: []\n")},
+		"services/web/containers/web.container": &fstest.MapFile{Data: []byte("[Container]\nImage=a\n")},
+	}
+
+	_, err := expandServiceBundles(fsys, []string{"web"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "services/web: cannot define both picolet.yml and picolet.yml.tmpl")
+}
+
+func TestExpandServiceBundlesHookMetadataAsDirectoryReportsOneError(t *testing.T) {
+	t.Parallel()
+
+	// A directory accidentally named picolet.yml previously surfaced both
+	// "unknown entry" (from collectBundleSubdirs) and "expected regular file"
+	// (from collectBundleHookRefs). Now collectBundleSubdirs skips hook metadata
+	// names unconditionally, so only the regular-file error remains.
+	fsys := fstest.MapFS{
+		"services/web/picolet.yml/something":    &fstest.MapFile{Data: []byte("oops")},
+		"services/web/containers/web.container": &fstest.MapFile{Data: []byte("[Container]\nImage=a\n")},
+	}
+
+	_, err := expandServiceBundles(fsys, []string{"web"})
+	require.ErrorContains(t, err, "services/web/picolet.yml: expected regular file")
+	assert.NotContains(t, err.Error(), "unknown entry")
+}
+
 func TestAddPathUnknownCategory(t *testing.T) {
 	t.Parallel()
 

@@ -76,10 +76,13 @@ Behavior notes:
 
 ## Reloading Rule And Scrape Config
 
-When a service supports hot reload, place a `picolet.yml(.tmpl)` file in the
-same service bundle as the secret. Example for vmalert:
+When a service supports hot reload, place a `picolet.yml.tmpl` file in the same
+service bundle as the secret. The snippet uses Go template syntax (`{{ index
+.Ports "vmalert" }}`), which only works in a `.tmpl` file — do not copy it into
+a plain `picolet.yml`. Example for vmalert:
 
 ```yaml
+# services/vmalert/picolet.yml.tmpl
 secret_hooks:
   - name: vmalert-rules
     secrets: [vmalert_rules]

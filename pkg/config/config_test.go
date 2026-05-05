@@ -273,3 +273,46 @@ func TestSecretHookNormalizeRejectsMismatchedFields(t *testing.T) {
 		})
 	}
 }
+
+func TestSecretHookNormalizeValidatesURLScheme(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		url       string
+		healthURL string
+		wantErr   string
+	}{
+		{name: "http ok", url: "http://example.test/reload"},
+		{name: "https ok", url: "https://example.test/reload"},
+		{name: "http with path and port", url: "http://localhost:8080/-/reload"},
+		{name: "https with health url", url: "https://example.test/reload", healthURL: "https://example.test/health"},
+		{name: "no scheme", url: "example.test/reload", wantErr: "url must use http or https"},
+		{name: "file scheme", url: "file:///etc/passwd", wantErr: "url must use http or https"},
+		{name: "ftp scheme", url: "ftp://example.test", wantErr: "url must use http or https"},
+		{name: "no host", url: "http:///path", wantErr: "url must include an explicit host"},
+		{name: "scheme relative", url: "//example.test/path", wantErr: "url must use http or https"},
+		{name: "invalid health url", url: "http://example.test/reload", healthURL: "file:///x", wantErr: "health_url must use http or https"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := SecretHook{
+				Name:      "hook",
+				Secrets:   []string{"cfg"},
+				Unit:      "app.service",
+				Action:    HookActionHTTP,
+				URL:       tt.url,
+				HealthURL: tt.healthURL,
+			}
+			err := h.Normalize()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}

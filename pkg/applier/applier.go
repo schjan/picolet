@@ -3,6 +3,7 @@ package applier
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -12,6 +13,26 @@ import (
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/reconciler"
 )
+
+// ErrApplyIncomplete is returned by the agent's apply path when all file writes
+// succeeded but one or more keep_running hook errors occurred. Callers should
+// retry on the next tick without treating this as a reconciliation failure.
+var ErrApplyIncomplete = errors.New("apply incomplete")
+
+// HookFallbackError wraps a hook execution error that triggered a fallback unit
+// restart (on_failure: restart). Callers can detect it via errors.As to log a
+// distinct "fallback restart scheduled" message instead of treating it as a
+// generic non-fatal apply error.
+type HookFallbackError struct {
+	Unit string
+	Err  error
+}
+
+func (e *HookFallbackError) Error() string {
+	return fmt.Sprintf("hook for unit %s failed (fallback restart scheduled): %v", e.Unit, e.Err)
+}
+
+func (e *HookFallbackError) Unwrap() error { return e.Err }
 
 // SystemdManager controls systemd units via D-Bus.
 type SystemdManager interface {
@@ -60,6 +81,22 @@ type ApplyResult struct {
 
 	NeedsSelfRestart bool
 	RestartedUnits   []string
+
+	// PendingHookNames holds names of keep_running hooks that errored and should
+	// retry on the next tick. Populated only when RetryableErrors is non-empty.
+	PendingHookNames []string
+
+	// FallbackRestartedUnits names units whose hook failed under on_failure:restart
+	// and were therefore scheduled for restart as a fallback. Used for status and
+	// metrics; per-error fallback details live in HookFallbackError wrappers in
+	// Errors.
+	FallbackRestartedUnits []string
+
+	// AttemptedHookNames lists names of hooks that ran in this apply (regardless
+	// of outcome). Callers use this to compute the new PendingSecretHooks list:
+	// hooks pending from a previous tick whose secret did not change now must
+	// stay pending; hooks attempted and not in PendingHookNames are cleared.
+	AttemptedHookNames []string
 }
 
 // Option configures an Applier.
@@ -302,14 +339,19 @@ func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets map[string]
 			continue
 		}
 		executed[key] = true
+		result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
 		restartSet := make(map[string]bool, len(restartScheduled)+len(restartUnits))
 		mergeUnitSet(restartSet, restartScheduled)
 		mergeUnitSet(restartSet, restartUnits)
 		shouldRestart, err := a.reloader.Run(ctx, hook, restartSet)
 		if err != nil {
-			result.Errors = append(result.Errors, err)
-			if !shouldRestart {
+			if shouldRestart {
+				result.Errors = append(result.Errors, &HookFallbackError{Unit: hook.Unit, Err: err})
+				result.FallbackRestartedUnits = append(result.FallbackRestartedUnits, hook.Unit)
+			} else {
+				result.Errors = append(result.Errors, err)
 				result.RetryableErrors = append(result.RetryableErrors, err)
+				result.PendingHookNames = append(result.PendingHookNames, hook.Name)
 			}
 		}
 		if shouldRestart {
@@ -319,10 +361,74 @@ func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets map[string]
 	return restartUnits
 }
 
+// RunPendingHooks re-executes hooks named in pendingNames without a changeset.
+// Hook names not present in the configured hooks are silently dropped (the
+// hook was removed from config since the last failure). Hooks that fall back
+// to restart cause the affected unit to be restarted inline (no daemon-reload —
+// the file system already matches state, only the unit config changed).
+func (a *Applier) RunPendingHooks(ctx context.Context, pendingNames []string) *ApplyResult {
+	result := &ApplyResult{}
+	if len(pendingNames) == 0 || len(a.secretHooks) == 0 {
+		return result
+	}
+	byName := make(map[string]config.SecretHook, len(a.secretHooks))
+	for _, h := range a.secretHooks {
+		byName[h.Name] = h
+	}
+
+	restartUnits := make(map[string]bool)
+	for _, name := range pendingNames {
+		hook, ok := byName[name]
+		if !ok {
+			// Hook removed from config since it was first scheduled. Mark it
+			// "processed" so mergePendingHooks drops it instead of carrying it
+			// forward forever.
+			slog.Info("pending secret hook no longer in config, dropping", "hook", name)
+			result.AttemptedHookNames = append(result.AttemptedHookNames, name)
+			continue
+		}
+		a.runPendingHook(ctx, hook, restartUnits, result)
+	}
+
+	if !a.dryRun {
+		a.restartFallbackUnits(ctx, restartUnits, result)
+	}
+	return result
+}
+
+func (a *Applier) runPendingHook(ctx context.Context, hook config.SecretHook, restartUnits map[string]bool, result *ApplyResult) {
+	result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
+	shouldRestart, err := a.reloader.Run(ctx, hook, restartUnits)
+	if err != nil {
+		if shouldRestart {
+			result.Errors = append(result.Errors, &HookFallbackError{Unit: hook.Unit, Err: err})
+			result.FallbackRestartedUnits = append(result.FallbackRestartedUnits, hook.Unit)
+		} else {
+			result.Errors = append(result.Errors, err)
+			result.RetryableErrors = append(result.RetryableErrors, err)
+			result.PendingHookNames = append(result.PendingHookNames, hook.Name)
+		}
+	}
+	if shouldRestart {
+		restartUnits[hook.Unit] = true
+	}
+}
+
+func (a *Applier) restartFallbackUnits(ctx context.Context, restartUnits map[string]bool, result *ApplyResult) {
+	for unit := range restartUnits {
+		slog.Info("restarting unit after secret hook retry", "unit", unit)
+		if err := a.systemd.RestartUnit(ctx, unit); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("restarting %s: %w", unit, err))
+		} else {
+			result.RestartedUnits = append(result.RestartedUnits, unit)
+		}
+	}
+}
+
 func hookExecutionKey(hook config.SecretHook) string {
 	switch hook.Action {
 	case config.HookActionHTTP:
-		return hook.Action + "\x00" + hook.Unit + "\x00" + hook.Method + "\x00" + hook.URL
+		return hook.Action + "\x00" + hook.Unit + "\x00" + hook.Method + "\x00" + hook.URL + "\x00" + hook.HealthURL
 	case config.HookActionSignal:
 		return hook.Action + "\x00" + hook.Unit + "\x00" + hook.Container + "\x00" + hook.Signal
 	case config.HookActionRestart:

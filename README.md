@@ -228,9 +228,12 @@ legacy paths in the same commit that introduces `services: [<name>]`.
 ### Secret Change Hooks
 
 Service bundles can declare actions to run after assigned Podman secrets change.
-Put them in `services/<name>/picolet.yml` or `picolet.yml.tmpl`:
+Put them in `services/<name>/picolet.yml` or `services/<name>/picolet.yml.tmpl`
+(only one of the two — bundles containing both are rejected). The example below
+uses Go template syntax, so it must be in a `.tmpl` file:
 
 ```yaml
+# services/<name>/picolet.yml.tmpl
 secret_hooks:
   - name: vmalert-rules
     secrets: [vmalert_rules]
@@ -245,6 +248,8 @@ Hooks run after secret writes and before normal unit restarts. If multiple
 changed secrets match one hook, Picolet runs that hook once. If the unit is
 already scheduled for restart because its Quadlet changed, Picolet skips reload
 hooks for that unit.
+
+Hook names must be unique across all service bundles assigned to a host.
 
 Supported actions:
 

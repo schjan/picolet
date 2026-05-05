@@ -175,7 +175,11 @@ func collectBundleSubdirs(root string, entries []fs.DirEntry) ([]bundleSubdir, [
 	)
 
 	for _, entry := range entries {
-		if isHookMetadataFile(entry.Name()) && !entry.IsDir() {
+		// collectBundleHookRefs owns validation/error messages for hook metadata
+		// names (including the directory case). Skip them here unconditionally so
+		// a directory accidentally named picolet.yml does not also trigger an
+		// "unknown entry" error.
+		if isHookMetadataFile(entry.Name()) {
 			continue
 		}
 		subdir, ok := bundleSubdirsByName[entry.Name()]
@@ -212,6 +216,9 @@ func collectBundleHookRefs(root, service string, entries []fs.DirEntry) ([]hookR
 			continue
 		}
 		refs = append(refs, hookRef{Service: service, SrcPath: path})
+	}
+	if len(refs) > 1 {
+		return nil, []error{fmt.Errorf("%s: cannot define both picolet.yml and picolet.yml.tmpl", root)}
 	}
 	return refs, errs
 }

@@ -141,7 +141,7 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 	// Phase 1 (collect): render all templates to discover readOpSecret calls (output discarded).
 	// Phase 2 (resolve): batch-resolve collected refs, then render templates for real.
 	if opCache != nil {
-		r.collectOpTemplateRefs(registry, tmplData, fileSet, manifestRefs)
+		r.collectOpTemplateRefs(registry, tmplData, fileSet, manifestRefs, hookRefs)
 		if err := opCache.Resolve(ctx); err != nil {
 			return nil, err
 		}
@@ -497,8 +497,12 @@ func (r *Resolver) resolveManifestRef(registry *template.Template, tmplData *Tem
 }
 
 func (r *Resolver) buildSecretHooks(registry *template.Template, tmplData *TemplateData, refs []hookRef) ([]config.SecretHook, error) {
+	type hookOrigin struct {
+		service string
+		path    string
+	}
 	var hooks []config.SecretHook
-	seen := make(map[string]string)
+	seen := make(map[string]hookOrigin)
 	for _, ref := range refs {
 		fileHooks, err := r.resolveSecretHooksFile(registry, tmplData, ref)
 		if err != nil {
@@ -506,9 +510,9 @@ func (r *Resolver) buildSecretHooks(registry *template.Template, tmplData *Templ
 		}
 		for _, hook := range fileHooks {
 			if prev, ok := seen[hook.Name]; ok {
-				return nil, fmt.Errorf("%s: duplicate secret hook name %q (already defined in %s)", ref.SrcPath, hook.Name, prev)
+				return nil, fmt.Errorf("%s: duplicate secret hook name %q (already defined by service %q in %s)", ref.SrcPath, hook.Name, prev.service, prev.path)
 			}
-			seen[hook.Name] = ref.SrcPath
+			seen[hook.Name] = hookOrigin{service: ref.Service, path: ref.SrcPath}
 			hooks = append(hooks, hook)
 		}
 	}
@@ -587,12 +591,16 @@ func (r *Resolver) collectOpTemplateRefs(
 	tmplData *TemplateData,
 	fileSet *config.ResolvedFileSet,
 	manifestRefs []manifestRef,
+	hookRefs []hookRef,
 ) {
 	allPaths := slices.Concat(
 		fileSet.Networks, fileSet.Systemd, fileSet.Volumes,
 		fileSet.Containers, fileSet.Kube,
 	)
 	for _, ref := range manifestRefs {
+		allPaths = append(allPaths, ref.SrcPath)
+	}
+	for _, ref := range hookRefs {
 		allPaths = append(allPaths, ref.SrcPath)
 	}
 	// Include non-op:// secrets that are templates (they might call readOpSecret).

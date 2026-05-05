@@ -635,10 +635,14 @@ func applyWithRollback(
 		return nil, fmt.Errorf("apply failed: %w", err)
 	}
 	for _, e := range result.Errors {
+		if fallback, ok := errors.AsType[*applier.HookFallbackError](e); ok {
+			slog.Warn("hook failed, fallback restart scheduled", "unit", fallback.Unit, "error", fallback.Err)
+			continue
+		}
 		slog.Warn("non-fatal apply error", "error", e)
 	}
 	if len(result.RetryableErrors) > 0 {
-		return result, fmt.Errorf("apply incomplete: %w", errors.Join(result.RetryableErrors...))
+		return result, fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(result.RetryableErrors...))
 	}
 
 	return result, nil
