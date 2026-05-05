@@ -19,6 +19,7 @@ func TestExpandServiceBundlesHappyPath(t *testing.T) {
 		"services/web/kube/app.kube.tmpl":                &fstest.MapFile{Data: []byte("kube")},
 		"services/web/systemd/http.socket":               &fstest.MapFile{Data: []byte("socket")},
 		"services/web/secrets/config.yml.tmpl":           &fstest.MapFile{Data: []byte("secret")},
+		"services/web/picolet.yml":                       &fstest.MapFile{Data: []byte("secret_hooks: []\n")},
 		"services/web/manifests/app/deployment.yml.tmpl": &fstest.MapFile{Data: []byte("manifest")},
 		"services/web/manifests/app/configs/app.conf":    &fstest.MapFile{Data: []byte("config")},
 	}
@@ -32,6 +33,7 @@ func TestExpandServiceBundlesHappyPath(t *testing.T) {
 	assert.Equal(t, []string{"services/web/containers/web.container.tmpl"}, expanded.Containers)
 	assert.Equal(t, []string{"services/web/kube/app.kube.tmpl"}, expanded.Kube)
 	assert.Equal(t, []string{"services/web/secrets/config.yml.tmpl"}, expanded.Secrets)
+	assert.Equal(t, []hookRef{{Service: "web", SrcPath: "services/web/picolet.yml"}}, expanded.Hooks)
 	assert.Equal(t, []manifestRef{
 		{
 			SrcPath:     "services/web/manifests/app/configs/app.conf",
@@ -42,6 +44,31 @@ func TestExpandServiceBundlesHappyPath(t *testing.T) {
 			LogicalPath: "manifests/app/deployment.yml.tmpl",
 		},
 	}, expanded.Manifests)
+}
+
+func TestExpandServiceBundlesMetadataOnlyIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"services/web/picolet.yml": &fstest.MapFile{Data: []byte("secret_hooks: []\n")},
+	}
+
+	_, err := expandServiceBundles(fsys, []string{"web"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "services/web: empty service bundle")
+}
+
+func TestExpandServiceBundlesRejectsMetadataSymlink(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"services/web/picolet.yml":              &fstest.MapFile{Mode: fs.ModeSymlink},
+		"services/web/containers/web.container": &fstest.MapFile{Data: []byte("container")},
+	}
+
+	_, err := expandServiceBundles(fsys, []string{"web"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "services/web/picolet.yml: expected regular file")
 }
 
 func TestExpandServiceBundlesMissingBundle(t *testing.T) {

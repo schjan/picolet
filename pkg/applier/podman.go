@@ -108,6 +108,15 @@ func (c *SocketPodmanClient) ContainerRemove(_ context.Context, nameOrID string,
 }
 
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
+func (c *SocketPodmanClient) ContainerKill(_ context.Context, nameOrID, signal string) error {
+	opts := new(containers.KillOptions).WithSignal(signal)
+	if err := containers.Kill(c.connCtx, nameOrID, opts); err != nil {
+		return fmt.Errorf("signaling container %s with %s: %w", nameOrID, signal, err)
+	}
+	return nil
+}
+
+//nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
 func (c *SocketPodmanClient) RunHealthcheck(_ context.Context, container string) (bool, error) {
 	result, err := containers.RunHealthCheck(c.connCtx, container, nil)
 	if err != nil {

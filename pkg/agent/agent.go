@@ -542,7 +542,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset)
+	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset, resolved.SecretHooks)
 	if err != nil {
 		return nil, err
 	}
@@ -610,13 +610,13 @@ func (a *Agent) reconcileNoChanges(headSHA string, files []resolver.ResolvedFile
 	return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: opCount}, nil
 }
 
-func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset) (*applier.ApplyResult, error) {
+func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset, hooks []config.SecretHook) (*applier.ApplyResult, error) {
 	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile)
 	if err != nil {
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
-	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun)
+	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, applier.WithSecretHooks(hooks))
 	result, err := app.Apply(ctx, changeset)
 	if err != nil {
 		slog.Error("apply failed, rolling back", "error", err)

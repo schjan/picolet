@@ -74,6 +74,26 @@ Behavior notes:
 - Keep rule fragments unindented and let the template own indentation with `nindent`.
 - Picolet validates rendered YAML syntax, but backend-specific semantic checks (`promtool`, `vmalert` tooling, etc.) should run in fleet CI.
 
+## Reloading Rule And Scrape Config
+
+When a service supports hot reload, place a `picolet.yml(.tmpl)` file in the
+same service bundle as the secret. Example for vmalert:
+
+```yaml
+secret_hooks:
+  - name: vmalert-rules
+    secrets: [vmalert_rules]
+    unit: vmalert.service
+    action: http
+    method: GET
+    url: "http://localhost:{{ index .Ports "vmalert" }}/vmalert/-/reload"
+    health_url: "http://localhost:{{ index .Ports "vmalert" }}/vmalert/health"
+```
+
+Use `action: restart` for services where the running process cannot see replaced
+Podman secret content without a new container. Use `action: signal` with
+`signal: HUP` for daemons that reload config on SIGHUP.
+
 ## Migration From Monolithic Rules
 
 You can keep the same secret assignment and migrate incrementally:

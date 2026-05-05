@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/reconciler"
 )
 
@@ -41,6 +42,7 @@ type PodmanClient interface {
 	ContainerRemove(ctx context.Context, nameOrID string, force bool) error
 	RunHealthcheck(ctx context.Context, container string) (bool, error)
 	GetPodState(ctx context.Context, pod string) (string, error)
+	ContainerKill(ctx context.Context, nameOrID, signal string) error
 }
 
 // FileWriter writes files atomically.
@@ -57,6 +59,9 @@ type ApplyResult struct {
 	NeedsSelfRestart bool
 	RestartedUnits   []string
 }
+
+// Option configures an Applier.
+type Option func(*Applier)
 
 // selfContainerFile is the quadlet filename for picolet's own container unit.
 // Its presence in a create/update changeset triggers a self-restart via picolet.service.
@@ -92,19 +97,44 @@ var categoryRankMap = func() map[string]int {
 
 // Applier applies a changeset to the system.
 type Applier struct {
-	systemd SystemdManager
-	podman  PodmanClient
-	writer  FileWriter
-	dryRun  bool
+	systemd     SystemdManager
+	podman      PodmanClient
+	writer      FileWriter
+	dryRun      bool
+	secretHooks []config.SecretHook
+	reloader    *SecretHookReloader
 }
 
 // New creates a new Applier.
-func New(systemd SystemdManager, podman PodmanClient, writer FileWriter, dryRun bool) *Applier {
-	return &Applier{
+func New(systemd SystemdManager, podman PodmanClient, writer FileWriter, dryRun bool, opts ...Option) *Applier {
+	a := &Applier{
 		systemd: systemd,
 		podman:  podman,
 		writer:  writer,
 		dryRun:  dryRun,
+	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	if a.reloader == nil {
+		a.reloader = NewSecretHookReloader(systemd, podman)
+	}
+	return a
+}
+
+// WithSecretHooks configures hooks to execute after matching secrets change.
+func WithSecretHooks(hooks []config.SecretHook) Option {
+	return func(a *Applier) {
+		a.secretHooks = slices.Clone(hooks)
+	}
+}
+
+// WithSecretHookReloader overrides hook execution, primarily for tests.
+func WithSecretHookReloader(reloader *SecretHookReloader) Option {
+	return func(a *Applier) {
+		if reloader != nil {
+			a.reloader = reloader
+		}
 	}
 }
 
@@ -116,13 +146,15 @@ func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyRe
 		return cmp.Compare(categoryRank(x.Category), categoryRank(y.Category))
 	})
 
-	changedUnits, needsReload, err := a.applyPhase(ctx, sorted, result)
+	changedUnits, changedSecrets, needsReload, err := a.applyPhase(ctx, sorted, result)
 	if err != nil {
 		return result, err
 	}
 	if a.dryRun {
 		return result, nil
 	}
+	hookRestartUnits := a.runSecretHooks(ctx, changedSecrets, changedUnits, result)
+	mergeUnitSet(changedUnits, hookRestartUnits)
 	return result, a.restartUnits(ctx, changedUnits, needsReload, result)
 }
 
@@ -135,8 +167,9 @@ func categoryRank(category string) int {
 }
 
 //nolint:cyclop // multiple early-continues are clearer than restructuring
-func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (changedUnits map[string]bool, needsReload bool, err error) {
+func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (changedUnits map[string]bool, changedSecrets map[string]bool, needsReload bool, err error) {
 	changedUnits = make(map[string]bool)
+	changedSecrets = make(map[string]bool)
 	for _, change := range sorted {
 		if change.Action == reconciler.ActionNoop {
 			continue
@@ -162,10 +195,13 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			}
 		}
 		if err := a.applyChange(ctx, change); err != nil {
-			return nil, false, fmt.Errorf("applying %s (%s): %w", change.DestPath, change.Action, err)
+			return nil, nil, false, fmt.Errorf("applying %s (%s): %w", change.DestPath, change.Action, err)
 		}
 		result.Applied++
 		if change.Category == "secret" {
+			if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
+				changedSecrets[reconciler.SecretNameFromPath(change.DestPath)] = true
+			}
 			continue
 		}
 		// All non-secret file changes (including deletes) require a daemon-reload.
@@ -182,7 +218,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			result.NeedsSelfRestart = true
 		}
 	}
-	return changedUnits, needsReload, nil
+	return changedUnits, changedSecrets, needsReload, nil
 }
 
 // unitNameForDelete returns the systemd unit name to stop before a file is removed.
@@ -215,9 +251,11 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]bool
 	if len(changedUnits) == 0 && !needsReload {
 		return nil
 	}
-	slog.Info("running systemd daemon-reload")
-	if err := a.systemd.DaemonReload(ctx); err != nil {
-		return fmt.Errorf("daemon-reload: %w", err)
+	if needsReload {
+		slog.Info("running systemd daemon-reload")
+		if err := a.systemd.DaemonReload(ctx); err != nil {
+			return fmt.Errorf("daemon-reload: %w", err)
+		}
 	}
 	for unit := range changedUnits {
 		if unit == "picolet.service" {
@@ -248,6 +286,48 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]bool
 		}()
 	}
 	return nil
+}
+
+func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets map[string]bool, restartScheduled map[string]bool, result *ApplyResult) map[string]bool {
+	if len(changedSecrets) == 0 || len(a.secretHooks) == 0 {
+		return nil
+	}
+	restartUnits := make(map[string]bool)
+	executed := make(map[string]bool)
+	for _, hook := range a.secretHooks {
+		if executed[hook.Name] || !hookMatchesChangedSecret(hook, changedSecrets) {
+			continue
+		}
+		executed[hook.Name] = true
+		restartSet := make(map[string]bool, len(restartScheduled)+len(restartUnits))
+		mergeUnitSet(restartSet, restartScheduled)
+		mergeUnitSet(restartSet, restartUnits)
+		shouldRestart, err := a.reloader.Run(ctx, hook, restartSet)
+		if err != nil {
+			result.Errors = append(result.Errors, err)
+		}
+		if shouldRestart {
+			restartUnits[hook.Unit] = true
+		}
+	}
+	return restartUnits
+}
+
+func hookMatchesChangedSecret(hook config.SecretHook, changedSecrets map[string]bool) bool {
+	for _, secret := range hook.Secrets {
+		if changedSecrets[secret] {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeUnitSet(dst, src map[string]bool) {
+	for k, v := range src {
+		if v {
+			dst[k] = true
+		}
+	}
 }
 
 func (a *Applier) applyCreateOrUpdate(ctx context.Context, change reconciler.Change) error {

@@ -180,10 +180,14 @@ services/<name>/
   systemd/
   secrets/
   manifests/
+  picolet.yml
 ```
 
 `manifests/` may contain nested directories. The other six category directories
 must contain files directly.
+
+`picolet.yml` is optional service metadata. It does not deploy a resource by
+itself; the bundle still needs at least one normal resource file.
 
 Strict bundle rules:
 
@@ -220,6 +224,45 @@ move the files without renaming them, and replace the per-category lists in
 legacy paths and a `services:` bundle resolves to the same on-disk destination,
 so Picolet fails the reconciliation with a destination collision. Remove the
 legacy paths in the same commit that introduces `services: [<name>]`.
+
+### Secret Change Hooks
+
+Service bundles can declare actions to run after assigned Podman secrets change.
+Put them in `services/<name>/picolet.yml` or `picolet.yml.tmpl`:
+
+```yaml
+secret_hooks:
+  - name: vmalert-rules
+    secrets: [vmalert_rules]
+    unit: vmalert.service
+    action: http
+    method: GET
+    url: "http://localhost:{{ index .Ports "vmalert" }}/vmalert/-/reload"
+    health_url: "http://localhost:{{ index .Ports "vmalert" }}/vmalert/health"
+```
+
+Hooks run after secret writes and before normal unit restarts. If multiple
+changed secrets match one hook, Picolet runs that hook once. If the unit is
+already scheduled for restart because its Quadlet changed, Picolet skips reload
+hooks for that unit.
+
+Supported actions:
+
+| Action | Required fields | Behavior |
+|--------|-----------------|----------|
+| `http` | `unit`, `secrets`, `url` | Send `method` (`POST` by default, `GET` also supported), then `GET health_url` when set |
+| `signal` | `unit`, `secrets`, `container` | Send `signal` (`HUP` by default) to the Podman container |
+| `restart` | `unit`, `secrets` | Restart the systemd unit after applying secrets |
+
+By default hook failures are non-fatal and keep the current process running:
+`on_failure: keep_running`. Use `on_failure: restart` only when a failed reload
+should fall back to a restart. Keeping the process running is usually safer for
+config reload APIs that reject invalid config while continuing with the old
+valid config.
+
+For services whose config is mounted through Podman secrets, verify that the
+running container sees replaced secret content on your target Podman version.
+If not, use `action: restart`.
 
 ### Templates
 

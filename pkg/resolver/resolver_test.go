@@ -335,6 +335,102 @@ data:
 	assert.Equal(t, resolvedOutputs(explicit.Files), resolvedOutputs(bundled.Files))
 }
 
+func TestResolveHostRendersServiceSecretHooks(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte(`
+images: {}
+ports:
+  app: 1234
+`)},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base: {}
+pi_types:
+  server:
+    services:
+      - app
+features: {}
+`)},
+		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: server
+pi_type: server
+features: []
+`)},
+		"services/app/containers/app.container": &fstest.MapFile{Data: []byte(`[Container]
+Image=app
+ContainerName=app
+`)},
+		"services/app/secrets/app_config.yml": &fstest.MapFile{Data: []byte("a: 1\n")},
+		"services/app/picolet.yml.tmpl": &fstest.MapFile{Data: []byte(`
+secret_hooks:
+  - name: app-reload
+    secrets: [app_config]
+    unit: app.service
+    action: http
+    method: GET
+    url: "http://localhost:{{ index .Ports "app" }}/-/reload"
+    health_url: "http://localhost:{{ index .Ports "app" }}/-/healthy"
+`)},
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "server")
+	require.NoError(t, err)
+	require.Len(t, resolved.SecretHooks, 1)
+	assert.Equal(t, config.SecretHook{
+		Name:      "app-reload",
+		Secrets:   []string{"app_config"},
+		Unit:      "app.service",
+		Action:    config.HookActionHTTP,
+		Method:    "GET",
+		URL:       "http://localhost:1234/-/reload",
+		HealthURL: "http://localhost:1234/-/healthy",
+		OnFailure: config.HookOnFailureKeepRunning,
+	}, resolved.SecretHooks[0])
+}
+
+func TestResolveHostRejectsInvalidSecretHook(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base: {}
+pi_types:
+  server:
+    services: [app]
+features: {}
+`)},
+		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: server
+pi_type: server
+features: []
+`)},
+		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
+		"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
+secret_hooks:
+  - name: broken
+    secrets: [app_config]
+    unit: app.service
+    action: http
+`)},
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	_, err = r.ResolveHost(t.Context(), "server")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "url is required")
+}
+
 func TestResolveHostBundleManifestTemplateRenders(t *testing.T) {
 	t.Parallel()
 

@@ -17,6 +17,7 @@ import (
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
+	"go.yaml.in/yaml/v4"
 
 	"github.com/schjan/picolet/pkg/config"
 	op "github.com/schjan/picolet/pkg/onepassword"
@@ -46,9 +47,10 @@ type ResolvedFile struct {
 
 // ResolvedHost is the complete desired state for a single host.
 type ResolvedHost struct {
-	Hostname string
-	Host     *config.HostConfig
-	Files    []ResolvedFile
+	Hostname    string
+	Host        *config.HostConfig
+	Files       []ResolvedFile
+	SecretHooks []config.SecretHook
 }
 
 // Config holds configuration for creating a Resolver.
@@ -130,7 +132,7 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 
 	// Fail fast on destination collisions before paying for template rendering
 	// or 1Password SDK calls. DestPath is knowable from the file layout alone.
-	fileSet, manifestRefs, err := r.expandAndValidate(r.cfg.Assignments.Resolve(host))
+	fileSet, manifestRefs, hookRefs, err := r.expandAndValidate(r.cfg.Assignments.Resolve(host))
 	if err != nil {
 		return nil, err
 	}
@@ -155,11 +157,16 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 	if err != nil {
 		return nil, err
 	}
+	hooks, err := r.buildSecretHooks(registry, tmplData, hookRefs)
+	if err != nil {
+		return nil, err
+	}
 
 	return &ResolvedHost{
-		Hostname: hostname,
-		Host:     host,
-		Files:    files,
+		Hostname:    hostname,
+		Host:        host,
+		Files:       files,
+		SecretHooks: hooks,
 	}, nil
 }
 
@@ -178,19 +185,19 @@ func (r *Resolver) ResolveAll(ctx context.Context) (map[string]*ResolvedHost, er
 
 // expandAndValidate expands service bundles into the file set and fails fast
 // if any two sources resolve to the same destination path.
-func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []manifestRef, error) {
-	merged, manifestRefs, err := r.expandFileSet(fileSet)
+func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []manifestRef, []hookRef, error) {
+	merged, manifestRefs, hookRefs, err := r.expandFileSet(fileSet)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	skeletons, err := r.buildFileSkeletons(merged, manifestRefs)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := detectCollisions(skeletons); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return merged, manifestRefs, nil
+	return merged, manifestRefs, hookRefs, nil
 }
 
 // expandFileSet returns a new ResolvedFileSet merged with any service bundles,
@@ -198,10 +205,10 @@ func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*config.R
 // not mutated. Manifests and Services are left nil: manifest paths flow through
 // manifestRefs, and Services is already flattened into the category slices.
 // Populating them would let a future caller miss bundle contents.
-func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []manifestRef, error) {
+func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []manifestRef, []hookRef, error) {
 	expanded, err := expandServiceBundles(r.fsys, fileSet.Services)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	merged := &config.ResolvedFileSet{
@@ -218,7 +225,7 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.Resol
 		manifestRefs = append(manifestRefs, newLegacyManifestRef(srcPath))
 	}
 	manifestRefs = append(manifestRefs, expanded.Manifests...)
-	return merged, uniqueManifestRefs(manifestRefs), nil
+	return merged, uniqueManifestRefs(manifestRefs), expanded.Hooks, nil
 }
 
 // newLegacyManifestRef constructs a manifestRef for a legacy (non-bundled)
@@ -487,6 +494,42 @@ func (r *Resolver) resolveManifestRef(registry *template.Template, tmplData *Tem
 		Content:  content,
 		Category: "manifest",
 	}, nil
+}
+
+func (r *Resolver) buildSecretHooks(registry *template.Template, tmplData *TemplateData, refs []hookRef) ([]config.SecretHook, error) {
+	var hooks []config.SecretHook
+	seen := make(map[string]string)
+	for _, ref := range refs {
+		fileHooks, err := r.resolveSecretHooksFile(registry, tmplData, ref)
+		if err != nil {
+			return nil, err
+		}
+		for _, hook := range fileHooks {
+			if prev, ok := seen[hook.Name]; ok {
+				return nil, fmt.Errorf("%s: duplicate secret hook name %q (already defined in %s)", ref.SrcPath, hook.Name, prev)
+			}
+			seen[hook.Name] = ref.SrcPath
+			hooks = append(hooks, hook)
+		}
+	}
+	return hooks, nil
+}
+
+func (r *Resolver) resolveSecretHooksFile(registry *template.Template, tmplData *TemplateData, ref hookRef) ([]config.SecretHook, error) {
+	content, err := r.renderOrRead(registry, tmplData, ref.SrcPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving secret hooks %s: %w", ref.SrcPath, err)
+	}
+	var file config.SecretHooksFile
+	if err := yaml.Load([]byte(content), &file, yaml.WithKnownFields()); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", ref.SrcPath, err)
+	}
+	for i := range file.SecretHooks {
+		if err := file.SecretHooks[i].Normalize(); err != nil {
+			return nil, fmt.Errorf("%s: secret_hooks[%d]: %w", ref.SrcPath, i, err)
+		}
+	}
+	return file.SecretHooks, nil
 }
 
 func (r *Resolver) resolveSecret(registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {

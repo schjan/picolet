@@ -615,6 +615,7 @@ func applyWithRollback(
 	changeset *reconciler.Changeset,
 	systemd applier.SystemdManager,
 	podman applier.PodmanClient,
+	hooks []config.SecretHook,
 ) (*applier.ApplyResult, error) {
 	writer := applier.NewAtomicFileWriter()
 	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile)
@@ -622,7 +623,7 @@ func applyWithRollback(
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
-	app := applier.New(systemd, podman, writer, false)
+	app := applier.New(systemd, podman, writer, false, applier.WithSecretHooks(hooks))
 	result, err := app.Apply(ctx, changeset)
 	if err != nil {
 		slog.Error("apply failed, rolling back", "error", err)
@@ -657,10 +658,11 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		return err
 	}
 
-	files, err := agent.LoadAndResolve(ctx, effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)
+	resolved, err := agent.LoadAndResolveHost(ctx, effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)
 	if err != nil {
 		return err
 	}
+	files := resolved.Files
 
 	store, err := stateStoreFromConfig(cfg)
 	if err != nil {
@@ -698,7 +700,7 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		return fmt.Errorf("connecting to podman: %w", err)
 	}
 
-	result, err := applyWithRollback(ctx, changeset, systemd, podman)
+	result, err := applyWithRollback(ctx, changeset, systemd, podman, resolved.SecretHooks)
 	if err != nil {
 		return err
 	}

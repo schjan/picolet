@@ -39,6 +39,11 @@ type manifestRef struct {
 	LogicalPath string
 }
 
+type hookRef struct {
+	Service string
+	SrcPath string
+}
+
 type expandedBundles struct {
 	Networks   []string
 	Systemd    []string
@@ -47,6 +52,7 @@ type expandedBundles struct {
 	Kube       []string
 	Secrets    []string
 	Manifests  []manifestRef
+	Hooks      []hookRef
 }
 
 // sortedUnique returns a sorted copy with duplicates removed.
@@ -96,6 +102,12 @@ func expandServiceBundles(fsys fs.FS, services []string) (*expandedBundles, erro
 		}
 		return cmp.Compare(a.SrcPath, b.SrcPath)
 	})
+	slices.SortFunc(expanded.Hooks, func(a, b hookRef) int {
+		if diff := cmp.Compare(a.Service, b.Service); diff != 0 {
+			return diff
+		}
+		return cmp.Compare(a.SrcPath, b.SrcPath)
+	})
 
 	return expanded, errors.Join(errs...)
 }
@@ -115,6 +127,9 @@ func expandServiceBundle(fsys fs.FS, service string) (*expandedBundles, error) {
 
 	validSubdirs, rootErrs := collectBundleSubdirs(root, rootEntries)
 	errs = append(errs, rootErrs...)
+	hookRefs, hookErrs := collectBundleHookRefs(root, service, rootEntries)
+	errs = append(errs, hookErrs...)
+	bundle.Hooks = append(bundle.Hooks, hookRefs...)
 
 	for _, subdir := range validSubdirs {
 		if err := bundle.readSubdir(fsys, service, subdir); err != nil {
@@ -160,6 +175,9 @@ func collectBundleSubdirs(root string, entries []fs.DirEntry) ([]bundleSubdir, [
 	)
 
 	for _, entry := range entries {
+		if isHookMetadataFile(entry.Name()) && !entry.IsDir() {
+			continue
+		}
 		subdir, ok := bundleSubdirsByName[entry.Name()]
 		if !ok {
 			errs = append(errs, fmt.Errorf("%s/%s: unknown entry", root, entry.Name()))
@@ -175,6 +193,33 @@ func collectBundleSubdirs(root string, entries []fs.DirEntry) ([]bundleSubdir, [
 	return valid, errs
 }
 
+func collectBundleHookRefs(root, service string, entries []fs.DirEntry) ([]hookRef, []error) {
+	var (
+		refs []hookRef
+		errs []error
+	)
+	for _, entry := range entries {
+		if !isHookMetadataFile(entry.Name()) {
+			continue
+		}
+		path := path.Join(root, entry.Name())
+		if entry.IsDir() {
+			errs = append(errs, fmt.Errorf("%s: expected regular file", path))
+			continue
+		}
+		if !entry.Type().IsRegular() {
+			errs = append(errs, fmt.Errorf("%s: expected regular file", path))
+			continue
+		}
+		refs = append(refs, hookRef{Service: service, SrcPath: path})
+	}
+	return refs, errs
+}
+
+func isHookMetadataFile(name string) bool {
+	return name == "picolet.yml" || name == "picolet.yml.tmpl"
+}
+
 func (b *expandedBundles) append(other *expandedBundles) {
 	b.Networks = append(b.Networks, other.Networks...)
 	b.Systemd = append(b.Systemd, other.Systemd...)
@@ -183,6 +228,7 @@ func (b *expandedBundles) append(other *expandedBundles) {
 	b.Kube = append(b.Kube, other.Kube...)
 	b.Secrets = append(b.Secrets, other.Secrets...)
 	b.Manifests = append(b.Manifests, other.Manifests...)
+	b.Hooks = append(b.Hooks, other.Hooks...)
 }
 
 func (b *expandedBundles) addPath(category, srcPath string) error {
