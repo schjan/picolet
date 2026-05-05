@@ -305,6 +305,8 @@ func TestApplyHTTPSecretHookFailureKeepsRunningByDefault(t *testing.T) {
 	assert.Contains(t, result.Errors[0].Error(), "reload request")
 	require.Len(t, result.RetryableErrors, 1)
 	assert.Contains(t, result.RetryableErrors[0].Error(), "reload request")
+	assert.Equal(t, []string{"app-reload"}, result.PendingHookNames)
+	assert.Empty(t, result.FallbackRestartedUnits)
 	assert.Empty(t, result.RestartedUnits)
 }
 
@@ -513,6 +515,10 @@ func TestApplyDeduplicatesHTTPSecretHooksByTarget(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, result.Errors)
 	assert.Equal(t, int32(1), reloads.Load())
+	// Both hook names must appear in AttemptedHookNames so a stale pending
+	// entry for the dedup-skipped hook gets cleared by mergePendingHooks
+	// instead of being carried forward forever.
+	assert.ElementsMatch(t, []string{"app-config-reload", "app-rules-reload"}, result.AttemptedHookNames)
 }
 
 func TestApplyDoesNotDeduplicateHTTPHooksAcrossUnits(t *testing.T) {
@@ -683,37 +689,6 @@ func TestApplyMarksFallbackRestartAsHookFallbackError(t *testing.T) {
 	assert.Empty(t, result.RetryableErrors)
 	assert.Empty(t, result.PendingHookNames)
 	assert.Equal(t, []string{"app.service"}, result.RestartedUnits)
-}
-
-func TestApplyKeepRunningHookFailureSetsPendingHookNames(t *testing.T) {
-	t.Parallel()
-	client := testHTTPClient(func(_ *http.Request) int { return http.StatusInternalServerError })
-
-	sys := appliermocks.NewMockSystemdManager(t)
-	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
-	pod := appliermocks.NewMockPodmanClient(t)
-	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
-	fw := newMemFileWriter()
-	hook := config.SecretHook{
-		Name:      "app-reload",
-		Secrets:   []string{"app_config"},
-		Unit:      "app.service",
-		Action:    config.HookActionHTTP,
-		Method:    http.MethodPost,
-		URL:       "http://example.test/reload",
-		OnFailure: config.HookOnFailureKeepRunning,
-	}
-	reloader := applier.NewSecretHookReloader(sys, pod).WithHTTPClient(client).WithHealthDelay(0)
-	a := applier.New(sys, pod, fw, false, applier.WithSecretHooks([]config.SecretHook{hook}), applier.WithSecretHookReloader(reloader))
-
-	result, err := a.Apply(context.Background(), &reconciler.Changeset{
-		Changes: []reconciler.Change{{DestPath: "secret:app_config", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"}},
-		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
-	})
-	require.NoError(t, err)
-	assert.Len(t, result.RetryableErrors, 1)
-	assert.Equal(t, []string{"app-reload"}, result.PendingHookNames)
-	assert.Empty(t, result.FallbackRestartedUnits)
 }
 
 func TestRunPendingHooksRetriesNamedHooks(t *testing.T) {

@@ -756,9 +756,8 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	}
 	if len(result.RetryableErrors) > 0 {
 		logNonRetryableApplyErrors(result)
-		joined := errors.Join(result.RetryableErrors...)
-		slog.Warn("apply incomplete, hooks will retry on next tick", "error", joined)
-		return result, fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, joined)
+		// tick() logs the user-facing "apply incomplete" message with sha + duration.
+		return result, fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(result.RetryableErrors...))
 	}
 
 	slog.Info("apply complete",
@@ -771,6 +770,9 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 }
 
 func logNonRetryableApplyErrors(result *applier.ApplyResult) {
+	if len(result.Errors) == 0 {
+		return
+	}
 	// runSecretHooks appends the same error pointer to both Errors and
 	// RetryableErrors, so pointer-identity lookup is sufficient and avoids the
 	// quadratic errors.Is walk per error.

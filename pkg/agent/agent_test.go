@@ -1844,11 +1844,11 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 	assert.Equal(t, 0, loaded.FailedCount, "FailedCount must not be touched on successful retry")
 }
 
-// TestTickPreservesUnrelatedPendingHookAcrossApplyTick guards against a regression
-// where a previously-pending hook for one secret is silently dropped when an
-// unrelated change triggers a non-noop apply. mergePendingHooks must keep the
-// previously-pending name because its secret was not in this tick's diff.
-func TestTickPreservesUnrelatedPendingHookAcrossApplyTick(t *testing.T) {
+// TestTickDropsStalePendingHookNameOnRetry exercises the retryPendingHooks path
+// (empty diff, non-empty PendingSecretHooks) for a name that no longer matches
+// any hook in the resolved config. RunPendingHooks must mark the name attempted
+// so mergePendingHooks drops it and stale entries don't accumulate.
+func TestTickDropsStalePendingHookNameOnRetry(t *testing.T) {
 	t.Parallel()
 	bareDir := initTestRepoWithHook(t)
 	repoDir := filepath.Join(t.TempDir(), "clone")
@@ -1900,10 +1900,6 @@ func TestTickPreservesUnrelatedPendingHookAcrossApplyTick(t *testing.T) {
 
 	loaded, err := store.Load()
 	require.NoError(t, err)
-	// The diff is empty AND PendingSecretHooks is non-empty, so the noop gate is
-	// bypassed and retryPendingHooks is called. The unknown hook name is dropped
-	// (RunPendingHooks treats it as removed-from-config) — ensuring stale entries
-	// don't accumulate forever.
 	assert.Empty(t, loaded.PendingSecretHooks, "stale hook name from a removed config must be dropped after retry")
 }
 

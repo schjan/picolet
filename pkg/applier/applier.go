@@ -334,8 +334,15 @@ func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets map[string]
 	restartUnits := make(map[string]bool)
 	executed := make(map[string]bool)
 	for _, hook := range a.secretHooks {
+		if !hookMatchesChangedSecret(hook, changedSecrets) {
+			continue
+		}
 		key := hookExecutionKey(hook)
-		if executed[key] || !hookMatchesChangedSecret(hook, changedSecrets) {
+		if executed[key] {
+			// Another hook with the same dedup key already ran this tick —
+			// its outcome covers this hook too. Mark attempted so a stale
+			// pending entry for this hook gets cleared by mergePendingHooks.
+			result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
 			continue
 		}
 		executed[key] = true
