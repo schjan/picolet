@@ -74,6 +74,13 @@ type FileWriter interface {
 	Remove(path string) error
 }
 
+// HookOutcome records the result of a single hook execution for metrics.
+type HookOutcome struct {
+	Name   string
+	Action string
+	Result string // "success", "failed", "fallback_restart", "skipped"
+}
+
 // ApplyResult contains the outcome of an apply operation.
 type ApplyResult struct {
 	Applied         int
@@ -98,6 +105,9 @@ type ApplyResult struct {
 	// hooks pending from a previous tick whose secret did not change now must
 	// stay pending; hooks attempted and not in PendingHookNames are cleared.
 	AttemptedHookNames []string
+
+	// HookOutcomes records per-hook execution results for metrics.
+	HookOutcomes []HookOutcome
 }
 
 // Option configures an Applier.
@@ -329,6 +339,8 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]stru
 }
 
 func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets, restartScheduled map[string]struct{}, result *ApplyResult) map[string]struct{} {
+	// Early return leaves AttemptedHookNames nil, which tells mergePendingHooks
+	// that no hooks ran this tick — preserving any existing pending entries.
 	if len(changedSecrets) == 0 || len(a.secretHooks) == 0 {
 		return nil
 	}
@@ -370,11 +382,15 @@ func dispatchHookResult(hook config.SecretHook, shouldRestart bool, err error, r
 		if shouldRestart {
 			result.Errors = append(result.Errors, &HookFallbackError{Unit: hook.Unit, Err: err})
 			result.FallbackRestartedUnits = append(result.FallbackRestartedUnits, hook.Unit)
+			result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "fallback_restart"})
 		} else {
 			result.Errors = append(result.Errors, err)
 			result.RetryableErrors = append(result.RetryableErrors, err)
 			result.PendingHookNames = append(result.PendingHookNames, hook.Name)
+			result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "failed"})
 		}
+	} else {
+		result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "success"})
 	}
 	if shouldRestart {
 		restartUnits[hook.Unit] = struct{}{}
@@ -430,6 +446,10 @@ func (a *Applier) restartFallbackUnits(ctx context.Context, restartUnits map[str
 	}
 }
 
+// hookExecutionKey produces a deduplication key for a hook. Hooks with
+// identical keys represent the same side-effect (e.g., same HTTP reload
+// endpoint) and only need to run once per tick. The \x00 separator is safe
+// because none of the fields (URLs, unit names, signals) can contain null bytes.
 func hookExecutionKey(hook config.SecretHook) string {
 	switch hook.Action {
 	case config.HookActionHTTP:

@@ -384,14 +384,15 @@ secret_hooks:
 	require.NoError(t, err)
 	require.Len(t, resolved.SecretHooks, 1)
 	assert.Equal(t, config.SecretHook{
-		Name:      "app-reload",
-		Secrets:   []string{"app_config"},
-		Unit:      "app.service",
-		Action:    config.HookActionHTTP,
-		Method:    "GET",
-		URL:       "http://localhost:1234/-/reload",
-		HealthURL: "http://localhost:1234/-/healthy",
-		OnFailure: config.HookOnFailureKeepRunning,
+		Name:       "app-reload",
+		Secrets:    []string{"app_config"},
+		Unit:       "app.service",
+		Action:     config.HookActionHTTP,
+		Method:     "GET",
+		URL:        "http://localhost:1234/-/reload",
+		HealthURL:  "http://localhost:1234/-/healthy",
+		OnFailure:  config.HookOnFailureKeepRunning,
+		MaxRetries: config.DefaultMaxRetries,
 	}, resolved.SecretHooks[0])
 }
 

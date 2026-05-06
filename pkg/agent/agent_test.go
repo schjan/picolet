@@ -228,7 +228,7 @@ features: []
 
 	loaded, err := store.Load()
 	require.NoError(t, err)
-	assert.Equal(t, []string{"app-sighup"}, loaded.PendingSecretHooks, "failed hook name persisted for retry")
+	assert.Equal(t, map[string]int{"app-sighup": 1}, loaded.PendingSecretHooks, "failed hook name persisted for retry")
 	assert.NotEmpty(t, loaded.ManagedFiles, "successfully-applied secret recorded so next tick does not re-write it")
 	// Files applied successfully — mark the SHA so gitpoll stops reporting
 	// "Changed" on every retry tick (which would otherwise produce duplicate
@@ -245,7 +245,7 @@ func TestRetryPendingHooksClearsListOnSuccess(t *testing.T) {
 	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 
 	st := state.NewState()
-	st.PendingSecretHooks = []string{"app-sighup"}
+	st.PendingSecretHooks = map[string]int{"app-sighup": 1}
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	store := state.NewStore(statePath)
 	require.NoError(t, store.Save(st))
@@ -276,52 +276,52 @@ func TestMergePendingHooksKeepsUnattemptedAndAddsFailures(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		old    []string
+		old    map[string]int
 		result *applier.ApplyResult
-		want   []string
+		want   map[string]int
 	}{
 		{
 			name:   "attempted+succeeded removed",
-			old:    []string{"hook-a"},
+			old:    map[string]int{"hook-a": 1},
 			result: &applier.ApplyResult{AttemptedHookNames: []string{"hook-a"}},
 			want:   nil,
 		},
 		{
-			name:   "empty inputs return nil (not [] — omitempty must omit)",
+			name:   "empty inputs return nil (not map{} — omitempty must omit)",
 			old:    nil,
 			result: &applier.ApplyResult{},
 			want:   nil,
 		},
 		{
-			name: "attempted+failed_keep_running stays",
-			old:  []string{"hook-a"},
+			name: "attempted+failed_keep_running increments count",
+			old:  map[string]int{"hook-a": 2},
 			result: &applier.ApplyResult{
 				AttemptedHookNames: []string{"hook-a"},
 				PendingHookNames:   []string{"hook-a"},
 			},
-			want: []string{"hook-a"},
+			want: map[string]int{"hook-a": 3},
 		},
 		{
 			name: "previously-pending hook for unrelated secret stays",
-			old:  []string{"hook-a", "hook-b"},
+			old:  map[string]int{"hook-a": 1, "hook-b": 1},
 			result: &applier.ApplyResult{
 				AttemptedHookNames: []string{"hook-b"}, // only hook-b's secret changed
 				PendingHookNames:   nil,                // hook-b succeeded
 			},
-			want: []string{"hook-a"},
+			want: map[string]int{"hook-a": 1},
 		},
 		{
 			name: "new failure added even when not previously pending",
-			old:  []string{},
+			old:  map[string]int{},
 			result: &applier.ApplyResult{
 				AttemptedHookNames: []string{"hook-c"},
 				PendingHookNames:   []string{"hook-c"},
 			},
-			want: []string{"hook-c"},
+			want: map[string]int{"hook-c": 1},
 		},
 		{
 			name:   "attempted+fallback_restart removed (restart already scheduled)",
-			old:    []string{"hook-a"},
+			old:    map[string]int{"hook-a": 1},
 			result: &applier.ApplyResult{AttemptedHookNames: []string{"hook-a"}, FallbackRestartedUnits: []string{"app.service"}},
 			want:   nil,
 		},
@@ -345,7 +345,7 @@ func TestRetryPendingHooksDropsStaleNamesAndKeepsFailures(t *testing.T) {
 	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 
 	st := state.NewState()
-	st.PendingSecretHooks = []string{"app-sighup", "removed-hook"}
+	st.PendingSecretHooks = map[string]int{"app-sighup": 1, "removed-hook": 3}
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	store := state.NewStore(statePath)
 	require.NoError(t, store.Save(st))
@@ -368,7 +368,7 @@ func TestRetryPendingHooksDropsStaleNamesAndKeepsFailures(t *testing.T) {
 
 	loaded, err := store.Load()
 	require.NoError(t, err)
-	assert.Equal(t, []string{"app-sighup"}, loaded.PendingSecretHooks, "removed-hook is dropped, app-sighup remains pending")
+	assert.Equal(t, map[string]int{"app-sighup": 2}, loaded.PendingSecretHooks, "removed-hook is dropped, app-sighup remains pending with incremented count")
 }
 
 func TestAcquireLockContentionAndRelease(t *testing.T) {
@@ -1836,7 +1836,7 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 	st := state.NewState()
 	UpdateState(st, reconciler.Diff(files, st))
 	st.MarkApplied(initial.HeadSHA)
-	st.PendingSecretHooks = []string{"app-sighup"}
+	st.PendingSecretHooks = map[string]int{"app-sighup": 1}
 	require.NoError(t, store.Save(st))
 
 	// The reason this tick ran was a pending-hook retry, not an OP refresh.
@@ -1905,7 +1905,7 @@ func TestTickDropsStalePendingHookNameOnRetry(t *testing.T) {
 	st := state.NewState()
 	UpdateState(st, reconciler.Diff(files, st))
 	st.MarkApplied(initial.HeadSHA)
-	st.PendingSecretHooks = []string{"hook-for-other-secret-not-in-this-bundle"}
+	st.PendingSecretHooks = map[string]int{"hook-for-other-secret-not-in-this-bundle": 1}
 	require.NoError(t, store.Save(st))
 
 	healthChecker := health.New(sys)
@@ -1963,7 +1963,7 @@ func TestTickDoesNotIncrementFailedCountOnRetryableHookError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, loaded.FailedCount, "retryable hook errors must not poison FailedCount")
 	assert.Empty(t, loaded.FailedSHA, "FailedSHA must not be set for retryable hook errors")
-	assert.Equal(t, []string{"app-sighup"}, loaded.PendingSecretHooks)
+	assert.Equal(t, map[string]int{"app-sighup": 1}, loaded.PendingSecretHooks)
 	assert.NotEmpty(t, loaded.ManagedFiles, "successfully-applied secret must be recorded in state")
 	assert.NotEmpty(t, loaded.AppliedSHA, "files were applied — SHA must be marked so gitpoll quiets between retry ticks")
 }
