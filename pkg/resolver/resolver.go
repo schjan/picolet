@@ -135,7 +135,7 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 
 	// Fail fast on destination collisions before paying for template rendering
 	// or 1Password SDK calls. DestPath is knowable from the file layout alone.
-	fileSet, manifestRefs, hookRefs, err := r.expandAndValidate(r.cfg.Assignments.Resolve(host))
+	expanded, err := r.expandAndValidate(r.cfg.Assignments.Resolve(host))
 	if err != nil {
 		return nil, err
 	}
@@ -144,23 +144,23 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 	// Phase 1 (collect): render all templates to discover readOpSecret calls (output discarded).
 	// Phase 2 (resolve): batch-resolve collected refs, then render templates for real.
 	if opCache != nil {
-		r.collectOpTemplateRefs(registry, tmplData, fileSet, manifestRefs, hookRefs)
+		r.collectOpTemplateRefs(registry, tmplData, expanded.FileSet, expanded.ManifestRefs, expanded.HookRefs)
 		if err := opCache.Resolve(ctx); err != nil {
 			return nil, err
 		}
 	}
 
 	// Batch-resolve op:// secrets in a single SDK call.
-	opResolved, err := r.batchResolveOpSecrets(ctx, fileSet.Secrets)
+	opResolved, err := r.batchResolveOpSecrets(ctx, expanded.FileSet.Secrets)
 	if err != nil {
 		return nil, err
 	}
 
-	files, err := r.buildFiles(registry, tmplData, fileSet, manifestRefs, opResolved)
+	files, err := r.buildFiles(registry, tmplData, expanded.FileSet, expanded.ManifestRefs, opResolved)
 	if err != nil {
 		return nil, err
 	}
-	hooks, err := r.buildHooks(registry, tmplData, hookRefs)
+	hooks, err := r.buildHooks(registry, tmplData, expanded.HookRefs)
 	if err != nil {
 		return nil, err
 	}
@@ -186,21 +186,32 @@ func (r *Resolver) ResolveAll(ctx context.Context) (map[string]*ResolvedHost, er
 	return results, nil
 }
 
+// expandedResult holds the outputs of bundle expansion and validation.
+type expandedResult struct {
+	FileSet      *config.ResolvedFileSet
+	ManifestRefs []manifestRef
+	HookRefs     []hookRef
+}
+
 // expandAndValidate expands service bundles into the file set and fails fast
 // if any two sources resolve to the same destination path.
-func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []manifestRef, []hookRef, error) {
+func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*expandedResult, error) {
 	merged, manifestRefs, hookRefs, err := r.expandFileSet(fileSet)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	skeletons, err := r.buildFileSkeletons(merged, manifestRefs)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	if err := detectCollisions(skeletons); err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
-	return merged, manifestRefs, hookRefs, nil
+	return &expandedResult{
+		FileSet:      merged,
+		ManifestRefs: manifestRefs,
+		HookRefs:     hookRefs,
+	}, nil
 }
 
 // expandFileSet returns a new ResolvedFileSet merged with any service bundles,
