@@ -699,7 +699,7 @@ func mergePendingHooks(old map[string]int, result *applier.ApplyResult) map[stri
 // map. Returns ErrApplyIncomplete when hooks still fail under keep_running.
 func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.ResolvedHost, st *state.State, store *state.Store, changeset *reconciler.Changeset, opCount int) (*ReconcileResult, error) {
 	pendingNames := pendingHookNames(st.PendingHooks)
-	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, applier.WithHooks(resolved.Hooks))
+	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, resolved.Hooks)
 	result := app.RunPendingHooks(ctx, pendingNames)
 
 	recordHookMetrics(result)
@@ -780,7 +780,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
-	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, applier.WithHooks(hooks))
+	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, hooks)
 	result, err := app.Apply(ctx, changeset)
 	if err != nil {
 		slog.Error("apply failed, rolling back", "error", err)

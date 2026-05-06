@@ -155,13 +155,14 @@ type Applier struct {
 	reloader *HookReloader
 }
 
-// New creates a new Applier.
-func New(systemd SystemdManager, podman PodmanClient, writer FileWriter, dryRun bool, opts ...Option) *Applier {
+// New creates a new Applier. Hooks may be nil if no change-triggered actions are needed.
+func New(systemd SystemdManager, podman PodmanClient, writer FileWriter, dryRun bool, hooks []config.Hook, opts ...Option) *Applier {
 	a := &Applier{
 		systemd: systemd,
 		podman:  podman,
 		writer:  writer,
 		dryRun:  dryRun,
+		hooks:   hooks,
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -170,13 +171,6 @@ func New(systemd SystemdManager, podman PodmanClient, writer FileWriter, dryRun 
 		a.reloader = NewHookReloader(systemd, podman)
 	}
 	return a
-}
-
-// WithHooks configures hooks to execute after matching secrets or manifests change.
-func WithHooks(hooks []config.Hook) Option {
-	return func(a *Applier) {
-		a.hooks = slices.Clone(hooks)
-	}
 }
 
 // WithHookReloader overrides hook execution, primarily for tests.

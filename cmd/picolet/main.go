@@ -623,7 +623,7 @@ func applyWithRollback(
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
-	app := applier.New(systemd, podman, writer, false, applier.WithHooks(hooks))
+	app := applier.New(systemd, podman, writer, false, hooks)
 	result, err := app.Apply(ctx, changeset)
 	if err != nil {
 		slog.Error("apply failed, rolling back", "error", err)
@@ -755,7 +755,7 @@ func runDown(ctx context.Context, configPath string) error { //nolint:cyclop // 
 	}
 
 	changeset := reconciler.Diff(nil, st)
-	app := applier.New(systemd, podman, applier.NewAtomicFileWriter(), false)
+	app := applier.New(systemd, podman, applier.NewAtomicFileWriter(), false, nil)
 	result, err := app.Apply(ctx, changeset)
 	if err != nil {
 		return fmt.Errorf("teardown failed: %w", err)
