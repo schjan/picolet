@@ -63,6 +63,14 @@ type Config struct {
 	SecretReader   SecretReader
 	OpSecretReader OpSecretReader
 	Rootless       bool
+
+	// QuadletDir, SystemdDir, and DataDir override the defaults computed by
+	// ResolveDirs. Empty fields fall back to the default for the given
+	// Rootless mode. Used by tests to isolate destination paths from a
+	// shared host filesystem; production callers leave them empty.
+	QuadletDir string
+	SystemdDir string
+	DataDir    string
 }
 
 // Resolver renders templates and resolves the desired state for hosts.
@@ -87,6 +95,15 @@ func New(rc Config) (*Resolver, error) {
 	quadletDir, systemdDir, dataDir, err := ResolveDirs(rc.Rootless)
 	if err != nil {
 		return nil, err
+	}
+	if rc.QuadletDir != "" {
+		quadletDir = rc.QuadletDir
+	}
+	if rc.SystemdDir != "" {
+		systemdDir = rc.SystemdDir
+	}
+	if rc.DataDir != "" {
+		dataDir = rc.DataDir
 	}
 	return &Resolver{
 		fsys:           rc.FS,

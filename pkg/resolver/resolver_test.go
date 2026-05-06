@@ -246,6 +246,66 @@ func TestRootlessPaths(t *testing.T) {
 	assert.Equal(t, filepath.Join(home, ".local", "share", "picolet", "manifests", "app", "deployment.yml"), manifest.DestPath)
 }
 
+// TestNewConfigDirOverrides verifies that non-empty Config.QuadletDir and
+// Config.DataDir take precedence over ResolveDirs defaults. Empty fields
+// (i.e. SystemdDir here, plus the "all empty" case) are exercised by
+// TestRootlessPaths.
+//
+// Fixture dependency: testdata/example-fleet must assign a .container file
+// and a manifest under "manifests/" to the "test-host" host. Adjust the
+// suffix matches below if that ever changes.
+func TestNewConfigDirOverrides(t *testing.T) {
+	t.Parallel()
+	fsys := newTestFS()
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+
+	const customQuadlet = "/custom/quadlet"
+	const customData = "/custom/data"
+
+	r, err := New(Config{
+		FS:         fsys,
+		Config:     cfg,
+		Rootless:   true,
+		QuadletDir: customQuadlet,
+		DataDir:    customData,
+		// SystemdDir intentionally left empty — falls back to ResolveDirs.
+	})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
+	require.NoError(t, err)
+
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	defaultSystemdDir := filepath.Join(home, ".config", "systemd", "user")
+
+	var sawContainer, sawManifest, sawSystemd bool
+	for _, f := range resolved.Files {
+		switch f.Category {
+		case "container", "network", "volume", "kube":
+			assert.True(t,
+				strings.HasPrefix(f.DestPath, customQuadlet+string(filepath.Separator)),
+				"%s file %s must live under QuadletDir override", f.Category, f.DestPath)
+			sawContainer = true
+		case "manifest":
+			assert.True(t,
+				strings.HasPrefix(f.DestPath, customData+string(filepath.Separator)),
+				"manifest file %s must live under DataDir override", f.DestPath)
+			sawManifest = true
+		case "systemd":
+			assert.True(t,
+				strings.HasPrefix(f.DestPath, defaultSystemdDir+string(filepath.Separator)),
+				"systemd file %s must fall back to default SystemdDir", f.DestPath)
+			sawSystemd = true
+		}
+	}
+	assert.True(t, sawContainer, "fixture must produce at least one quadlet file")
+	assert.True(t, sawManifest, "fixture must produce at least one manifest file")
+	// sawSystemd is best-effort: not every fixture host has a systemd-category file.
+	_ = sawSystemd
+}
+
 //nolint:funlen // fixture setup is clearer inline for equivalence coverage
 func TestResolveHostBundleEquivalentToExplicit(t *testing.T) {
 	t.Parallel()
