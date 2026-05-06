@@ -535,6 +535,121 @@ hooks:
 	require.ErrorContains(t, err, `service "api"`)
 }
 
+func TestIsQuadletUnit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		unit string
+		want bool
+	}{
+		{"foo.container", true},
+		{"foo.network", true},
+		{"foo.volume", true},
+		{"foo.kube", true},
+		{"foo.pod", true},
+		{"foo.image", true},
+		{"foo.build", true},
+		{"foo.artifact", true},
+		{"foo.service", false},
+		{"foo.timer", false},
+		{"", false},
+		{"container", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.unit, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isQuadletUnit(tt.unit))
+		})
+	}
+}
+
+func TestResolveHostHookUnitResolution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		hookUnit string
+		wantUnit string
+	}{
+		{
+			name:     "quadlet container resolves to service name",
+			hookUnit: "app.container",
+			wantUnit: "app.service",
+		},
+		{
+			name:     "explicit service passes through unchanged",
+			hookUnit: "app.service",
+			wantUnit: "app.service",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fsys := fstest.MapFS{
+				"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+				"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\npi_types:\n  server:\n    services: [app]\nfeatures: {}\n")},
+				"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: server
+pi_type: server
+features: []
+`)},
+				"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\nContainerName=app\n")},
+				"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
+hooks:
+  - name: app-reload
+    secrets: [cfg]
+    unit: ` + tt.hookUnit + `
+    action: restart
+`)},
+			}
+
+			cfg, err := config.LoadAll(fsys)
+			require.NoError(t, err)
+			r, err := New(Config{FS: fsys, Config: cfg})
+			require.NoError(t, err)
+
+			resolved, err := r.ResolveHost(t.Context(), "server")
+			require.NoError(t, err)
+			require.Len(t, resolved.Hooks, 1)
+			assert.Equal(t, tt.wantUnit, resolved.Hooks[0].Unit)
+		})
+	}
+}
+
+func TestResolveHostHookUnitQuadletNotFoundErrors(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\npi_types:\n  server:\n    services: [app]\nfeatures: {}\n")},
+		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: server
+pi_type: server
+features: []
+`)},
+		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\nContainerName=app\n")},
+		"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
+hooks:
+  - name: app-reload
+    secrets: [cfg]
+    unit: nonexistent.container
+    action: restart
+`)},
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	_, err = r.ResolveHost(t.Context(), "server")
+	require.ErrorContains(t, err, `unit "nonexistent.container"`)
+	require.ErrorContains(t, err, "no matching quadlet file found")
+}
+
 func TestResolveHostBundleManifestTemplateRenders(t *testing.T) {
 	t.Parallel()
 

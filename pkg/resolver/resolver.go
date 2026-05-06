@@ -160,7 +160,7 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 	if err != nil {
 		return nil, err
 	}
-	hooks, err := r.buildHooks(registry, tmplData, expanded.HookRefs)
+	hooks, err := r.buildHooks(registry, tmplData, expanded.HookRefs, files)
 	if err != nil {
 		return nil, err
 	}
@@ -492,6 +492,26 @@ func unitServiceName(unit *parser.UnitFile) string {
 	return name + ".service"
 }
 
+// resolveHookQuadletUnit finds the ResolvedFile matching the given Quadlet filename
+// and returns its ServiceName (computed by the Podman library via GetUnitServiceName).
+// Returns an error if no matching file exists in the resolved set.
+func resolveHookQuadletUnit(quadletName string, files []ResolvedFile) (string, error) {
+	for i := range files {
+		if destFilename(files[i].SrcPath) == quadletName && files[i].ServiceName != "" {
+			return files[i].ServiceName, nil
+		}
+	}
+	return "", fmt.Errorf("unit %q: no matching quadlet file found in assigned bundles", quadletName)
+}
+
+// isQuadletUnit reports whether the given unit name has a Quadlet file extension,
+// indicating it needs resolution to its generated systemd service name.
+func isQuadletUnit(unit string) bool {
+	ext := filepath.Ext(unit)
+	_, ok := quadlet.SupportedExtensions[ext]
+	return ok
+}
+
 // destFilename returns the base filename for a source path, stripping any .tmpl suffix.
 func destFilename(srcPath string) string {
 	return strings.TrimSuffix(path.Base(srcPath), ".tmpl")
@@ -521,7 +541,7 @@ func manifestRelPath(logicalPath string) string {
 	return logicalPath
 }
 
-func (r *Resolver) buildHooks(registry *template.Template, tmplData *TemplateData, refs []hookRef) ([]config.Hook, error) {
+func (r *Resolver) buildHooks(registry *template.Template, tmplData *TemplateData, refs []hookRef, files []ResolvedFile) ([]config.Hook, error) {
 	type hookOrigin struct {
 		service string
 		path    string
@@ -529,7 +549,7 @@ func (r *Resolver) buildHooks(registry *template.Template, tmplData *TemplateDat
 	var hooks []config.Hook
 	seen := make(map[string]hookOrigin)
 	for _, ref := range refs {
-		fileHooks, err := r.resolveHooksFile(registry, tmplData, ref)
+		fileHooks, err := r.resolveHooksFile(registry, tmplData, ref, files)
 		if err != nil {
 			return nil, err
 		}
@@ -544,7 +564,7 @@ func (r *Resolver) buildHooks(registry *template.Template, tmplData *TemplateDat
 	return hooks, nil
 }
 
-func (r *Resolver) resolveHooksFile(registry *template.Template, tmplData *TemplateData, ref hookRef) ([]config.Hook, error) {
+func (r *Resolver) resolveHooksFile(registry *template.Template, tmplData *TemplateData, ref hookRef, files []ResolvedFile) ([]config.Hook, error) {
 	content, err := r.renderOrRead(registry, tmplData, ref.SrcPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving hooks %s: %w", ref.SrcPath, err)
@@ -554,6 +574,13 @@ func (r *Resolver) resolveHooksFile(registry *template.Template, tmplData *Templ
 		return nil, fmt.Errorf("parsing %s: %w", ref.SrcPath, err)
 	}
 	for i := range file.Hooks {
+		if isQuadletUnit(file.Hooks[i].Unit) {
+			resolved, err := resolveHookQuadletUnit(file.Hooks[i].Unit, files)
+			if err != nil {
+				return nil, fmt.Errorf("%s: hooks[%d]: %w", ref.SrcPath, i, err)
+			}
+			file.Hooks[i].Unit = resolved
+		}
 		if err := file.Hooks[i].Normalize(); err != nil {
 			return nil, fmt.Errorf("%s: hooks[%d]: %w", ref.SrcPath, i, err)
 		}
