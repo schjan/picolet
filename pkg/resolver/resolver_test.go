@@ -196,7 +196,7 @@ func TestRenderTemplateRecursion(t *testing.T) {
 		"a.tmpl": &fstest.MapFile{Data: []byte(`{{renderTemplate "b.tmpl" .}}`)},
 		"b.tmpl": &fstest.MapFile{Data: []byte(`{{renderTemplate "a.tmpl" .}}`)},
 	}
-	registry, _, err := BuildRegistry(t.Context(), fsys, nil, nil)
+	registry, _, err := BuildRegistry(t.Context(), fsys, nil, nil, "/var/lib/picolet")
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
@@ -364,7 +364,7 @@ ContainerName=app
 `)},
 		"services/app/secrets/app_config.yml": &fstest.MapFile{Data: []byte("a: 1\n")},
 		"services/app/picolet.yml.tmpl": &fstest.MapFile{Data: []byte(`
-secret_hooks:
+hooks:
   - name: app-reload
     secrets: [app_config]
     unit: app.service
@@ -382,8 +382,8 @@ secret_hooks:
 
 	resolved, err := r.ResolveHost(t.Context(), "server")
 	require.NoError(t, err)
-	require.Len(t, resolved.SecretHooks, 1)
-	assert.Equal(t, config.SecretHook{
+	require.Len(t, resolved.Hooks, 1)
+	assert.Equal(t, config.Hook{
 		Name:       "app-reload",
 		Secrets:    []string{"app_config"},
 		Unit:       "app.service",
@@ -393,7 +393,7 @@ secret_hooks:
 		HealthURL:  "http://localhost:1234/-/healthy",
 		OnFailure:  config.HookOnFailureKeepRunning,
 		MaxRetries: config.DefaultMaxRetries,
-	}, resolved.SecretHooks[0])
+	}, resolved.Hooks[0])
 }
 
 func TestResolveHostRejectsInvalidSecretHook(t *testing.T) {
@@ -415,7 +415,7 @@ features: []
 `)},
 		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
 		"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
-secret_hooks:
+hooks:
   - name: broken
     secrets: [app_config]
     unit: app.service
@@ -456,7 +456,7 @@ features: []
 		// Hook URL embeds an op:// reference. Phase 1 must collect this ref so
 		// the OpSecretReader sees it on the (single) batch call.
 		"services/app/picolet.yml.tmpl": &fstest.MapFile{Data: []byte(`
-secret_hooks:
+hooks:
   - name: app-reload
     secrets: [app_config]
     unit: app.service
@@ -480,8 +480,8 @@ secret_hooks:
 
 	resolved, err := r.ResolveHost(t.Context(), "server")
 	require.NoError(t, err)
-	require.Len(t, resolved.SecretHooks, 1)
-	assert.Equal(t, "http://example.test/reload?token=tok", resolved.SecretHooks[0].URL)
+	require.Len(t, resolved.Hooks, 1)
+	assert.Equal(t, "http://example.test/reload?token=tok", resolved.Hooks[0].URL)
 	assert.Equal(t, int32(1), calls.Load(), "OpSecretReader should be called exactly once for the batch")
 }
 
@@ -504,7 +504,7 @@ features: []
 `)},
 		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
 		"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
-secret_hooks:
+hooks:
   - name: shared
     secrets: [cfg]
     unit: app.service
@@ -513,7 +513,7 @@ secret_hooks:
 `)},
 		"services/api/containers/api.container": &fstest.MapFile{Data: []byte("[Container]\nImage=api\n")},
 		"services/api/picolet.yml": &fstest.MapFile{Data: []byte(`
-secret_hooks:
+hooks:
   - name: shared
     secrets: [cfg]
     unit: api.service
@@ -528,7 +528,7 @@ secret_hooks:
 	require.NoError(t, err)
 
 	_, err = r.ResolveHost(t.Context(), "server")
-	require.ErrorContains(t, err, `duplicate secret hook name "shared"`)
+	require.ErrorContains(t, err, `duplicate hook name "shared"`)
 	// The error must name the previously-defining service so the operator can
 	// find both files. Hook refs are sorted by service name during bundle
 	// expansion, so "api" is processed first and "app" reports the duplicate.
@@ -1227,7 +1227,7 @@ func TestReadOpSecret(t *testing.T) {
 			}
 			return results, nil
 		}
-		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, reader)
+		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, reader, "/var/lib/picolet")
 		require.NoError(t, err)
 		require.NotNil(t, cache)
 
@@ -1247,7 +1247,7 @@ func TestReadOpSecret(t *testing.T) {
 
 	t.Run("nil reader returns placeholder", func(t *testing.T) {
 		t.Parallel()
-		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, nil)
+		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, nil, "/var/lib/picolet")
 		require.NoError(t, err)
 		assert.Nil(t, cache)
 		var buf bytes.Buffer
@@ -1260,7 +1260,7 @@ func TestReadOpSecret(t *testing.T) {
 		reader := func(_ context.Context, _ []string) (map[string]string, error) {
 			return nil, fmt.Errorf("1password error")
 		}
-		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, reader)
+		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, reader, "/var/lib/picolet")
 		require.NoError(t, err)
 
 		// Collect phase.
@@ -1281,7 +1281,7 @@ func TestReadOpSecret(t *testing.T) {
 		reader := func(_ context.Context, _ []string) (map[string]string, error) {
 			return nil, fmt.Errorf("should-not-be-called")
 		}
-		registry, _, err := BuildRegistry(t.Context(), invalidFS, nil, reader)
+		registry, _, err := BuildRegistry(t.Context(), invalidFS, nil, reader, "/var/lib/picolet")
 		require.NoError(t, err)
 		var buf bytes.Buffer
 		err = registry.ExecuteTemplate(&buf, "bad.tmpl", nil)
@@ -1305,7 +1305,7 @@ func TestReadOpSecret(t *testing.T) {
 			}
 			return results, nil
 		}
-		registry, cache, err := BuildRegistry(t.Context(), multiFS, nil, reader)
+		registry, cache, err := BuildRegistry(t.Context(), multiFS, nil, reader, "/var/lib/picolet")
 		require.NoError(t, err)
 
 		// Collect.

@@ -19,7 +19,7 @@ func TestExpandServiceBundlesHappyPath(t *testing.T) {
 		"services/web/kube/app.kube.tmpl":                &fstest.MapFile{Data: []byte("kube")},
 		"services/web/systemd/http.socket":               &fstest.MapFile{Data: []byte("socket")},
 		"services/web/secrets/config.yml.tmpl":           &fstest.MapFile{Data: []byte("secret")},
-		"services/web/picolet.yml":                       &fstest.MapFile{Data: []byte("secret_hooks: []\n")},
+		"services/web/picolet.yml":                       &fstest.MapFile{Data: []byte("hooks: []\n")},
 		"services/web/manifests/app/deployment.yml.tmpl": &fstest.MapFile{Data: []byte("manifest")},
 		"services/web/manifests/app/configs/app.conf":    &fstest.MapFile{Data: []byte("config")},
 	}
@@ -50,7 +50,7 @@ func TestExpandServiceBundlesMetadataOnlyIsEmpty(t *testing.T) {
 	t.Parallel()
 
 	fsys := fstest.MapFS{
-		"services/web/picolet.yml": &fstest.MapFile{Data: []byte("secret_hooks: []\n")},
+		"services/web/picolet.yml": &fstest.MapFile{Data: []byte("hooks: []\n")},
 	}
 
 	_, err := expandServiceBundles(fsys, []string{"web"})
@@ -265,8 +265,8 @@ func TestExpandServiceBundlesRejectsBothHookMetadataFiles(t *testing.T) {
 	t.Parallel()
 
 	fsys := fstest.MapFS{
-		"services/web/picolet.yml":              &fstest.MapFile{Data: []byte("secret_hooks: []\n")},
-		"services/web/picolet.yml.tmpl":         &fstest.MapFile{Data: []byte("secret_hooks: []\n")},
+		"services/web/picolet.yml":              &fstest.MapFile{Data: []byte("hooks: []\n")},
+		"services/web/picolet.yml.tmpl":         &fstest.MapFile{Data: []byte("hooks: []\n")},
 		"services/web/containers/web.container": &fstest.MapFile{Data: []byte("[Container]\nImage=a\n")},
 	}
 

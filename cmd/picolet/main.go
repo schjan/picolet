@@ -615,7 +615,7 @@ func applyWithRollback(
 	changeset *reconciler.Changeset,
 	systemd applier.SystemdManager,
 	podman applier.PodmanClient,
-	hooks []config.SecretHook,
+	hooks []config.Hook,
 ) (*applier.ApplyResult, error) {
 	writer := applier.NewAtomicFileWriter()
 	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile)
@@ -623,7 +623,7 @@ func applyWithRollback(
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
-	app := applier.New(systemd, podman, writer, false, applier.WithSecretHooks(hooks))
+	app := applier.New(systemd, podman, writer, false, applier.WithHooks(hooks))
 	result, err := app.Apply(ctx, changeset)
 	if err != nil {
 		slog.Error("apply failed, rolling back", "error", err)
@@ -707,7 +707,7 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		return fmt.Errorf("connecting to podman: %w", err)
 	}
 
-	result, err := applyWithRollback(ctx, changeset, systemd, podman, resolved.SecretHooks)
+	result, err := applyWithRollback(ctx, changeset, systemd, podman, resolved.Hooks)
 	if err != nil {
 		return err
 	}

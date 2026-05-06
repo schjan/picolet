@@ -101,8 +101,8 @@ type ApplyResult struct {
 	FallbackRestartedUnits []string
 
 	// AttemptedHookNames lists names of hooks that ran in this apply (regardless
-	// of outcome). Callers use this to compute the new PendingSecretHooks list:
-	// hooks pending from a previous tick whose secret did not change now must
+	// of outcome). Callers use this to compute the new PendingHooks list:
+	// hooks pending from a previous tick whose trigger did not change now must
 	// stay pending; hooks attempted and not in PendingHookNames are cleared.
 	AttemptedHookNames []string
 
@@ -147,12 +147,12 @@ var categoryRankMap = func() map[string]int {
 
 // Applier applies a changeset to the system.
 type Applier struct {
-	systemd     SystemdManager
-	podman      PodmanClient
-	writer      FileWriter
-	dryRun      bool
-	secretHooks []config.SecretHook
-	reloader    *SecretHookReloader
+	systemd  SystemdManager
+	podman   PodmanClient
+	writer   FileWriter
+	dryRun   bool
+	hooks    []config.Hook
+	reloader *HookReloader
 }
 
 // New creates a new Applier.
@@ -167,20 +167,20 @@ func New(systemd SystemdManager, podman PodmanClient, writer FileWriter, dryRun 
 		opt(a)
 	}
 	if a.reloader == nil {
-		a.reloader = NewSecretHookReloader(systemd, podman)
+		a.reloader = NewHookReloader(systemd, podman)
 	}
 	return a
 }
 
-// WithSecretHooks configures hooks to execute after matching secrets change.
-func WithSecretHooks(hooks []config.SecretHook) Option {
+// WithHooks configures hooks to execute after matching secrets or manifests change.
+func WithHooks(hooks []config.Hook) Option {
 	return func(a *Applier) {
-		a.secretHooks = slices.Clone(hooks)
+		a.hooks = slices.Clone(hooks)
 	}
 }
 
-// WithSecretHookReloader overrides hook execution, primarily for tests.
-func WithSecretHookReloader(reloader *SecretHookReloader) Option {
+// WithHookReloader overrides hook execution, primarily for tests.
+func WithHookReloader(reloader *HookReloader) Option {
 	return func(a *Applier) {
 		if reloader != nil {
 			a.reloader = reloader
@@ -189,6 +189,14 @@ func WithSecretHookReloader(reloader *SecretHookReloader) Option {
 }
 
 // Apply applies the changeset in phased order.
+// applyPhaseResult holds the categorized change sets produced by applyPhase.
+type applyPhaseResult struct {
+	ChangedUnits     map[string]struct{}
+	ChangedSecrets   map[string]struct{}
+	ChangedManifests map[string]struct{}
+	NeedsReload      bool
+}
+
 func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyResult, error) {
 	result := &ApplyResult{}
 	sorted := slices.Clone(cs.Changes)
@@ -196,16 +204,16 @@ func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyRe
 		return cmp.Compare(categoryRank(x.Category), categoryRank(y.Category))
 	})
 
-	changedUnits, changedSecrets, needsReload, err := a.applyPhase(ctx, sorted, result)
+	phase, err := a.applyPhase(ctx, sorted, result)
 	if err != nil {
 		return result, err
 	}
 	if a.dryRun {
 		return result, nil
 	}
-	hookRestartUnits := a.runSecretHooks(ctx, changedSecrets, changedUnits, result)
-	maps.Copy(changedUnits, hookRestartUnits)
-	return result, a.restartUnits(ctx, changedUnits, needsReload, result)
+	hookRestartUnits := a.runHooks(ctx, phase.ChangedSecrets, phase.ChangedManifests, phase.ChangedUnits, result)
+	maps.Copy(phase.ChangedUnits, hookRestartUnits)
+	return result, a.restartUnits(ctx, phase.ChangedUnits, phase.NeedsReload, result)
 }
 
 func categoryRank(category string) int {
@@ -217,9 +225,12 @@ func categoryRank(category string) int {
 }
 
 //nolint:cyclop // multiple early-continues are clearer than restructuring
-func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (changedUnits map[string]struct{}, changedSecrets map[string]struct{}, needsReload bool, err error) {
-	changedUnits = make(map[string]struct{})
-	changedSecrets = make(map[string]struct{})
+func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (*applyPhaseResult, error) {
+	p := &applyPhaseResult{
+		ChangedUnits:     make(map[string]struct{}),
+		ChangedSecrets:   make(map[string]struct{}),
+		ChangedManifests: make(map[string]struct{}),
+	}
 	for _, change := range sorted {
 		if change.Action == reconciler.ActionNoop {
 			continue
@@ -245,30 +256,35 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			}
 		}
 		if err := a.applyChange(ctx, change); err != nil {
-			return nil, nil, false, fmt.Errorf("applying %s (%s): %w", change.DestPath, change.Action, err)
+			return nil, fmt.Errorf("applying %s (%s): %w", change.DestPath, change.Action, err)
 		}
 		result.Applied++
 		if change.Category == "secret" {
 			if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
-				changedSecrets[reconciler.SecretNameFromPath(change.DestPath)] = struct{}{}
+				p.ChangedSecrets[reconciler.SecretNameFromPath(change.DestPath)] = struct{}{}
 			}
 			continue
 		}
+		if change.Category == "manifest" && change.ManifestRelPath != "" {
+			if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
+				p.ChangedManifests[change.ManifestRelPath] = struct{}{}
+			}
+		}
 		// All non-secret file changes (including deletes) require a daemon-reload.
-		needsReload = true
+		p.NeedsReload = true
 		if change.Action == reconciler.ActionDelete {
 			// Deleted units must NOT be restarted — the unit no longer exists after
 			// daemon-reload. StopUnit above already terminated the running service.
 			continue
 		}
 		if change.ServiceName != "" {
-			changedUnits[change.ServiceName] = struct{}{}
+			p.ChangedUnits[change.ServiceName] = struct{}{}
 		}
 		if filepath.Base(change.DestPath) == selfContainerFile {
 			result.NeedsSelfRestart = true
 		}
 	}
-	return changedUnits, changedSecrets, needsReload, nil
+	return p, nil
 }
 
 // unitNameForDelete returns the systemd unit name to stop before a file is removed.
@@ -338,10 +354,10 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]stru
 	return nil
 }
 
-func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets, restartScheduled map[string]struct{}, result *ApplyResult) map[string]struct{} {
+func (a *Applier) runHooks(ctx context.Context, changedSecrets, changedManifests, restartScheduled map[string]struct{}, result *ApplyResult) map[string]struct{} {
 	// Early return leaves AttemptedHookNames nil, which tells mergePendingHooks
 	// that no hooks ran this tick — preserving any existing pending entries.
-	if len(changedSecrets) == 0 || len(a.secretHooks) == 0 {
+	if len(a.hooks) == 0 || (len(changedSecrets) == 0 && len(changedManifests) == 0) {
 		return nil
 	}
 	restartUnits := make(map[string]struct{})
@@ -351,8 +367,8 @@ func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets, restartSch
 	// allocate once instead of N+1 times per hook batch.
 	restartSet := make(map[string]struct{}, len(restartScheduled))
 	maps.Copy(restartSet, restartScheduled)
-	for _, hook := range a.secretHooks {
-		if !hookMatchesChangedSecret(hook, changedSecrets) {
+	for _, hook := range a.hooks {
+		if !hookMatchesChange(hook, changedSecrets, changedManifests) {
 			continue
 		}
 		key := hookExecutionKey(hook)
@@ -374,9 +390,9 @@ func (a *Applier) runSecretHooks(ctx context.Context, changedSecrets, restartSch
 }
 
 // dispatchHookResult records a hook's outcome on result and updates restartUnits.
-// Shared by runSecretHooks and RunPendingHooks so error classification, attempt
+// Shared by runHooks and RunPendingHooks so error classification, attempt
 // tracking, and restart-set updates stay consistent across both paths.
-func dispatchHookResult(hook config.SecretHook, shouldRestart bool, err error, restartUnits map[string]struct{}, result *ApplyResult) {
+func dispatchHookResult(hook config.Hook, shouldRestart bool, err error, restartUnits map[string]struct{}, result *ApplyResult) {
 	result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
 	if err != nil {
 		if shouldRestart {
@@ -410,8 +426,8 @@ func (a *Applier) RunPendingHooks(ctx context.Context, pendingNames []string) *A
 	// byName may be empty if the operator removed all hooks from config since
 	// the last failure — the loop below still marks every pending name attempted
 	// so mergePendingHooks can drop them.
-	byName := make(map[string]config.SecretHook, len(a.secretHooks))
-	for _, h := range a.secretHooks {
+	byName := make(map[string]config.Hook, len(a.hooks))
+	for _, h := range a.hooks {
 		byName[h.Name] = h
 	}
 
@@ -421,7 +437,7 @@ func (a *Applier) RunPendingHooks(ctx context.Context, pendingNames []string) *A
 		if !ok {
 			// Mark stale names as attempted so mergePendingHooks drops them
 			// instead of carrying them forward forever.
-			slog.Info("pending secret hook no longer in config, dropping", "hook", name)
+			slog.Info("pending hook no longer in config, dropping", "hook", name)
 			result.AttemptedHookNames = append(result.AttemptedHookNames, name)
 			continue
 		}
@@ -437,7 +453,7 @@ func (a *Applier) RunPendingHooks(ctx context.Context, pendingNames []string) *A
 
 func (a *Applier) restartFallbackUnits(ctx context.Context, restartUnits map[string]struct{}, result *ApplyResult) {
 	for unit := range restartUnits {
-		slog.Info("restarting unit after secret hook retry", "unit", unit)
+		slog.Info("restarting unit after hook retry", "unit", unit)
 		if err := a.systemd.RestartUnit(ctx, unit); err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("restarting %s: %w", unit, err))
 		} else {
@@ -450,7 +466,7 @@ func (a *Applier) restartFallbackUnits(ctx context.Context, restartUnits map[str
 // identical keys represent the same side-effect (e.g., same HTTP reload
 // endpoint) and only need to run once per tick. The \x00 separator is safe
 // because none of the fields (URLs, unit names, signals) can contain null bytes.
-func hookExecutionKey(hook config.SecretHook) string {
+func hookExecutionKey(hook config.Hook) string {
 	switch hook.Action {
 	case config.HookActionHTTP:
 		return hook.Action + "\x00" + hook.Unit + "\x00" + hook.Method + "\x00" + hook.URL + "\x00" + hook.HealthURL
@@ -463,9 +479,14 @@ func hookExecutionKey(hook config.SecretHook) string {
 	}
 }
 
-func hookMatchesChangedSecret(hook config.SecretHook, changedSecrets map[string]struct{}) bool {
+func hookMatchesChange(hook config.Hook, changedSecrets, changedManifests map[string]struct{}) bool {
 	for _, secret := range hook.Secrets {
 		if _, ok := changedSecrets[secret]; ok {
+			return true
+		}
+	}
+	for _, manifest := range hook.Manifests {
+		if _, ok := changedManifests[manifest]; ok {
 			return true
 		}
 	}

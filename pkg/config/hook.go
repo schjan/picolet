@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 )
 
@@ -20,10 +21,12 @@ const (
 
 const DefaultMaxRetries = 10
 
-// SecretHook describes a runtime action to run after one or more Podman secrets change.
-type SecretHook struct {
+// Hook describes a runtime action to run after one or more Podman secrets
+// or manifest files change.
+type Hook struct {
 	Name       string   `yaml:"name"`
 	Secrets    []string `yaml:"secrets"`
+	Manifests  []string `yaml:"manifests"`
 	Unit       string   `yaml:"unit"`
 	Action     string   `yaml:"action"`
 	Method     string   `yaml:"method"`
@@ -38,13 +41,13 @@ type SecretHook struct {
 // FallbackToRestart reports whether a hook execution failure should fall back
 // to restarting hook.Unit (rather than leaving the unit running and retrying
 // the hook on the next tick).
-func (h SecretHook) FallbackToRestart() bool {
+func (h Hook) FallbackToRestart() bool {
 	return h.OnFailure == HookOnFailureRestart
 }
 
-// SecretHooksFile is the service-bundle metadata file schema.
-type SecretHooksFile struct {
-	SecretHooks []SecretHook `yaml:"secret_hooks"`
+// HooksFile is the service-bundle metadata file schema.
+type HooksFile struct {
+	Hooks []Hook `yaml:"hooks"`
 }
 
 type hookField struct {
@@ -53,12 +56,14 @@ type hookField struct {
 }
 
 // Normalize applies defaults and validates the hook.
-func (h *SecretHook) Normalize() error {
+//
+//nolint:cyclop // sequential validation steps are clearer as a single flow
+func (h *Hook) Normalize() error {
 	if h.Name == "" {
 		return errors.New("name is required")
 	}
-	if len(h.Secrets) == 0 {
-		return fmt.Errorf("%s: secrets must not be empty", h.Name)
+	if len(h.Secrets) == 0 && len(h.Manifests) == 0 {
+		return fmt.Errorf("%s: at least one of secrets or manifests is required", h.Name)
 	}
 	if h.Unit == "" {
 		return fmt.Errorf("%s: unit is required", h.Name)
@@ -73,12 +78,11 @@ func (h *SecretHook) Normalize() error {
 	if h.MaxRetries < 0 {
 		return fmt.Errorf("%s: max_retries must be positive", h.Name)
 	}
-	for i, secret := range h.Secrets {
-		name := strings.TrimPrefix(secret, "secret:")
-		if name == "" {
-			return fmt.Errorf("%s: secrets[%d] must not be empty", h.Name, i)
-		}
-		h.Secrets[i] = name
+	if err := h.normalizeSecrets(); err != nil {
+		return err
+	}
+	if err := h.normalizeManifests(); err != nil {
+		return err
 	}
 	if err := h.normalizeAction(); err != nil {
 		return err
@@ -86,7 +90,35 @@ func (h *SecretHook) Normalize() error {
 	return h.normalizeOnFailure()
 }
 
-func (h *SecretHook) normalizeAction() error {
+func (h *Hook) normalizeSecrets() error {
+	for i, secret := range h.Secrets {
+		name := strings.TrimPrefix(secret, "secret:")
+		if name == "" {
+			return fmt.Errorf("%s: secrets[%d] must not be empty", h.Name, i)
+		}
+		h.Secrets[i] = name
+	}
+	return nil
+}
+
+func (h *Hook) normalizeManifests() error {
+	for i, manifest := range h.Manifests {
+		m := strings.TrimSpace(manifest)
+		if m == "" {
+			return fmt.Errorf("%s: manifests[%d] must not be empty", h.Name, i)
+		}
+		if strings.HasPrefix(m, "/") {
+			return fmt.Errorf("%s: manifests[%d]: must be a relative path (no leading /)", h.Name, i)
+		}
+		if strings.Contains(m, "..") {
+			return fmt.Errorf("%s: manifests[%d]: path traversal (..) is not allowed", h.Name, i)
+		}
+		h.Manifests[i] = path.Clean(m)
+	}
+	return nil
+}
+
+func (h *Hook) normalizeAction() error {
 	switch h.Action {
 	case HookActionHTTP:
 		return h.normalizeHTTPAction()
@@ -99,7 +131,7 @@ func (h *SecretHook) normalizeAction() error {
 	}
 }
 
-func (h *SecretHook) normalizeHTTPAction() error {
+func (h *Hook) normalizeHTTPAction() error {
 	if field, ok := firstSetField(
 		hookField{name: "container", value: h.Container},
 		hookField{name: "signal", value: h.Signal},
@@ -138,7 +170,7 @@ func validateHookHTTPURL(hookName, field, raw string) error {
 	return nil
 }
 
-func (h *SecretHook) normalizeSignalAction() error {
+func (h *Hook) normalizeSignalAction() error {
 	if field, ok := firstSetField(
 		hookField{name: "method", value: h.Method},
 		hookField{name: "url", value: h.URL},
@@ -153,7 +185,7 @@ func (h *SecretHook) normalizeSignalAction() error {
 	return nil
 }
 
-func (h *SecretHook) normalizeRestartAction() error {
+func (h *Hook) normalizeRestartAction() error {
 	if field, ok := firstSetField(
 		hookField{name: "method", value: h.Method},
 		hookField{name: "url", value: h.URL},
@@ -175,7 +207,7 @@ func firstSetField(fields ...hookField) (string, bool) {
 	return "", false
 }
 
-func (h *SecretHook) normalizeOnFailure() error {
+func (h *Hook) normalizeOnFailure() error {
 	switch h.OnFailure {
 	case HookOnFailureKeepRunning, HookOnFailureRestart:
 		return nil

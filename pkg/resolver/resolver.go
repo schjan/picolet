@@ -43,14 +43,17 @@ type ResolvedFile struct {
 	ParsedUnit *parser.UnitFile
 	// ServiceName is the derived systemd service name (e.g. "foo.service"); "" for non-quadlets.
 	ServiceName string
+	// ManifestRelPath is the manifest path relative to the manifests/ directory
+	// (e.g. "config/scrape.yml"). Only set for manifest-category files.
+	ManifestRelPath string
 }
 
 // ResolvedHost is the complete desired state for a single host.
 type ResolvedHost struct {
-	Hostname    string
-	Host        *config.HostConfig
-	Files       []ResolvedFile
-	SecretHooks []config.SecretHook
+	Hostname string
+	Host     *config.HostConfig
+	Files    []ResolvedFile
+	Hooks    []config.Hook
 }
 
 // Config holds configuration for creating a Resolver.
@@ -125,7 +128,7 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 		return nil, err
 	}
 
-	registry, opCache, err := BuildRegistry(ctx, r.fsys, r.secretReader, r.opSecretReader)
+	registry, opCache, err := BuildRegistry(ctx, r.fsys, r.secretReader, r.opSecretReader, r.dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}
@@ -157,16 +160,16 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 	if err != nil {
 		return nil, err
 	}
-	hooks, err := r.buildSecretHooks(registry, tmplData, hookRefs)
+	hooks, err := r.buildHooks(registry, tmplData, hookRefs)
 	if err != nil {
 		return nil, err
 	}
 
 	return &ResolvedHost{
-		Hostname:    hostname,
-		Host:        host,
-		Files:       files,
-		SecretHooks: hooks,
+		Hostname: hostname,
+		Host:     host,
+		Files:    files,
+		Hooks:    hooks,
 	}, nil
 }
 
@@ -267,6 +270,7 @@ func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, manifestR
 	for _, ref := range manifestRefs {
 		skeletons = append(skeletons, ResolvedFile{
 			SrcPath: ref.SrcPath, Category: "manifest", DestPath: r.manifestDestPath(ref.LogicalPath),
+			ManifestRelPath: manifestRelPath(ref.LogicalPath),
 		})
 	}
 	for _, srcPath := range fileSet.Secrets {
@@ -489,28 +493,38 @@ func (r *Resolver) resolveManifestRef(registry *template.Template, tmplData *Tem
 	}
 
 	return &ResolvedFile{
-		SrcPath:  ref.SrcPath,
-		DestPath: r.manifestDestPath(ref.LogicalPath),
-		Content:  content,
-		Category: "manifest",
+		SrcPath:         ref.SrcPath,
+		DestPath:        r.manifestDestPath(ref.LogicalPath),
+		Content:         content,
+		Category:        "manifest",
+		ManifestRelPath: manifestRelPath(ref.LogicalPath),
 	}, nil
 }
 
-func (r *Resolver) buildSecretHooks(registry *template.Template, tmplData *TemplateData, refs []hookRef) ([]config.SecretHook, error) {
+// manifestRelPath strips the leading "manifests/" prefix from a logical path
+// to produce the user-facing relative path (e.g. "config/scrape.yml").
+func manifestRelPath(logicalPath string) string {
+	if rel, ok := strings.CutPrefix(logicalPath, "manifests/"); ok {
+		return rel
+	}
+	return logicalPath
+}
+
+func (r *Resolver) buildHooks(registry *template.Template, tmplData *TemplateData, refs []hookRef) ([]config.Hook, error) {
 	type hookOrigin struct {
 		service string
 		path    string
 	}
-	var hooks []config.SecretHook
+	var hooks []config.Hook
 	seen := make(map[string]hookOrigin)
 	for _, ref := range refs {
-		fileHooks, err := r.resolveSecretHooksFile(registry, tmplData, ref)
+		fileHooks, err := r.resolveHooksFile(registry, tmplData, ref)
 		if err != nil {
 			return nil, err
 		}
 		for _, hook := range fileHooks {
 			if prev, ok := seen[hook.Name]; ok {
-				return nil, fmt.Errorf("%s: duplicate secret hook name %q (already defined by service %q in %s)", ref.SrcPath, hook.Name, prev.service, prev.path)
+				return nil, fmt.Errorf("%s: duplicate hook name %q (already defined by service %q in %s)", ref.SrcPath, hook.Name, prev.service, prev.path)
 			}
 			seen[hook.Name] = hookOrigin{service: ref.Service, path: ref.SrcPath}
 			hooks = append(hooks, hook)
@@ -519,21 +533,21 @@ func (r *Resolver) buildSecretHooks(registry *template.Template, tmplData *Templ
 	return hooks, nil
 }
 
-func (r *Resolver) resolveSecretHooksFile(registry *template.Template, tmplData *TemplateData, ref hookRef) ([]config.SecretHook, error) {
+func (r *Resolver) resolveHooksFile(registry *template.Template, tmplData *TemplateData, ref hookRef) ([]config.Hook, error) {
 	content, err := r.renderOrRead(registry, tmplData, ref.SrcPath)
 	if err != nil {
-		return nil, fmt.Errorf("resolving secret hooks %s: %w", ref.SrcPath, err)
+		return nil, fmt.Errorf("resolving hooks %s: %w", ref.SrcPath, err)
 	}
-	var file config.SecretHooksFile
+	var file config.HooksFile
 	if err := yaml.Load([]byte(content), &file, yaml.WithKnownFields()); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", ref.SrcPath, err)
 	}
-	for i := range file.SecretHooks {
-		if err := file.SecretHooks[i].Normalize(); err != nil {
-			return nil, fmt.Errorf("%s: secret_hooks[%d]: %w", ref.SrcPath, i, err)
+	for i := range file.Hooks {
+		if err := file.Hooks[i].Normalize(); err != nil {
+			return nil, fmt.Errorf("%s: hooks[%d]: %w", ref.SrcPath, i, err)
 		}
 	}
-	return file.SecretHooks, nil
+	return file.Hooks, nil
 }
 
 func (r *Resolver) resolveSecret(registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {

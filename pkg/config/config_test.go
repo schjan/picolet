@@ -177,12 +177,12 @@ func TestSecretHookNormalizeRejectsMismatchedFields(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		hook    SecretHook
+		hook    Hook
 		wantErr string
 	}{
 		{
 			name: "http container",
-			hook: SecretHook{
+			hook: Hook{
 				Name:      "hook",
 				Secrets:   []string{"cfg"},
 				Unit:      "app.service",
@@ -194,7 +194,7 @@ func TestSecretHookNormalizeRejectsMismatchedFields(t *testing.T) {
 		},
 		{
 			name: "http signal",
-			hook: SecretHook{
+			hook: Hook{
 				Name:    "hook",
 				Secrets: []string{"cfg"},
 				Unit:    "app.service",
@@ -206,7 +206,7 @@ func TestSecretHookNormalizeRejectsMismatchedFields(t *testing.T) {
 		},
 		{
 			name: "signal method",
-			hook: SecretHook{
+			hook: Hook{
 				Name:      "hook",
 				Secrets:   []string{"cfg"},
 				Unit:      "app.service",
@@ -218,7 +218,7 @@ func TestSecretHookNormalizeRejectsMismatchedFields(t *testing.T) {
 		},
 		{
 			name: "signal url",
-			hook: SecretHook{
+			hook: Hook{
 				Name:      "hook",
 				Secrets:   []string{"cfg"},
 				Unit:      "app.service",
@@ -230,7 +230,7 @@ func TestSecretHookNormalizeRejectsMismatchedFields(t *testing.T) {
 		},
 		{
 			name: "signal health url",
-			hook: SecretHook{
+			hook: Hook{
 				Name:      "hook",
 				Secrets:   []string{"cfg"},
 				Unit:      "app.service",
@@ -242,7 +242,7 @@ func TestSecretHookNormalizeRejectsMismatchedFields(t *testing.T) {
 		},
 		{
 			name: "restart health url",
-			hook: SecretHook{
+			hook: Hook{
 				Name:      "hook",
 				Secrets:   []string{"cfg"},
 				Unit:      "app.service",
@@ -253,7 +253,7 @@ func TestSecretHookNormalizeRejectsMismatchedFields(t *testing.T) {
 		},
 		{
 			name: "restart container",
-			hook: SecretHook{
+			hook: Hook{
 				Name:      "hook",
 				Secrets:   []string{"cfg"},
 				Unit:      "app.service",
@@ -298,7 +298,7 @@ func TestSecretHookNormalizeValidatesURLScheme(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			h := SecretHook{
+			h := Hook{
 				Name:      "hook",
 				Secrets:   []string{"cfg"},
 				Unit:      "app.service",

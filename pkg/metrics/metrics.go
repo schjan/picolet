@@ -163,10 +163,10 @@ var (
 		},
 	)
 
-	SecretHookTotal = prometheus.NewCounterVec(
+	HookTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "picolet_secret_hook_total",
-			Help: "Total secret hook executions by name, action, and result.",
+			Name: "picolet_hook_total",
+			Help: "Total hook executions by name, action, and result.",
 		},
 		[]string{"name", "action", "result"},
 	)
@@ -202,7 +202,7 @@ func Register(store *status.Store) {
 			OpDirectSecretsCount,
 			OpSyncTotal,
 			OpLastSyncTimestamp,
-			SecretHookTotal,
+			HookTotal,
 			NewUnitHealthCollector(store),
 			NewUnitDependencyCollector(store),
 			NewHostInfoCollector(store),

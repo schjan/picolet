@@ -33,11 +33,12 @@ type State struct {
 
 	LastSuccessfulReconciliationAt time.Time `json:"last_successful_reconciliation_at,omitzero"`
 
-	// PendingSecretHooks tracks hooks that errored under on_failure: keep_running
+	// PendingHooks tracks hooks that errored under on_failure: keep_running
 	// and must retry on the next reconciliation tick. The map value is the number
 	// of consecutive failed attempts. Persisted so a restart does not silently
 	// abandon a promised retry.
-	PendingSecretHooks map[string]int `json:"pending_secret_hooks,omitempty"`
+	// Renamed from pending_secret_hooks (unreleased feature, no migration needed).
+	PendingHooks map[string]int `json:"pending_hooks,omitempty"`
 }
 
 // NewState returns a zero State with initialized maps, suitable for first-run or testing.

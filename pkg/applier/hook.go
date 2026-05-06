@@ -16,17 +16,17 @@ const (
 	defaultReloadHealthDelay = 2 * time.Second
 )
 
-// SecretHookReloader executes secret-change runtime hooks.
-type SecretHookReloader struct {
+// HookReloader executes change-triggered runtime hooks.
+type HookReloader struct {
 	systemd     SystemdManager
 	podman      PodmanClient
 	httpClient  *http.Client
 	healthDelay time.Duration
 }
 
-// NewSecretHookReloader creates a hook runner with production defaults.
-func NewSecretHookReloader(systemd SystemdManager, podman PodmanClient) *SecretHookReloader {
-	return &SecretHookReloader{
+// NewHookReloader creates a hook runner with production defaults.
+func NewHookReloader(systemd SystemdManager, podman PodmanClient) *HookReloader {
+	return &HookReloader{
 		systemd:     systemd,
 		podman:      podman,
 		httpClient:  &http.Client{Timeout: defaultReloadTimeout},
@@ -35,7 +35,7 @@ func NewSecretHookReloader(systemd SystemdManager, podman PodmanClient) *SecretH
 }
 
 // WithHTTPClient overrides the HTTP client used by reload hooks.
-func (r *SecretHookReloader) WithHTTPClient(client *http.Client) *SecretHookReloader {
+func (r *HookReloader) WithHTTPClient(client *http.Client) *HookReloader {
 	if client != nil {
 		r.httpClient = client
 	}
@@ -43,20 +43,20 @@ func (r *SecretHookReloader) WithHTTPClient(client *http.Client) *SecretHookRelo
 }
 
 // WithHealthDelay overrides the delay between HTTP reload and health check.
-func (r *SecretHookReloader) WithHealthDelay(delay time.Duration) *SecretHookReloader {
+func (r *HookReloader) WithHealthDelay(delay time.Duration) *HookReloader {
 	r.healthDelay = delay
 	return r
 }
 
 // Run executes a hook. The bool return indicates whether the caller should
 // restart hook.Unit after hook execution.
-func (r *SecretHookReloader) Run(ctx context.Context, hook config.SecretHook, restartScheduled map[string]struct{}) (bool, error) {
+func (r *HookReloader) Run(ctx context.Context, hook config.Hook, restartScheduled map[string]struct{}) (bool, error) {
 	if _, scheduled := restartScheduled[hook.Unit]; scheduled && hook.Action != config.HookActionRestart {
-		slog.Info("skipping secret hook, unit already scheduled for restart", "hook", hook.Name, "unit", hook.Unit)
+		slog.Info("skipping hook, unit already scheduled for restart", "hook", hook.Name, "unit", hook.Unit)
 		return false, nil
 	}
 	if hook.Action == config.HookActionRestart {
-		slog.Info("secret hook scheduled restart", "hook", hook.Name, "unit", hook.Unit)
+		slog.Info("hook scheduled restart", "hook", hook.Name, "unit", hook.Unit)
 		return true, nil
 	}
 	active, err := r.unitActive(ctx, hook)
@@ -72,20 +72,20 @@ func (r *SecretHookReloader) Run(ctx context.Context, hook config.SecretHook, re
 	case config.HookActionSignal:
 		return r.runSignal(ctx, hook)
 	default:
-		return false, fmt.Errorf("secret hook %s: unsupported action %q", hook.Name, hook.Action)
+		return false, fmt.Errorf("hook %s: unsupported action %q", hook.Name, hook.Action)
 	}
 }
 
-func (r *SecretHookReloader) unitActive(ctx context.Context, hook config.SecretHook) (bool, error) {
+func (r *HookReloader) unitActive(ctx context.Context, hook config.Hook) (bool, error) {
 	status, err := r.systemd.GetUnitStatus(ctx, hook.Unit)
 	if err != nil {
-		return false, fmt.Errorf("secret hook %s: checking unit %s: %w", hook.Name, hook.Unit, err)
+		return false, fmt.Errorf("hook %s: checking unit %s: %w", hook.Name, hook.Unit, err)
 	}
 	switch status.ActiveState {
 	case "active", "activating":
 		return true, nil
 	default:
-		slog.Info("skipping secret hook, unit is not running",
+		slog.Info("skipping hook, unit is not running",
 			"hook", hook.Name,
 			"unit", hook.Unit,
 			"active_state", status.ActiveState,
@@ -95,10 +95,10 @@ func (r *SecretHookReloader) unitActive(ctx context.Context, hook config.SecretH
 	}
 }
 
-func (r *SecretHookReloader) runHTTP(ctx context.Context, hook config.SecretHook) (bool, error) {
-	slog.Info("running HTTP secret hook", "hook", hook.Name, "method", hook.Method, "url", hook.URL, "unit", hook.Unit)
+func (r *HookReloader) runHTTP(ctx context.Context, hook config.Hook) (bool, error) {
+	slog.Info("running HTTP hook", "hook", hook.Name, "method", hook.Method, "url", hook.URL, "unit", hook.Unit)
 	if err := r.doHTTP(ctx, hook.Method, hook.URL); err != nil {
-		return hook.FallbackToRestart(), fmt.Errorf("secret hook %s: reload request: %w", hook.Name, err)
+		return hook.FallbackToRestart(), fmt.Errorf("hook %s: reload request: %w", hook.Name, err)
 	}
 	if hook.HealthURL != "" {
 		if r.healthDelay > 0 {
@@ -107,25 +107,25 @@ func (r *SecretHookReloader) runHTTP(ctx context.Context, hook config.SecretHook
 			case <-timer.C:
 			case <-ctx.Done():
 				timer.Stop()
-				return hook.FallbackToRestart(), fmt.Errorf("secret hook %s: waiting for health check: %w", hook.Name, ctx.Err())
+				return hook.FallbackToRestart(), fmt.Errorf("hook %s: waiting for health check: %w", hook.Name, ctx.Err())
 			}
 		}
 		if err := r.doHTTP(ctx, http.MethodGet, hook.HealthURL); err != nil {
-			return hook.FallbackToRestart(), fmt.Errorf("secret hook %s: health check: %w", hook.Name, err)
+			return hook.FallbackToRestart(), fmt.Errorf("hook %s: health check: %w", hook.Name, err)
 		}
 	}
 	return false, nil
 }
 
-func (r *SecretHookReloader) runSignal(ctx context.Context, hook config.SecretHook) (bool, error) {
-	slog.Info("running signal secret hook", "hook", hook.Name, "container", hook.Container, "signal", hook.Signal, "unit", hook.Unit)
+func (r *HookReloader) runSignal(ctx context.Context, hook config.Hook) (bool, error) {
+	slog.Info("running signal hook", "hook", hook.Name, "container", hook.Container, "signal", hook.Signal, "unit", hook.Unit)
 	if err := r.podman.ContainerKill(ctx, hook.Container, hook.Signal); err != nil {
-		return hook.FallbackToRestart(), fmt.Errorf("secret hook %s: signal container %s: %w", hook.Name, hook.Container, err)
+		return hook.FallbackToRestart(), fmt.Errorf("hook %s: signal container %s: %w", hook.Name, hook.Container, err)
 	}
 	return false, nil
 }
 
-func (r *SecretHookReloader) doHTTP(ctx context.Context, method, url string) error {
+func (r *HookReloader) doHTTP(ctx context.Context, method, url string) error {
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		return fmt.Errorf("building request: %w", err)
