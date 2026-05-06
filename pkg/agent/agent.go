@@ -79,6 +79,16 @@ type Agent struct {
 	statePath string
 	lockPath  string
 
+	// quadletDirOverride, systemdDirOverride, and dataDirOverride are
+	// test-only injection points. Empty values fall back to
+	// resolver.ResolveDirs(cfg.Rootless). Production deployments leave
+	// them unset so destination paths follow the documented layout.
+	// loadAndResolve passes these straight to ResolveParams (resolver.New
+	// owns fallback); scanOrphans applies the same fallback inline.
+	quadletDirOverride string
+	systemdDirOverride string
+	dataDirOverride    string
+
 	opReader resolver.OpSecretReader // nil when 1Password not configured; initialized in Run
 	// Accessed only by the agent tick loop, which runs serially.
 	lastOPRefresh time.Time // zero = never refreshed; in-memory only (restart always re-fetches)
@@ -138,6 +148,39 @@ func WithStatePath(path string) Option {
 // WithLockPath overrides the reconciliation lock file path.
 func WithLockPath(path string) Option {
 	return func(a *Agent) { a.lockPath = path }
+}
+
+// WithQuadletDir overrides the quadlet destination directory. Test-only;
+// production agents leave this unset so paths come from resolver.ResolveDirs.
+// An empty path is ignored. When this option is set, callers that also
+// use systemd or manifest categories must set WithSystemdDir/WithDataDir
+// to keep loadAndResolve and scanOrphans pointed at consistent locations.
+func WithQuadletDir(path string) Option {
+	return func(a *Agent) {
+		if path != "" {
+			a.quadletDirOverride = path
+		}
+	}
+}
+
+// WithSystemdDir overrides the systemd destination directory. Test-only.
+// An empty path is ignored. See WithQuadletDir for the consistency rule.
+func WithSystemdDir(path string) Option {
+	return func(a *Agent) {
+		if path != "" {
+			a.systemdDirOverride = path
+		}
+	}
+}
+
+// WithDataDir overrides the manifest data directory. Test-only.
+// An empty path is ignored. See WithQuadletDir for the consistency rule.
+func WithDataDir(path string) Option {
+	return func(a *Agent) {
+		if path != "" {
+			a.dataDirOverride = path
+		}
+	}
 }
 
 // WithMQTT sets the MQTTClient for pause/trigger/status publishing.
@@ -543,6 +586,11 @@ func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, err
 		SecretsDir:     a.cfg.SecretsDir,
 		Rootless:       a.cfg.Rootless,
 		OpSecretReader: a.opReader,
+		// Override fields are passed raw; resolver.New applies the
+		// ResolveDirs fallback for any field left empty.
+		QuadletDir: a.quadletDirOverride,
+		SystemdDir: a.systemdDirOverride,
+		DataDir:    a.dataDirOverride,
 	})
 }
 
@@ -995,6 +1043,24 @@ func countCategoriesFromState(managed map[string]state.ManagedFile) map[string]f
 
 // scanOrphans detects and removes files/secrets placed by a previous picolet run that
 // are no longer tracked in state. Runs once at startup; errors are logged, not fatal.
+// applyDirOverrides applies the agent's WithQuadletDir/WithSystemdDir/WithDataDir
+// overrides on top of already-resolved directory defaults. Mirrors the same
+// logic that resolver.New applies to Config.QuadletDir/SystemdDir/DataDir;
+// scanOrphans must stay in sync with that path so it never deletes files the
+// resolver just wrote into a custom directory.
+func (a *Agent) applyDirOverrides(quadletDir, systemdDir, dataDir string) (string, string, string) {
+	if a.quadletDirOverride != "" {
+		quadletDir = a.quadletDirOverride
+	}
+	if a.systemdDirOverride != "" {
+		systemdDir = a.systemdDirOverride
+	}
+	if a.dataDirOverride != "" {
+		dataDir = a.dataDirOverride
+	}
+	return quadletDir, systemdDir, dataDir
+}
+
 func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	if a.dryRun {
 		return
@@ -1005,6 +1071,7 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 		a.statusStore.SetOrphanScan(status.OrphanScan{Ran: true, Error: err.Error()})
 		return
 	}
+	quadletDir, systemdDir, dataDir = a.applyDirOverrides(quadletDir, systemdDir, dataDir)
 	st, err := store.Load()
 	if err != nil {
 		slog.Warn("loading state for orphan scan failed", "error", err)
