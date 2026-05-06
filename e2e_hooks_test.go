@@ -186,6 +186,15 @@ ports: {}
 			data, err := containers.Inspect(connCtx, containerName, nil)
 			return err == nil && data.State.Status == "running"
 		}, 60*time.Second, 2*time.Second, "container %s should reach running state", containerName)
+
+		// Also wait for systemd unit to be fully active (not just "activating").
+		// Restarting a unit that's still activating can fail on CI.
+		ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+		defer cancel()
+		require.Eventually(t, func() bool {
+			status, err := systemd.GetUnitStatus(ctx, "hook-restart.service")
+			return err == nil && status.ActiveState == "active"
+		}, 60*time.Second, 2*time.Second, "hook-restart.service should reach active state")
 	})
 
 	t.Run("update_secret_triggers_restart", func(t *testing.T) {
