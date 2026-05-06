@@ -83,7 +83,7 @@ a plain `picolet.yml`. Example for vmalert:
 
 ```yaml
 # services/vmalert/picolet.yml.tmpl
-secret_hooks:
+hooks:
   - name: vmalert-rules
     secrets: [vmalert_rules]
     unit: vmalert.service
