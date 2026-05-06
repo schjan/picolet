@@ -460,10 +460,19 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	return nil
 }
 
+// ResolveParams holds the parameters for LoadAndResolve and LoadAndResolveHost.
+type ResolveParams struct {
+	RepoPath       string
+	Hostname       string
+	SecretsDir     string
+	Rootless       bool
+	OpSecretReader resolver.OpSecretReader
+}
+
 // LoadAndResolve loads fleet config from repoPath and resolves the desired state for the given host.
 // It is the shared implementation behind Agent.loadAndResolve and CLI subcommands (apply, dry-run).
-func LoadAndResolve(ctx context.Context, repoPath, hostname, secretsDir string, rootless bool, opSecretReader resolver.OpSecretReader) ([]resolver.ResolvedFile, error) {
-	resolved, err := LoadAndResolveHost(ctx, repoPath, hostname, secretsDir, rootless, opSecretReader)
+func LoadAndResolve(ctx context.Context, params ResolveParams) ([]resolver.ResolvedFile, error) {
+	resolved, err := LoadAndResolveHost(ctx, params)
 	if err != nil {
 		return nil, err
 	}
@@ -471,16 +480,16 @@ func LoadAndResolve(ctx context.Context, repoPath, hostname, secretsDir string, 
 }
 
 // LoadAndResolveHost loads fleet config from repoPath and resolves the desired state plus host metadata.
-func LoadAndResolveHost(ctx context.Context, repoPath, hostname, secretsDir string, rootless bool, opSecretReader resolver.OpSecretReader) (*resolver.ResolvedHost, error) {
-	slog.Debug("loading fleet config", "repo", repoPath)
-	repoFS := os.DirFS(repoPath)
+func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.ResolvedHost, error) {
+	slog.Debug("loading fleet config", "repo", params.RepoPath)
+	repoFS := os.DirFS(params.RepoPath)
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
 
 	secretReader := func(path string) (string, error) {
-		secretRoot, err := os.OpenRoot(secretsDir)
+		secretRoot, err := os.OpenRoot(params.SecretsDir)
 		if err != nil {
 			return "", fmt.Errorf("opening secrets dir: %w", err)
 		}
@@ -493,23 +502,23 @@ func LoadAndResolveHost(ctx context.Context, repoPath, hostname, secretsDir stri
 		return string(data), nil
 	}
 
-	slog.Debug("resolving host", "hostname", hostname)
+	slog.Debug("resolving host", "hostname", params.Hostname)
 	loadStart := time.Now()
 	r, err := resolver.New(resolver.Config{
 		FS:             repoFS,
 		Config:         cfg,
 		SecretReader:   secretReader,
-		OpSecretReader: opSecretReader,
-		Rootless:       rootless,
+		OpSecretReader: params.OpSecretReader,
+		Rootless:       params.Rootless,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating resolver: %w", err)
 	}
-	resolved, err := r.ResolveHost(ctx, hostname)
+	resolved, err := r.ResolveHost(ctx, params.Hostname)
 	if err != nil {
-		return nil, fmt.Errorf("resolving host %s: %w", hostname, err)
+		return nil, fmt.Errorf("resolving host %s: %w", params.Hostname, err)
 	}
-	slog.Debug("host resolved", "hostname", hostname, "files", len(resolved.Files), "duration", time.Since(loadStart).Round(time.Millisecond))
+	slog.Debug("host resolved", "hostname", params.Hostname, "files", len(resolved.Files), "duration", time.Since(loadStart).Round(time.Millisecond))
 	return resolved, nil
 }
 
@@ -518,7 +527,13 @@ func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, err
 	if a.cfg.RepoSubDir != "" {
 		fleetPath = filepath.Join(a.repoPath, a.cfg.RepoSubDir)
 	}
-	return LoadAndResolveHost(ctx, fleetPath, a.cfg.Hostname, a.cfg.SecretsDir, a.cfg.Rootless, a.opReader)
+	return LoadAndResolveHost(ctx, ResolveParams{
+		RepoPath:       fleetPath,
+		Hostname:       a.cfg.Hostname,
+		SecretsDir:     a.cfg.SecretsDir,
+		Rootless:       a.cfg.Rootless,
+		OpSecretReader: a.opReader,
+	})
 }
 
 // ReconcileResult contains the outcome of a single reconciliation cycle.

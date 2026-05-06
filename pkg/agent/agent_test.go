@@ -807,7 +807,7 @@ Internal=true
 		Hostname:   "test-host",
 		SecretsDir: t.TempDir(),
 	}
-	files, err := LoadAndResolve(t.Context(), repoDir, cfg.Hostname, cfg.SecretsDir, false, nil)
+	files, err := LoadAndResolve(t.Context(), ResolveParams{RepoPath: repoDir, Hostname: cfg.Hostname, SecretsDir: cfg.SecretsDir})
 	require.NoError(t, err)
 
 	st := state.NewState()
@@ -1395,7 +1395,7 @@ Internal=true
 
 	// Resolve from the subdirectory path (simulates what Agent.loadAndResolve does with RepoSubDir).
 	fleetPath := filepath.Join(repoDir, subDir)
-	files, err := LoadAndResolve(t.Context(), fleetPath, "test-host", t.TempDir(), false, nil)
+	files, err := LoadAndResolve(t.Context(), ResolveParams{RepoPath: fleetPath, Hostname: "test-host", SecretsDir: t.TempDir()})
 	require.NoError(t, err)
 	require.NotEmpty(t, files)
 	assert.Equal(t, "/etc/containers/systemd/picolet/internal.network", files[0].DestPath)
@@ -1830,7 +1830,7 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 	// Pre-seed state at the current SHA, with the secret already managed and
 	// one hook waiting for retry. The diff against this state must be empty;
 	// the noop gate must be bypassed because PendingHooks is non-empty.
-	files, err := LoadAndResolve(ctx, repoDir, "test-host", cfg.SecretsDir, false, nil)
+	files, err := LoadAndResolve(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
 	require.NoError(t, err)
 	store := state.NewStore(statePath)
 	st := state.NewState()
@@ -1899,7 +1899,7 @@ func TestTickDropsStalePendingHookNameOnRetry(t *testing.T) {
 	// Pre-seed state matching the current resolved files (so the diff is empty)
 	// AND a pending hook for a *different* secret that did not change in this
 	// tick. The pending entry must survive the tick.
-	files, err := LoadAndResolve(ctx, repoDir, "test-host", cfg.SecretsDir, false, nil)
+	files, err := LoadAndResolve(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
 	require.NoError(t, err)
 	store := state.NewStore(statePath)
 	st := state.NewState()

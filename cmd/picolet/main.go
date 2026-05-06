@@ -401,7 +401,13 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 		return nil, nil, false, err
 	}
 
-	files, err := agent.LoadAndResolve(ctx, effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)
+	files, err := agent.LoadAndResolve(ctx, agent.ResolveParams{
+		RepoPath:       effectiveRepoDir(repoDir, cfg.RepoSubDir),
+		Hostname:       hostname,
+		SecretsDir:     cfg.SecretsDir,
+		Rootless:       cfg.Rootless,
+		OpSecretReader: opReader,
+	})
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -665,7 +671,13 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		return err
 	}
 
-	resolved, err := agent.LoadAndResolveHost(ctx, effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)
+	resolved, err := agent.LoadAndResolveHost(ctx, agent.ResolveParams{
+		RepoPath:       effectiveRepoDir(repoDir, cfg.RepoSubDir),
+		Hostname:       hostname,
+		SecretsDir:     cfg.SecretsDir,
+		Rootless:       cfg.Rootless,
+		OpSecretReader: opReader,
+	})
 	if err != nil {
 		return err
 	}
