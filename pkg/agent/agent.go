@@ -467,6 +467,13 @@ type ResolveParams struct {
 	SecretsDir     string
 	Rootless       bool
 	OpSecretReader resolver.OpSecretReader
+
+	// QuadletDir, SystemdDir, and DataDir override the defaults computed by
+	// resolver.ResolveDirs. Empty fields fall back to the default. Used by
+	// tests to isolate destination paths.
+	QuadletDir string
+	SystemdDir string
+	DataDir    string
 }
 
 // LoadAndResolve loads fleet config from repoPath and resolves the desired state for the given host.
@@ -510,6 +517,9 @@ func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.Re
 		SecretReader:   secretReader,
 		OpSecretReader: params.OpSecretReader,
 		Rootless:       params.Rootless,
+		QuadletDir:     params.QuadletDir,
+		SystemdDir:     params.SystemdDir,
+		DataDir:        params.DataDir,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating resolver: %w", err)
