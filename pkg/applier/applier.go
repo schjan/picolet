@@ -75,10 +75,16 @@ type FileWriter interface {
 }
 
 // HookOutcome records the result of a single hook execution for metrics.
+// Result values:
+//   - "success"          — reload reached the unit and returned 2xx (HTTP) or signal delivered.
+//   - "failed"           — reload was attempted but errored; retryable per OnFailure.
+//   - "fallback_restart" — reload errored and on_failure: restart triggered a unit restart instead.
+//   - "skipped"          — reload was not attempted because it was redundant (dedup peer ran)
+//     or moot (unit already scheduled for restart this tick).
 type HookOutcome struct {
 	Name   string
 	Action string
-	Result string // "success", "failed", "fallback_restart", "skipped"
+	Result string
 }
 
 // ApplyResult contains the outcome of an apply operation.
@@ -367,10 +373,12 @@ func (a *Applier) runHooks(ctx context.Context, changedSecrets, changedManifests
 		}
 		key := hookExecutionKey(hook)
 		if _, ran := executed[key]; ran {
-			// Another hook with the same dedup key already ran this tick —
-			// its outcome covers this hook too. Mark attempted so a stale
-			// pending entry for this hook gets cleared by mergePendingHooks.
+			// Another hook with the same dedup key already ran this tick — its
+			// outcome covers this hook too. Mark attempted so a stale pending
+			// entry for this hook gets cleared by mergePendingHooks, and emit
+			// a "skipped" outcome so the metric reflects what happened.
 			result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
+			result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "skipped"})
 			continue
 		}
 		executed[key] = struct{}{}
@@ -388,19 +396,22 @@ func (a *Applier) runHooks(ctx context.Context, changedSecrets, changedManifests
 // tracking, and restart-set updates stay consistent across both paths.
 func dispatchHookResult(hook config.Hook, shouldRestart bool, err error, restartUnits map[string]struct{}, result *ApplyResult) {
 	result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
-	if err != nil {
-		if shouldRestart {
-			result.Errors = append(result.Errors, &HookFallbackError{Unit: hook.Unit, Err: err})
-			result.FallbackRestartedUnits = append(result.FallbackRestartedUnits, hook.Unit)
-			result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "fallback_restart"})
-		} else {
-			result.Errors = append(result.Errors, err)
-			result.RetryableErrors = append(result.RetryableErrors, err)
-			result.PendingHookNames = append(result.PendingHookNames, hook.Name)
-			result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "failed"})
-		}
-	} else {
+	switch {
+	case err == nil:
 		result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "success"})
+	case errors.Is(err, ErrHookSkipped):
+		// Intentional no-op: unit already scheduled for restart. Record but do not surface as error.
+		result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "skipped"})
+	case shouldRestart:
+		result.Errors = append(result.Errors, &HookFallbackError{Unit: hook.Unit, Err: err})
+		result.FallbackRestartedUnits = append(result.FallbackRestartedUnits, hook.Unit)
+		result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "fallback_restart"})
+	default:
+		// keep_running: classify as retryable. ErrUnitNotActive lands here too.
+		result.Errors = append(result.Errors, err)
+		result.RetryableErrors = append(result.RetryableErrors, err)
+		result.PendingHookNames = append(result.PendingHookNames, hook.Name)
+		result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "failed"})
 	}
 	if shouldRestart {
 		restartUnits[hook.Unit] = struct{}{}

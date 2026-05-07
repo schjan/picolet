@@ -832,6 +832,107 @@ func TestApplyRejectsHookHTTPRedirect(t *testing.T) {
 	assert.Equal(t, []string{"app-reload"}, result.PendingHookNames)
 }
 
+func TestApplyPendsHookOnInactiveUnit(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "inactive", SubState: "dead"}, nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
+	fw := newMemFileWriter()
+	hook := config.Hook{
+		Name:      "app-reload",
+		Secrets:   []string{"app_config"},
+		Unit:      "app.service",
+		Action:    config.HookActionHTTP,
+		Method:    http.MethodPost,
+		URL:       "http://example.test/reload",
+		OnFailure: config.HookOnFailureKeepRunning,
+	}
+	a := applier.New(sys, pod, fw, false, []config.Hook{hook})
+
+	result, err := a.Apply(t.Context(), &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "secret:app_config", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	})
+	require.NoError(t, err) // Apply itself does not return ErrApplyIncomplete; only the agent wrapper does
+	require.Len(t, result.RetryableErrors, 1)
+	require.ErrorIs(t, result.RetryableErrors[0], applier.ErrUnitNotActive)
+	assert.Equal(t, []string{"app-reload"}, result.PendingHookNames)
+	require.Len(t, result.HookOutcomes, 1)
+	assert.Equal(t, "failed", result.HookOutcomes[0].Result)
+}
+
+func TestApplySkippedOutcomeForDedupedHook(t *testing.T) {
+	t.Parallel()
+	var reloads atomic.Int32
+	client := testHTTPClient(func(_ *http.Request) int {
+		reloads.Add(1)
+		return http.StatusOK
+	})
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_rules", []byte("new"), true).Return(nil)
+	fw := newMemFileWriter()
+	hooks := []config.Hook{
+		{Name: "primary", Secrets: []string{"app_config"}, Unit: "app.service", Action: config.HookActionHTTP, Method: http.MethodPost, URL: "http://example.test/reload", OnFailure: config.HookOnFailureKeepRunning},
+		{Name: "dedup-peer", Secrets: []string{"app_rules"}, Unit: "app.service", Action: config.HookActionHTTP, Method: http.MethodPost, URL: "http://example.test/reload", OnFailure: config.HookOnFailureKeepRunning},
+	}
+	reloader := applier.NewHookReloader(sys, pod).WithHTTPClient(client).WithHealthDelay(0)
+	a := applier.New(sys, pod, fw, false, hooks, applier.WithHookReloader(reloader))
+
+	result, err := a.Apply(t.Context(), &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "secret:app_config", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"},
+			{DestPath: "secret:app_rules", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 2},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), reloads.Load())
+	require.Len(t, result.HookOutcomes, 2)
+	outcomes := map[string]string{}
+	for _, o := range result.HookOutcomes {
+		outcomes[o.Name] = o.Result
+	}
+	assert.Equal(t, "success", outcomes["primary"])
+	assert.Equal(t, "skipped", outcomes["dedup-peer"])
+}
+
+func TestApplySkippedOutcomeForRestartScheduledUnit(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys.EXPECT().RestartUnit(mock.Anything, "app.service").Return(nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
+	fw := newMemFileWriter()
+	hook := config.Hook{
+		Name:      "app-reload",
+		Secrets:   []string{"app_config"},
+		Unit:      "app.service",
+		Action:    config.HookActionHTTP,
+		Method:    http.MethodPost,
+		URL:       "http://example.test/reload",
+		OnFailure: config.HookOnFailureKeepRunning,
+	}
+	a := applier.New(sys, pod, fw, false, []config.Hook{hook})
+
+	result, err := a.Apply(t.Context(), &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "/etc/containers/systemd/app.container", Category: "container", Action: reconciler.ActionUpdate, NewContent: "[Container]\nImage=app", ServiceName: "app.service"},
+			{DestPath: "secret:app_config", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 2},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.HookOutcomes, 1)
+	assert.Equal(t, "skipped", result.HookOutcomes[0].Result)
+}
+
 func TestSecretHookReloaderHonorsHealthDelayCancellation(t *testing.T) {
 	t.Parallel()
 

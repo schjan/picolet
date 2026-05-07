@@ -2,6 +2,7 @@ package applier
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +11,18 @@ import (
 
 	"github.com/schjan/picolet/pkg/config"
 )
+
+// ErrUnitNotActive is returned when a hook fires against a unit that is not
+// in the active or activating state. The applier classifies this as a
+// retryable failure so the next tick can attempt the reload once the unit
+// comes up; without a sentinel the silent (false, nil) return path would
+// drop the reload attempt and clear the pending entry forever.
+var ErrUnitNotActive = errors.New("hook target unit not active")
+
+// ErrHookSkipped is returned when a hook is intentionally not run because it
+// is moot — the unit is already scheduled for restart this tick. The applier
+// records a "skipped" outcome and leaves no error on the result.
+var ErrHookSkipped = errors.New("hook skipped")
 
 const (
 	defaultReloadTimeout     = 5 * time.Second
@@ -64,22 +77,20 @@ func (r *HookReloader) WithHealthDelay(delay time.Duration) *HookReloader {
 }
 
 // Run executes a hook. The bool return indicates whether the caller should
-// restart hook.Unit after hook execution.
+// restart hook.Unit after hook execution. ErrUnitNotActive and ErrHookSkipped
+// are recognized by dispatchHookResult and mapped to the retryable and
+// skipped outcomes respectively.
 func (r *HookReloader) Run(ctx context.Context, hook config.Hook, restartScheduled map[string]struct{}) (bool, error) {
 	if _, scheduled := restartScheduled[hook.Unit]; scheduled && hook.Action != config.HookActionRestart {
 		slog.Info("skipping hook, unit already scheduled for restart", "hook", hook.Name, "unit", hook.Unit)
-		return false, nil
+		return false, ErrHookSkipped
 	}
 	if hook.Action == config.HookActionRestart {
 		slog.Info("hook scheduled restart", "hook", hook.Name, "unit", hook.Unit)
 		return true, nil
 	}
-	active, err := r.unitActive(ctx, hook)
-	if err != nil {
+	if err := r.unitActive(ctx, hook); err != nil {
 		return hook.FallbackToRestart(), err
-	}
-	if !active {
-		return false, nil
 	}
 	switch hook.Action {
 	case config.HookActionHTTP:
@@ -91,22 +102,25 @@ func (r *HookReloader) Run(ctx context.Context, hook config.Hook, restartSchedul
 	}
 }
 
-func (r *HookReloader) unitActive(ctx context.Context, hook config.Hook) (bool, error) {
+// unitActive reports whether hook.Unit is in a state that can receive a
+// reload. Returns ErrUnitNotActive (retryable) for inactive/failed/etc.
+// states and a wrapped D-Bus error for transport failures.
+func (r *HookReloader) unitActive(ctx context.Context, hook config.Hook) error {
 	status, err := r.systemd.GetUnitStatus(ctx, hook.Unit)
 	if err != nil {
-		return false, fmt.Errorf("hook %s: checking unit %s: %w", hook.Name, hook.Unit, err)
+		return fmt.Errorf("hook %s: checking unit %s: %w", hook.Name, hook.Unit, err)
 	}
 	switch status.ActiveState {
 	case "active", "activating":
-		return true, nil
+		return nil
 	default:
-		slog.Info("skipping hook, unit is not running",
+		slog.Info("hook target unit not active, will retry",
 			"hook", hook.Name,
 			"unit", hook.Unit,
 			"active_state", status.ActiveState,
 			"sub_state", status.SubState,
 		)
-		return false, nil
+		return fmt.Errorf("hook %s: %w (state=%s/%s)", hook.Name, ErrUnitNotActive, status.ActiveState, status.SubState)
 	}
 }
 
