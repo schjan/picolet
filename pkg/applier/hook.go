@@ -12,16 +12,13 @@ import (
 	"github.com/schjan/picolet/pkg/config"
 )
 
-// ErrUnitNotActive is returned when a hook fires against a unit that is not
-// in the active or activating state. The applier classifies this as a
-// retryable failure so the next tick can attempt the reload once the unit
-// comes up; without a sentinel the silent (false, nil) return path would
-// drop the reload attempt and clear the pending entry forever.
+// ErrUnitNotActive is returned when the hook target unit is not active or
+// activating. The applier treats this as retryable so the reload is
+// reattempted on the next tick.
 var ErrUnitNotActive = errors.New("hook target unit not active")
 
-// ErrHookSkipped is returned when a hook is intentionally not run because it
-// is moot — the unit is already scheduled for restart this tick. The applier
-// records a "skipped" outcome and leaves no error on the result.
+// ErrHookSkipped is returned when the unit is already scheduled for restart
+// this tick, making the hook a moot no-op.
 var ErrHookSkipped = errors.New("hook skipped")
 
 const (
@@ -57,15 +54,17 @@ func rejectRedirects(req *http.Request, _ []*http.Request) error {
 	return fmt.Errorf("hook redirected to %s: redirects are not permitted", req.URL.Redacted())
 }
 
-// WithHTTPClient overrides the HTTP client used by reload hooks. CheckRedirect
-// is reinstalled on the supplied client so test-supplied clients still reject
-// redirects unless the caller explicitly opts out.
+// WithHTTPClient overrides the HTTP client used by reload hooks. The caller's
+// client is shallow-copied before CheckRedirect is set so tests passing a
+// shared client do not have rejectRedirects leak back into the caller's
+// instance.
 func (r *HookReloader) WithHTTPClient(client *http.Client) *HookReloader {
 	if client != nil {
-		if client.CheckRedirect == nil {
-			client.CheckRedirect = rejectRedirects
+		cp := *client
+		if cp.CheckRedirect == nil {
+			cp.CheckRedirect = rejectRedirects
 		}
-		r.httpClient = client
+		r.httpClient = &cp
 	}
 	return r
 }

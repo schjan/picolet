@@ -207,8 +207,8 @@ func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyRe
 // hook names whose triggers are not in the changeset. Pending hooks share the
 // per-tick dedup map with changeset-driven hooks, so a pending hook whose
 // hookExecutionKey matches a hook just run is recorded as "skipped" instead
-// of producing a duplicate side-effect. Stale pending names (no matching
-// configured hook) are dropped via dispatchHookResult bookkeeping.
+// of producing a duplicate side-effect. Stale pending names (hook removed
+// from config) are marked attempted so mergePendingHooks drops them.
 func (a *Applier) ApplyWithPending(ctx context.Context, cs *reconciler.Changeset, pendingNames []string) (*ApplyResult, error) {
 	result := &ApplyResult{}
 	sorted := slices.Clone(cs.Changes)
@@ -437,8 +437,7 @@ func (a *Applier) runOneHook(
 ) {
 	key := hookExecutionKey(hook)
 	if _, ran := executed[key]; ran {
-		result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
-		result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "skipped"})
+		dispatchHookResult(hook, false, ErrHookSkipped, restartUnits, result)
 		return
 	}
 	executed[key] = struct{}{}
@@ -450,8 +449,6 @@ func (a *Applier) runOneHook(
 }
 
 // dispatchHookResult records a hook's outcome on result and updates restartUnits.
-// Shared by runHooks and RunPendingHooks so error classification, attempt
-// tracking, and restart-set updates stay consistent across both paths.
 func dispatchHookResult(hook config.Hook, shouldRestart bool, err error, restartUnits map[string]struct{}, result *ApplyResult) {
 	result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
 	switch {

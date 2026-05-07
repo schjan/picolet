@@ -509,46 +509,41 @@ func unitServiceName(unit *parser.UnitFile) string {
 	return name + ".service"
 }
 
+// findQuadletFile returns the ResolvedFile whose destination filename matches
+// quadletName, or nil if none. Quadlet filename is the source basename minus
+// any .tmpl suffix (e.g. "app.container").
+func findQuadletFile(quadletName string, files []ResolvedFile) *ResolvedFile {
+	for i := range files {
+		if destFilename(files[i].SrcPath) == quadletName {
+			return &files[i]
+		}
+	}
+	return nil
+}
+
 // validateSignalHookContainer cross-checks a signal-action hook's Container
 // against the Quadlet [Container] ContainerName= when the unit is
-// Quadlet-resolvable and the field is explicitly set. Returns nil for
-// non-signal hooks, non-Quadlet units, when ContainerName= is unset, or
-// when no matching file exists (resolveHookQuadletUnit will surface that
-// case with a clearer error). Returns a wrapped error when the declared
-// Container does not match.
-//
-// Must be called BEFORE resolveHookQuadletUnit rewrites hook.Unit, since
-// the lookup compares against destFilename(files[i].SrcPath) (the original
-// Quadlet filename like "app.container").
+// Quadlet-resolvable and the field is explicitly set. Must be called BEFORE
+// resolveHookQuadletUnit rewrites hook.Unit, since the lookup compares against
+// the original Quadlet filename (e.g. "app.container").
 func validateSignalHookContainer(hook config.Hook, files []ResolvedFile) error {
-	if hook.Action != config.HookActionSignal {
+	if hook.Action != config.HookActionSignal || !isQuadletUnit(hook.Unit) {
 		return nil
 	}
-	if !isQuadletUnit(hook.Unit) {
-		slog.Debug("signal hook on non-Quadlet unit, container name not validated",
+	file := findQuadletFile(hook.Unit, files)
+	if file == nil || file.ParsedUnit == nil {
+		return nil
+	}
+	declared, ok := file.ParsedUnit.LookupLast("Container", "ContainerName")
+	declared = strings.TrimSpace(declared)
+	if !ok || declared == "" {
+		slog.Debug("Quadlet has no explicit ContainerName, container not validated",
 			"hook", hook.Name, "unit", hook.Unit, "container", hook.Container)
 		return nil
 	}
-	for i := range files {
-		if destFilename(files[i].SrcPath) != hook.Unit {
-			continue
-		}
-		unit := files[i].ParsedUnit
-		if unit == nil {
-			return nil
-		}
-		declared, ok := unit.LookupLast("Container", "ContainerName")
-		declared = strings.TrimSpace(declared)
-		if !ok || declared == "" {
-			slog.Debug("Quadlet has no explicit ContainerName, container not validated",
-				"hook", hook.Name, "unit", hook.Unit, "container", hook.Container)
-			return nil
-		}
-		if declared != hook.Container {
-			return fmt.Errorf("hook %s: container %q does not match Quadlet ContainerName %q for unit %s",
-				hook.Name, hook.Container, declared, hook.Unit)
-		}
-		return nil
+	if declared != hook.Container {
+		return fmt.Errorf("hook %s: container %q does not match Quadlet ContainerName %q for unit %s",
+			hook.Name, hook.Container, declared, hook.Unit)
 	}
 	return nil
 }
@@ -557,10 +552,8 @@ func validateSignalHookContainer(hook config.Hook, files []ResolvedFile) error {
 // and returns its ServiceName (computed by the Podman library via GetUnitServiceName).
 // Returns an error if no matching file exists in the resolved set.
 func resolveHookQuadletUnit(quadletName string, files []ResolvedFile) (string, error) {
-	for i := range files {
-		if destFilename(files[i].SrcPath) == quadletName && files[i].ServiceName != "" {
-			return files[i].ServiceName, nil
-		}
+	if file := findQuadletFile(quadletName, files); file != nil && file.ServiceName != "" {
+		return file.ServiceName, nil
 	}
 	return "", fmt.Errorf("unit %q: no matching quadlet file found in assigned bundles", quadletName)
 }
