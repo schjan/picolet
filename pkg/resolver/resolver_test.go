@@ -710,6 +710,7 @@ hooks:
 	require.ErrorContains(t, err, "no matching quadlet file found")
 }
 
+//nolint:funlen // table-driven test with three quadlet fixtures inline
 func TestBuildHooksValidatesSignalContainerName(t *testing.T) {
 	t.Parallel()
 

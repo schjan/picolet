@@ -271,6 +271,7 @@ func TestRetryPendingHooksClearsListOnSuccess(t *testing.T) {
 	assert.Empty(t, loaded.PendingHooks, "successful retry should clear pending list")
 }
 
+//nolint:funlen // table-driven test with explicit cases for every-tick retry semantics
 func TestMergePendingHooksKeepsUnattemptedAndAddsFailures(t *testing.T) {
 	t.Parallel()
 
