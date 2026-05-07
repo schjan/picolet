@@ -104,16 +104,14 @@ func (h *Hook) normalizeSecrets() error {
 func (h *Hook) normalizeManifests() error {
 	for i, manifest := range h.Manifests {
 		m := strings.TrimSpace(manifest)
-		if m == "" {
-			return fmt.Errorf("%s: manifests[%d] must not be empty", h.Name, i)
+		cleaned := path.Clean(m)
+		if m == "" || m != cleaned ||
+			cleaned == "." || cleaned == ".." ||
+			strings.HasPrefix(cleaned, "/") ||
+			strings.HasPrefix(cleaned, "../") {
+			return fmt.Errorf("%s: manifests[%d]: %q must be a clean relative path", h.Name, i, manifest)
 		}
-		if strings.HasPrefix(m, "/") {
-			return fmt.Errorf("%s: manifests[%d]: must be a relative path (no leading /)", h.Name, i)
-		}
-		if strings.Contains(m, "..") {
-			return fmt.Errorf("%s: manifests[%d]: path traversal (..) is not allowed", h.Name, i)
-		}
-		h.Manifests[i] = path.Clean(m)
+		h.Manifests[i] = cleaned
 	}
 	return nil
 }

@@ -316,3 +316,42 @@ func TestSecretHookNormalizeValidatesURLScheme(t *testing.T) {
 		})
 	}
 }
+
+func TestHookNormalizeValidatesManifests(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		manifest string
+		wantErr  string
+	}{
+		{name: "simple file", manifest: "scrape.yml"},
+		{name: "nested file", manifest: "config/scrape.yml"},
+		{name: "double dot in filename allowed", manifest: "foo..bar/baz.yml"},
+		{name: "absolute path rejected", manifest: "/etc/passwd", wantErr: "must be a clean relative path"},
+		{name: "traversal rejected", manifest: "../etc/passwd", wantErr: "must be a clean relative path"},
+		{name: "embedded traversal rejected", manifest: "a/../b", wantErr: "must be a clean relative path"},
+		{name: "double slash rejected", manifest: "a//b.yml", wantErr: "must be a clean relative path"},
+		{name: "dot rejected", manifest: ".", wantErr: "must be a clean relative path"},
+		{name: "empty rejected", manifest: "", wantErr: "must be a clean relative path"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := Hook{
+				Name:      "hook",
+				Manifests: []string{tt.manifest},
+				Unit:      "app.service",
+				Action:    HookActionRestart,
+			}
+			err := h.Normalize()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}

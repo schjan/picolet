@@ -76,9 +76,9 @@ func (r *HookReloader) WithHealthDelay(delay time.Duration) *HookReloader {
 }
 
 // Run executes a hook. The bool return indicates whether the caller should
-// restart hook.Unit after hook execution. ErrUnitNotActive and ErrHookSkipped
-// are recognized by dispatchHookResult and mapped to the retryable and
-// skipped outcomes respectively.
+// restart hook.Unit after hook execution. Returns ErrHookSkipped when the
+// unit is already scheduled for restart this tick, and ErrUnitNotActive
+// when the unit is not in an active/activating state.
 func (r *HookReloader) Run(ctx context.Context, hook config.Hook, restartScheduled map[string]struct{}) (bool, error) {
 	if _, scheduled := restartScheduled[hook.Unit]; scheduled && hook.Action != config.HookActionRestart {
 		slog.Info("skipping hook, unit already scheduled for restart", "hook", hook.Name, "unit", hook.Unit)

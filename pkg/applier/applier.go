@@ -75,17 +75,26 @@ type FileWriter interface {
 }
 
 // HookOutcome records the result of a single hook execution for metrics.
-// Result values:
-//   - "success"          — reload reached the unit and returned 2xx (HTTP) or signal delivered.
-//   - "failed"           — reload was attempted but errored; retryable per OnFailure.
-//   - "fallback_restart" — reload errored and on_failure: restart triggered a unit restart instead.
-//   - "skipped"          — reload was not attempted because it was redundant (dedup peer ran)
-//     or moot (unit already scheduled for restart this tick).
+// Result values are the HookResult* constants below; they are also used as
+// label values on the picolet_hook_total Prometheus metric, so keep them
+// stable.
 type HookOutcome struct {
 	Name   string
 	Action string
 	Result string
 }
+
+const (
+	// HookResultSuccess: reload reached the unit and returned 2xx (HTTP) or signal delivered.
+	HookResultSuccess = "success"
+	// HookResultFailed: reload was attempted but errored; retryable per OnFailure.
+	HookResultFailed = "failed"
+	// HookResultFallbackRestart: reload errored and on_failure: restart triggered a unit restart instead.
+	HookResultFallbackRestart = "fallback_restart"
+	// HookResultSkipped: reload was not attempted because it was redundant (dedup peer ran)
+	// or moot (unit already scheduled for restart this tick).
+	HookResultSkipped = "skipped"
+)
 
 // ApplyResult contains the outcome of an apply operation.
 type ApplyResult struct {
@@ -451,34 +460,31 @@ func (a *Applier) runOneHook(
 // dispatchHookResult records a hook's outcome on result and updates restartUnits.
 func dispatchHookResult(hook config.Hook, shouldRestart bool, err error, restartUnits map[string]struct{}, result *ApplyResult) {
 	result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
+	outcome := HookOutcome{Name: hook.Name, Action: hook.Action}
 	switch {
 	case err == nil:
-		result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "success"})
+		outcome.Result = HookResultSuccess
 	case errors.Is(err, ErrHookSkipped):
-		// Intentional no-op: unit already scheduled for restart. Record but do not surface as error.
-		result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "skipped"})
+		outcome.Result = HookResultSkipped
 	case shouldRestart:
 		result.Errors = append(result.Errors, &HookFallbackError{Unit: hook.Unit, Err: err})
 		result.FallbackRestartedUnits = append(result.FallbackRestartedUnits, hook.Unit)
-		result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "fallback_restart"})
+		outcome.Result = HookResultFallbackRestart
 	default:
 		// keep_running: classify as retryable. ErrUnitNotActive lands here too.
 		result.Errors = append(result.Errors, err)
 		result.RetryableErrors = append(result.RetryableErrors, err)
 		result.PendingHookNames = append(result.PendingHookNames, hook.Name)
-		result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "failed"})
+		outcome.Result = HookResultFailed
 	}
+	result.HookOutcomes = append(result.HookOutcomes, outcome)
 	if shouldRestart {
 		restartUnits[hook.Unit] = struct{}{}
 	}
 }
 
-// RunPendingHooks re-executes hooks named in pendingNames without a changeset.
-// Still required by retryPendingHooks: the agent's noop-fast-path branch
-// (changeset.HasChanges() == false but len(st.PendingHooks) > 0) bypasses
-// applyWithRollback entirely, so RunPendingHooks is the only retry path
-// reachable on those ticks. ApplyWithPending handles every-tick retry on
-// non-noop ticks.
+// RunPendingHooks re-executes the named hooks without a changeset. Used on
+// ticks where the diff is otherwise empty but pending hooks remain.
 func (a *Applier) RunPendingHooks(ctx context.Context, pendingNames []string) *ApplyResult {
 	result := &ApplyResult{}
 	if len(pendingNames) == 0 {
