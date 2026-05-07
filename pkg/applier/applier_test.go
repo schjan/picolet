@@ -791,6 +791,47 @@ func TestRunPendingHooksKeepsFailedHookInPending(t *testing.T) {
 	assert.Equal(t, []string{"app-reload"}, result.PendingHookNames)
 }
 
+func TestApplyRejectsHookHTTPRedirect(t *testing.T) {
+	t.Parallel()
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"http://elsewhere.test/reload"}},
+			Body:       io.NopCloser(http.NoBody),
+			Request:    req,
+		}, nil
+	})}
+
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
+	fw := newMemFileWriter()
+	hook := config.Hook{
+		Name:      "app-reload",
+		Secrets:   []string{"app_config"},
+		Unit:      "app.service",
+		Action:    config.HookActionHTTP,
+		Method:    http.MethodPost,
+		URL:       "http://example.test/reload",
+		OnFailure: config.HookOnFailureKeepRunning,
+	}
+	reloader := applier.NewHookReloader(sys, pod).WithHTTPClient(client).WithHealthDelay(0)
+	a := applier.New(sys, pod, fw, false, []config.Hook{hook}, applier.WithHookReloader(reloader))
+
+	result, err := a.Apply(t.Context(), &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "secret:app_config", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.RetryableErrors, 1)
+	assert.Contains(t, result.RetryableErrors[0].Error(), "redirect")
+	assert.Contains(t, result.RetryableErrors[0].Error(), "elsewhere.test")
+	assert.Equal(t, []string{"app-reload"}, result.PendingHookNames)
+}
+
 func TestSecretHookReloaderHonorsHealthDelayCancellation(t *testing.T) {
 	t.Parallel()
 

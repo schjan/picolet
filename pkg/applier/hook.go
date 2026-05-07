@@ -27,16 +27,31 @@ type HookReloader struct {
 // NewHookReloader creates a hook runner with production defaults.
 func NewHookReloader(systemd SystemdManager, podman PodmanClient) *HookReloader {
 	return &HookReloader{
-		systemd:     systemd,
-		podman:      podman,
-		httpClient:  &http.Client{Timeout: defaultReloadTimeout},
+		systemd: systemd,
+		podman:  podman,
+		httpClient: &http.Client{
+			Timeout:       defaultReloadTimeout,
+			CheckRedirect: rejectRedirects,
+		},
 		healthDelay: defaultReloadHealthDelay,
 	}
 }
 
-// WithHTTPClient overrides the HTTP client used by reload hooks.
+// rejectRedirects refuses any 3xx response. validateHookHTTPURL only checks the
+// user-declared URL; without this guard a reload endpoint that returned 3xx
+// would silently follow up to ten hops into arbitrary internal targets.
+func rejectRedirects(req *http.Request, _ []*http.Request) error {
+	return fmt.Errorf("hook redirected to %s: redirects are not permitted", req.URL.Redacted())
+}
+
+// WithHTTPClient overrides the HTTP client used by reload hooks. CheckRedirect
+// is reinstalled on the supplied client so test-supplied clients still reject
+// redirects unless the caller explicitly opts out.
 func (r *HookReloader) WithHTTPClient(client *http.Client) *HookReloader {
 	if client != nil {
+		if client.CheckRedirect == nil {
+			client.CheckRedirect = rejectRedirects
+		}
 		r.httpClient = client
 	}
 	return r
