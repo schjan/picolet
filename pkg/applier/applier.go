@@ -188,7 +188,6 @@ func WithHookReloader(reloader *HookReloader) Option {
 	}
 }
 
-// Apply applies the changeset in phased order.
 // applyPhaseResult holds the categorized change sets produced by applyPhase.
 type applyPhaseResult struct {
 	ChangedUnits     map[string]struct{}
@@ -197,7 +196,20 @@ type applyPhaseResult struct {
 	NeedsReload      bool
 }
 
+// Apply applies the changeset in phased order. Equivalent to ApplyWithPending
+// with no pending-hook retries — used by the CLI dry-run / one-shot apply
+// where there is no agent-level pending-hook bookkeeping.
 func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyResult, error) {
+	return a.ApplyWithPending(ctx, cs, nil)
+}
+
+// ApplyWithPending applies the changeset and additionally retries any pending
+// hook names whose triggers are not in the changeset. Pending hooks share the
+// per-tick dedup map with changeset-driven hooks, so a pending hook whose
+// hookExecutionKey matches a hook just run is recorded as "skipped" instead
+// of producing a duplicate side-effect. Stale pending names (no matching
+// configured hook) are dropped via dispatchHookResult bookkeeping.
+func (a *Applier) ApplyWithPending(ctx context.Context, cs *reconciler.Changeset, pendingNames []string) (*ApplyResult, error) {
 	result := &ApplyResult{}
 	sorted := slices.Clone(cs.Changes)
 	slices.SortFunc(sorted, func(x, y reconciler.Change) int {
@@ -211,7 +223,7 @@ func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyRe
 	if a.dryRun {
 		return result, nil
 	}
-	hookRestartUnits := a.runHooks(ctx, phase.ChangedSecrets, phase.ChangedManifests, phase.ChangedUnits, result)
+	hookRestartUnits := a.runHooksWithPending(ctx, phase.ChangedSecrets, phase.ChangedManifests, phase.ChangedUnits, pendingNames, result)
 	maps.Copy(phase.ChangedUnits, hookRestartUnits)
 	return result, a.restartUnits(ctx, phase.ChangedUnits, phase.NeedsReload, result)
 }
@@ -354,41 +366,87 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]stru
 	return nil
 }
 
-func (a *Applier) runHooks(ctx context.Context, changedSecrets, changedManifests, restartScheduled map[string]struct{}, result *ApplyResult) map[string]struct{} {
-	// Early return leaves AttemptedHookNames nil, which tells mergePendingHooks
-	// that no hooks ran this tick — preserving any existing pending entries.
-	if len(a.hooks) == 0 || (len(changedSecrets) == 0 && len(changedManifests) == 0) {
+// runHooksWithPending executes hooks in two passes that share a per-tick dedup
+// map: the first pass walks hooks whose triggers are in the changeset; the
+// second pass retries pending names that did not appear in the first. A
+// pending hook whose hookExecutionKey matches a hook just run lands as
+// "skipped" via runOneHook.
+//
+//nolint:cyclop // two-pass loop with shared dedup is clearer as one function
+func (a *Applier) runHooksWithPending(
+	ctx context.Context,
+	changedSecrets, changedManifests, restartScheduled map[string]struct{},
+	pendingNames []string,
+	result *ApplyResult,
+) map[string]struct{} {
+	if len(changedSecrets) == 0 && len(changedManifests) == 0 && len(pendingNames) == 0 {
+		return nil
+	}
+	if len(a.hooks) == 0 && len(pendingNames) == 0 {
 		return nil
 	}
 	restartUnits := make(map[string]struct{})
 	executed := make(map[string]struct{})
-	// restartSet starts as the Apply-phase scheduled units and grows as each
-	// hook schedules an additional restart. Hoisted out of the loop so we
-	// allocate once instead of N+1 times per hook batch.
+	firstPass := make(map[string]struct{})
 	restartSet := make(map[string]struct{}, len(restartScheduled))
 	maps.Copy(restartSet, restartScheduled)
+
+	// First pass: hooks whose trigger is in this tick's changeset.
 	for _, hook := range a.hooks {
 		if !hookMatchesChange(hook, changedSecrets, changedManifests) {
 			continue
 		}
-		key := hookExecutionKey(hook)
-		if _, ran := executed[key]; ran {
-			// Another hook with the same dedup key already ran this tick — its
-			// outcome covers this hook too. Mark attempted so a stale pending
-			// entry for this hook gets cleared by mergePendingHooks, and emit
-			// a "skipped" outcome so the metric reflects what happened.
-			result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
-			result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "skipped"})
+		firstPass[hook.Name] = struct{}{}
+		a.runOneHook(ctx, hook, restartSet, executed, restartUnits, result)
+	}
+
+	// Second pass: pending names not already attempted in the first pass.
+	if len(pendingNames) == 0 {
+		return restartUnits
+	}
+	byName := make(map[string]config.Hook, len(a.hooks))
+	for _, h := range a.hooks {
+		byName[h.Name] = h
+	}
+	for _, name := range pendingNames {
+		if _, already := firstPass[name]; already {
 			continue
 		}
-		executed[key] = struct{}{}
-		shouldRestart, err := a.reloader.Run(ctx, hook, restartSet)
-		dispatchHookResult(hook, shouldRestart, err, restartUnits, result)
-		if shouldRestart {
-			restartSet[hook.Unit] = struct{}{}
+		hook, ok := byName[name]
+		if !ok {
+			// Hook was removed from config since the last failure. Mark
+			// attempted (no outcome) so mergePendingHooks drops it.
+			slog.Info("pending hook no longer in config, dropping", "hook", name)
+			result.AttemptedHookNames = append(result.AttemptedHookNames, name)
+			continue
 		}
+		a.runOneHook(ctx, hook, restartSet, executed, restartUnits, result)
 	}
 	return restartUnits
+}
+
+// runOneHook dispatches a single hook through the dedup map and the shared
+// dispatchHookResult bookkeeping.
+func (a *Applier) runOneHook(
+	ctx context.Context,
+	hook config.Hook,
+	restartSet map[string]struct{},
+	executed map[string]struct{},
+	restartUnits map[string]struct{},
+	result *ApplyResult,
+) {
+	key := hookExecutionKey(hook)
+	if _, ran := executed[key]; ran {
+		result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
+		result.HookOutcomes = append(result.HookOutcomes, HookOutcome{Name: hook.Name, Action: hook.Action, Result: "skipped"})
+		return
+	}
+	executed[key] = struct{}{}
+	shouldRestart, err := a.reloader.Run(ctx, hook, restartSet)
+	dispatchHookResult(hook, shouldRestart, err, restartUnits, result)
+	if shouldRestart {
+		restartSet[hook.Unit] = struct{}{}
+	}
 }
 
 // dispatchHookResult records a hook's outcome on result and updates restartUnits.
@@ -419,37 +477,17 @@ func dispatchHookResult(hook config.Hook, shouldRestart bool, err error, restart
 }
 
 // RunPendingHooks re-executes hooks named in pendingNames without a changeset.
-// Hook names not present in the configured hooks are silently dropped (the
-// hook was removed from config since the last failure). Hooks that fall back
-// to restart cause the affected unit to be restarted inline (no daemon-reload —
-// the file system already matches state, only the unit config changed).
+// Still required by retryPendingHooks: the agent's noop-fast-path branch
+// (changeset.HasChanges() == false but len(st.PendingHooks) > 0) bypasses
+// applyWithRollback entirely, so RunPendingHooks is the only retry path
+// reachable on those ticks. ApplyWithPending handles every-tick retry on
+// non-noop ticks.
 func (a *Applier) RunPendingHooks(ctx context.Context, pendingNames []string) *ApplyResult {
 	result := &ApplyResult{}
 	if len(pendingNames) == 0 {
 		return result
 	}
-	// byName may be empty if the operator removed all hooks from config since
-	// the last failure — the loop below still marks every pending name attempted
-	// so mergePendingHooks can drop them.
-	byName := make(map[string]config.Hook, len(a.hooks))
-	for _, h := range a.hooks {
-		byName[h.Name] = h
-	}
-
-	restartUnits := make(map[string]struct{})
-	for _, name := range pendingNames {
-		hook, ok := byName[name]
-		if !ok {
-			// Mark stale names as attempted so mergePendingHooks drops them
-			// instead of carrying them forward forever.
-			slog.Info("pending hook no longer in config, dropping", "hook", name)
-			result.AttemptedHookNames = append(result.AttemptedHookNames, name)
-			continue
-		}
-		shouldRestart, err := a.reloader.Run(ctx, hook, restartUnits)
-		dispatchHookResult(hook, shouldRestart, err, restartUnits, result)
-	}
-
+	restartUnits := a.runHooksWithPending(ctx, nil, nil, nil, pendingNames, result)
 	if !a.dryRun {
 		a.restartFallbackUnits(ctx, restartUnits, result)
 	}

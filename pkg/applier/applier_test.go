@@ -933,6 +933,49 @@ func TestApplySkippedOutcomeForRestartScheduledUnit(t *testing.T) {
 	assert.Equal(t, "skipped", result.HookOutcomes[0].Result)
 }
 
+func TestApplyDeduplicatesPendingAgainstCurrentTick(t *testing.T) {
+	t.Parallel()
+	var reloads atomic.Int32
+	client := testHTTPClient(func(_ *http.Request) int {
+		reloads.Add(1)
+		return http.StatusOK
+	})
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_rules", []byte("new"), true).Return(nil)
+	fw := newMemFileWriter()
+
+	// Two hooks with the SAME dedup key (same unit, same URL, same method).
+	// In this tick the changeset triggers only the second one; the first is
+	// pending from a previous tick. The second's success must clear the
+	// first's pending entry by sharing the dedup map.
+	hooks := []config.Hook{
+		{Name: "stale-pending", Secrets: []string{"app_config"}, Unit: "app.service", Action: config.HookActionHTTP, Method: http.MethodPost, URL: "http://example.test/reload", OnFailure: config.HookOnFailureKeepRunning},
+		{Name: "current-tick", Secrets: []string{"app_rules"}, Unit: "app.service", Action: config.HookActionHTTP, Method: http.MethodPost, URL: "http://example.test/reload", OnFailure: config.HookOnFailureKeepRunning},
+	}
+	reloader := applier.NewHookReloader(sys, pod).WithHTTPClient(client).WithHealthDelay(0)
+	a := applier.New(sys, pod, fw, false, hooks, applier.WithHookReloader(reloader))
+
+	result, err := a.ApplyWithPending(t.Context(), &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "secret:app_rules", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	}, []string{"stale-pending"})
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), reloads.Load(), "shared dedup key means only one HTTP call")
+	assert.ElementsMatch(t, []string{"current-tick", "stale-pending"}, result.AttemptedHookNames)
+	require.Len(t, result.HookOutcomes, 2)
+	outcomes := map[string]string{}
+	for _, o := range result.HookOutcomes {
+		outcomes[o.Name] = o.Result
+	}
+	assert.Equal(t, "success", outcomes["current-tick"])
+	assert.Equal(t, "skipped", outcomes["stale-pending"])
+	assert.Empty(t, result.PendingHookNames)
+}
+
 func TestSecretHookReloaderHonorsHealthDelayCancellation(t *testing.T) {
 	t.Parallel()
 

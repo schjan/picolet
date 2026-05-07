@@ -177,7 +177,7 @@ func TestApplyWithRollbackReturnsRetryableHookErrorsWithoutRollback(t *testing.T
 		Container: "app",
 		Signal:    "HUP",
 		OnFailure: config.HookOnFailureKeepRunning,
-	}})
+	}}, nil)
 
 	require.ErrorIs(t, err, applier.ErrApplyIncomplete)
 	require.NotNil(t, result)
@@ -302,13 +302,22 @@ func TestMergePendingHooksKeepsUnattemptedAndAddsFailures(t *testing.T) {
 			want: map[string]int{"hook-a": 3},
 		},
 		{
-			name: "previously-pending hook for unrelated secret stays",
+			name: "previously-pending hook is attempted each tick",
 			old:  map[string]int{"hook-a": 1, "hook-b": 1},
 			result: &applier.ApplyResult{
-				AttemptedHookNames: []string{"hook-b"}, // only hook-b's secret changed
-				PendingHookNames:   nil,                // hook-b succeeded
+				AttemptedHookNames: []string{"hook-a", "hook-b"}, // both attempted via every-tick retry
+				PendingHookNames:   nil,                          // both succeeded
 			},
-			want: map[string]int{"hook-a": 1},
+			want: nil,
+		},
+		{
+			name: "previously-pending hook fails again, count increments",
+			old:  map[string]int{"hook-a": 1},
+			result: &applier.ApplyResult{
+				AttemptedHookNames: []string{"hook-a"},
+				PendingHookNames:   []string{"hook-a"},
+			},
+			want: map[string]int{"hook-a": 2},
 		},
 		{
 			name: "new failure added even when not previously pending",
@@ -1966,4 +1975,74 @@ func TestTickDoesNotIncrementFailedCountOnRetryableHookError(t *testing.T) {
 	assert.Equal(t, map[string]int{"app-sighup": 1}, loaded.PendingHooks)
 	assert.NotEmpty(t, loaded.ManagedFiles, "successfully-applied secret must be recorded in state")
 	assert.NotEmpty(t, loaded.AppliedSHA, "files were applied — SHA must be marked so gitpoll quiets between retry ticks")
+}
+
+func TestApplyWithRollbackRunsPendingHooksAlongsideChangeset(t *testing.T) {
+	t.Parallel()
+	sys, pod, fw := newBareMocks(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_rules", []byte("new"), true).Return(nil)
+	pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(nil)
+	// NOTE: no DaemonReload expected — secret-only changesets do not set NeedsReload.
+
+	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
+
+	hooks := []config.Hook{
+		{Name: "stale-pending", Secrets: []string{"app_config"}, Unit: "app.service", Action: config.HookActionSignal, Container: "app", Signal: "HUP", OnFailure: config.HookOnFailureKeepRunning},
+		// no current-tick hooks for app_rules; verifying pending fires alongside an unrelated changeset
+	}
+	changeset := &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "secret:app_rules", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	}
+
+	result, err := a.applyWithRollback(t.Context(), "head-sha", changeset, hooks, []string{"stale-pending"})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"stale-pending"}, result.AttemptedHookNames,
+		"pending hook ran even though its trigger was not in the changeset")
+	require.Len(t, result.HookOutcomes, 1)
+	assert.Equal(t, "success", result.HookOutcomes[0].Result)
+}
+
+func TestPendingHookExhaustsBudgetAfterMaxRetries(t *testing.T) {
+	t.Parallel()
+	hooks := []config.Hook{{
+		Name:       "app-reload",
+		Secrets:    []string{"app_config"},
+		Unit:       "app.service",
+		Action:     config.HookActionSignal,
+		Container:  "app",
+		Signal:     "HUP",
+		OnFailure:  config.HookOnFailureKeepRunning,
+		MaxRetries: 3,
+	}}
+	pending := map[string]int{"app-reload": 3}
+
+	got := enforceRetryBudget(pending, hooks)
+	assert.Empty(t, got, "hook exhausted retry budget should be dropped")
+}
+
+func TestMergeThenEnforceBudgetDropsAtLimit(t *testing.T) {
+	t.Parallel()
+	hooks := []config.Hook{{
+		Name:       "app-reload",
+		Secrets:    []string{"app_config"},
+		Unit:       "app.service",
+		Action:     config.HookActionSignal,
+		Container:  "app",
+		Signal:     "HUP",
+		OnFailure:  config.HookOnFailureKeepRunning,
+		MaxRetries: 3,
+	}}
+
+	old := map[string]int{"app-reload": 2}
+	result := &applier.ApplyResult{
+		AttemptedHookNames: []string{"app-reload"},
+		PendingHookNames:   []string{"app-reload"},
+	}
+
+	got := enforceRetryBudget(mergePendingHooks(old, result), hooks)
+	assert.Empty(t, got, "count reaches MaxRetries=3, budget drops the entry on the same tick")
 }

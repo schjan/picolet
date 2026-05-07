@@ -639,7 +639,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset, resolved.Hooks)
+	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset, resolved.Hooks, pendingHookNames(st.PendingHooks))
 	recordHookMetrics(applyResult)
 	if errors.Is(err, applier.ErrApplyIncomplete) {
 		a.savePartialStateOnHookFailure(headSHA, st, store, changeset, applyResult, deps, resolved.Hooks)
@@ -733,14 +733,13 @@ func (a *Agent) savePartialStateOnHookFailure(headSHA string, st *state.State, s
 }
 
 // mergePendingHooks computes the new PendingHooks map given the previous
-// map and the apply result. A hook stays pending (with its count preserved) if
-// it was pending before and did not run in this apply (its trigger was not in
-// the changeset). A hook is added to pending (count=1) if it ran and failed
-// under keep_running. Hooks that ran and succeeded — or fell back to a unit
-// restart — are removed.
-//
-// Returns nil (not an empty map) when empty so the omitempty tag on
-// state.State.PendingHooks omits the field from the on-disk JSON.
+// map and the apply result. After the every-tick-retry change a hook either
+// runs (success/failed/skipped) or is dropped as stale; it does not stay
+// pending across ticks without an attempt. So a hook is removed from
+// pending if it appears in AttemptedHookNames (regardless of outcome
+// classification — count increments come from PendingHookNames), and added
+// if it's a new keep_running failure. Returns nil (not an empty map) when
+// empty so omitempty omits the field.
 func mergePendingHooks(old map[string]int, result *applier.ApplyResult) map[string]int {
 	if len(old) == 0 && len(result.PendingHookNames) == 0 {
 		return nil
@@ -843,14 +842,14 @@ func enforceRetryBudget(pending map[string]int, hooks []config.Hook) map[string]
 	return pending
 }
 
-func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset, hooks []config.Hook) (*applier.ApplyResult, error) {
+func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset, hooks []config.Hook, pendingNames []string) (*applier.ApplyResult, error) {
 	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile)
 	if err != nil {
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
 	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, hooks)
-	result, err := app.Apply(ctx, changeset)
+	result, err := app.ApplyWithPending(ctx, changeset, pendingNames)
 	if err != nil {
 		slog.Error("apply failed, rolling back", "error", err)
 		metrics.RollbackTotal.Inc()
