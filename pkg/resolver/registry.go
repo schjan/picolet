@@ -149,7 +149,11 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 		},
 		"manifestPath": func(relPath string) (string, error) {
 			cleaned := path.Clean(relPath)
-			if cleaned == "" || strings.HasPrefix(cleaned, "/") || strings.Contains(cleaned, "..") {
+			if relPath != cleaned ||
+				cleaned == "." ||
+				cleaned == ".." ||
+				strings.HasPrefix(cleaned, "/") ||
+				strings.HasPrefix(cleaned, "../") {
 				return "", fmt.Errorf("manifestPath %q: must be a clean relative path", relPath)
 			}
 			return filepath.Join(dataDir, "manifests", filepath.FromSlash(cleaned)), nil
