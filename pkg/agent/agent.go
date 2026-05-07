@@ -803,17 +803,13 @@ func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.Resolv
 	return out, nil
 }
 
-// pendingHookNames extracts the hook names from the pending map.
+// pendingHookNames returns the hook names from the pending map in sorted order.
+// Sorted output keeps log lines and tests deterministic.
 func pendingHookNames(pending map[string]int) []string {
 	if len(pending) == 0 {
 		return nil
 	}
-	names := make([]string, 0, len(pending))
-	for name := range pending {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
+	return slices.Sorted(maps.Keys(pending))
 }
 
 // enforceRetryBudget removes hooks that exceeded their configured max_retries.
