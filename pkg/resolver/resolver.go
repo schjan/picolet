@@ -509,6 +509,50 @@ func unitServiceName(unit *parser.UnitFile) string {
 	return name + ".service"
 }
 
+// validateSignalHookContainer cross-checks a signal-action hook's Container
+// against the Quadlet [Container] ContainerName= when the unit is
+// Quadlet-resolvable and the field is explicitly set. Returns nil for
+// non-signal hooks, non-Quadlet units, when ContainerName= is unset, or
+// when no matching file exists (resolveHookQuadletUnit will surface that
+// case with a clearer error). Returns a wrapped error when the declared
+// Container does not match.
+//
+// Must be called BEFORE resolveHookQuadletUnit rewrites hook.Unit, since
+// the lookup compares against destFilename(files[i].SrcPath) (the original
+// Quadlet filename like "app.container").
+func validateSignalHookContainer(hook config.Hook, files []ResolvedFile) error {
+	if hook.Action != config.HookActionSignal {
+		return nil
+	}
+	if !isQuadletUnit(hook.Unit) {
+		slog.Debug("signal hook on non-Quadlet unit, container name not validated",
+			"hook", hook.Name, "unit", hook.Unit, "container", hook.Container)
+		return nil
+	}
+	for i := range files {
+		if destFilename(files[i].SrcPath) != hook.Unit {
+			continue
+		}
+		unit := files[i].ParsedUnit
+		if unit == nil {
+			return nil
+		}
+		declared, ok := unit.LookupLast("Container", "ContainerName")
+		declared = strings.TrimSpace(declared)
+		if !ok || declared == "" {
+			slog.Debug("Quadlet has no explicit ContainerName, container not validated",
+				"hook", hook.Name, "unit", hook.Unit, "container", hook.Container)
+			return nil
+		}
+		if declared != hook.Container {
+			return fmt.Errorf("hook %s: container %q does not match Quadlet ContainerName %q for unit %s",
+				hook.Name, hook.Container, declared, hook.Unit)
+		}
+		return nil
+	}
+	return nil
+}
+
 // resolveHookQuadletUnit finds the ResolvedFile matching the given Quadlet filename
 // and returns its ServiceName (computed by the Podman library via GetUnitServiceName).
 // Returns an error if no matching file exists in the resolved set.
@@ -591,6 +635,9 @@ func (r *Resolver) resolveHooksFile(registry *template.Template, tmplData *Templ
 		return nil, fmt.Errorf("parsing %s: %w", ref.SrcPath, err)
 	}
 	for i := range file.Hooks {
+		if err := validateSignalHookContainer(file.Hooks[i], files); err != nil {
+			return nil, fmt.Errorf("%s: hooks[%d]: %w", ref.SrcPath, i, err)
+		}
 		if isQuadletUnit(file.Hooks[i].Unit) {
 			resolved, err := resolveHookQuadletUnit(file.Hooks[i].Unit, files)
 			if err != nil {

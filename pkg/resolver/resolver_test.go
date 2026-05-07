@@ -710,6 +710,83 @@ hooks:
 	require.ErrorContains(t, err, "no matching quadlet file found")
 }
 
+func TestBuildHooksValidatesSignalContainerName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		quadlet  string
+		hookYAML string
+		wantErr  string
+	}{
+		{
+			name:    "matching ContainerName accepted",
+			quadlet: "[Container]\nImage=app\nContainerName=app-prod\n",
+			hookYAML: `hooks:
+  - name: app-sighup
+    secrets: [cfg]
+    unit: app.container
+    action: signal
+    container: app-prod
+    signal: HUP
+`,
+		},
+		{
+			name:    "mismatching ContainerName rejected",
+			quadlet: "[Container]\nImage=app\nContainerName=app-prod\n",
+			hookYAML: `hooks:
+  - name: app-sighup
+    secrets: [cfg]
+    unit: app.container
+    action: signal
+    container: bar
+    signal: HUP
+`,
+			wantErr: `container "bar" does not match Quadlet ContainerName "app-prod"`,
+		},
+		{
+			name:    "unset ContainerName accepts any container",
+			quadlet: "[Container]\nImage=app\n",
+			hookYAML: `hooks:
+  - name: app-sighup
+    secrets: [cfg]
+    unit: app.container
+    action: signal
+    container: anything
+    signal: HUP
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fsys := fstest.MapFS{
+				"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+				"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\npi_types:\n  server:\n    services: [app]\nfeatures: {}\n")},
+				"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: server
+pi_type: server
+features: []
+`)},
+				"services/app/containers/app.container": &fstest.MapFile{Data: []byte(tt.quadlet)},
+				"services/app/picolet.yml":              &fstest.MapFile{Data: []byte(tt.hookYAML)},
+			}
+			cfg, err := config.LoadAll(fsys)
+			require.NoError(t, err)
+			r, err := New(Config{FS: fsys, Config: cfg})
+			require.NoError(t, err)
+			_, err = r.ResolveHost(t.Context(), "server")
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestResolveHostBundleManifestTemplateRenders(t *testing.T) {
 	t.Parallel()
 
