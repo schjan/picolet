@@ -976,6 +976,52 @@ func TestApplyDeduplicatesPendingAgainstCurrentTick(t *testing.T) {
 	assert.Empty(t, result.PendingHookNames)
 }
 
+func TestApplyManifestTriggeredHookFires(t *testing.T) {
+	t.Parallel()
+	var reloads atomic.Int32
+	client := testHTTPClient(func(_ *http.Request) int {
+		reloads.Add(1)
+		return http.StatusOK
+	})
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "vm.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	hooks := []config.Hook{
+		{
+			Name:      "scrape-reload",
+			Manifests: []string{"config/scrape.yml"},
+			Unit:      "vm.service",
+			Action:    config.HookActionHTTP,
+			Method:    http.MethodPost,
+			URL:       "http://example.test/reload",
+			OnFailure: config.HookOnFailureKeepRunning,
+		},
+		{
+			Name:      "rules-reload",
+			Manifests: []string{"config/rules.yml"},
+			Unit:      "vm.service",
+			Action:    config.HookActionHTTP,
+			Method:    http.MethodPost,
+			URL:       "http://example.test/reload-rules",
+			OnFailure: config.HookOnFailureKeepRunning,
+		},
+	}
+	reloader := applier.NewHookReloader(sys, pod).WithHTTPClient(client).WithHealthDelay(0)
+	a := applier.New(sys, pod, fw, false, hooks, applier.WithHookReloader(reloader))
+
+	result, err := a.Apply(t.Context(), &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "/var/lib/picolet/manifests/config/scrape.yml", Category: "manifest", Action: reconciler.ActionUpdate, NewContent: "x", ManifestRelPath: "config/scrape.yml"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), reloads.Load(), "exactly one matching hook fired")
+	assert.ElementsMatch(t, []string{"scrape-reload"}, result.AttemptedHookNames)
+}
+
 func TestSecretHookReloaderHonorsHealthDelayCancellation(t *testing.T) {
 	t.Parallel()
 
