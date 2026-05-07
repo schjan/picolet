@@ -3,14 +3,37 @@ package applier
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"slices"
 	"time"
 
+	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/reconciler"
 )
+
+// ErrApplyIncomplete is returned by the agent's apply path when all file writes
+// succeeded but one or more keep_running hook errors occurred. Callers should
+// retry on the next tick without treating this as a reconciliation failure.
+var ErrApplyIncomplete = errors.New("apply incomplete")
+
+// HookFallbackError wraps a hook execution error that triggered a fallback unit
+// restart (on_failure: restart). Callers can detect it via errors.As to log a
+// distinct "fallback restart scheduled" message instead of treating it as a
+// generic non-fatal apply error.
+type HookFallbackError struct {
+	Unit string
+	Err  error
+}
+
+func (e *HookFallbackError) Error() string {
+	return fmt.Sprintf("hook for unit %s failed (fallback restart scheduled): %v", e.Unit, e.Err)
+}
+
+func (e *HookFallbackError) Unwrap() error { return e.Err }
 
 // SystemdManager controls systemd units via D-Bus.
 type SystemdManager interface {
@@ -41,6 +64,7 @@ type PodmanClient interface {
 	ContainerRemove(ctx context.Context, nameOrID string, force bool) error
 	RunHealthcheck(ctx context.Context, container string) (bool, error)
 	GetPodState(ctx context.Context, pod string) (string, error)
+	ContainerKill(ctx context.Context, nameOrID, signal string) error
 }
 
 // FileWriter writes files atomically.
@@ -50,13 +74,59 @@ type FileWriter interface {
 	Remove(path string) error
 }
 
+// HookOutcome records the result of a single hook execution for metrics.
+// Result values are the HookResult* constants below; they are also used as
+// label values on the picolet_hook_total Prometheus metric, so keep them
+// stable.
+type HookOutcome struct {
+	Name   string
+	Action string
+	Result string
+}
+
+const (
+	// HookResultSuccess: reload reached the unit and returned 2xx (HTTP) or signal delivered.
+	HookResultSuccess = "success"
+	// HookResultFailed: reload was attempted but errored; retryable per OnFailure.
+	HookResultFailed = "failed"
+	// HookResultFallbackRestart: reload errored and on_failure: restart triggered a unit restart instead.
+	HookResultFallbackRestart = "fallback_restart"
+	// HookResultSkipped: reload was not attempted because it was redundant (dedup peer ran)
+	// or moot (unit already scheduled for restart this tick).
+	HookResultSkipped = "skipped"
+)
+
 // ApplyResult contains the outcome of an apply operation.
 type ApplyResult struct {
-	Applied          int
-	Errors           []error
+	Applied         int
+	Errors          []error
+	RetryableErrors []error
+
 	NeedsSelfRestart bool
 	RestartedUnits   []string
+
+	// PendingHookNames holds names of keep_running hooks that errored and should
+	// retry on the next tick. Populated only when RetryableErrors is non-empty.
+	PendingHookNames []string
+
+	// FallbackRestartedUnits names units whose hook failed under on_failure:restart
+	// and were therefore scheduled for restart as a fallback. Used for status and
+	// metrics; per-error fallback details live in HookFallbackError wrappers in
+	// Errors.
+	FallbackRestartedUnits []string
+
+	// AttemptedHookNames lists names of hooks that ran in this apply (regardless
+	// of outcome). Callers use this to compute the new PendingHooks list:
+	// hooks pending from a previous tick whose trigger did not change now must
+	// stay pending; hooks attempted and not in PendingHookNames are cleared.
+	AttemptedHookNames []string
+
+	// HookOutcomes records per-hook execution results for metrics.
+	HookOutcomes []HookOutcome
 }
+
+// Option configures an Applier.
+type Option func(*Applier)
 
 // selfContainerFile is the quadlet filename for picolet's own container unit.
 // Its presence in a create/update changeset triggers a self-restart via picolet.service.
@@ -92,38 +162,79 @@ var categoryRankMap = func() map[string]int {
 
 // Applier applies a changeset to the system.
 type Applier struct {
-	systemd SystemdManager
-	podman  PodmanClient
-	writer  FileWriter
-	dryRun  bool
+	systemd  SystemdManager
+	podman   PodmanClient
+	writer   FileWriter
+	dryRun   bool
+	hooks    []config.Hook
+	reloader *HookReloader
 }
 
-// New creates a new Applier.
-func New(systemd SystemdManager, podman PodmanClient, writer FileWriter, dryRun bool) *Applier {
-	return &Applier{
+// New creates a new Applier. Hooks may be nil if no change-triggered actions are needed.
+func New(systemd SystemdManager, podman PodmanClient, writer FileWriter, dryRun bool, hooks []config.Hook, opts ...Option) *Applier {
+	a := &Applier{
 		systemd: systemd,
 		podman:  podman,
 		writer:  writer,
 		dryRun:  dryRun,
+		hooks:   hooks,
+	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	if a.reloader == nil {
+		a.reloader = NewHookReloader(systemd, podman)
+	}
+	return a
+}
+
+// WithHookReloader overrides hook execution, primarily for tests.
+func WithHookReloader(reloader *HookReloader) Option {
+	return func(a *Applier) {
+		if reloader != nil {
+			a.reloader = reloader
+		}
 	}
 }
 
-// Apply applies the changeset in phased order.
+// applyPhaseResult holds the categorized change sets produced by applyPhase.
+type applyPhaseResult struct {
+	ChangedUnits     map[string]struct{}
+	ChangedSecrets   map[string]struct{}
+	ChangedManifests map[string]struct{}
+	NeedsReload      bool
+}
+
+// Apply applies the changeset in phased order. Equivalent to ApplyWithPending
+// with no pending-hook retries — used by the CLI dry-run / one-shot apply
+// where there is no agent-level pending-hook bookkeeping.
 func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyResult, error) {
+	return a.ApplyWithPending(ctx, cs, nil)
+}
+
+// ApplyWithPending applies the changeset and additionally retries any pending
+// hook names whose triggers are not in the changeset. Pending hooks share the
+// per-tick dedup map with changeset-driven hooks, so a pending hook whose
+// hookExecutionKey matches a hook just run is recorded as "skipped" instead
+// of producing a duplicate side-effect. Stale pending names (hook removed
+// from config) are marked attempted so mergePendingHooks drops them.
+func (a *Applier) ApplyWithPending(ctx context.Context, cs *reconciler.Changeset, pendingNames []string) (*ApplyResult, error) {
 	result := &ApplyResult{}
 	sorted := slices.Clone(cs.Changes)
 	slices.SortFunc(sorted, func(x, y reconciler.Change) int {
 		return cmp.Compare(categoryRank(x.Category), categoryRank(y.Category))
 	})
 
-	changedUnits, needsReload, err := a.applyPhase(ctx, sorted, result)
+	phase, err := a.applyPhase(ctx, sorted, result)
 	if err != nil {
 		return result, err
 	}
 	if a.dryRun {
 		return result, nil
 	}
-	return result, a.restartUnits(ctx, changedUnits, needsReload, result)
+	hookRestartUnits := a.runHooksWithPending(ctx, phase.ChangedSecrets, phase.ChangedManifests, phase.ChangedUnits, pendingNames, result)
+	maps.Copy(phase.ChangedUnits, hookRestartUnits)
+	return result, a.restartUnits(ctx, phase.ChangedUnits, phase.NeedsReload, result)
 }
 
 func categoryRank(category string) int {
@@ -135,8 +246,12 @@ func categoryRank(category string) int {
 }
 
 //nolint:cyclop // multiple early-continues are clearer than restructuring
-func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (changedUnits map[string]bool, needsReload bool, err error) {
-	changedUnits = make(map[string]bool)
+func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (*applyPhaseResult, error) {
+	p := &applyPhaseResult{
+		ChangedUnits:     make(map[string]struct{}),
+		ChangedSecrets:   make(map[string]struct{}),
+		ChangedManifests: make(map[string]struct{}),
+	}
 	for _, change := range sorted {
 		if change.Action == reconciler.ActionNoop {
 			continue
@@ -162,27 +277,35 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			}
 		}
 		if err := a.applyChange(ctx, change); err != nil {
-			return nil, false, fmt.Errorf("applying %s (%s): %w", change.DestPath, change.Action, err)
+			return nil, fmt.Errorf("applying %s (%s): %w", change.DestPath, change.Action, err)
 		}
 		result.Applied++
 		if change.Category == "secret" {
+			if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
+				p.ChangedSecrets[reconciler.SecretNameFromPath(change.DestPath)] = struct{}{}
+			}
 			continue
 		}
+		if change.Category == "manifest" && change.ManifestRelPath != "" {
+			if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
+				p.ChangedManifests[change.ManifestRelPath] = struct{}{}
+			}
+		}
 		// All non-secret file changes (including deletes) require a daemon-reload.
-		needsReload = true
+		p.NeedsReload = true
 		if change.Action == reconciler.ActionDelete {
 			// Deleted units must NOT be restarted — the unit no longer exists after
 			// daemon-reload. StopUnit above already terminated the running service.
 			continue
 		}
 		if change.ServiceName != "" {
-			changedUnits[change.ServiceName] = true
+			p.ChangedUnits[change.ServiceName] = struct{}{}
 		}
 		if filepath.Base(change.DestPath) == selfContainerFile {
 			result.NeedsSelfRestart = true
 		}
 	}
-	return changedUnits, needsReload, nil
+	return p, nil
 }
 
 // unitNameForDelete returns the systemd unit name to stop before a file is removed.
@@ -211,13 +334,15 @@ func (a *Applier) applyChange(ctx context.Context, change reconciler.Change) err
 	}
 }
 
-func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]bool, needsReload bool, result *ApplyResult) error {
+func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]struct{}, needsReload bool, result *ApplyResult) error {
 	if len(changedUnits) == 0 && !needsReload {
 		return nil
 	}
-	slog.Info("running systemd daemon-reload")
-	if err := a.systemd.DaemonReload(ctx); err != nil {
-		return fmt.Errorf("daemon-reload: %w", err)
+	if needsReload {
+		slog.Info("running systemd daemon-reload")
+		if err := a.systemd.DaemonReload(ctx); err != nil {
+			return fmt.Errorf("daemon-reload: %w", err)
+		}
 	}
 	for unit := range changedUnits {
 		if unit == "picolet.service" {
@@ -230,7 +355,7 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]bool
 			result.RestartedUnits = append(result.RestartedUnits, unit)
 		}
 	}
-	if changedUnits["picolet.service"] {
+	if _, ok := changedUnits["picolet.service"]; ok {
 		slog.Info("restarting picolet (self-update), state will be saved before shutdown")
 		result.RestartedUnits = append(result.RestartedUnits, "picolet.service")
 		// Fire-and-forget: detached context so Apply() returns promptly, allowing
@@ -248,6 +373,170 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]bool
 		}()
 	}
 	return nil
+}
+
+// runHooksWithPending executes hooks in two passes that share a per-tick dedup
+// map: the first pass walks hooks whose triggers are in the changeset; the
+// second pass retries pending names that did not appear in the first. A
+// pending hook whose hookExecutionKey matches a hook just run lands as
+// "skipped" via runOneHook.
+//
+//nolint:cyclop // two-pass loop with shared dedup is clearer as one function
+func (a *Applier) runHooksWithPending(
+	ctx context.Context,
+	changedSecrets, changedManifests, restartScheduled map[string]struct{},
+	pendingNames []string,
+	result *ApplyResult,
+) map[string]struct{} {
+	if len(changedSecrets) == 0 && len(changedManifests) == 0 && len(pendingNames) == 0 {
+		return nil
+	}
+	if len(a.hooks) == 0 && len(pendingNames) == 0 {
+		return nil
+	}
+	restartUnits := make(map[string]struct{})
+	executed := make(map[string]struct{})
+	firstPass := make(map[string]struct{})
+	restartSet := make(map[string]struct{}, len(restartScheduled))
+	maps.Copy(restartSet, restartScheduled)
+
+	// First pass: hooks whose trigger is in this tick's changeset.
+	for _, hook := range a.hooks {
+		if !hookMatchesChange(hook, changedSecrets, changedManifests) {
+			continue
+		}
+		firstPass[hook.Name] = struct{}{}
+		a.runOneHook(ctx, hook, restartSet, executed, restartUnits, result)
+	}
+
+	// Second pass: pending names not already attempted in the first pass.
+	if len(pendingNames) == 0 {
+		return restartUnits
+	}
+	byName := make(map[string]config.Hook, len(a.hooks))
+	for _, h := range a.hooks {
+		byName[h.Name] = h
+	}
+	for _, name := range pendingNames {
+		if _, already := firstPass[name]; already {
+			continue
+		}
+		hook, ok := byName[name]
+		if !ok {
+			// Hook was removed from config since the last failure. Mark
+			// attempted (no outcome) so mergePendingHooks drops it.
+			slog.Info("pending hook no longer in config, dropping", "hook", name)
+			result.AttemptedHookNames = append(result.AttemptedHookNames, name)
+			continue
+		}
+		a.runOneHook(ctx, hook, restartSet, executed, restartUnits, result)
+	}
+	return restartUnits
+}
+
+// runOneHook dispatches a single hook through the dedup map and the shared
+// dispatchHookResult bookkeeping.
+func (a *Applier) runOneHook(
+	ctx context.Context,
+	hook config.Hook,
+	restartSet map[string]struct{},
+	executed map[string]struct{},
+	restartUnits map[string]struct{},
+	result *ApplyResult,
+) {
+	key := hookExecutionKey(hook)
+	if _, ran := executed[key]; ran {
+		dispatchHookResult(hook, false, ErrHookSkipped, restartUnits, result)
+		return
+	}
+	executed[key] = struct{}{}
+	shouldRestart, err := a.reloader.Run(ctx, hook, restartSet)
+	dispatchHookResult(hook, shouldRestart, err, restartUnits, result)
+	if shouldRestart {
+		restartSet[hook.Unit] = struct{}{}
+	}
+}
+
+// dispatchHookResult records a hook's outcome on result and updates restartUnits.
+func dispatchHookResult(hook config.Hook, shouldRestart bool, err error, restartUnits map[string]struct{}, result *ApplyResult) {
+	result.AttemptedHookNames = append(result.AttemptedHookNames, hook.Name)
+	outcome := HookOutcome{Name: hook.Name, Action: hook.Action}
+	switch {
+	case err == nil:
+		outcome.Result = HookResultSuccess
+	case errors.Is(err, ErrHookSkipped):
+		outcome.Result = HookResultSkipped
+	case shouldRestart:
+		result.Errors = append(result.Errors, &HookFallbackError{Unit: hook.Unit, Err: err})
+		result.FallbackRestartedUnits = append(result.FallbackRestartedUnits, hook.Unit)
+		outcome.Result = HookResultFallbackRestart
+	default:
+		// keep_running: classify as retryable. ErrUnitNotActive lands here too.
+		result.Errors = append(result.Errors, err)
+		result.RetryableErrors = append(result.RetryableErrors, err)
+		result.PendingHookNames = append(result.PendingHookNames, hook.Name)
+		outcome.Result = HookResultFailed
+	}
+	result.HookOutcomes = append(result.HookOutcomes, outcome)
+	if shouldRestart {
+		restartUnits[hook.Unit] = struct{}{}
+	}
+}
+
+// RunPendingHooks re-executes the named hooks without a changeset. Used on
+// ticks where the diff is otherwise empty but pending hooks remain.
+func (a *Applier) RunPendingHooks(ctx context.Context, pendingNames []string) *ApplyResult {
+	result := &ApplyResult{}
+	if len(pendingNames) == 0 {
+		return result
+	}
+	restartUnits := a.runHooksWithPending(ctx, nil, nil, nil, pendingNames, result)
+	if !a.dryRun {
+		a.restartFallbackUnits(ctx, restartUnits, result)
+	}
+	return result
+}
+
+func (a *Applier) restartFallbackUnits(ctx context.Context, restartUnits map[string]struct{}, result *ApplyResult) {
+	for unit := range restartUnits {
+		slog.Info("restarting unit after hook retry", "unit", unit)
+		if err := a.systemd.RestartUnit(ctx, unit); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("restarting %s: %w", unit, err))
+		} else {
+			result.RestartedUnits = append(result.RestartedUnits, unit)
+		}
+	}
+}
+
+// hookExecutionKey produces a deduplication key for a hook. Hooks with
+// identical keys represent the same side-effect (e.g., same HTTP reload
+// endpoint) and only need to run once per tick. The \x00 separator is safe
+// because none of the fields (URLs, unit names, signals) can contain null bytes.
+func hookExecutionKey(hook config.Hook) string {
+	switch hook.Action {
+	case config.HookActionHTTP:
+		return hook.Action + "\x00" + hook.Unit + "\x00" + hook.Method + "\x00" + hook.URL + "\x00" + hook.HealthURL
+	case config.HookActionSignal:
+		return hook.Action + "\x00" + hook.Unit + "\x00" + hook.Container + "\x00" + hook.Signal
+	case config.HookActionRestart:
+		return hook.Action + "\x00" + hook.Unit
+	default:
+		return hook.Name
+	}
+}
+
+func hookMatchesChange(hook config.Hook, changedSecrets, changedManifests map[string]struct{}) bool {
+	for _, secret := range hook.Secrets {
+		if _, ok := changedSecrets[secret]; ok {
+			return true
+		}
+	}
+	for _, manifest := range hook.Manifests {
+		if _, ok := changedManifests[manifest]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Applier) applyCreateOrUpdate(ctx context.Context, change reconciler.Change) error {

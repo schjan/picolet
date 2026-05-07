@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 
@@ -195,7 +196,7 @@ func TestRenderTemplateRecursion(t *testing.T) {
 		"a.tmpl": &fstest.MapFile{Data: []byte(`{{renderTemplate "b.tmpl" .}}`)},
 		"b.tmpl": &fstest.MapFile{Data: []byte(`{{renderTemplate "a.tmpl" .}}`)},
 	}
-	registry, _, err := BuildRegistry(t.Context(), fsys, nil, nil)
+	registry, _, err := BuildRegistry(t.Context(), fsys, nil, nil, "/var/lib/picolet")
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
@@ -243,6 +244,66 @@ func TestRootlessPaths(t *testing.T) {
 
 	// Verify manifest goes to rootless data dir
 	assert.Equal(t, filepath.Join(home, ".local", "share", "picolet", "manifests", "app", "deployment.yml"), manifest.DestPath)
+}
+
+// TestNewConfigDirOverrides verifies that non-empty Config.QuadletDir and
+// Config.DataDir take precedence over ResolveDirs defaults. Empty fields
+// (i.e. SystemdDir here, plus the "all empty" case) are exercised by
+// TestRootlessPaths.
+//
+// Fixture dependency: testdata/example-fleet must assign a .container file
+// and a manifest under "manifests/" to the "test-host" host. Adjust the
+// suffix matches below if that ever changes.
+func TestNewConfigDirOverrides(t *testing.T) {
+	t.Parallel()
+	fsys := newTestFS()
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+
+	const customQuadlet = "/custom/quadlet"
+	const customData = "/custom/data"
+
+	r, err := New(Config{
+		FS:         fsys,
+		Config:     cfg,
+		Rootless:   true,
+		QuadletDir: customQuadlet,
+		DataDir:    customData,
+		// SystemdDir intentionally left empty — falls back to ResolveDirs.
+	})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
+	require.NoError(t, err)
+
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	defaultSystemdDir := filepath.Join(home, ".config", "systemd", "user")
+
+	var sawContainer, sawManifest, sawSystemd bool
+	for _, f := range resolved.Files {
+		switch f.Category {
+		case "container", "network", "volume", "kube":
+			assert.True(t,
+				strings.HasPrefix(f.DestPath, customQuadlet+string(filepath.Separator)),
+				"%s file %s must live under QuadletDir override", f.Category, f.DestPath)
+			sawContainer = true
+		case "manifest":
+			assert.True(t,
+				strings.HasPrefix(f.DestPath, customData+string(filepath.Separator)),
+				"manifest file %s must live under DataDir override", f.DestPath)
+			sawManifest = true
+		case "systemd":
+			assert.True(t,
+				strings.HasPrefix(f.DestPath, defaultSystemdDir+string(filepath.Separator)),
+				"systemd file %s must fall back to default SystemdDir", f.DestPath)
+			sawSystemd = true
+		}
+	}
+	assert.True(t, sawContainer, "fixture must produce at least one quadlet file")
+	assert.True(t, sawManifest, "fixture must produce at least one manifest file")
+	// sawSystemd is best-effort: not every fixture host has a systemd-category file.
+	_ = sawSystemd
 }
 
 //nolint:funlen // fixture setup is clearer inline for equivalence coverage
@@ -333,6 +394,398 @@ data:
 	require.NoError(t, err)
 
 	assert.Equal(t, resolvedOutputs(explicit.Files), resolvedOutputs(bundled.Files))
+}
+
+func TestResolveHostRendersServiceSecretHooks(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte(`
+images: {}
+ports:
+  app: 1234
+`)},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base: {}
+pi_types:
+  server:
+    services:
+      - app
+features: {}
+`)},
+		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: server
+pi_type: server
+features: []
+`)},
+		"services/app/containers/app.container": &fstest.MapFile{Data: []byte(`[Container]
+Image=app
+ContainerName=app
+`)},
+		"services/app/secrets/app_config.yml": &fstest.MapFile{Data: []byte("a: 1\n")},
+		"services/app/picolet.yml.tmpl": &fstest.MapFile{Data: []byte(`
+hooks:
+  - name: app-reload
+    secrets: [app_config]
+    unit: app.service
+    action: http
+    method: GET
+    url: "http://localhost:{{ index .Ports "app" }}/-/reload"
+    health_url: "http://localhost:{{ index .Ports "app" }}/-/healthy"
+`)},
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "server")
+	require.NoError(t, err)
+	require.Len(t, resolved.Hooks, 1)
+	assert.Equal(t, config.Hook{
+		Name:       "app-reload",
+		Secrets:    []string{"app_config"},
+		Unit:       "app.service",
+		Action:     config.HookActionHTTP,
+		Method:     "GET",
+		URL:        "http://localhost:1234/-/reload",
+		HealthURL:  "http://localhost:1234/-/healthy",
+		OnFailure:  config.HookOnFailureKeepRunning,
+		MaxRetries: config.DefaultMaxRetries,
+	}, resolved.Hooks[0])
+}
+
+func TestResolveHostRejectsInvalidSecretHook(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base: {}
+pi_types:
+  server:
+    services: [app]
+features: {}
+`)},
+		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: server
+pi_type: server
+features: []
+`)},
+		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
+		"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
+hooks:
+  - name: broken
+    secrets: [app_config]
+    unit: app.service
+    action: http
+`)},
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	_, err = r.ResolveHost(t.Context(), "server")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "url is required")
+}
+
+func TestResolveHostBatchesOpRefsFromHookTemplates(t *testing.T) {
+	t.Parallel()
+
+	hookOpRef := "op://vault/app/reload-token"
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base: {}
+pi_types:
+  server:
+    services: [app]
+features: {}
+`)},
+		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: server
+pi_type: server
+features: []
+`)},
+		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
+		// Hook URL embeds an op:// reference. Phase 1 must collect this ref so
+		// the OpSecretReader sees it on the (single) batch call.
+		"services/app/picolet.yml.tmpl": &fstest.MapFile{Data: []byte(`
+hooks:
+  - name: app-reload
+    secrets: [app_config]
+    unit: app.service
+    action: http
+    method: POST
+    url: "http://example.test/reload?token={{readOpSecret "` + hookOpRef + `"}}"
+`)},
+	}
+
+	var calls atomic.Int32
+	reader := func(_ context.Context, refs []string) (map[string]string, error) {
+		calls.Add(1)
+		assert.Contains(t, refs, hookOpRef, "hook template's op:// ref must appear in Phase 1 batch")
+		return map[string]string{hookOpRef: "tok"}, nil
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg, OpSecretReader: reader})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "server")
+	require.NoError(t, err)
+	require.Len(t, resolved.Hooks, 1)
+	assert.Equal(t, "http://example.test/reload?token=tok", resolved.Hooks[0].URL)
+	assert.Equal(t, int32(1), calls.Load(), "OpSecretReader should be called exactly once for the batch")
+}
+
+func TestResolveHostHookNameUniquenessErrorIncludesService(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base: {}
+pi_types:
+  server:
+    services: [app, api]
+features: {}
+`)},
+		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: server
+pi_type: server
+features: []
+`)},
+		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
+		"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
+hooks:
+  - name: shared
+    secrets: [cfg]
+    unit: app.service
+    action: http
+    url: "http://example.test/reload"
+`)},
+		"services/api/containers/api.container": &fstest.MapFile{Data: []byte("[Container]\nImage=api\n")},
+		"services/api/picolet.yml": &fstest.MapFile{Data: []byte(`
+hooks:
+  - name: shared
+    secrets: [cfg]
+    unit: api.service
+    action: http
+    url: "http://example.test/reload"
+`)},
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	_, err = r.ResolveHost(t.Context(), "server")
+	require.ErrorContains(t, err, `duplicate hook name "shared"`)
+	// The error must name the previously-defining service so the operator can
+	// find both files. Hook refs are sorted by service name during bundle
+	// expansion, so "api" is processed first and "app" reports the duplicate.
+	require.ErrorContains(t, err, `service "api"`)
+}
+
+func TestIsQuadletUnit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		unit string
+		want bool
+	}{
+		{"foo.container", true},
+		{"foo.network", true},
+		{"foo.volume", true},
+		{"foo.kube", true},
+		{"foo.pod", true},
+		{"foo.image", true},
+		{"foo.build", true},
+		{"foo.artifact", true},
+		{"foo.service", false},
+		{"foo.timer", false},
+		{"", false},
+		{"container", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.unit, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isQuadletUnit(tt.unit))
+		})
+	}
+}
+
+func TestResolveHostHookUnitResolution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		hookUnit string
+		wantUnit string
+	}{
+		{
+			name:     "quadlet container resolves to service name",
+			hookUnit: "app.container",
+			wantUnit: "app.service",
+		},
+		{
+			name:     "explicit service passes through unchanged",
+			hookUnit: "app.service",
+			wantUnit: "app.service",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fsys := fstest.MapFS{
+				"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+				"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\npi_types:\n  server:\n    services: [app]\nfeatures: {}\n")},
+				"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: server
+pi_type: server
+features: []
+`)},
+				"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\nContainerName=app\n")},
+				"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
+hooks:
+  - name: app-reload
+    secrets: [cfg]
+    unit: ` + tt.hookUnit + `
+    action: restart
+`)},
+			}
+
+			cfg, err := config.LoadAll(fsys)
+			require.NoError(t, err)
+			r, err := New(Config{FS: fsys, Config: cfg})
+			require.NoError(t, err)
+
+			resolved, err := r.ResolveHost(t.Context(), "server")
+			require.NoError(t, err)
+			require.Len(t, resolved.Hooks, 1)
+			assert.Equal(t, tt.wantUnit, resolved.Hooks[0].Unit)
+		})
+	}
+}
+
+func TestResolveHostHookUnitQuadletNotFoundErrors(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\npi_types:\n  server:\n    services: [app]\nfeatures: {}\n")},
+		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: server
+pi_type: server
+features: []
+`)},
+		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\nContainerName=app\n")},
+		"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
+hooks:
+  - name: app-reload
+    secrets: [cfg]
+    unit: nonexistent.container
+    action: restart
+`)},
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	_, err = r.ResolveHost(t.Context(), "server")
+	require.ErrorContains(t, err, `unit "nonexistent.container"`)
+	require.ErrorContains(t, err, "no matching quadlet file found")
+}
+
+//nolint:funlen // table-driven test with three quadlet fixtures inline
+func TestBuildHooksValidatesSignalContainerName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		quadlet  string
+		hookYAML string
+		wantErr  string
+	}{
+		{
+			name:    "matching ContainerName accepted",
+			quadlet: "[Container]\nImage=app\nContainerName=app-prod\n",
+			hookYAML: `hooks:
+  - name: app-sighup
+    secrets: [cfg]
+    unit: app.container
+    action: signal
+    container: app-prod
+    signal: HUP
+`,
+		},
+		{
+			name:    "mismatching ContainerName rejected",
+			quadlet: "[Container]\nImage=app\nContainerName=app-prod\n",
+			hookYAML: `hooks:
+  - name: app-sighup
+    secrets: [cfg]
+    unit: app.container
+    action: signal
+    container: bar
+    signal: HUP
+`,
+			wantErr: `container "bar" does not match Quadlet ContainerName "app-prod"`,
+		},
+		{
+			name:    "unset ContainerName accepts any container",
+			quadlet: "[Container]\nImage=app\n",
+			hookYAML: `hooks:
+  - name: app-sighup
+    secrets: [cfg]
+    unit: app.container
+    action: signal
+    container: anything
+    signal: HUP
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fsys := fstest.MapFS{
+				"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+				"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\npi_types:\n  server:\n    services: [app]\nfeatures: {}\n")},
+				"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: server
+pi_type: server
+features: []
+`)},
+				"services/app/containers/app.container": &fstest.MapFile{Data: []byte(tt.quadlet)},
+				"services/app/picolet.yml":              &fstest.MapFile{Data: []byte(tt.hookYAML)},
+			}
+			cfg, err := config.LoadAll(fsys)
+			require.NoError(t, err)
+			r, err := New(Config{FS: fsys, Config: cfg})
+			require.NoError(t, err)
+			_, err = r.ResolveHost(t.Context(), "server")
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestResolveHostBundleManifestTemplateRenders(t *testing.T) {
@@ -1027,7 +1480,7 @@ func TestReadOpSecret(t *testing.T) {
 			}
 			return results, nil
 		}
-		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, reader)
+		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, reader, "/var/lib/picolet")
 		require.NoError(t, err)
 		require.NotNil(t, cache)
 
@@ -1047,7 +1500,7 @@ func TestReadOpSecret(t *testing.T) {
 
 	t.Run("nil reader returns placeholder", func(t *testing.T) {
 		t.Parallel()
-		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, nil)
+		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, nil, "/var/lib/picolet")
 		require.NoError(t, err)
 		assert.Nil(t, cache)
 		var buf bytes.Buffer
@@ -1060,7 +1513,7 @@ func TestReadOpSecret(t *testing.T) {
 		reader := func(_ context.Context, _ []string) (map[string]string, error) {
 			return nil, fmt.Errorf("1password error")
 		}
-		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, reader)
+		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, reader, "/var/lib/picolet")
 		require.NoError(t, err)
 
 		// Collect phase.
@@ -1081,7 +1534,7 @@ func TestReadOpSecret(t *testing.T) {
 		reader := func(_ context.Context, _ []string) (map[string]string, error) {
 			return nil, fmt.Errorf("should-not-be-called")
 		}
-		registry, _, err := BuildRegistry(t.Context(), invalidFS, nil, reader)
+		registry, _, err := BuildRegistry(t.Context(), invalidFS, nil, reader, "/var/lib/picolet")
 		require.NoError(t, err)
 		var buf bytes.Buffer
 		err = registry.ExecuteTemplate(&buf, "bad.tmpl", nil)
@@ -1105,7 +1558,7 @@ func TestReadOpSecret(t *testing.T) {
 			}
 			return results, nil
 		}
-		registry, cache, err := BuildRegistry(t.Context(), multiFS, nil, reader)
+		registry, cache, err := BuildRegistry(t.Context(), multiFS, nil, reader, "/var/lib/picolet")
 		require.NoError(t, err)
 
 		// Collect.

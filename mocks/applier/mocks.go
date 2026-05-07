@@ -386,6 +386,69 @@ func (_m *MockPodmanClient) EXPECT() *MockPodmanClient_Expecter {
 	return &MockPodmanClient_Expecter{mock: &_m.Mock}
 }
 
+// ContainerKill provides a mock function for the type MockPodmanClient
+func (_mock *MockPodmanClient) ContainerKill(ctx context.Context, nameOrID string, signal string) error {
+	ret := _mock.Called(ctx, nameOrID, signal)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ContainerKill")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string) error); ok {
+		r0 = returnFunc(ctx, nameOrID, signal)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockPodmanClient_ContainerKill_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ContainerKill'
+type MockPodmanClient_ContainerKill_Call struct {
+	*mock.Call
+}
+
+// ContainerKill is a helper method to define mock.On call
+//   - ctx context.Context
+//   - nameOrID string
+//   - signal string
+func (_e *MockPodmanClient_Expecter) ContainerKill(ctx interface{}, nameOrID interface{}, signal interface{}) *MockPodmanClient_ContainerKill_Call {
+	return &MockPodmanClient_ContainerKill_Call{Call: _e.mock.On("ContainerKill", ctx, nameOrID, signal)}
+}
+
+func (_c *MockPodmanClient_ContainerKill_Call) Run(run func(ctx context.Context, nameOrID string, signal string)) *MockPodmanClient_ContainerKill_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 string
+		if args[2] != nil {
+			arg2 = args[2].(string)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+		)
+	})
+	return _c
+}
+
+func (_c *MockPodmanClient_ContainerKill_Call) Return(err error) *MockPodmanClient_ContainerKill_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockPodmanClient_ContainerKill_Call) RunAndReturn(run func(ctx context.Context, nameOrID string, signal string) error) *MockPodmanClient_ContainerKill_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // ContainerRemove provides a mock function for the type MockPodmanClient
 func (_mock *MockPodmanClient) ContainerRemove(ctx context.Context, nameOrID string, force bool) error {
 	ret := _mock.Called(ctx, nameOrID, force)

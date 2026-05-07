@@ -21,13 +21,14 @@ const (
 
 // Change represents a single file change.
 type Change struct {
-	DestPath    string
-	Category    string
-	Action      Action
-	NewContent  string // empty for delete
-	OldHash     string // from state, empty for create
-	NewHash     string // sha256 of NewContent
-	ServiceName string // "foo.service"; "" for non-quadlets/secrets
+	DestPath        string
+	Category        string
+	Action          Action
+	NewContent      string // empty for delete
+	OldHash         string // from state, empty for create
+	NewHash         string // sha256 of NewContent
+	ServiceName     string // "foo.service"; "" for non-quadlets/secrets
+	ManifestRelPath string // relative path within manifests/ dir; "" for non-manifests
 }
 
 // Changeset is the complete set of changes to apply.
@@ -78,11 +79,12 @@ func classifyFile(f resolver.ResolvedFile, currentState *state.State) Change {
 	mf, managed := currentState.ManagedFiles[f.DestPath]
 
 	c := Change{
-		DestPath:    f.DestPath,
-		Category:    f.Category,
-		OldHash:     mf.Hash,
-		NewHash:     newHash,
-		ServiceName: f.ServiceName,
+		DestPath:        f.DestPath,
+		Category:        f.Category,
+		OldHash:         mf.Hash,
+		NewHash:         newHash,
+		ServiceName:     f.ServiceName,
+		ManifestRelPath: f.ManifestRelPath,
 	}
 
 	switch {

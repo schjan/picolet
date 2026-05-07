@@ -180,10 +180,14 @@ services/<name>/
   systemd/
   secrets/
   manifests/
+  picolet.yml
 ```
 
 `manifests/` may contain nested directories. The other six category directories
 must contain files directly.
+
+`picolet.yml` is optional service metadata. It does not deploy a resource by
+itself; the bundle still needs at least one normal resource file.
 
 Strict bundle rules:
 
@@ -221,6 +225,70 @@ legacy paths and a `services:` bundle resolves to the same on-disk destination,
 so Picolet fails the reconciliation with a destination collision. Remove the
 legacy paths in the same commit that introduces `services: [<name>]`.
 
+### Hooks
+
+Service bundles can declare actions to run after assigned Podman secrets or
+manifest files change. Put them in `services/<name>/picolet.yml` or
+`services/<name>/picolet.yml.tmpl` (only one of the two — bundles containing
+both are rejected). The example below uses Go template syntax, so it must be in
+a `.tmpl` file:
+
+```yaml
+# services/<name>/picolet.yml.tmpl
+hooks:
+  - name: vmalert-rules
+    secrets: [vmalert_rules]
+    unit: vmalert.service
+    action: http
+    method: GET
+    url: 'http://localhost:{{ index .Ports "vmalert" }}/vmalert/-/reload'
+    health_url: 'http://localhost:{{ index .Ports "vmalert" }}/vmalert/health'
+
+  - name: victoriametrics-scrape-reload
+    manifests: [config/scrape.yml]
+    unit: victoriametrics.service
+    action: http
+    method: GET
+    url: 'http://localhost:{{ index .Ports "victoriametrics" }}/prometheus/-/reload'
+    health_url: 'http://localhost:{{ index .Ports "victoriametrics" }}/prometheus/health'
+```
+
+Hooks run after secret/manifest writes and before normal unit restarts. If
+multiple changed secrets or manifests match one hook, Picolet runs that hook
+once. If the unit is already scheduled for restart because its Quadlet changed,
+Picolet skips reload hooks for that unit.
+
+Hook names must be unique across all service bundles assigned to a host.
+
+Each hook must specify at least one trigger — `secrets`, `manifests`, or both.
+When both are set, the hook fires if ANY listed secret OR manifest changed.
+
+The `manifests` field uses paths relative to the service bundle's `manifests/`
+directory (e.g., `config/scrape.yml`).
+
+Supported actions:
+
+| Action | Required fields | Behavior |
+|--------|-----------------|----------|
+| `http` | `unit`, `url`, at least one trigger (`secrets` and/or `manifests`) | Send `method` (`POST` by default, `GET` also supported), then `GET health_url` when set |
+| `signal` | `unit`, `container`, at least one trigger | Send `signal` (`HUP` by default) to the Podman container |
+| `restart` | `unit`, at least one trigger | Restart the systemd unit after applying changes |
+
+By default hook failures are non-fatal and keep the current process running:
+`on_failure: keep_running`. Use `on_failure: restart` only when a failed reload
+should fall back to a restart. Keeping the process running is usually safer for
+config reload APIs that reject invalid config while continuing with the old
+valid config.
+
+Each retry attempt increments `picolet_reconciliation_total{result="retry_pending"}`
+and emits an `apply incomplete` warning in the agent log; the hook is dropped
+from the pending list once it succeeds, falls back to a restart, or exhausts
+its `max_retries` budget.
+
+For services whose config is mounted through Podman secrets, verify that the
+running container sees replaced secret content on your target Podman version.
+If not, use `action: restart`.
+
 ### Templates
 
 Files ending in `.tmpl` are rendered with Go `text/template` (`missingkey=error`) plus Sprig's hermetic text helpers. Static files are deployed as-is.
@@ -236,6 +304,7 @@ Available data: `.Host` (hostname, pi_type, features), `.Images`, `.Ports`, `.Fl
 | `indent(n, str)` | Indent all non-empty lines by n spaces |
 | `nindent(n, str)` | Prepend a newline, then indent all non-empty lines by n spaces |
 | `readSecretFile(path)` | Read secret (placeholder in CI mode) |
+| `manifestPath(relPath)` | Return the absolute deployed path for a manifest file (handles rootless/rootful automatically). `relPath` is relative to the service's `manifests/` dir |
 | `has(item, slice)` | Sprig: check if a value is present in a list |
 
 Use this when runtime expects one file but you want many repo fragments. Example:

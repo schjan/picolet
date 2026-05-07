@@ -13,7 +13,7 @@ import (
 func renderRegistryTemplate(tb testing.TB, fsys fstest.MapFS, name string, data any) (string, error) {
 	tb.Helper()
 
-	registry, _, err := BuildRegistry(tb.Context(), fsys, nil, nil)
+	registry, _, err := BuildRegistry(tb.Context(), fsys, nil, nil, "/var/lib/picolet")
 	require.NoError(tb, err)
 
 	var buf bytes.Buffer
@@ -160,6 +160,46 @@ func TestGlobAndRenderTemplateWorkflow(t *testing.T) {
 	assert.Equal(t, "first=node-1\nsecond=app:v1", out)
 }
 
+func TestManifestPathValidatesInputs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr string
+	}{
+		{name: "simple file", input: "scrape.yml", want: "/var/lib/picolet/manifests/scrape.yml"},
+		{name: "nested file", input: "config/scrape.yml", want: "/var/lib/picolet/manifests/config/scrape.yml"},
+		{name: "double dot in filename allowed", input: "foo..bar/baz.yml", want: "/var/lib/picolet/manifests/foo..bar/baz.yml"},
+		{name: "absolute path rejected", input: "/etc/passwd", wantErr: "must be a clean relative path"},
+		{name: "traversal segment rejected", input: "../etc/passwd", wantErr: "must be a clean relative path"},
+		{name: "embedded traversal rejected", input: "a/../b", wantErr: "must be a clean relative path"},
+		{name: "double slash rejected", input: "a//b.yml", wantErr: "must be a clean relative path"},
+		{name: "trailing slash rejected", input: "a/", wantErr: "must be a clean relative path"},
+		{name: "dot rejected", input: ".", wantErr: "must be a clean relative path"},
+		{name: "empty rejected", input: "", wantErr: "must be a clean relative path"},
+		{name: "double-dot rejected", input: "..", wantErr: "must be a clean relative path"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fsys := fstest.MapFS{
+				"main.tmpl": &fstest.MapFile{Data: []byte(`{{ manifestPath "` + tt.input + `" }}`)},
+			}
+			out, err := renderRegistryTemplate(t, fsys, "main.tmpl", nil)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, out)
+		})
+	}
+}
+
 func TestBuildRegistrySkipsGitDirectory(t *testing.T) {
 	t.Parallel()
 
@@ -171,7 +211,7 @@ func TestBuildRegistrySkipsGitDirectory(t *testing.T) {
 		"nested/plain.txt":  &fstest.MapFile{Data: []byte("ignored")},
 	}
 
-	registry, _, err := BuildRegistry(t.Context(), fsys, nil, nil)
+	registry, _, err := BuildRegistry(t.Context(), fsys, nil, nil, "/var/lib/picolet")
 	require.NoError(t, err)
 	assert.NotNil(t, registry.Lookup("main.tmpl"))
 	assert.Nil(t, registry.Lookup(".git/invalid.tmpl"))

@@ -17,6 +17,7 @@ import (
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
+	"go.yaml.in/yaml/v4"
 
 	"github.com/schjan/picolet/pkg/config"
 	op "github.com/schjan/picolet/pkg/onepassword"
@@ -42,6 +43,9 @@ type ResolvedFile struct {
 	ParsedUnit *parser.UnitFile
 	// ServiceName is the derived systemd service name (e.g. "foo.service"); "" for non-quadlets.
 	ServiceName string
+	// ManifestRelPath is the manifest path relative to the manifests/ directory
+	// (e.g. "config/scrape.yml"). Only set for manifest-category files.
+	ManifestRelPath string
 }
 
 // ResolvedHost is the complete desired state for a single host.
@@ -49,6 +53,7 @@ type ResolvedHost struct {
 	Hostname string
 	Host     *config.HostConfig
 	Files    []ResolvedFile
+	Hooks    []config.Hook
 }
 
 // Config holds configuration for creating a Resolver.
@@ -58,6 +63,14 @@ type Config struct {
 	SecretReader   SecretReader
 	OpSecretReader OpSecretReader
 	Rootless       bool
+
+	// QuadletDir, SystemdDir, and DataDir override the defaults computed by
+	// ResolveDirs. Empty fields fall back to the default for the given
+	// Rootless mode. Used by tests to isolate destination paths from a
+	// shared host filesystem; production callers leave them empty.
+	QuadletDir string
+	SystemdDir string
+	DataDir    string
 }
 
 // Resolver renders templates and resolves the desired state for hosts.
@@ -82,6 +95,15 @@ func New(rc Config) (*Resolver, error) {
 	quadletDir, systemdDir, dataDir, err := ResolveDirs(rc.Rootless)
 	if err != nil {
 		return nil, err
+	}
+	if rc.QuadletDir != "" {
+		quadletDir = rc.QuadletDir
+	}
+	if rc.SystemdDir != "" {
+		systemdDir = rc.SystemdDir
+	}
+	if rc.DataDir != "" {
+		dataDir = rc.DataDir
 	}
 	return &Resolver{
 		fsys:           rc.FS,
@@ -123,14 +145,14 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 		return nil, err
 	}
 
-	registry, opCache, err := BuildRegistry(ctx, r.fsys, r.secretReader, r.opSecretReader)
+	registry, opCache, err := BuildRegistry(ctx, r.fsys, r.secretReader, r.opSecretReader, r.dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}
 
 	// Fail fast on destination collisions before paying for template rendering
 	// or 1Password SDK calls. DestPath is knowable from the file layout alone.
-	fileSet, manifestRefs, err := r.expandAndValidate(r.cfg.Assignments.Resolve(host))
+	expanded, err := r.expandAndValidate(r.cfg.Assignments.Resolve(host))
 	if err != nil {
 		return nil, err
 	}
@@ -139,19 +161,23 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 	// Phase 1 (collect): render all templates to discover readOpSecret calls (output discarded).
 	// Phase 2 (resolve): batch-resolve collected refs, then render templates for real.
 	if opCache != nil {
-		r.collectOpTemplateRefs(registry, tmplData, fileSet, manifestRefs)
+		r.collectOpTemplateRefs(registry, tmplData, expanded.FileSet, expanded.ManifestRefs, expanded.HookRefs)
 		if err := opCache.Resolve(ctx); err != nil {
 			return nil, err
 		}
 	}
 
 	// Batch-resolve op:// secrets in a single SDK call.
-	opResolved, err := r.batchResolveOpSecrets(ctx, fileSet.Secrets)
+	opResolved, err := r.batchResolveOpSecrets(ctx, expanded.FileSet.Secrets)
 	if err != nil {
 		return nil, err
 	}
 
-	files, err := r.buildFiles(registry, tmplData, fileSet, manifestRefs, opResolved)
+	files, err := r.buildFiles(registry, tmplData, expanded.FileSet, expanded.ManifestRefs, opResolved)
+	if err != nil {
+		return nil, err
+	}
+	hooks, err := r.buildHooks(registry, tmplData, expanded.HookRefs, files)
 	if err != nil {
 		return nil, err
 	}
@@ -160,6 +186,7 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 		Hostname: hostname,
 		Host:     host,
 		Files:    files,
+		Hooks:    hooks,
 	}, nil
 }
 
@@ -176,21 +203,32 @@ func (r *Resolver) ResolveAll(ctx context.Context) (map[string]*ResolvedHost, er
 	return results, nil
 }
 
+// expandedResult holds the outputs of bundle expansion and validation.
+type expandedResult struct {
+	FileSet      *config.ResolvedFileSet
+	ManifestRefs []manifestRef
+	HookRefs     []hookRef
+}
+
 // expandAndValidate expands service bundles into the file set and fails fast
 // if any two sources resolve to the same destination path.
-func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []manifestRef, error) {
-	merged, manifestRefs, err := r.expandFileSet(fileSet)
+func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*expandedResult, error) {
+	merged, manifestRefs, hookRefs, err := r.expandFileSet(fileSet)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	skeletons, err := r.buildFileSkeletons(merged, manifestRefs)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := detectCollisions(skeletons); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return merged, manifestRefs, nil
+	return &expandedResult{
+		FileSet:      merged,
+		ManifestRefs: manifestRefs,
+		HookRefs:     hookRefs,
+	}, nil
 }
 
 // expandFileSet returns a new ResolvedFileSet merged with any service bundles,
@@ -198,10 +236,10 @@ func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*config.R
 // not mutated. Manifests and Services are left nil: manifest paths flow through
 // manifestRefs, and Services is already flattened into the category slices.
 // Populating them would let a future caller miss bundle contents.
-func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []manifestRef, error) {
+func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []manifestRef, []hookRef, error) {
 	expanded, err := expandServiceBundles(r.fsys, fileSet.Services)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	merged := &config.ResolvedFileSet{
@@ -218,7 +256,7 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.Resol
 		manifestRefs = append(manifestRefs, newLegacyManifestRef(srcPath))
 	}
 	manifestRefs = append(manifestRefs, expanded.Manifests...)
-	return merged, uniqueManifestRefs(manifestRefs), nil
+	return merged, uniqueManifestRefs(manifestRefs), expanded.Hooks, nil
 }
 
 // newLegacyManifestRef constructs a manifestRef for a legacy (non-bundled)
@@ -260,6 +298,7 @@ func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, manifestR
 	for _, ref := range manifestRefs {
 		skeletons = append(skeletons, ResolvedFile{
 			SrcPath: ref.SrcPath, Category: "manifest", DestPath: r.manifestDestPath(ref.LogicalPath),
+			ManifestRelPath: manifestRelPath(ref.LogicalPath),
 		})
 	}
 	for _, srcPath := range fileSet.Secrets {
@@ -470,6 +509,63 @@ func unitServiceName(unit *parser.UnitFile) string {
 	return name + ".service"
 }
 
+// findQuadletFile returns the ResolvedFile whose destination filename matches
+// quadletName, or nil if none. Quadlet filename is the source basename minus
+// any .tmpl suffix (e.g. "app.container").
+func findQuadletFile(quadletName string, files []ResolvedFile) *ResolvedFile {
+	for i := range files {
+		if destFilename(files[i].SrcPath) == quadletName {
+			return &files[i]
+		}
+	}
+	return nil
+}
+
+// validateSignalHookContainer cross-checks a signal-action hook's Container
+// against the Quadlet [Container] ContainerName= when the unit is
+// Quadlet-resolvable and the field is explicitly set. Must be called BEFORE
+// resolveHookQuadletUnit rewrites hook.Unit, since the lookup compares against
+// the original Quadlet filename (e.g. "app.container").
+func validateSignalHookContainer(hook config.Hook, files []ResolvedFile) error {
+	if hook.Action != config.HookActionSignal || !isQuadletUnit(hook.Unit) {
+		return nil
+	}
+	file := findQuadletFile(hook.Unit, files)
+	if file == nil || file.ParsedUnit == nil {
+		return nil
+	}
+	declared, ok := file.ParsedUnit.LookupLast("Container", "ContainerName")
+	declared = strings.TrimSpace(declared)
+	if !ok || declared == "" {
+		slog.Debug("Quadlet has no explicit ContainerName, container not validated",
+			"hook", hook.Name, "unit", hook.Unit, "container", hook.Container)
+		return nil
+	}
+	if declared != hook.Container {
+		return fmt.Errorf("hook %s: container %q does not match Quadlet ContainerName %q for unit %s",
+			hook.Name, hook.Container, declared, hook.Unit)
+	}
+	return nil
+}
+
+// resolveHookQuadletUnit finds the ResolvedFile matching the given Quadlet filename
+// and returns its ServiceName (computed by the Podman library via GetUnitServiceName).
+// Returns an error if no matching file exists in the resolved set.
+func resolveHookQuadletUnit(quadletName string, files []ResolvedFile) (string, error) {
+	if file := findQuadletFile(quadletName, files); file != nil && file.ServiceName != "" {
+		return file.ServiceName, nil
+	}
+	return "", fmt.Errorf("unit %q: no matching quadlet file found in assigned bundles", quadletName)
+}
+
+// isQuadletUnit reports whether the given unit name has a Quadlet file extension,
+// indicating it needs resolution to its generated systemd service name.
+func isQuadletUnit(unit string) bool {
+	ext := filepath.Ext(unit)
+	_, ok := quadlet.SupportedExtensions[ext]
+	return ok
+}
+
 // destFilename returns the base filename for a source path, stripping any .tmpl suffix.
 func destFilename(srcPath string) string {
 	return strings.TrimSuffix(path.Base(srcPath), ".tmpl")
@@ -482,11 +578,71 @@ func (r *Resolver) resolveManifestRef(registry *template.Template, tmplData *Tem
 	}
 
 	return &ResolvedFile{
-		SrcPath:  ref.SrcPath,
-		DestPath: r.manifestDestPath(ref.LogicalPath),
-		Content:  content,
-		Category: "manifest",
+		SrcPath:         ref.SrcPath,
+		DestPath:        r.manifestDestPath(ref.LogicalPath),
+		Content:         content,
+		Category:        "manifest",
+		ManifestRelPath: manifestRelPath(ref.LogicalPath),
 	}, nil
+}
+
+// manifestRelPath strips the leading "manifests/" prefix from a logical path
+// to produce the user-facing relative path (e.g. "config/scrape.yml").
+func manifestRelPath(logicalPath string) string {
+	if rel, ok := strings.CutPrefix(logicalPath, "manifests/"); ok {
+		return rel
+	}
+	return logicalPath
+}
+
+func (r *Resolver) buildHooks(registry *template.Template, tmplData *TemplateData, refs []hookRef, files []ResolvedFile) ([]config.Hook, error) {
+	type hookOrigin struct {
+		service string
+		path    string
+	}
+	var hooks []config.Hook
+	seen := make(map[string]hookOrigin)
+	for _, ref := range refs {
+		fileHooks, err := r.resolveHooksFile(registry, tmplData, ref, files)
+		if err != nil {
+			return nil, err
+		}
+		for _, hook := range fileHooks {
+			if prev, ok := seen[hook.Name]; ok {
+				return nil, fmt.Errorf("%s: duplicate hook name %q (already defined by service %q in %s)", ref.SrcPath, hook.Name, prev.service, prev.path)
+			}
+			seen[hook.Name] = hookOrigin{service: ref.Service, path: ref.SrcPath}
+			hooks = append(hooks, hook)
+		}
+	}
+	return hooks, nil
+}
+
+func (r *Resolver) resolveHooksFile(registry *template.Template, tmplData *TemplateData, ref hookRef, files []ResolvedFile) ([]config.Hook, error) {
+	content, err := r.renderOrRead(registry, tmplData, ref.SrcPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving hooks %s: %w", ref.SrcPath, err)
+	}
+	var file config.HooksFile
+	if err := yaml.Load([]byte(content), &file, yaml.WithKnownFields()); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", ref.SrcPath, err)
+	}
+	for i := range file.Hooks {
+		if err := validateSignalHookContainer(file.Hooks[i], files); err != nil {
+			return nil, fmt.Errorf("%s: hooks[%d]: %w", ref.SrcPath, i, err)
+		}
+		if isQuadletUnit(file.Hooks[i].Unit) {
+			resolved, err := resolveHookQuadletUnit(file.Hooks[i].Unit, files)
+			if err != nil {
+				return nil, fmt.Errorf("%s: hooks[%d]: %w", ref.SrcPath, i, err)
+			}
+			file.Hooks[i].Unit = resolved
+		}
+		if err := file.Hooks[i].Normalize(); err != nil {
+			return nil, fmt.Errorf("%s: hooks[%d]: %w", ref.SrcPath, i, err)
+		}
+	}
+	return file.Hooks, nil
 }
 
 func (r *Resolver) resolveSecret(registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {
@@ -544,12 +700,16 @@ func (r *Resolver) collectOpTemplateRefs(
 	tmplData *TemplateData,
 	fileSet *config.ResolvedFileSet,
 	manifestRefs []manifestRef,
+	hookRefs []hookRef,
 ) {
 	allPaths := slices.Concat(
 		fileSet.Networks, fileSet.Systemd, fileSet.Volumes,
 		fileSet.Containers, fileSet.Kube,
 	)
 	for _, ref := range manifestRefs {
+		allPaths = append(allPaths, ref.SrcPath)
+	}
+	for _, ref := range hookRefs {
 		allPaths = append(allPaths, ref.SrcPath)
 	}
 	// Include non-op:// secrets that are templates (they might call readOpSecret).

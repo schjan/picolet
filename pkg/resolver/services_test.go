@@ -19,6 +19,7 @@ func TestExpandServiceBundlesHappyPath(t *testing.T) {
 		"services/web/kube/app.kube.tmpl":                &fstest.MapFile{Data: []byte("kube")},
 		"services/web/systemd/http.socket":               &fstest.MapFile{Data: []byte("socket")},
 		"services/web/secrets/config.yml.tmpl":           &fstest.MapFile{Data: []byte("secret")},
+		"services/web/picolet.yml":                       &fstest.MapFile{Data: []byte("hooks: []\n")},
 		"services/web/manifests/app/deployment.yml.tmpl": &fstest.MapFile{Data: []byte("manifest")},
 		"services/web/manifests/app/configs/app.conf":    &fstest.MapFile{Data: []byte("config")},
 	}
@@ -32,6 +33,7 @@ func TestExpandServiceBundlesHappyPath(t *testing.T) {
 	assert.Equal(t, []string{"services/web/containers/web.container.tmpl"}, expanded.Containers)
 	assert.Equal(t, []string{"services/web/kube/app.kube.tmpl"}, expanded.Kube)
 	assert.Equal(t, []string{"services/web/secrets/config.yml.tmpl"}, expanded.Secrets)
+	assert.Equal(t, []hookRef{{Service: "web", SrcPath: "services/web/picolet.yml"}}, expanded.Hooks)
 	assert.Equal(t, []manifestRef{
 		{
 			SrcPath:     "services/web/manifests/app/configs/app.conf",
@@ -42,6 +44,31 @@ func TestExpandServiceBundlesHappyPath(t *testing.T) {
 			LogicalPath: "manifests/app/deployment.yml.tmpl",
 		},
 	}, expanded.Manifests)
+}
+
+func TestExpandServiceBundlesMetadataOnlyIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"services/web/picolet.yml": &fstest.MapFile{Data: []byte("hooks: []\n")},
+	}
+
+	_, err := expandServiceBundles(fsys, []string{"web"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "services/web: empty service bundle")
+}
+
+func TestExpandServiceBundlesRejectsMetadataSymlink(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"services/web/picolet.yml":              &fstest.MapFile{Mode: fs.ModeSymlink},
+		"services/web/containers/web.container": &fstest.MapFile{Data: []byte("container")},
+	}
+
+	_, err := expandServiceBundles(fsys, []string{"web"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "services/web/picolet.yml: expected regular file")
 }
 
 func TestExpandServiceBundlesMissingBundle(t *testing.T) {
@@ -232,6 +259,37 @@ func TestExpandServiceBundlesRejectsInvalidName(t *testing.T) {
 			require.ErrorContains(t, err, tt.want)
 		})
 	}
+}
+
+func TestExpandServiceBundlesRejectsBothHookMetadataFiles(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"services/web/picolet.yml":              &fstest.MapFile{Data: []byte("hooks: []\n")},
+		"services/web/picolet.yml.tmpl":         &fstest.MapFile{Data: []byte("hooks: []\n")},
+		"services/web/containers/web.container": &fstest.MapFile{Data: []byte("[Container]\nImage=a\n")},
+	}
+
+	_, err := expandServiceBundles(fsys, []string{"web"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "services/web: cannot define both picolet.yml and picolet.yml.tmpl")
+}
+
+func TestExpandServiceBundlesHookMetadataAsDirectoryReportsOneError(t *testing.T) {
+	t.Parallel()
+
+	// A directory accidentally named picolet.yml previously surfaced both
+	// "unknown entry" (from collectBundleSubdirs) and "expected regular file"
+	// (from collectBundleHookRefs). Now collectBundleSubdirs skips hook metadata
+	// names unconditionally, so only the regular-file error remains.
+	fsys := fstest.MapFS{
+		"services/web/picolet.yml/something":    &fstest.MapFile{Data: []byte("oops")},
+		"services/web/containers/web.container": &fstest.MapFile{Data: []byte("[Container]\nImage=a\n")},
+	}
+
+	_, err := expandServiceBundles(fsys, []string{"web"})
+	require.ErrorContains(t, err, "services/web/picolet.yml: expected regular file")
+	assert.NotContains(t, err.Error(), "unknown entry")
 }
 
 func TestAddPathUnknownCategory(t *testing.T) {

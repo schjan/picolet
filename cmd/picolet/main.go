@@ -401,7 +401,13 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 		return nil, nil, false, err
 	}
 
-	files, err := agent.LoadAndResolve(ctx, effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)
+	files, err := agent.LoadAndResolve(ctx, agent.ResolveParams{
+		RepoPath:       effectiveRepoDir(repoDir, cfg.RepoSubDir),
+		Hostname:       hostname,
+		SecretsDir:     cfg.SecretsDir,
+		Rootless:       cfg.Rootless,
+		OpSecretReader: opReader,
+	})
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -615,6 +621,7 @@ func applyWithRollback(
 	changeset *reconciler.Changeset,
 	systemd applier.SystemdManager,
 	podman applier.PodmanClient,
+	hooks []config.Hook,
 ) (*applier.ApplyResult, error) {
 	writer := applier.NewAtomicFileWriter()
 	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile)
@@ -622,7 +629,7 @@ func applyWithRollback(
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
-	app := applier.New(systemd, podman, writer, false)
+	app := applier.New(systemd, podman, writer, false, hooks)
 	result, err := app.Apply(ctx, changeset)
 	if err != nil {
 		slog.Error("apply failed, rolling back", "error", err)
@@ -634,7 +641,14 @@ func applyWithRollback(
 		return nil, fmt.Errorf("apply failed: %w", err)
 	}
 	for _, e := range result.Errors {
+		if fallback, ok := errors.AsType[*applier.HookFallbackError](e); ok {
+			slog.Warn("hook failed, fallback restart scheduled", "unit", fallback.Unit, "error", fallback.Err)
+			continue
+		}
 		slog.Warn("non-fatal apply error", "error", e)
+	}
+	if len(result.RetryableErrors) > 0 {
+		return result, fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(result.RetryableErrors...))
 	}
 
 	return result, nil
@@ -657,10 +671,17 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		return err
 	}
 
-	files, err := agent.LoadAndResolve(ctx, effectiveRepoDir(repoDir, cfg.RepoSubDir), hostname, cfg.SecretsDir, cfg.Rootless, opReader)
+	resolved, err := agent.LoadAndResolveHost(ctx, agent.ResolveParams{
+		RepoPath:       effectiveRepoDir(repoDir, cfg.RepoSubDir),
+		Hostname:       hostname,
+		SecretsDir:     cfg.SecretsDir,
+		Rootless:       cfg.Rootless,
+		OpSecretReader: opReader,
+	})
 	if err != nil {
 		return err
 	}
+	files := resolved.Files
 
 	store, err := stateStoreFromConfig(cfg)
 	if err != nil {
@@ -698,7 +719,7 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		return fmt.Errorf("connecting to podman: %w", err)
 	}
 
-	result, err := applyWithRollback(ctx, changeset, systemd, podman)
+	result, err := applyWithRollback(ctx, changeset, systemd, podman, resolved.Hooks)
 	if err != nil {
 		return err
 	}
@@ -746,7 +767,7 @@ func runDown(ctx context.Context, configPath string) error { //nolint:cyclop // 
 	}
 
 	changeset := reconciler.Diff(nil, st)
-	app := applier.New(systemd, podman, applier.NewAtomicFileWriter(), false)
+	app := applier.New(systemd, podman, applier.NewAtomicFileWriter(), false, nil)
 	result, err := app.Apply(ctx, changeset)
 	if err != nil {
 		return fmt.Errorf("teardown failed: %w", err)

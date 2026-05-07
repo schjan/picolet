@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -77,6 +79,16 @@ type Agent struct {
 	statePath string
 	lockPath  string
 
+	// quadletDirOverride, systemdDirOverride, and dataDirOverride are
+	// test-only injection points. Empty values fall back to
+	// resolver.ResolveDirs(cfg.Rootless). Production deployments leave
+	// them unset so destination paths follow the documented layout.
+	// loadAndResolve passes these straight to ResolveParams (resolver.New
+	// owns fallback); scanOrphans applies the same fallback inline.
+	quadletDirOverride string
+	systemdDirOverride string
+	dataDirOverride    string
+
 	opReader resolver.OpSecretReader // nil when 1Password not configured; initialized in Run
 	// Accessed only by the agent tick loop, which runs serially.
 	lastOPRefresh time.Time // zero = never refreshed; in-memory only (restart always re-fetches)
@@ -136,6 +148,39 @@ func WithStatePath(path string) Option {
 // WithLockPath overrides the reconciliation lock file path.
 func WithLockPath(path string) Option {
 	return func(a *Agent) { a.lockPath = path }
+}
+
+// WithQuadletDir overrides the quadlet destination directory. Test-only;
+// production agents leave this unset so paths come from resolver.ResolveDirs.
+// An empty path is ignored. When this option is set, callers that also
+// use systemd or manifest categories must set WithSystemdDir/WithDataDir
+// to keep loadAndResolve and scanOrphans pointed at consistent locations.
+func WithQuadletDir(path string) Option {
+	return func(a *Agent) {
+		if path != "" {
+			a.quadletDirOverride = path
+		}
+	}
+}
+
+// WithSystemdDir overrides the systemd destination directory. Test-only.
+// An empty path is ignored. See WithQuadletDir for the consistency rule.
+func WithSystemdDir(path string) Option {
+	return func(a *Agent) {
+		if path != "" {
+			a.systemdDirOverride = path
+		}
+	}
+}
+
+// WithDataDir overrides the manifest data directory. Test-only.
+// An empty path is ignored. See WithQuadletDir for the consistency rule.
+func WithDataDir(path string) Option {
+	return func(a *Agent) {
+		if path != "" {
+			a.dataDirOverride = path
+		}
+	}
 }
 
 // WithMQTT sets the MQTTClient for pause/trigger/status publishing.
@@ -342,7 +387,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return fmt.Errorf("polling git: %w", err)
 	}
 
-	if !pollResult.Changed && !a.opRefreshDue() {
+	if !pollResult.Changed && !a.opRefreshDue() && len(st.PendingHooks) == 0 {
 		metrics.GitPollTotal.WithLabelValues("noop").Inc()
 		slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
@@ -364,9 +409,16 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return nil
 	}
 
-	if pollResult.Changed {
+	switch {
+	case pollResult.Changed:
 		metrics.GitPollTotal.WithLabelValues("changed").Inc()
-	} else {
+	case len(st.PendingHooks) > 0:
+		// Pending-hook retry takes priority over OP refresh in the label even
+		// when both apply: the retry is the actionable reason this tick ran,
+		// and ReconcileOnce will refresh op:// secrets regardless.
+		slog.Info("forcing reconciliation for pending hook retry", "sha", pollResult.HeadSHA, "pending", st.PendingHooks)
+		metrics.GitPollTotal.WithLabelValues("pending_hook_retry").Inc()
+	default:
 		slog.Info("forcing reconciliation for 1password secret refresh", "sha", pollResult.HeadSHA)
 		metrics.GitPollTotal.WithLabelValues("op_refresh").Inc()
 	}
@@ -387,20 +439,32 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return nil
 	}
 
-	// Report deployments only for new git SHAs; forced OP refresh runs on the same SHA
-	// are reconciliations, not deployments.
+	// Report deployments only for new git SHAs; forced reconciliations on the
+	// same SHA (OP refresh, pending hook retry) are not deployments.
 	var deploymentID int64
 	if pollResult.Changed {
 		slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
 		deploymentID = a.createDeployment(ctx, pollResult.HeadSHA)
-	} else {
-		slog.Info("reconciling unchanged git commit for 1password secret refresh", "sha", pollResult.HeadSHA)
 	}
 
 	start := time.Now()
 	result, err := a.ReconcileOnce(ctx, pollResult.HeadSHA, st, store)
 	elapsed := time.Since(start)
 	metrics.ReconciliationDuration.Observe(elapsed.Seconds())
+
+	if errors.Is(err, applier.ErrApplyIncomplete) {
+		// Files were applied; only hook retry is pending. This is not a
+		// reconciliation failure: do not increment FailedCount, do not arm the
+		// failed-SHA gate, do not report a failed deployment.
+		a.reportDeploymentResult(ctx, deploymentID, nil)
+		if a.opReader != nil {
+			a.lastOPRefresh = time.Now()
+		}
+		slog.Warn("apply incomplete, hooks will retry on next tick", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
+		metrics.ReconciliationTotal.WithLabelValues("retry_pending").Inc()
+		a.recordEvent("retry_pending", pollResult.HeadSHA, err.Error())
+		return nil
+	}
 
 	a.reportDeploymentResult(ctx, deploymentID, err)
 
@@ -439,10 +503,26 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	return nil
 }
 
+// ResolveParams holds the parameters for LoadAndResolve and LoadAndResolveHost.
+type ResolveParams struct {
+	RepoPath       string
+	Hostname       string
+	SecretsDir     string
+	Rootless       bool
+	OpSecretReader resolver.OpSecretReader
+
+	// QuadletDir, SystemdDir, and DataDir override the defaults computed by
+	// resolver.ResolveDirs. Empty fields fall back to the default. Used by
+	// tests to isolate destination paths.
+	QuadletDir string
+	SystemdDir string
+	DataDir    string
+}
+
 // LoadAndResolve loads fleet config from repoPath and resolves the desired state for the given host.
 // It is the shared implementation behind Agent.loadAndResolve and CLI subcommands (apply, dry-run).
-func LoadAndResolve(ctx context.Context, repoPath, hostname, secretsDir string, rootless bool, opSecretReader resolver.OpSecretReader) ([]resolver.ResolvedFile, error) {
-	resolved, err := LoadAndResolveHost(ctx, repoPath, hostname, secretsDir, rootless, opSecretReader)
+func LoadAndResolve(ctx context.Context, params ResolveParams) ([]resolver.ResolvedFile, error) {
+	resolved, err := LoadAndResolveHost(ctx, params)
 	if err != nil {
 		return nil, err
 	}
@@ -450,16 +530,16 @@ func LoadAndResolve(ctx context.Context, repoPath, hostname, secretsDir string, 
 }
 
 // LoadAndResolveHost loads fleet config from repoPath and resolves the desired state plus host metadata.
-func LoadAndResolveHost(ctx context.Context, repoPath, hostname, secretsDir string, rootless bool, opSecretReader resolver.OpSecretReader) (*resolver.ResolvedHost, error) {
-	slog.Debug("loading fleet config", "repo", repoPath)
-	repoFS := os.DirFS(repoPath)
+func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.ResolvedHost, error) {
+	slog.Debug("loading fleet config", "repo", params.RepoPath)
+	repoFS := os.DirFS(params.RepoPath)
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
 
 	secretReader := func(path string) (string, error) {
-		secretRoot, err := os.OpenRoot(secretsDir)
+		secretRoot, err := os.OpenRoot(params.SecretsDir)
 		if err != nil {
 			return "", fmt.Errorf("opening secrets dir: %w", err)
 		}
@@ -472,23 +552,26 @@ func LoadAndResolveHost(ctx context.Context, repoPath, hostname, secretsDir stri
 		return string(data), nil
 	}
 
-	slog.Debug("resolving host", "hostname", hostname)
+	slog.Debug("resolving host", "hostname", params.Hostname)
 	loadStart := time.Now()
 	r, err := resolver.New(resolver.Config{
 		FS:             repoFS,
 		Config:         cfg,
 		SecretReader:   secretReader,
-		OpSecretReader: opSecretReader,
-		Rootless:       rootless,
+		OpSecretReader: params.OpSecretReader,
+		Rootless:       params.Rootless,
+		QuadletDir:     params.QuadletDir,
+		SystemdDir:     params.SystemdDir,
+		DataDir:        params.DataDir,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating resolver: %w", err)
 	}
-	resolved, err := r.ResolveHost(ctx, hostname)
+	resolved, err := r.ResolveHost(ctx, params.Hostname)
 	if err != nil {
-		return nil, fmt.Errorf("resolving host %s: %w", hostname, err)
+		return nil, fmt.Errorf("resolving host %s: %w", params.Hostname, err)
 	}
-	slog.Debug("host resolved", "hostname", hostname, "files", len(resolved.Files), "duration", time.Since(loadStart).Round(time.Millisecond))
+	slog.Debug("host resolved", "hostname", params.Hostname, "files", len(resolved.Files), "duration", time.Since(loadStart).Round(time.Millisecond))
 	return resolved, nil
 }
 
@@ -497,7 +580,18 @@ func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, err
 	if a.cfg.RepoSubDir != "" {
 		fleetPath = filepath.Join(a.repoPath, a.cfg.RepoSubDir)
 	}
-	return LoadAndResolveHost(ctx, fleetPath, a.cfg.Hostname, a.cfg.SecretsDir, a.cfg.Rootless, a.opReader)
+	return LoadAndResolveHost(ctx, ResolveParams{
+		RepoPath:       fleetPath,
+		Hostname:       a.cfg.Hostname,
+		SecretsDir:     a.cfg.SecretsDir,
+		Rootless:       a.cfg.Rootless,
+		OpSecretReader: a.opReader,
+		// Override fields are passed raw; resolver.New applies the
+		// ResolveDirs fallback for any field left empty.
+		QuadletDir: a.quadletDirOverride,
+		SystemdDir: a.systemdDirOverride,
+		DataDir:    a.dataDirOverride,
+	})
 }
 
 // ReconcileResult contains the outcome of a single reconciliation cycle.
@@ -526,6 +620,9 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	changeset := reconciler.Diff(files, st)
 
 	if !changeset.HasChanges() {
+		if len(st.PendingHooks) > 0 {
+			return a.retryPendingHooks(ctx, resolved, st, store, changeset, opCount)
+		}
 		return a.reconcileNoChanges(headSHA, files, changeset, st, store, opCount)
 	}
 
@@ -542,17 +639,25 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset)
+	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset, resolved.Hooks, pendingHookNames(st.PendingHooks))
+	recordHookMetrics(applyResult)
+	if errors.Is(err, applier.ErrApplyIncomplete) {
+		a.savePartialStateOnHookFailure(headSHA, st, store, changeset, applyResult, deps, resolved.Hooks)
+		return nil, err
+	}
 	if err != nil {
 		return nil, err
 	}
+	return a.finalizeApply(headSHA, st, store, changeset, applyResult, deps, opCount, resolved.Hooks)
+}
+
+func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, opCount int, hooks []config.Hook) (*ReconcileResult, error) {
 	// Set deps after a successful apply so the dashboard's dep map matches the
 	// deployed state. On apply failure (rollback) we keep the previous good
 	// map rather than advertising deps for a state we couldn't reach.
 	a.statusStore.SetDependencies(deps)
-	for _, e := range applyResult.Errors {
-		slog.Warn("non-fatal apply error", "error", e)
-	}
+	st.PendingHooks = enforceRetryBudget(mergePendingHooks(st.PendingHooks, applyResult), hooks)
+	logNonRetryableApplyErrors(applyResult)
 
 	markAppliedWithMetrics(st, headSHA)
 	a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
@@ -610,14 +715,141 @@ func (a *Agent) reconcileNoChanges(headSHA string, files []resolver.ResolvedFile
 	return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: opCount}, nil
 }
 
-func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset) (*applier.ApplyResult, error) {
+// savePartialStateOnHookFailure persists state after a successful apply that
+// only failed at the keep_running hook stage. Files and secrets are recorded
+// (so the next tick does not re-write them), the SHA is marked applied (so
+// gitpoll stops reporting "Changed" on every retry tick — which would otherwise
+// produce duplicate deployment reports for the same SHA), and the pending hook
+// list is saved so retry survives an agent restart.
+func (a *Agent) savePartialStateOnHookFailure(headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, hooks []config.Hook) {
+	UpdateState(st, changeset)
+	st.PendingHooks = enforceRetryBudget(mergePendingHooks(st.PendingHooks, applyResult), hooks)
+	markAppliedWithMetrics(st, headSHA)
+	a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
+	if saveErr := store.Save(st); saveErr != nil {
+		slog.Error("saving partial state after hook failure", "error", saveErr)
+	}
+	a.statusStore.SetDependencies(deps)
+}
+
+// mergePendingHooks computes the new PendingHooks map given the previous
+// map and the apply result. After the every-tick-retry change a hook either
+// runs (success/failed/skipped) or is dropped as stale; it does not stay
+// pending across ticks without an attempt. So a hook is removed from
+// pending if it appears in AttemptedHookNames (regardless of outcome
+// classification — count increments come from PendingHookNames), and added
+// if it's a new keep_running failure. Returns nil (not an empty map) when
+// empty so omitempty omits the field.
+func mergePendingHooks(old map[string]int, result *applier.ApplyResult) map[string]int {
+	if len(old) == 0 && len(result.PendingHookNames) == 0 {
+		return nil
+	}
+	attempted := make(map[string]bool, len(result.AttemptedHookNames))
+	for _, name := range result.AttemptedHookNames {
+		attempted[name] = true
+	}
+	merged := make(map[string]int, len(old)+len(result.PendingHookNames))
+	for name, count := range old {
+		if attempted[name] {
+			continue
+		}
+		merged[name] = count
+	}
+	for _, name := range result.PendingHookNames {
+		prev := old[name]
+		merged[name] = prev + 1
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
+
+// retryPendingHooks runs pending secret hooks on a tick where the diff is
+// otherwise empty. It does NOT call UpdateState — that would wipe ManagedFiles
+// from an empty changeset. State is saved with the (possibly trimmed) pending
+// map. Returns ErrApplyIncomplete when hooks still fail under keep_running.
+func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.ResolvedHost, st *state.State, store *state.Store, changeset *reconciler.Changeset, opCount int) (*ReconcileResult, error) {
+	pendingNames := pendingHookNames(st.PendingHooks)
+	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, resolved.Hooks)
+	result := app.RunPendingHooks(ctx, pendingNames)
+
+	recordHookMetrics(result)
+	logNonRetryableApplyErrors(result)
+
+	newPending := mergePendingHooks(st.PendingHooks, result)
+	newPending = enforceRetryBudget(newPending, resolved.Hooks)
+
+	if !maps.Equal(st.PendingHooks, newPending) {
+		st.PendingHooks = newPending
+		if err := store.Save(st); err != nil {
+			return nil, fmt.Errorf("saving state after hook retry: %w", err)
+		}
+	}
+
+	out := &ReconcileResult{
+		HasChanges:     len(result.RestartedUnits) > 0 || len(result.FallbackRestartedUnits) > 0,
+		Summary:        changeset.Summary,
+		ApplyResult:    result,
+		OpSecretsCount: opCount,
+	}
+
+	if len(result.RetryableErrors) > 0 {
+		return out, fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(result.RetryableErrors...))
+	}
+
+	slog.Info("pending hooks retried", "restarted", result.RestartedUnits)
+	return out, nil
+}
+
+// pendingHookNames returns the hook names from the pending map in sorted order.
+// Sorted output keeps log lines and tests deterministic.
+func pendingHookNames(pending map[string]int) []string {
+	if len(pending) == 0 {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(pending))
+}
+
+// enforceRetryBudget removes hooks that exceeded their configured max_retries.
+// Hooks not found in the config are left untouched (they'll be dropped as stale
+// on the next actual retry attempt by RunPendingHooks).
+func enforceRetryBudget(pending map[string]int, hooks []config.Hook) map[string]int {
+	if len(pending) == 0 {
+		return nil
+	}
+	maxByName := make(map[string]int, len(hooks))
+	for _, h := range hooks {
+		maxByName[h.Name] = h.MaxRetries
+	}
+	for name, count := range pending {
+		limit, ok := maxByName[name]
+		if !ok {
+			continue // stale hook name; RunPendingHooks will handle it
+		}
+		if limit <= 0 {
+			limit = config.DefaultMaxRetries
+		}
+		if count >= limit {
+			slog.Error("hook exhausted retry budget, giving up",
+				"hook", name, "attempts", count, "max_retries", limit)
+			delete(pending, name)
+		}
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	return pending
+}
+
+func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset, hooks []config.Hook, pendingNames []string) (*applier.ApplyResult, error) {
 	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile)
 	if err != nil {
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
-	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun)
-	result, err := app.Apply(ctx, changeset)
+	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, hooks)
+	result, err := app.ApplyWithPending(ctx, changeset, pendingNames)
 	if err != nil {
 		slog.Error("apply failed, rolling back", "error", err)
 		metrics.RollbackTotal.Inc()
@@ -645,6 +877,11 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 			a.statusStore.DeleteUnit(change.ServiceName)
 		}
 	}
+	if len(result.RetryableErrors) > 0 {
+		logNonRetryableApplyErrors(result)
+		// tick() logs the user-facing "apply incomplete" message with sha + duration.
+		return result, fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(result.RetryableErrors...))
+	}
 
 	slog.Info("apply complete",
 		"applied", result.Applied,
@@ -653,6 +890,38 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	)
 
 	return result, nil
+}
+
+func logNonRetryableApplyErrors(result *applier.ApplyResult) {
+	if len(result.Errors) == 0 {
+		return
+	}
+	// runHooks appends the same error pointer to both Errors and
+	// RetryableErrors, so pointer-identity lookup is sufficient and avoids the
+	// quadratic errors.Is walk per error.
+	retryable := make(map[error]struct{}, len(result.RetryableErrors))
+	for _, e := range result.RetryableErrors {
+		retryable[e] = struct{}{}
+	}
+	for _, err := range result.Errors {
+		if _, ok := retryable[err]; ok {
+			continue
+		}
+		if fallback, ok := errors.AsType[*applier.HookFallbackError](err); ok {
+			slog.Warn("hook failed, fallback restart scheduled", "unit", fallback.Unit, "error", fallback.Err)
+			continue
+		}
+		slog.Warn("non-fatal apply error", "error", err)
+	}
+}
+
+func recordHookMetrics(result *applier.ApplyResult) {
+	if result == nil {
+		return
+	}
+	for _, o := range result.HookOutcomes {
+		metrics.HookTotal.WithLabelValues(o.Name, o.Action, o.Result).Inc()
+	}
 }
 
 func (a *Agent) resolvePollerAuth(ctx context.Context) (gitpoll.AuthProvider, error) {
@@ -769,6 +1038,24 @@ func countCategoriesFromState(managed map[string]state.ManagedFile) map[string]f
 
 // scanOrphans detects and removes files/secrets placed by a previous picolet run that
 // are no longer tracked in state. Runs once at startup; errors are logged, not fatal.
+// applyDirOverrides applies the agent's WithQuadletDir/WithSystemdDir/WithDataDir
+// overrides on top of already-resolved directory defaults. Mirrors the same
+// logic that resolver.New applies to Config.QuadletDir/SystemdDir/DataDir;
+// scanOrphans must stay in sync with that path so it never deletes files the
+// resolver just wrote into a custom directory.
+func (a *Agent) applyDirOverrides(quadletDir, systemdDir, dataDir string) (string, string, string) {
+	if a.quadletDirOverride != "" {
+		quadletDir = a.quadletDirOverride
+	}
+	if a.systemdDirOverride != "" {
+		systemdDir = a.systemdDirOverride
+	}
+	if a.dataDirOverride != "" {
+		dataDir = a.dataDirOverride
+	}
+	return quadletDir, systemdDir, dataDir
+}
+
 func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	if a.dryRun {
 		return
@@ -779,6 +1066,7 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 		a.statusStore.SetOrphanScan(status.OrphanScan{Ran: true, Error: err.Error()})
 		return
 	}
+	quadletDir, systemdDir, dataDir = a.applyDirOverrides(quadletDir, systemdDir, dataDir)
 	st, err := store.Load()
 	if err != nil {
 		slog.Warn("loading state for orphan scan failed", "error", err)

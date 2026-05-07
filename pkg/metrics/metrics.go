@@ -162,6 +162,14 @@ var (
 			Help: "Unix timestamp of the last successful 1Password secret sync.",
 		},
 	)
+
+	HookTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "picolet_hook_total",
+			Help: "Total hook executions by name, action, and result.",
+		},
+		[]string{"name", "action", "result"},
+	)
 )
 
 var registerOnce sync.Once
@@ -194,6 +202,7 @@ func Register(store *status.Store) {
 			OpDirectSecretsCount,
 			OpSyncTotal,
 			OpLastSyncTimestamp,
+			HookTotal,
 			NewUnitHealthCollector(store),
 			NewUnitDependencyCollector(store),
 			NewHostInfoCollector(store),
