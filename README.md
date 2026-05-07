@@ -241,16 +241,16 @@ hooks:
     unit: vmalert.service
     action: http
     method: GET
-    url: "http://localhost:{{ index .Ports "vmalert" }}/vmalert/-/reload"
-    health_url: "http://localhost:{{ index .Ports "vmalert" }}/vmalert/health"
+    url: 'http://localhost:{{ index .Ports "vmalert" }}/vmalert/-/reload'
+    health_url: 'http://localhost:{{ index .Ports "vmalert" }}/vmalert/health'
 
   - name: victoriametrics-scrape-reload
     manifests: [config/scrape.yml]
     unit: victoriametrics.service
     action: http
     method: GET
-    url: "http://localhost:{{ index .Ports "victoriametrics" }}/prometheus/-/reload"
-    health_url: "http://localhost:{{ index .Ports "victoriametrics" }}/prometheus/health"
+    url: 'http://localhost:{{ index .Ports "victoriametrics" }}/prometheus/-/reload'
+    health_url: 'http://localhost:{{ index .Ports "victoriametrics" }}/prometheus/health'
 ```
 
 Hooks run after secret/manifest writes and before normal unit restarts. If
@@ -279,6 +279,11 @@ By default hook failures are non-fatal and keep the current process running:
 should fall back to a restart. Keeping the process running is usually safer for
 config reload APIs that reject invalid config while continuing with the old
 valid config.
+
+Each retry attempt increments `picolet_reconciliation_total{result="retry_pending"}`
+and emits an `apply incomplete` warning in the agent log; the hook is dropped
+from the pending list once it succeeds, falls back to a restart, or exhausts
+its `max_retries` budget.
 
 For services whose config is mounted through Podman secrets, verify that the
 running container sees replaced secret content on your target Podman version.

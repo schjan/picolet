@@ -89,8 +89,8 @@ hooks:
     unit: vmalert.service
     action: http
     method: GET
-    url: "http://localhost:{{ index .Ports "vmalert" }}/vmalert/-/reload"
-    health_url: "http://localhost:{{ index .Ports "vmalert" }}/vmalert/health"
+    url: 'http://localhost:{{ index .Ports "vmalert" }}/vmalert/-/reload'
+    health_url: 'http://localhost:{{ index .Ports "vmalert" }}/vmalert/health'
 ```
 
 Use `action: restart` for services where the running process cannot see replaced
