@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 )
 
@@ -103,13 +102,9 @@ func (h *Hook) normalizeSecrets() error {
 
 func (h *Hook) normalizeManifests() error {
 	for i, manifest := range h.Manifests {
-		m := strings.TrimSpace(manifest)
-		cleaned := path.Clean(m)
-		if m == "" || m != cleaned ||
-			cleaned == "." || cleaned == ".." ||
-			strings.HasPrefix(cleaned, "/") ||
-			strings.HasPrefix(cleaned, "../") {
-			return fmt.Errorf("%s: manifests[%d]: %q must be a clean relative path", h.Name, i, manifest)
+		cleaned, err := ValidateRelPath(manifest)
+		if err != nil {
+			return fmt.Errorf("%s: manifests[%d]: %q %w", h.Name, i, manifest, err)
 		}
 		h.Manifests[i] = cleaned
 	}

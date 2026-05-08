@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"maps"
-	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,6 +14,7 @@ import (
 
 	sprig "github.com/Masterminds/sprig/v3"
 
+	"github.com/schjan/picolet/pkg/config"
 	op "github.com/schjan/picolet/pkg/onepassword"
 	pp "github.com/schjan/picolet/pkg/protonpass"
 )
@@ -180,13 +180,9 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, p
 			return secretReader(path)
 		},
 		"manifestPath": func(relPath string) (string, error) {
-			cleaned := path.Clean(relPath)
-			if relPath != cleaned ||
-				cleaned == "." ||
-				cleaned == ".." ||
-				strings.HasPrefix(cleaned, "/") ||
-				strings.HasPrefix(cleaned, "../") {
-				return "", fmt.Errorf("manifestPath %q: must be a clean relative path", relPath)
+			cleaned, err := config.ValidateRelPath(relPath)
+			if err != nil {
+				return "", fmt.Errorf("manifestPath %q: %w", relPath, err)
 			}
 			return filepath.Join(dataDir, "manifests", filepath.FromSlash(cleaned)), nil
 		},
