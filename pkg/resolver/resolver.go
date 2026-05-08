@@ -270,9 +270,17 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.Resol
 		Secrets:    sortedUnique(slices.Concat(fileSet.Secrets, expanded.Secrets)),
 	}
 
-	manifestRefs := make([]bundleFileRef, 0, len(fileSet.Manifests)+len(expanded.NestedRefs))
+	manifestRefs := make([]bundleFileRef, 0, len(fileSet.Manifests)+len(fileSet.Files)+len(expanded.NestedRefs))
 	for _, srcPath := range fileSet.Manifests {
 		manifestRefs = append(manifestRefs, newLegacyManifestRef(srcPath))
+	}
+	for _, srcPath := range fileSet.Files {
+		manifestRefs = append(manifestRefs, bundleFileRef{
+			SrcPath:     srcPath,
+			LogicalPath: srcPath,
+			Category:    "file",
+			RelPath:     stripCategoryPrefix(srcPath, "files"),
+		})
 	}
 	manifestRefs = append(manifestRefs, expanded.NestedRefs...)
 	return merged, uniqueManifestRefs(manifestRefs), expanded.Hooks, nil

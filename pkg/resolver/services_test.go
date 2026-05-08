@@ -318,3 +318,29 @@ func TestStripServicePrefix(t *testing.T) {
 	assert.Equal(t, "containers/web.container",
 		stripServicePrefix("services/web/containers/web.container", "web"))
 }
+
+func TestExpandServiceBundlesIncludesFilesCategory(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"services/web/containers/web.container": &fstest.MapFile{Data: []byte("c")},
+		"services/web/files/scrape.yml":         &fstest.MapFile{Data: []byte("a: 1")},
+		"services/web/files/rules/alerts.yml":   &fstest.MapFile{Data: []byte("b: 2")},
+	}
+
+	expanded, err := expandServiceBundles(fsys, []string{"web"})
+	require.NoError(t, err)
+	require.Len(t, expanded.NestedRefs, 2)
+	assert.Equal(t, bundleFileRef{
+		SrcPath:     "services/web/files/rules/alerts.yml",
+		LogicalPath: "files/rules/alerts.yml",
+		Category:    "file",
+		RelPath:     "rules/alerts.yml",
+	}, expanded.NestedRefs[0])
+	assert.Equal(t, bundleFileRef{
+		SrcPath:     "services/web/files/scrape.yml",
+		LogicalPath: "files/scrape.yml",
+		Category:    "file",
+		RelPath:     "scrape.yml",
+	}, expanded.NestedRefs[1])
+}

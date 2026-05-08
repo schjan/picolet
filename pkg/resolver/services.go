@@ -24,6 +24,7 @@ var bundleSubdirs = []bundleSubdir{
 	{Subdir: "systemd", Category: "systemd", AllowNesting: false},
 	{Subdir: "secrets", Category: "secret", AllowNesting: false},
 	{Subdir: "manifests", Category: "manifest", AllowNesting: true},
+	{Subdir: "files", Category: "file", AllowNesting: true},
 }
 
 var bundleSubdirsByName = func() map[string]bundleSubdir {
