@@ -279,7 +279,7 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.Resol
 
 // newLegacyManifestRef constructs a bundleFileRef for a legacy (non-bundled)
 // manifest path, where the source and logical paths are the same. Bundled
-// refs set a stripped LogicalPath and are built in readManifestSubdir.
+// refs set a stripped LogicalPath and are built in readNestedSubdir.
 func newLegacyManifestRef(srcPath string) bundleFileRef {
 	return bundleFileRef{
 		SrcPath:     srcPath,

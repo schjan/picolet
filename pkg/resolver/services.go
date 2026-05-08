@@ -264,12 +264,12 @@ func (b *expandedBundles) fileCount() int {
 func (b *expandedBundles) readSubdir(fsys fs.FS, service string, subdir bundleSubdir) error {
 	root := path.Join("services", service, subdir.Subdir)
 	if subdir.AllowNesting {
-		return b.readManifestSubdir(fsys, root, service)
+		return b.readNestedSubdir(fsys, root, service, subdir)
 	}
 	return b.readFlatSubdir(fsys, root, subdir.Category)
 }
 
-func (b *expandedBundles) readManifestSubdir(fsys fs.FS, root, service string) error {
+func (b *expandedBundles) readNestedSubdir(fsys fs.FS, root, service string, subdir bundleSubdir) error {
 	return fs.WalkDir(fsys, root, func(walkPath string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return fmt.Errorf("walking %s: %w", walkPath, walkErr)
@@ -277,7 +277,6 @@ func (b *expandedBundles) readManifestSubdir(fsys fs.FS, root, service string) e
 		if walkPath == root || d.IsDir() {
 			return nil
 		}
-		// d.Type() returns only mode-type bits; a symlink has ModeSymlink set and fails IsRegular().
 		if !d.Type().IsRegular() {
 			return fmt.Errorf("%s: expected regular file", walkPath)
 		}
@@ -285,8 +284,8 @@ func (b *expandedBundles) readManifestSubdir(fsys fs.FS, root, service string) e
 		b.NestedRefs = append(b.NestedRefs, bundleFileRef{
 			SrcPath:     walkPath,
 			LogicalPath: logical,
-			Category:    "manifest",
-			RelPath:     stripCategoryPrefix(logical, "manifests"),
+			Category:    subdir.Category,
+			RelPath:     stripCategoryPrefix(logical, subdir.Subdir),
 		})
 		return nil
 	})
