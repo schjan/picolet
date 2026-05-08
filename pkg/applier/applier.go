@@ -199,10 +199,10 @@ func WithHookReloader(reloader *HookReloader) Option {
 
 // applyPhaseResult holds the categorized change sets produced by applyPhase.
 type applyPhaseResult struct {
-	ChangedUnits     map[string]struct{}
-	ChangedSecrets   map[string]struct{}
-	ChangedManifests map[string]struct{}
-	NeedsReload      bool
+	ChangedUnits   map[string]struct{}
+	ChangedSecrets map[string]struct{}
+	ChangedRels    map[string]map[string]struct{} // category → relpath set
+	NeedsReload    bool
 }
 
 // Apply applies the changeset in phased order. Equivalent to ApplyWithPending
@@ -232,7 +232,7 @@ func (a *Applier) ApplyWithPending(ctx context.Context, cs *reconciler.Changeset
 	if a.dryRun {
 		return result, nil
 	}
-	hookRestartUnits := a.runHooksWithPending(ctx, phase.ChangedSecrets, phase.ChangedManifests, phase.ChangedUnits, pendingNames, result)
+	hookRestartUnits := a.runHooksWithPending(ctx, phase.ChangedSecrets, phase.ChangedRels, phase.ChangedUnits, pendingNames, result)
 	maps.Copy(phase.ChangedUnits, hookRestartUnits)
 	return result, a.restartUnits(ctx, phase.ChangedUnits, phase.NeedsReload, result)
 }
@@ -248,9 +248,9 @@ func categoryRank(category string) int {
 //nolint:cyclop // multiple early-continues are clearer than restructuring
 func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (*applyPhaseResult, error) {
 	p := &applyPhaseResult{
-		ChangedUnits:     make(map[string]struct{}),
-		ChangedSecrets:   make(map[string]struct{}),
-		ChangedManifests: make(map[string]struct{}),
+		ChangedUnits:   make(map[string]struct{}),
+		ChangedSecrets: make(map[string]struct{}),
+		ChangedRels:    make(map[string]map[string]struct{}),
 	}
 	for _, change := range sorted {
 		if change.Action == reconciler.ActionNoop {
@@ -286,9 +286,14 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			}
 			continue
 		}
-		if change.Category == "manifest" && change.RelPath != "" {
+		if (change.Category == "manifest" || change.Category == "file") && change.RelPath != "" {
 			if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
-				p.ChangedManifests[change.RelPath] = struct{}{}
+				// Lazy inner-map init: only insert when there is a rel to record, so the
+				// len(changedRels) == 0 check in runHooksWithPending stays a reliable guard.
+				if p.ChangedRels[change.Category] == nil {
+					p.ChangedRels[change.Category] = make(map[string]struct{})
+				}
+				p.ChangedRels[change.Category][change.RelPath] = struct{}{}
 			}
 		}
 		// All non-secret file changes (including deletes) require a daemon-reload.
@@ -384,11 +389,13 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]stru
 //nolint:cyclop // two-pass loop with shared dedup is clearer as one function
 func (a *Applier) runHooksWithPending(
 	ctx context.Context,
-	changedSecrets, changedManifests, restartScheduled map[string]struct{},
+	changedSecrets map[string]struct{},
+	changedRels map[string]map[string]struct{},
+	restartScheduled map[string]struct{},
 	pendingNames []string,
 	result *ApplyResult,
 ) map[string]struct{} {
-	if len(changedSecrets) == 0 && len(changedManifests) == 0 && len(pendingNames) == 0 {
+	if len(changedSecrets) == 0 && len(changedRels) == 0 && len(pendingNames) == 0 {
 		return nil
 	}
 	if len(a.hooks) == 0 && len(pendingNames) == 0 {
@@ -402,7 +409,7 @@ func (a *Applier) runHooksWithPending(
 
 	// First pass: hooks whose trigger is in this tick's changeset.
 	for _, hook := range a.hooks {
-		if !hookMatchesChange(hook, changedSecrets, changedManifests) {
+		if !hookMatchesChange(hook, changedSecrets, changedRels) {
 			continue
 		}
 		firstPass[hook.Name] = struct{}{}
@@ -525,14 +532,14 @@ func hookExecutionKey(hook config.Hook) string {
 	}
 }
 
-func hookMatchesChange(hook config.Hook, changedSecrets, changedManifests map[string]struct{}) bool {
+func hookMatchesChange(hook config.Hook, changedSecrets map[string]struct{}, changedRels map[string]map[string]struct{}) bool {
 	for _, secret := range hook.Secrets {
 		if _, ok := changedSecrets[secret]; ok {
 			return true
 		}
 	}
 	for _, manifest := range hook.Manifests {
-		if _, ok := changedManifests[manifest]; ok {
+		if _, ok := changedRels["manifest"][manifest]; ok {
 			return true
 		}
 	}
