@@ -168,13 +168,13 @@ Already category-agnostic — `LogicalPath` always carries the category prefix a
 | Layer | Change |
 |---|---|
 | `pkg/config/assignments.go` | `Files []string` on `AssignmentGroup` and `ResolvedFileSet`; mirror in `merge`/`deduplicate` |
-| `pkg/config/hook.go` | `Files []string` on `Hook`; `normalizeFiles`; trigger-required check covers all three |
+| `pkg/config/hook.go` | `Files []string` on `Hook`; `normalizeFiles`; the trigger-required check at `:65` (currently `len(Secrets) == 0 && len(Manifests) == 0`) extends to include `Files` |
 | `pkg/resolver/services.go` | `bundleSubdirs` entry for `files/`; `manifestRef` → `bundleFileRef`; `readManifestSubdir` → `readNestedSubdir` |
 | `pkg/resolver/resolver.go` | `RelPath` on `ResolvedFile`; `manifestRelPath()` removed; `manifestDestPath` → `dataDestPath`; `resolveManifestRef` becomes `resolveNestedRef(category, ref)` |
 | `pkg/resolver/registry.go` | `filePath` template helper; shared `validateRelPath` |
 | `pkg/validator/validator.go` | `case "file":` arm; new `validateFile` |
-| `pkg/reconciler/reconciler.go` | `RelPath` on `Change` (replaces `ManifestRelPath`); `Categories()` slice gains `"file"` |
-| `pkg/applier/applier.go` | `categoryOrder` insert; `ChangedRels` map; `hookMatchesChange` covers `Hook.Files` |
+| `pkg/reconciler/reconciler.go` | `RelPath` on `Change` (replaces `ManifestRelPath`); the package-level `categories` slice at `:122` gains `"file"` (consumed by `Categories()` and the `pkg/agent` managed-files metric) |
+| `pkg/applier/applier.go` | `categoryOrder` insert; `ChangedRels` map (replacing `ChangedManifests`); `runHooksWithPending` early-exit guard at `:391` extended to also check `len(changedRels) == 0` so `files:`-only hooks are not silently skipped; `runHooksWithPending` and `hookMatchesChange` signatures take `changedRels` instead of `changedManifests`; `hookMatchesChange` covers `Hook.Files` |
 | `README.md` | Categories table; bundle layout; template helper table; hook example switched to `files: [config/scrape.yml]` and `filePath` |
 | `testdata/example-fleet/` | New `files/` example under one service; refresh goldens with `-update` |
 
@@ -194,7 +194,7 @@ Picolet's table-driven coverage is the regression net. The internal genericizati
 - `pkg/resolver`: `files/` bundle expansion (flat + nested); `filePath` rootful + rootless + path validation; collision detection (`files/x` vs `manifests/x` → no collision; same logical path under `files/` from two services → collision).
 - `pkg/validator`: `validateFile` truth table — plain text passes; `.yml` valid passes; `.yaml` valid passes; `.yml` invalid fails with `validateYAMLSyntax` error format; `.yml.tmpl` validates rendered output; empty file passes (deliberate); non-YAML extensions skip regardless of content.
 - `pkg/reconciler`: file-category resolved file populates `Change.RelPath`.
-- `pkg/applier`: `categoryOrder` contains `"file"` next to `"manifest"`; `applyPhase` populates `ChangedRels["file"][rel]`; file changes don't trigger daemon-reload; `hookMatchesChange` returns true for matching `Hook.Files`, false for unrelated changes; hook with both `manifests:` and `files:` fires on either.
+- `pkg/applier`: `categoryOrder` contains `"file"` next to `"manifest"`; `applyPhase` populates `ChangedRels["file"][rel]`; file changes don't trigger daemon-reload; `hookMatchesChange` returns true for matching `Hook.Files`, false for unrelated changes; hook with both `manifests:` and `files:` fires on either; **a `files:`-only hook (no `secrets`, no `manifests`) actually fires** — guards against a regression of the `runHooksWithPending` early-exit at `applier.go:391` that currently short-circuits when secrets+manifests+pending are all empty.
 
 **Phase 3 — refactor manifest path (green).** Land A–E. Existing manifest tests stay green; new file tests can stay red. Tests that referenced `ManifestRelPath` directly or `ChangedManifests` directly are rewritten to the new shape. Tests for the deleted `manifestRelPath()` helper are removed.
 
