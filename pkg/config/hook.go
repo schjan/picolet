@@ -26,6 +26,7 @@ type Hook struct {
 	Name       string   `yaml:"name"`
 	Secrets    []string `yaml:"secrets"`
 	Manifests  []string `yaml:"manifests"`
+	Files      []string `yaml:"files"`
 	Unit       string   `yaml:"unit"`
 	Action     string   `yaml:"action"`
 	Method     string   `yaml:"method"`
@@ -61,8 +62,8 @@ func (h *Hook) Normalize() error {
 	if h.Name == "" {
 		return errors.New("name is required")
 	}
-	if len(h.Secrets) == 0 && len(h.Manifests) == 0 {
-		return fmt.Errorf("%s: at least one of secrets or manifests is required", h.Name)
+	if len(h.Secrets) == 0 && len(h.Manifests) == 0 && len(h.Files) == 0 {
+		return fmt.Errorf("%s: at least one of secrets, manifests, or files is required", h.Name)
 	}
 	if h.Unit == "" {
 		return fmt.Errorf("%s: unit is required", h.Name)
@@ -81,6 +82,9 @@ func (h *Hook) Normalize() error {
 		return err
 	}
 	if err := h.normalizeManifests(); err != nil {
+		return err
+	}
+	if err := h.normalizeFiles(); err != nil {
 		return err
 	}
 	if err := h.normalizeAction(); err != nil {
@@ -107,6 +111,17 @@ func (h *Hook) normalizeManifests() error {
 			return fmt.Errorf("%s: manifests[%d]: %q %w", h.Name, i, manifest, err)
 		}
 		h.Manifests[i] = cleaned
+	}
+	return nil
+}
+
+func (h *Hook) normalizeFiles() error {
+	for i, file := range h.Files {
+		cleaned, err := ValidateRelPath(file)
+		if err != nil {
+			return fmt.Errorf("%s: files[%d]: %w", h.Name, i, err)
+		}
+		h.Files[i] = cleaned
 	}
 	return nil
 }
