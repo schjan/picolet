@@ -200,7 +200,7 @@ Strict bundle rules:
 | empty bundle | error |
 | unknown entry at bundle root | error |
 | category-named file at bundle root | error |
-| nested directory under non-`manifests/` category | error |
+| nested directory under any category except `manifests/` and `files/` | error |
 | two sources resolving to the same destination | error |
 
 Dotfiles and loose files are not special-cased. Keep the bundle directory clean

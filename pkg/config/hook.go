@@ -119,7 +119,7 @@ func (h *Hook) normalizeFiles() error {
 	for i, file := range h.Files {
 		cleaned, err := ValidateRelPath(file)
 		if err != nil {
-			return fmt.Errorf("%s: files[%d]: %w", h.Name, i, err)
+			return fmt.Errorf("%s: files[%d]: %q %w", h.Name, i, file, err)
 		}
 		h.Files[i] = cleaned
 	}

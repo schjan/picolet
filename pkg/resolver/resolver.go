@@ -329,7 +329,7 @@ func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, manifestR
 	}
 	for _, ref := range manifestRefs {
 		skeletons = append(skeletons, ResolvedFile{
-			SrcPath: ref.SrcPath, Category: "manifest", DestPath: r.dataDestPath(ref.LogicalPath),
+			SrcPath: ref.SrcPath, Category: ref.Category, DestPath: r.dataDestPath(ref.LogicalPath),
 			RelPath: ref.RelPath,
 		})
 	}
