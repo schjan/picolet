@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1061,4 +1062,14 @@ func TestSecretHookReloaderHonorsHealthDelayCancellation(t *testing.T) {
 			assert.Equal(t, tt.shouldRestart, shouldRestart)
 		})
 	}
+}
+
+func TestCategoryOrderIncludesFileNextToManifest(t *testing.T) {
+	t.Parallel()
+	order := applier.CategoryOrder()
+	manifestIdx := slices.Index(order, "manifest")
+	fileIdx := slices.Index(order, "file")
+	require.NotEqual(t, -1, manifestIdx, "manifest must be present")
+	require.NotEqual(t, -1, fileIdx, "file must be present")
+	assert.Equal(t, manifestIdx+1, fileIdx, "file must come immediately after manifest")
 }

@@ -140,6 +140,7 @@ var categoryOrder = []string{
 	"secret",
 	"systemd",
 	"manifest",
+	"file",
 	"container",
 	"kube",
 }
