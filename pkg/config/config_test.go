@@ -317,6 +317,19 @@ func TestSecretHookNormalizeValidatesURLScheme(t *testing.T) {
 	}
 }
 
+func TestAssignmentsResolveMergesFiles(t *testing.T) {
+	t.Parallel()
+	a := &Assignments{
+		Base: AssignmentGroup{Files: []string{"shared/base.yml"}},
+		Features: map[string]AssignmentGroup{
+			"observability": {Files: []string{"shared/obs.yml"}},
+		},
+	}
+	host := &HostConfig{Hostname: "h", PiType: "p", Features: []string{"observability"}}
+	resolved := a.Resolve(host)
+	assert.Equal(t, []string{"shared/base.yml", "shared/obs.yml"}, resolved.Files)
+}
+
 func TestHookNormalizeValidatesManifests(t *testing.T) {
 	t.Parallel()
 
