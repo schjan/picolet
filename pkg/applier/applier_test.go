@@ -1013,7 +1013,7 @@ func TestApplyManifestTriggeredHookFires(t *testing.T) {
 
 	result, err := a.Apply(t.Context(), &reconciler.Changeset{
 		Changes: []reconciler.Change{
-			{DestPath: "/var/lib/picolet/manifests/config/scrape.yml", Category: "manifest", Action: reconciler.ActionUpdate, NewContent: "x", ManifestRelPath: "config/scrape.yml"},
+			{DestPath: "/var/lib/picolet/manifests/config/scrape.yml", Category: "manifest", Action: reconciler.ActionUpdate, NewContent: "x", RelPath: "config/scrape.yml"},
 		},
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
 	})

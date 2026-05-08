@@ -286,9 +286,9 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			}
 			continue
 		}
-		if change.Category == "manifest" && change.ManifestRelPath != "" {
+		if change.Category == "manifest" && change.RelPath != "" {
 			if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
-				p.ChangedManifests[change.ManifestRelPath] = struct{}{}
+				p.ChangedManifests[change.RelPath] = struct{}{}
 			}
 		}
 		// All non-secret file changes (including deletes) require a daemon-reload.
