@@ -101,16 +101,24 @@ The "clean, non-escaping relative path" rule lives in two places today (`normali
 package config
 
 import (
-	"fmt"
+	"errors"
 	"path"
 	"strings"
 )
 
+// ErrNotCleanRelPath is returned by ValidateRelPath when the input is not a
+// clean, non-escaping relative path. Callers should wrap with their own
+// context (e.g. "manifests[0]: %q %w") so the existing error wording is
+// preserved.
+var ErrNotCleanRelPath = errors.New("must be a clean relative path")
+
 // ValidateRelPath returns the cleaned form of a relative path used to address
 // a file inside a bundle category directory (e.g. manifests/, files/). It
-// rejects empty strings, absolute paths, traversal, double slashes, and any
-// input that does not match path.Clean(input). On success the cleaned path
-// is returned; on failure the error message embeds the original raw input.
+// rejects empty strings, absolute paths, traversal segments, double slashes,
+// trailing slashes, and any input that does not equal path.Clean(input).
+// On success the cleaned path is returned; on failure ErrNotCleanRelPath
+// is returned with no embedded path so callers can preserve their existing
+// error format.
 func ValidateRelPath(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	cleaned := path.Clean(trimmed)
@@ -118,7 +126,7 @@ func ValidateRelPath(raw string) (string, error) {
 		cleaned == "." || cleaned == ".." ||
 		strings.HasPrefix(cleaned, "/") ||
 		strings.HasPrefix(cleaned, "../") {
-		return "", fmt.Errorf("%q must be a clean relative path", raw)
+		return "", ErrNotCleanRelPath
 	}
 	return cleaned, nil
 }
@@ -133,13 +141,15 @@ func (h *Hook) normalizeManifests() error {
 	for i, manifest := range h.Manifests {
 		cleaned, err := ValidateRelPath(manifest)
 		if err != nil {
-			return fmt.Errorf("%s: manifests[%d]: %w", h.Name, i, err)
+			return fmt.Errorf("%s: manifests[%d]: %q %w", h.Name, i, manifest, err)
 		}
 		h.Manifests[i] = cleaned
 	}
 	return nil
 }
 ```
+
+The combined error reads `hook: manifests[0]: "X" must be a clean relative path` — byte-identical to the pre-refactor wording, so the existing `TestHookNormalizeValidatesManifests` assertions still pass.
 
 The `path` and `strings` imports may now be unused at this site — let `task fmt` drop them if so.
 
@@ -151,13 +161,15 @@ In `pkg/resolver/registry.go`, replace the body of the `manifestPath` func (curr
 "manifestPath": func(relPath string) (string, error) {
 	cleaned, err := config.ValidateRelPath(relPath)
 	if err != nil {
-		return "", fmt.Errorf("manifestPath %w", err)
+		return "", fmt.Errorf("manifestPath %q: %w", relPath, err)
 	}
 	return filepath.Join(dataDir, "manifests", filepath.FromSlash(cleaned)), nil
 },
 ```
 
-If `config` is not yet imported here, add it (the existing imports already include `github.com/schjan/picolet/pkg/config` at the top of the file? — confirm; it's used elsewhere in resolver but check this file specifically before adding).
+The combined error reads `manifestPath "X": must be a clean relative path` — byte-identical to the pre-refactor wording, so the existing `TestManifestPathValidatesInputs` test (`registry_test.go:163`) still passes.
+
+If `config` is not yet imported here, add it. (`github.com/schjan/picolet/pkg/config` is used elsewhere in `pkg/resolver`; check this file specifically — the import block is at the top.)
 
 - [ ] **Step 4: Run tests.**
 
@@ -418,12 +430,11 @@ Now that the walker stamps `Category` and `RelPath`, parametrize the function so
 **Files:**
 - Modify: `pkg/resolver/services.go`
 
-- [ ] **Step 1: Add `category` parameter to the walker.**
+- [ ] **Step 1: Take the `bundleSubdir` struct directly in the walker.**
 
 Replace the function from Task 4 step 3 with:
 ```go
-func (b *expandedBundles) readNestedSubdir(fsys fs.FS, root, service, category string) error {
-	categorySubdir := categorySubdirForCategory(category)
+func (b *expandedBundles) readNestedSubdir(fsys fs.FS, root, service string, subdir bundleSubdir) error {
 	return fs.WalkDir(fsys, root, func(walkPath string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return fmt.Errorf("walking %s: %w", walkPath, walkErr)
@@ -438,25 +449,15 @@ func (b *expandedBundles) readNestedSubdir(fsys fs.FS, root, service, category s
 		b.NestedRefs = append(b.NestedRefs, bundleFileRef{
 			SrcPath:     walkPath,
 			LogicalPath: logical,
-			Category:    category,
-			RelPath:     stripCategoryPrefix(logical, categorySubdir),
+			Category:    subdir.Category,
+			RelPath:     stripCategoryPrefix(logical, subdir.Subdir),
 		})
 		return nil
 	})
 }
-
-// categorySubdirForCategory maps an internal category name to the bundle subdir
-// it lives under. It panics on unknown input — only categories declared in
-// bundleSubdirs as AllowNesting=true should ever reach this path.
-func categorySubdirForCategory(category string) string {
-	for _, sub := range bundleSubdirs {
-		if sub.Category == category {
-			return sub.Subdir
-		}
-	}
-	panic(fmt.Sprintf("readNestedSubdir: unknown nested category %q", category))
-}
 ```
+
+Caller already has the `bundleSubdir` value — passing the struct avoids a category→subdir lookup and the panic helper that lookup would need.
 
 - [ ] **Step 2: Update the dispatch in `readSubdir`.**
 
@@ -465,7 +466,7 @@ Replace the body of `(b *expandedBundles).readSubdir` (currently at `:262-268`):
 func (b *expandedBundles) readSubdir(fsys fs.FS, service string, subdir bundleSubdir) error {
 	root := path.Join("services", service, subdir.Subdir)
 	if subdir.AllowNesting {
-		return b.readNestedSubdir(fsys, root, service, subdir.Category)
+		return b.readNestedSubdir(fsys, root, service, subdir)
 	}
 	return b.readFlatSubdir(fsys, root, subdir.Category)
 }
@@ -550,9 +551,28 @@ for _, ref := range manifestRefs {
 }
 ```
 
-- [ ] **Step 3: Update `pkg/resolver/resolver_test.go` and any other readers.**
+- [ ] **Step 3: Update only the readers of `ResolvedFile.ManifestRelPath`.**
 
-`grep -rn 'ManifestRelPath' --include='*.go' pkg/` — every match must change to `RelPath`. Compiler will also surface them on the next test run.
+Task 6 renames the field on **`ResolvedFile`** only; `Change.ManifestRelPath` is renamed in Task 7. So this step touches only the spots that read a `ResolvedFile`'s field.
+
+The compile-required updates:
+
+- `pkg/reconciler/reconciler.go` `classifyFile` (around `:78-100`): the right-hand side `f.ManifestRelPath` → `f.RelPath`. The left-hand side `c.ManifestRelPath` (a `Change` field) **stays** for now.
+  ```go
+  c := Change{
+      ...
+      ManifestRelPath: f.RelPath, // RHS renamed; LHS still old until Task 7
+  }
+  ```
+- `pkg/resolver/resolver_test.go`: any `ResolvedFile{... ManifestRelPath: ...}` literal becomes `ResolvedFile{... RelPath: ...}`. Run:
+  ```
+  grep -n 'ResolvedFile{' pkg/resolver/resolver_test.go
+  ```
+  to enumerate candidates.
+
+The `Change` literal at `pkg/applier/applier_test.go:1016` keeps `ManifestRelPath: "..."` for now — it's a `Change`, not a `ResolvedFile`. Task 7 renames it.
+
+After this step, `grep -rn 'ManifestRelPath' --include='*.go' .` should still return matches — they're all `Change`-related and will be cleared in Task 7.
 
 - [ ] **Step 4: Run tests.**
 
@@ -939,13 +959,14 @@ task lint && git add -A && git commit -m "feat(config): add Hook.Files trigger f
 
 ---
 
-### Task 11: `bundleSubdirs` entry for `files/`; `Files` legacy ref support; applier hook matching
+### Task 11: `bundleSubdirs` entry for `files/`; `Files` legacy ref support
+
+`hookMatchesChange` is wired in Task 15 alongside its regression test — they read together.
 
 **Files:**
 - Modify: `pkg/resolver/services.go` (bundleSubdirs entry)
 - Modify: `pkg/resolver/resolver.go` (legacy file refs from `fileSet.Files`)
 - Modify: `pkg/resolver/services_test.go` (new test for files/ bundle)
-- Modify: `pkg/applier/applier.go` (`hookMatchesChange` covers `Hook.Files`)
 
 - [ ] **Step 1: Write failing test for files/ bundle expansion.**
 
@@ -1024,34 +1045,10 @@ for _, srcPath := range fileSet.Files {
 }
 ```
 
-- [ ] **Step 6: Wire `Hook.Files` into `hookMatchesChange`.**
-
-In `pkg/applier/applier.go`, extend `hookMatchesChange`:
-```go
-func hookMatchesChange(hook config.Hook, changedSecrets map[string]struct{}, changedRels map[string]map[string]struct{}) bool {
-	for _, secret := range hook.Secrets {
-		if _, ok := changedSecrets[secret]; ok {
-			return true
-		}
-	}
-	for _, manifest := range hook.Manifests {
-		if _, ok := changedRels["manifest"][manifest]; ok {
-			return true
-		}
-	}
-	for _, file := range hook.Files {
-		if _, ok := changedRels["file"][file]; ok {
-			return true
-		}
-	}
-	return false
-}
-```
-
-- [ ] **Step 7: Run all tests, lint, commit.**
+- [ ] **Step 6: Run all tests, lint, commit.**
 
 ```
-task test && task lint && git add -A && git commit -m "feat(resolver,applier): wire files/ category through bundle expansion and hook matching"
+task test && task lint && git add -A && git commit -m "feat(resolver): wire files/ category through bundle expansion"
 ```
 
 ---
@@ -1064,38 +1061,47 @@ task test && task lint && git add -A && git commit -m "feat(resolver,applier): w
 
 - [ ] **Step 1: Write failing tests.**
 
-Append to `pkg/resolver/registry_test.go` (mirror whichever existing helper test pattern is in use; if no existing test for `manifestPath` exists, write a self-contained one):
-```go
-func TestFilePathHelperRootful(t *testing.T) {
-	t.Parallel()
-	registry, _, err := BuildRegistry(t.Context(), fstest.MapFS{}, nil, nil, "/var/lib/picolet")
-	require.NoError(t, err)
-	tmpl, err := registry.New("t").Parse(`{{ filePath "config/scrape.yml" }}`)
-	require.NoError(t, err)
-	var buf bytes.Buffer
-	require.NoError(t, tmpl.Execute(&buf, nil))
-	assert.Equal(t, "/var/lib/picolet/files/config/scrape.yml", buf.String())
-}
+Reuse the existing `renderRegistryTemplate` helper at `registry_test.go:13` — same style as `TestManifestPathValidatesInputs` at `:163`. Append to `pkg/resolver/registry_test.go`:
 
-func TestFilePathHelperRejectsBadPaths(t *testing.T) {
+```go
+func TestFilePathValidatesInputs(t *testing.T) {
 	t.Parallel()
-	cases := []string{"", "/abs", "../etc/passwd", "a//b", "."}
-	for _, raw := range cases {
-		t.Run(raw, func(t *testing.T) {
+
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr string
+	}{
+		{name: "simple file", input: "scrape.yml", want: "/var/lib/picolet/files/scrape.yml"},
+		{name: "nested file", input: "config/scrape.yml", want: "/var/lib/picolet/files/config/scrape.yml"},
+		{name: "absolute path rejected", input: "/etc/passwd", wantErr: "must be a clean relative path"},
+		{name: "traversal segment rejected", input: "../etc/passwd", wantErr: "must be a clean relative path"},
+		{name: "embedded traversal rejected", input: "a/../b", wantErr: "must be a clean relative path"},
+		{name: "double slash rejected", input: "a//b.yml", wantErr: "must be a clean relative path"},
+		{name: "trailing slash rejected", input: "a/", wantErr: "must be a clean relative path"},
+		{name: "dot rejected", input: ".", wantErr: "must be a clean relative path"},
+		{name: "empty rejected", input: "", wantErr: "must be a clean relative path"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			registry, _, err := BuildRegistry(t.Context(), fstest.MapFS{}, nil, nil, "/var/lib/picolet")
+			fsys := fstest.MapFS{
+				"main.tmpl": &fstest.MapFile{Data: []byte(`{{ filePath "` + tt.input + `" }}`)},
+			}
+			out, err := renderRegistryTemplate(t, fsys, "main.tmpl", nil)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
 			require.NoError(t, err)
-			tmpl, err := registry.New("t").Parse(`{{ filePath .P }}`)
-			require.NoError(t, err)
-			err = tmpl.Execute(io.Discard, map[string]string{"P": raw})
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "must be a clean relative path")
+			assert.Equal(t, tt.want, out)
 		})
 	}
 }
 ```
-
-(If `bytes`, `io`, `fstest` are not yet imported in this test file, add them.)
 
 - [ ] **Step 2: Run; expect failure (filePath undefined).**
 
@@ -1303,7 +1309,31 @@ In `pkg/reconciler/reconciler.go` at `:122`:
 var categories = []string{"container", "network", "volume", "kube", "systemd", "manifest", "file", "secret"}
 ```
 
-- [ ] **Step 4: Add a regression test for files-only hook firing.**
+- [ ] **Step 4: Wire `Hook.Files` into `hookMatchesChange`.**
+
+In `pkg/applier/applier.go` (around `:528`), extend `hookMatchesChange`:
+```go
+func hookMatchesChange(hook config.Hook, changedSecrets map[string]struct{}, changedRels map[string]map[string]struct{}) bool {
+	for _, secret := range hook.Secrets {
+		if _, ok := changedSecrets[secret]; ok {
+			return true
+		}
+	}
+	for _, manifest := range hook.Manifests {
+		if _, ok := changedRels["manifest"][manifest]; ok {
+			return true
+		}
+	}
+	for _, file := range hook.Files {
+		if _, ok := changedRels["file"][file]; ok {
+			return true
+		}
+	}
+	return false
+}
+```
+
+- [ ] **Step 5: Add a regression test for files-only hook firing.**
 
 This is the issue the spec calls out from review feedback. Append to `pkg/applier/applier_test.go`:
 
@@ -1349,10 +1379,10 @@ func TestApplyFiresFilesOnlyHook(t *testing.T) {
 
 (Match the helper-naming style of the existing `TestSecretHookReloaderFires*` test in this file. Imports `atomic`, `http`, `mock`, etc. follow that test's pattern.)
 
-- [ ] **Step 5: Run, lint, commit.**
+- [ ] **Step 6: Run, lint, commit.**
 
 ```
-task test && task lint && git add -A && git commit -m "feat(reconciler): add file category and regression test for files-only hooks"
+task test && task lint && git add -A && git commit -m "feat(applier,reconciler): wire Hook.Files matching and regression test"
 ```
 
 ---
@@ -1538,7 +1568,7 @@ Expected: no findings.
 - [ ] **Step 3: Confirm `grep` cleanliness.**
 
 ```
-grep -rn 'ManifestRelPath\|ChangedManifests\|manifestRelPath\|manifestDestPath\|manifestRef' --include='*.go' .
+grep -rn 'ManifestRelPath\|ChangedManifests\|changedManifests\|manifestRelPath\|manifestDestPath\|manifestRef' --include='*.go' .
 ```
 
 Expected: zero hits.
