@@ -158,7 +158,8 @@ Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a co
 | `quadlets/volumes/` | `.volume` | `/etc/containers/systemd/picolet/` |
 | `quadlets/containers/` | `.container` | `/etc/containers/systemd/picolet/` |
 | `quadlets/kube/` | `.kube` | `/etc/containers/systemd/picolet/` |
-| `manifests/<app>/` | `.yml` | `/var/lib/picolet/manifests/<app>/` |
+| `manifests/<app>/` | `.yml` (Kubernetes resources only) | `/var/lib/picolet/manifests/<app>/` |
+| `files/<app>/` | any | `/var/lib/picolet/files/<app>/` |
 | `secrets/` | `.yml` | Podman secrets |
 | `systemd/` | `.socket` | `/etc/systemd/system/` |
 
@@ -179,11 +180,12 @@ services/<name>/
   kube/
   systemd/
   secrets/
-  manifests/
+  manifests/    # K8s YAML only — validated against k8s.io/api types
+  files/        # opaque, container-mounted files; validated only as YAML if .yml/.yaml
   picolet.yml
 ```
 
-`manifests/` may contain nested directories. The other six category directories
+`manifests/` and `files/` may contain nested directories. The other six category directories
 must contain files directly.
 
 `picolet.yml` is optional service metadata. It does not deploy a resource by
@@ -245,7 +247,7 @@ hooks:
     health_url: 'http://localhost:{{ index .Ports "vmalert" }}/vmalert/health'
 
   - name: victoriametrics-scrape-reload
-    manifests: [config/scrape.yml]
+    files: [config/scrape.yml]
     unit: victoriametrics.service
     action: http
     method: GET
@@ -260,19 +262,23 @@ Picolet skips reload hooks for that unit.
 
 Hook names must be unique across all service bundles assigned to a host.
 
-Each hook must specify at least one trigger — `secrets`, `manifests`, or both.
-When both are set, the hook fires if ANY listed secret OR manifest changed.
+Each hook must specify at least one trigger — `secrets`, `manifests`, or `files`.
+When more than one is set, the hook fires if ANY listed secret OR manifest OR file changed.
 
 The `manifests` field uses paths relative to the service bundle's `manifests/`
-directory (e.g., `config/scrape.yml`).
+directory (e.g., `app/deployment.yml`); use `manifests/` only for Kubernetes
+resources fed to `podman kube play`. The `files` field uses paths relative to
+the service bundle's `files/` directory (e.g., `config/scrape.yml`); use `files/`
+for arbitrary container-mounted config (Prometheus scrape configs, vmalert rules,
+etc.).
 
 Supported actions:
 
 | Action | Required fields | Behavior |
 |--------|-----------------|----------|
-| `http` | `unit`, `url`, at least one trigger (`secrets` and/or `manifests`) | Send `method` (`POST` by default, `GET` also supported), then `GET health_url` when set |
-| `signal` | `unit`, `container`, at least one trigger | Send `signal` (`HUP` by default) to the Podman container |
-| `restart` | `unit`, at least one trigger | Restart the systemd unit after applying changes |
+| `http` | `unit`, `url`, at least one trigger (`secrets`, `manifests`, and/or `files`) | Send `method` (`POST` by default, `GET` also supported), then `GET health_url` when set |
+| `signal` | `unit`, `container`, at least one trigger (`secrets`, `manifests`, and/or `files`) | Send `signal` (`HUP` by default) to the Podman container |
+| `restart` | `unit`, at least one trigger (`secrets`, `manifests`, and/or `files`) | Restart the systemd unit after applying changes |
 
 By default hook failures are non-fatal and keep the current process running:
 `on_failure: keep_running`. Use `on_failure: restart` only when a failed reload
@@ -307,6 +313,7 @@ Available data: `.Host` (hostname, pi_type, features), `.Images`, `.Ports`, `.Fl
 | `readOpSecret(ref)` | Resolve a 1Password reference, e.g. `op://vault/item/field` |
 | `readProtonPassSecret(ref)` | Resolve a Proton Pass reference, e.g. `pass://share/item/field` |
 | `manifestPath(relPath)` | Return the absolute deployed path for a manifest file (handles rootless/rootful automatically). `relPath` is relative to the service's `manifests/` dir |
+| `filePath(relPath)` | Return the absolute deployed path for a file (handles rootless/rootful automatically). `relPath` is relative to the service's `files/` dir |
 | `has(item, slice)` | Sprig: check if a value is present in a list |
 
 Use this when runtime expects one file but you want many repo fragments. Example:
