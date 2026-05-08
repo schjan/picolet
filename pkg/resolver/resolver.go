@@ -224,7 +224,7 @@ func (r *Resolver) ResolveAll(ctx context.Context) (map[string]*ResolvedHost, er
 // expandedResult holds the outputs of bundle expansion and validation.
 type expandedResult struct {
 	FileSet      *config.ResolvedFileSet
-	ManifestRefs []manifestRef
+	ManifestRefs []bundleFileRef
 	HookRefs     []hookRef
 }
 
@@ -254,7 +254,7 @@ func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*expanded
 // not mutated. Manifests and Services are left nil: manifest paths flow through
 // manifestRefs, and Services is already flattened into the category slices.
 // Populating them would let a future caller miss bundle contents.
-func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []manifestRef, []hookRef, error) {
+func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []bundleFileRef, []hookRef, error) {
 	expanded, err := expandServiceBundles(r.fsys, fileSet.Services)
 	if err != nil {
 		return nil, nil, nil, err
@@ -269,25 +269,30 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.Resol
 		Secrets:    sortedUnique(slices.Concat(fileSet.Secrets, expanded.Secrets)),
 	}
 
-	manifestRefs := make([]manifestRef, 0, len(fileSet.Manifests)+len(expanded.Manifests))
+	manifestRefs := make([]bundleFileRef, 0, len(fileSet.Manifests)+len(expanded.NestedRefs))
 	for _, srcPath := range fileSet.Manifests {
 		manifestRefs = append(manifestRefs, newLegacyManifestRef(srcPath))
 	}
-	manifestRefs = append(manifestRefs, expanded.Manifests...)
+	manifestRefs = append(manifestRefs, expanded.NestedRefs...)
 	return merged, uniqueManifestRefs(manifestRefs), expanded.Hooks, nil
 }
 
-// newLegacyManifestRef constructs a manifestRef for a legacy (non-bundled)
+// newLegacyManifestRef constructs a bundleFileRef for a legacy (non-bundled)
 // manifest path, where the source and logical paths are the same. Bundled
 // refs set a stripped LogicalPath and are built in readManifestSubdir.
-func newLegacyManifestRef(srcPath string) manifestRef {
-	return manifestRef{SrcPath: srcPath, LogicalPath: srcPath}
+func newLegacyManifestRef(srcPath string) bundleFileRef {
+	return bundleFileRef{
+		SrcPath:     srcPath,
+		LogicalPath: srcPath,
+		Category:    "manifest",
+		RelPath:     stripCategoryPrefix(srcPath, "manifests"),
+	}
 }
 
 // buildFileSkeletons returns SrcPath/Category/DestPath tuples for every file
 // the host will deploy. It does not render templates, read files, or call the
 // 1Password SDK, so it's safe (and cheap) to run before expensive operations.
-func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, manifestRefs []manifestRef) ([]ResolvedFile, error) {
+func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, manifestRefs []bundleFileRef) ([]ResolvedFile, error) {
 	total := len(fileSet.Networks) + len(fileSet.Systemd) + len(fileSet.Volumes) +
 		len(fileSet.Containers) + len(fileSet.Kube) + len(manifestRefs) + len(fileSet.Secrets)
 	skeletons := make([]ResolvedFile, 0, total)
@@ -316,7 +321,7 @@ func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, manifestR
 	for _, ref := range manifestRefs {
 		skeletons = append(skeletons, ResolvedFile{
 			SrcPath: ref.SrcPath, Category: "manifest", DestPath: r.dataDestPath(ref.LogicalPath),
-			ManifestRelPath: manifestRelPath(ref.LogicalPath),
+			ManifestRelPath: ref.RelPath,
 		})
 	}
 	for _, srcPath := range fileSet.Secrets {
@@ -364,14 +369,14 @@ func (r *Resolver) secretDestPath(srcPath string) (string, error) {
 	return "secret:" + strings.TrimSuffix(filename, filepath.Ext(filename)), nil
 }
 
-func uniqueManifestRefs(refs []manifestRef) []manifestRef {
-	slices.SortFunc(refs, func(a, b manifestRef) int {
+func uniqueManifestRefs(refs []bundleFileRef) []bundleFileRef {
+	slices.SortFunc(refs, func(a, b bundleFileRef) int {
 		if diff := strings.Compare(a.LogicalPath, b.LogicalPath); diff != 0 {
 			return diff
 		}
 		return strings.Compare(a.SrcPath, b.SrcPath)
 	})
-	return slices.CompactFunc(refs, func(a, b manifestRef) bool {
+	return slices.CompactFunc(refs, func(a, b bundleFileRef) bool {
 		return a == b
 	})
 }
@@ -380,7 +385,7 @@ func (r *Resolver) buildFiles(
 	registry *template.Template,
 	tmplData *TemplateData,
 	fileSet *config.ResolvedFileSet,
-	manifestRefs []manifestRef,
+	manifestRefs []bundleFileRef,
 	opResolved map[string]string,
 ) ([]ResolvedFile, error) {
 	var files []ResolvedFile
@@ -596,7 +601,7 @@ func destFilename(srcPath string) string {
 	return strings.TrimSuffix(path.Base(srcPath), ".tmpl")
 }
 
-func (r *Resolver) resolveManifestRef(registry *template.Template, tmplData *TemplateData, ref manifestRef) (*ResolvedFile, error) {
+func (r *Resolver) resolveManifestRef(registry *template.Template, tmplData *TemplateData, ref bundleFileRef) (*ResolvedFile, error) {
 	content, err := r.renderOrRead(registry, tmplData, ref.SrcPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving manifest %s: %w", ref.SrcPath, err)
@@ -607,17 +612,8 @@ func (r *Resolver) resolveManifestRef(registry *template.Template, tmplData *Tem
 		DestPath:        r.dataDestPath(ref.LogicalPath),
 		Content:         content,
 		Category:        "manifest",
-		ManifestRelPath: manifestRelPath(ref.LogicalPath),
+		ManifestRelPath: ref.RelPath,
 	}, nil
-}
-
-// manifestRelPath strips the leading "manifests/" prefix from a logical path
-// to produce the user-facing relative path (e.g. "config/scrape.yml").
-func manifestRelPath(logicalPath string) string {
-	if rel, ok := strings.CutPrefix(logicalPath, "manifests/"); ok {
-		return rel
-	}
-	return logicalPath
 }
 
 func (r *Resolver) buildHooks(registry *template.Template, tmplData *TemplateData, refs []hookRef, files []ResolvedFile) ([]config.Hook, error) {
@@ -752,7 +748,7 @@ func (r *Resolver) collectTemplateRefs(
 	registry *template.Template,
 	tmplData *TemplateData,
 	fileSet *config.ResolvedFileSet,
-	manifestRefs []manifestRef,
+	manifestRefs []bundleFileRef,
 	hookRefs []hookRef,
 ) {
 	allPaths := slices.Concat(

@@ -34,9 +34,11 @@ var bundleSubdirsByName = func() map[string]bundleSubdir {
 	return byName
 }()
 
-type manifestRef struct {
+type bundleFileRef struct {
 	SrcPath     string
 	LogicalPath string
+	Category    string // "manifest" or "file"
+	RelPath     string // LogicalPath with the category subdir prefix stripped if present, otherwise unchanged
 }
 
 type hookRef struct {
@@ -51,7 +53,7 @@ type expandedBundles struct {
 	Containers []string
 	Kube       []string
 	Secrets    []string
-	Manifests  []manifestRef
+	NestedRefs []bundleFileRef
 	Hooks      []hookRef
 }
 
@@ -96,7 +98,7 @@ func expandServiceBundles(fsys fs.FS, services []string) (*expandedBundles, erro
 	expanded.Containers = sortedUnique(expanded.Containers)
 	expanded.Kube = sortedUnique(expanded.Kube)
 	expanded.Secrets = sortedUnique(expanded.Secrets)
-	slices.SortFunc(expanded.Manifests, func(a, b manifestRef) int {
+	slices.SortFunc(expanded.NestedRefs, func(a, b bundleFileRef) int {
 		if diff := cmp.Compare(a.LogicalPath, b.LogicalPath); diff != 0 {
 			return diff
 		}
@@ -230,7 +232,7 @@ func (b *expandedBundles) append(other *expandedBundles) {
 	b.Containers = append(b.Containers, other.Containers...)
 	b.Kube = append(b.Kube, other.Kube...)
 	b.Secrets = append(b.Secrets, other.Secrets...)
-	b.Manifests = append(b.Manifests, other.Manifests...)
+	b.NestedRefs = append(b.NestedRefs, other.NestedRefs...)
 	b.Hooks = append(b.Hooks, other.Hooks...)
 }
 
@@ -256,7 +258,7 @@ func (b *expandedBundles) addPath(category, srcPath string) error {
 
 func (b *expandedBundles) fileCount() int {
 	return len(b.Networks) + len(b.Systemd) + len(b.Volumes) +
-		len(b.Containers) + len(b.Kube) + len(b.Secrets) + len(b.Manifests)
+		len(b.Containers) + len(b.Kube) + len(b.Secrets) + len(b.NestedRefs)
 }
 
 func (b *expandedBundles) readSubdir(fsys fs.FS, service string, subdir bundleSubdir) error {
@@ -279,9 +281,12 @@ func (b *expandedBundles) readManifestSubdir(fsys fs.FS, root, service string) e
 		if !d.Type().IsRegular() {
 			return fmt.Errorf("%s: expected regular file", walkPath)
 		}
-		b.Manifests = append(b.Manifests, manifestRef{
+		logical := stripServicePrefix(walkPath, service)
+		b.NestedRefs = append(b.NestedRefs, bundleFileRef{
 			SrcPath:     walkPath,
-			LogicalPath: stripServicePrefix(walkPath, service),
+			LogicalPath: logical,
+			Category:    "manifest",
+			RelPath:     stripCategoryPrefix(logical, "manifests"),
 		})
 		return nil
 	})
@@ -313,4 +318,15 @@ func (b *expandedBundles) readFlatSubdir(fsys fs.FS, root, category string) erro
 func stripServicePrefix(filePath, service string) string {
 	prefix := path.Join("services", service) + "/"
 	return strings.TrimPrefix(filePath, prefix)
+}
+
+// stripCategoryPrefix strips the leading "<category>/" segment from a logical
+// path (e.g. "manifests/app/foo.yml" -> "app/foo.yml" for category "manifests").
+// Logical paths from legacy top-level assignments may not start with the category
+// dir; in that case the input is returned unchanged.
+func stripCategoryPrefix(logical, categorySubdir string) string {
+	if rel, ok := strings.CutPrefix(logical, categorySubdir+"/"); ok {
+		return rel
+	}
+	return logical
 }
