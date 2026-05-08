@@ -186,6 +186,13 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, p
 			}
 			return filepath.Join(dataDir, "manifests", filepath.FromSlash(cleaned)), nil
 		},
+		"filePath": func(relPath string) (string, error) {
+			cleaned, err := config.ValidateRelPath(relPath)
+			if err != nil {
+				return "", fmt.Errorf("filePath %w", err)
+			}
+			return filepath.Join(dataDir, "files", filepath.FromSlash(cleaned)), nil
+		},
 		// renderTemplate uses a closure depth counter to prevent infinite recursion.
 		// Not goroutine-safe; template rendering must be serial.
 		"renderTemplate": func() any {
