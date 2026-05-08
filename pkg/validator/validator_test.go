@@ -6,6 +6,7 @@ import (
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/pkg/resolver"
@@ -520,6 +521,43 @@ func TestValidateSecret(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestValidateFileTruthTable(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		srcPath string
+		content string
+		wantErr string
+	}{
+		{name: "plain text passes", srcPath: "files/notes.txt", content: "hello"},
+		{name: "yml valid passes", srcPath: "files/scrape.yml", content: "scrape_configs:\n  - job_name: x\n"},
+		{name: "yaml valid passes", srcPath: "files/scrape.yaml", content: "scrape_configs: []\n"},
+		{name: "yml invalid fails", srcPath: "files/bad.yml", content: "scrape_configs: [\n - broken\n", wantErr: "YAML parse error"},
+		{name: "yml.tmpl validates rendered", srcPath: "files/x.yml.tmpl", content: ":\n  - bad\n", wantErr: "YAML parse error"},
+		{name: "empty file passes", srcPath: "files/empty.yml", content: ""},
+		{name: "non-yaml extension skips validation", srcPath: "files/raw.bin", content: "\x00\x01not yaml\x02"},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := resolver.ResolvedFile{
+				SrcPath:  tt.srcPath,
+				DestPath: "/var/lib/picolet/" + tt.srcPath,
+				Content:  tt.content,
+				Category: "file",
+			}
+			_, err := AnalyzeFiles([]resolver.ResolvedFile{f}, false)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
 }

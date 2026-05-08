@@ -96,6 +96,8 @@ func analyzeFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo
 		return dependenciesFromSystemd(f), nil
 	case "secret":
 		return status.UnitDependencies{}, validateSecret(f)
+	case "file":
+		return status.UnitDependencies{}, validateFile(f)
 	default:
 		return status.UnitDependencies{}, fmt.Errorf("%s: unknown file category %q", f.DestPath, f.Category)
 	}
@@ -228,6 +230,20 @@ func shouldValidateSecretYAML(f resolver.ResolvedFile, trimmedContent string) bo
 		return true
 	default:
 		return false
+	}
+}
+
+// validateFile checks opaque container-mounted files. Empty content is allowed
+// (legitimate for empty allowlists/rule sets). Files whose source extension is
+// .yml or .yaml (after stripping .tmpl) are syntax-checked; anything else is
+// considered opaque and not inspected.
+func validateFile(f resolver.ResolvedFile) error {
+	effectivePath := strings.TrimSuffix(strings.ToLower(f.SrcPath), ".tmpl")
+	switch filepath.Ext(effectivePath) {
+	case ".yml", ".yaml":
+		return validateYAMLSyntax(f.DestPath, []byte(f.Content))
+	default:
+		return nil
 	}
 }
 
