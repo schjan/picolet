@@ -315,7 +315,7 @@ func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, manifestR
 	}
 	for _, ref := range manifestRefs {
 		skeletons = append(skeletons, ResolvedFile{
-			SrcPath: ref.SrcPath, Category: "manifest", DestPath: r.manifestDestPath(ref.LogicalPath),
+			SrcPath: ref.SrcPath, Category: "manifest", DestPath: r.dataDestPath(ref.LogicalPath),
 			ManifestRelPath: manifestRelPath(ref.LogicalPath),
 		})
 	}
@@ -339,7 +339,7 @@ func (r *Resolver) systemdDestPath(srcPath string) string {
 	return filepath.Join(r.systemdDir, destFilename(srcPath))
 }
 
-func (r *Resolver) manifestDestPath(logicalPath string) string {
+func (r *Resolver) dataDestPath(logicalPath string) string {
 	return filepath.Join(r.dataDir, filepath.FromSlash(strings.TrimSuffix(logicalPath, ".tmpl")))
 }
 
@@ -604,7 +604,7 @@ func (r *Resolver) resolveManifestRef(registry *template.Template, tmplData *Tem
 
 	return &ResolvedFile{
 		SrcPath:         ref.SrcPath,
-		DestPath:        r.manifestDestPath(ref.LogicalPath),
+		DestPath:        r.dataDestPath(ref.LogicalPath),
 		Content:         content,
 		Category:        "manifest",
 		ManifestRelPath: manifestRelPath(ref.LogicalPath),
