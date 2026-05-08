@@ -84,7 +84,7 @@ func classifyFile(f resolver.ResolvedFile, currentState *state.State) Change {
 		OldHash:         mf.Hash,
 		NewHash:         newHash,
 		ServiceName:     f.ServiceName,
-		ManifestRelPath: f.ManifestRelPath,
+		ManifestRelPath: f.RelPath,
 	}
 
 	switch {

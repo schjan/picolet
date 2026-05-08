@@ -45,9 +45,10 @@ type ResolvedFile struct {
 	ParsedUnit *parser.UnitFile
 	// ServiceName is the derived systemd service name (e.g. "foo.service"); "" for non-quadlets.
 	ServiceName string
-	// ManifestRelPath is the manifest path relative to the manifests/ directory
-	// (e.g. "config/scrape.yml"). Only set for manifest-category files.
-	ManifestRelPath string
+	// RelPath is the file's path relative to its bundle category directory
+	// (e.g. "config/scrape.yml" for a manifest at manifests/config/scrape.yml).
+	// Only set for manifest- and file-category resolved files.
+	RelPath string
 }
 
 // ResolvedHost is the complete desired state for a single host.
@@ -321,7 +322,7 @@ func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, manifestR
 	for _, ref := range manifestRefs {
 		skeletons = append(skeletons, ResolvedFile{
 			SrcPath: ref.SrcPath, Category: "manifest", DestPath: r.dataDestPath(ref.LogicalPath),
-			ManifestRelPath: ref.RelPath,
+			RelPath: ref.RelPath,
 		})
 	}
 	for _, srcPath := range fileSet.Secrets {
@@ -397,7 +398,7 @@ func (r *Resolver) buildFiles(
 	files = append(files, standardFiles...)
 
 	for _, ref := range manifestRefs {
-		f, err := r.resolveManifestRef(registry, tmplData, ref)
+		f, err := r.resolveNestedRef(registry, tmplData, ref)
 		if err != nil {
 			return nil, err
 		}
@@ -601,18 +602,18 @@ func destFilename(srcPath string) string {
 	return strings.TrimSuffix(path.Base(srcPath), ".tmpl")
 }
 
-func (r *Resolver) resolveManifestRef(registry *template.Template, tmplData *TemplateData, ref bundleFileRef) (*ResolvedFile, error) {
+func (r *Resolver) resolveNestedRef(registry *template.Template, tmplData *TemplateData, ref bundleFileRef) (*ResolvedFile, error) {
 	content, err := r.renderOrRead(registry, tmplData, ref.SrcPath)
 	if err != nil {
-		return nil, fmt.Errorf("resolving manifest %s: %w", ref.SrcPath, err)
+		return nil, fmt.Errorf("resolving %s %s: %w", ref.Category, ref.SrcPath, err)
 	}
 
 	return &ResolvedFile{
-		SrcPath:         ref.SrcPath,
-		DestPath:        r.dataDestPath(ref.LogicalPath),
-		Content:         content,
-		Category:        "manifest",
-		ManifestRelPath: ref.RelPath,
+		SrcPath:  ref.SrcPath,
+		DestPath: r.dataDestPath(ref.LogicalPath),
+		Content:  content,
+		Category: ref.Category,
+		RelPath:  ref.RelPath,
 	}, nil
 }
 
