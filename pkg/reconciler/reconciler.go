@@ -119,7 +119,7 @@ func SecretNameFromPath(destPath string) string {
 	return destPath
 }
 
-var categories = []string{"container", "network", "volume", "kube", "systemd", "manifest", "secret"}
+var categories = []string{"container", "network", "volume", "kube", "systemd", "manifest", "file", "secret"}
 
 // Categories returns the fixed set of known file categories used for metric labels.
 func Categories() []string {

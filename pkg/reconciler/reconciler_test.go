@@ -162,3 +162,8 @@ func TestDiffServiceNamePropagated(t *testing.T) {
 	require.Equal(t, 1, cs.Summary[ActionCreate])
 	assert.Equal(t, "app.service", cs.Changes[0].ServiceName)
 }
+
+func TestCategoriesIncludesFile(t *testing.T) {
+	t.Parallel()
+	assert.Contains(t, Categories(), "file")
+}

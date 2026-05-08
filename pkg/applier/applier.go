@@ -544,6 +544,11 @@ func hookMatchesChange(hook config.Hook, changedSecrets map[string]struct{}, cha
 			return true
 		}
 	}
+	for _, file := range hook.Files {
+		if _, ok := changedRels["file"][file]; ok {
+			return true
+		}
+	}
 	return false
 }
 

@@ -1073,3 +1073,41 @@ func TestCategoryOrderIncludesFileNextToManifest(t *testing.T) {
 	require.NotEqual(t, -1, fileIdx, "file must be present")
 	assert.Equal(t, manifestIdx+1, fileIdx, "file must come immediately after manifest")
 }
+
+func TestApplyFiresFilesOnlyHook(t *testing.T) {
+	t.Parallel()
+
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+
+	var reloads atomic.Int32
+	client := testHTTPClient(func(_ *http.Request) int {
+		reloads.Add(1)
+		return http.StatusOK
+	})
+
+	hooks := []config.Hook{{
+		Name:      "scrape-reload",
+		Files:     []string{"config/scrape.yml"},
+		Unit:      "app.service",
+		Action:    config.HookActionHTTP,
+		Method:    http.MethodPost,
+		URL:       "http://example.test/reload",
+		OnFailure: config.HookOnFailureKeepRunning,
+	}}
+	reloader := applier.NewHookReloader(sys, pod).WithHTTPClient(client).WithHealthDelay(0)
+	a := applier.New(sys, pod, fw, false, hooks, applier.WithHookReloader(reloader))
+
+	result, err := a.Apply(t.Context(), &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "/var/lib/picolet/files/config/scrape.yml", Category: "file", Action: reconciler.ActionUpdate, NewContent: "x", RelPath: "config/scrape.yml"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), reloads.Load(), "files-only hook must fire (regression: applier.go:391 early-exit)")
+	assert.ElementsMatch(t, []string{"scrape-reload"}, result.AttemptedHookNames)
+}
