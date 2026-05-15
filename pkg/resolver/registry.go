@@ -16,6 +16,7 @@ import (
 	sprig "github.com/Masterminds/sprig/v3"
 
 	op "github.com/schjan/picolet/pkg/onepassword"
+	pp "github.com/schjan/picolet/pkg/protonpass"
 )
 
 const maxTemplateDepth = 10
@@ -55,6 +56,18 @@ func OpProvider(reader SecretRefReader) ProviderTemplate {
 		IsRef:              op.IsRef,
 		PlaceholderEmpty:   "<op-secret>",
 		PlaceholderPending: "<op-secret-pending>",
+	}
+}
+
+// PPProvider returns the standard Proton Pass provider template.
+// reader may be nil to disable the provider.
+func PPProvider(reader SecretRefReader) ProviderTemplate {
+	return ProviderTemplate{
+		FuncName:           "readProtonPassSecret",
+		Reader:             reader,
+		IsRef:              pp.IsRef,
+		PlaceholderEmpty:   "<pp-secret>",
+		PlaceholderPending: "<pp-secret-pending>",
 	}
 }
 

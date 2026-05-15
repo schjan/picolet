@@ -263,7 +263,7 @@ func TestRetryPendingHooksClearsListOnSuccess(t *testing.T) {
 	}
 	changeset := &reconciler.Changeset{Summary: map[reconciler.Action]int{}}
 
-	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, 0)
+	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, refSecretsCounts{})
 	require.NoError(t, err)
 
 	loaded, err := store.Load()
@@ -373,7 +373,7 @@ func TestRetryPendingHooksDropsStaleNamesAndKeepsFailures(t *testing.T) {
 	}
 	changeset := &reconciler.Changeset{Summary: map[reconciler.Action]int{}}
 
-	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, 0)
+	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, refSecretsCounts{})
 	require.ErrorIs(t, err, applier.ErrApplyIncomplete)
 
 	loaded, err := store.Load()

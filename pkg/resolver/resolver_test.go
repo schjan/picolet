@@ -1582,6 +1582,56 @@ func TestReadOpSecret(t *testing.T) {
 	})
 }
 
+// TestReadProvidersCoexist exercises the two-phase resolution machinery with
+// both providers active simultaneously and a template that calls each.
+func TestReadProvidersCoexist(t *testing.T) {
+	t.Parallel()
+	fsys := fstest.MapFS{
+		"both.tmpl": &fstest.MapFile{Data: []byte(
+			`op={{readOpSecret "op://v/i/f"}} pp={{readProtonPassSecret "pass://s/i/f"}}`,
+		)},
+	}
+
+	opReader := func(_ context.Context, refs []string) (map[string]string, error) {
+		out := make(map[string]string, len(refs))
+		for _, r := range refs {
+			out[r] = "op-" + r
+		}
+		return out, nil
+	}
+	ppReader := func(_ context.Context, refs []string) (map[string]string, error) {
+		out := make(map[string]string, len(refs))
+		for _, r := range refs {
+			out[r] = "pp-" + r
+		}
+		return out, nil
+	}
+
+	registry, caches, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{
+		OpProvider(opReader),
+		PPProvider(ppReader),
+	}, "/var/lib/picolet")
+	require.NoError(t, err)
+	require.Len(t, caches, 2)
+	opCache, ppCache := caches[0], caches[1]
+	require.NotNil(t, opCache)
+	require.NotNil(t, ppCache)
+
+	// Collect phase.
+	var discard bytes.Buffer
+	require.NoError(t, registry.ExecuteTemplate(&discard, "both.tmpl", nil))
+	assert.Equal(t, "op=<op-secret-pending> pp=<pp-secret-pending>", discard.String())
+
+	// Resolve both caches.
+	require.NoError(t, opCache.Resolve(t.Context()))
+	require.NoError(t, ppCache.Resolve(t.Context()))
+
+	// Render phase.
+	var buf bytes.Buffer
+	require.NoError(t, registry.ExecuteTemplate(&buf, "both.tmpl", nil))
+	assert.Equal(t, "op=op-op://v/i/f pp=pp-pass://s/i/f", buf.String())
+}
+
 func TestResolveHostSkipsOpSecretWhenNotConfigured(t *testing.T) {
 	t.Parallel()
 	fsys := fstest.MapFS{

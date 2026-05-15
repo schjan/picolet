@@ -292,6 +292,18 @@ func (c *Config) HasGitHubAppPPRefs() bool {
 	return c.ProtonPass.GitHubAppIDRef != "" && c.ProtonPass.GitHubInstallationRef != "" && c.ProtonPass.GitHubPrivateKeyRef != ""
 }
 
+// ToClientConfig converts ProtonPassConfig into the internal pass-cli ClientConfig.
+// The pass-cli package does not depend on agentcfg to keep the dependency
+// graph one-way; this method bridges the two.
+func (c *ProtonPassConfig) ToClientConfig() pp.ClientConfig {
+	return pp.ClientConfig{
+		CLIPath:           c.CLIPath,
+		PATPath:           c.PATPath,
+		EncryptionKeyPath: c.EncryptionKeyPath,
+		SessionDir:        c.SessionDir,
+	}
+}
+
 func validateOptionalOpRef(name, ref string) error {
 	if ref == "" {
 		return nil

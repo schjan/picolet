@@ -21,6 +21,7 @@ import (
 
 	"github.com/schjan/picolet/pkg/config"
 	op "github.com/schjan/picolet/pkg/onepassword"
+	pp "github.com/schjan/picolet/pkg/protonpass"
 )
 
 // PicoletMarker is the comment header prepended to systemd unit files managed by picolet.
@@ -61,7 +62,8 @@ type Config struct {
 	FS             fs.FS
 	Config         *config.Config
 	SecretReader   SecretReader
-	OpSecretReader OpSecretReader
+	OpSecretReader SecretRefReader
+	PPSecretReader SecretRefReader
 	Rootless       bool
 
 	// QuadletDir, SystemdDir, and DataDir override the defaults computed by
@@ -78,7 +80,8 @@ type Resolver struct {
 	fsys           fs.FS
 	cfg            *config.Config
 	secretReader   SecretReader
-	opSecretReader OpSecretReader
+	opSecretReader SecretRefReader
+	ppSecretReader SecretRefReader
 	quadletDir     string
 	systemdDir     string
 	dataDir        string
@@ -110,6 +113,7 @@ func New(rc Config) (*Resolver, error) {
 		cfg:            rc.Config,
 		secretReader:   rc.SecretReader,
 		opSecretReader: rc.OpSecretReader,
+		ppSecretReader: rc.PPSecretReader,
 		quadletDir:     quadletDir,
 		systemdDir:     systemdDir,
 		dataDir:        dataDir,
@@ -145,37 +149,49 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 		return nil, err
 	}
 
-	providers := []ProviderTemplate{OpProvider(r.opSecretReader)}
+	providers := []ProviderTemplate{
+		OpProvider(r.opSecretReader),
+		PPProvider(r.ppSecretReader),
+	}
 	registry, caches, err := BuildRegistry(ctx, r.fsys, r.secretReader, providers, r.dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}
-	opCache := caches[0]
+	opCache, ppCache := caches[0], caches[1]
 
 	// Fail fast on destination collisions before paying for template rendering
-	// or 1Password SDK calls. DestPath is knowable from the file layout alone.
+	// or remote secret-provider calls. DestPath is knowable from the file layout alone.
 	expanded, err := r.expandAndValidate(r.cfg.Assignments.Resolve(host))
 	if err != nil {
 		return nil, err
 	}
 
-	// Two-phase op:// secret resolution for templates:
-	// Phase 1 (collect): render all templates to discover readOpSecret calls (output discarded).
-	// Phase 2 (resolve): batch-resolve collected refs, then render templates for real.
-	if opCache != nil {
-		r.collectOpTemplateRefs(registry, tmplData, expanded.FileSet, expanded.ManifestRefs, expanded.HookRefs)
-		if err := opCache.Resolve(ctx); err != nil {
-			return nil, err
+	// Two-phase secret resolution for templates: collect refs by rendering
+	// once with placeholders, then batch-resolve, then render for real. Each
+	// provider has its own cache; rendering twice is cheap relative to the
+	// network/exec round-trips we save.
+	needsCollect := opCache != nil || ppCache != nil
+	if needsCollect {
+		r.collectTemplateRefs(registry, tmplData, expanded.FileSet, expanded.ManifestRefs, expanded.HookRefs)
+		if opCache != nil {
+			if err := opCache.Resolve(ctx); err != nil {
+				return nil, err
+			}
+		}
+		if ppCache != nil {
+			if err := ppCache.Resolve(ctx); err != nil {
+				return nil, err
+			}
 		}
 	}
 
-	// Batch-resolve op:// secrets in a single SDK call.
-	opResolved, err := r.batchResolveOpSecrets(ctx, expanded.FileSet.Secrets)
+	// Batch-resolve direct (non-template) secret refs in one call per provider.
+	resolvedDirect, err := r.batchResolveDirectSecrets(ctx, expanded.FileSet.Secrets)
 	if err != nil {
 		return nil, err
 	}
 
-	files, err := r.buildFiles(registry, tmplData, expanded.FileSet, expanded.ManifestRefs, opResolved)
+	files, err := r.buildFiles(registry, tmplData, expanded.FileSet, expanded.ManifestRefs, resolvedDirect)
 	if err != nil {
 		return nil, err
 	}
@@ -327,11 +343,18 @@ func (r *Resolver) manifestDestPath(logicalPath string) string {
 	return filepath.Join(r.dataDir, filepath.FromSlash(strings.TrimSuffix(logicalPath, ".tmpl")))
 }
 
-// secretDestPath returns the DestPath for either an op:// ref or a file-based
-// secret. ParseOpRef is pure — no network call.
+// secretDestPath returns the DestPath for either a provider-backed ref
+// (op:// or pass://) or a file-based secret. Parsing is pure — no I/O.
 func (r *Resolver) secretDestPath(srcPath string) (string, error) {
 	if op.IsRef(srcPath) {
 		parsed, err := op.ParseOpRef(srcPath)
+		if err != nil {
+			return "", err
+		}
+		return "secret:" + parsed.PodmanSecretName(), nil
+	}
+	if pp.IsRef(srcPath) {
+		parsed, err := pp.ParseRef(srcPath)
 		if err != nil {
 			return "", err
 		}
@@ -420,15 +443,15 @@ func (r *Resolver) buildSecretFiles(
 	registry *template.Template,
 	tmplData *TemplateData,
 	secrets []string,
-	opResolved map[string]string,
+	resolvedDirect map[string]string,
 ) ([]ResolvedFile, error) {
 	var files []ResolvedFile
 	for _, srcPath := range secrets {
-		if op.IsRef(srcPath) {
-			if opResolved == nil {
+		if op.IsRef(srcPath) || pp.IsRef(srcPath) {
+			if resolvedDirect == nil {
 				continue
 			}
-			f, err := r.buildOpSecretFile(srcPath, opResolved[srcPath])
+			f, err := r.buildDirectSecretFile(srcPath, resolvedDirect[srcPath])
 			if err != nil {
 				return nil, err
 			}
@@ -666,38 +689,68 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 	}, nil
 }
 
-// batchResolveOpSecrets collects all op:// refs from the secrets list and resolves
-// them in a single SDK call. Returns a map from ref to secret value.
-// Any resolution failure is fatal to prevent reconciler.Diff from marking
-// unresolved secrets for deletion (which would remove them from Podman).
-// When 1Password is not configured, all op:// refs are skipped with a warning.
+// batchResolveDirectSecrets resolves all provider-backed (op:// + pass://)
+// refs in the secrets list, one batched call per provider. Returns a single
+// map keyed by ref. A resolution failure is fatal to prevent reconciler.Diff
+// from marking unresolved secrets for deletion (which would remove them from
+// Podman). When a provider is not configured, its refs are skipped with a
+// warning so the rest of the reconcile can proceed.
 //
-//nolint:nilnil // nil map signals "no op:// secrets to resolve" or "1Password not configured"
-func (r *Resolver) batchResolveOpSecrets(ctx context.Context, allSecrets []string) (map[string]string, error) {
-	var opRefs []string
-	for _, path := range allSecrets {
-		if op.IsRef(path) {
-			opRefs = append(opRefs, path)
-		}
-	}
-	if len(opRefs) == 0 {
+//nolint:nilnil // nil map signals "no provider-backed secrets to resolve"
+func (r *Resolver) batchResolveDirectSecrets(ctx context.Context, allSecrets []string) (map[string]string, error) {
+	opRefs, ppRefs := splitDirectRefs(allSecrets)
+	if len(opRefs) == 0 && len(ppRefs) == 0 {
 		return nil, nil
 	}
-	if r.opSecretReader == nil {
-		slog.Warn("skipping op:// secrets (1password not configured)", "count", len(opRefs))
-		return nil, nil
+
+	results := make(map[string]string)
+	if err := r.resolveProviderRefs(ctx, "1password", r.opSecretReader, opRefs, results); err != nil {
+		return nil, err
 	}
-	slog.Debug("batch-resolving 1password secrets", "count", len(opRefs))
-	results, err := r.opSecretReader(ctx, opRefs)
-	if err != nil {
-		return nil, fmt.Errorf("resolving 1password secrets: %w", err)
+	if err := r.resolveProviderRefs(ctx, "protonpass", r.ppSecretReader, ppRefs, results); err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		return nil, nil
 	}
 	return results, nil
 }
 
-// collectOpTemplateRefs executes all .tmpl files in collect mode to discover readOpSecret calls.
-// Output is discarded — only the side effect of populating the OpSecretCache matters.
-func (r *Resolver) collectOpTemplateRefs(
+func splitDirectRefs(allSecrets []string) (opRefs, ppRefs []string) {
+	for _, path := range allSecrets {
+		switch {
+		case op.IsRef(path):
+			opRefs = append(opRefs, path)
+		case pp.IsRef(path):
+			ppRefs = append(ppRefs, path)
+		}
+	}
+	return opRefs, ppRefs
+}
+
+func (r *Resolver) resolveProviderRefs(ctx context.Context, name string, reader SecretRefReader, refs []string, into map[string]string) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	if reader == nil {
+		slog.Warn("skipping secrets (provider not configured)", "provider", name, "count", len(refs))
+		return nil
+	}
+	slog.Debug("batch-resolving secrets", "provider", name, "count", len(refs))
+	results, err := reader(ctx, refs)
+	if err != nil {
+		return fmt.Errorf("resolving %s secrets: %w", name, err)
+	}
+	for k, v := range results {
+		into[k] = v
+	}
+	return nil
+}
+
+// collectTemplateRefs executes all .tmpl files in collect mode to discover
+// reader-function calls (readOpSecret, readProtonPassSecret, …). Output is
+// discarded — only the side effect of populating each provider's RefCache matters.
+func (r *Resolver) collectTemplateRefs(
 	registry *template.Template,
 	tmplData *TemplateData,
 	fileSet *config.ResolvedFileSet,
@@ -714,9 +767,11 @@ func (r *Resolver) collectOpTemplateRefs(
 	for _, ref := range hookRefs {
 		allPaths = append(allPaths, ref.SrcPath)
 	}
-	// Include non-op:// secrets that are templates (they might call readOpSecret).
+	// Include secret entries that are templates — they may call provider
+	// reader functions. Direct provider refs (op://, pass://) are not
+	// templates and are skipped.
 	for _, path := range fileSet.Secrets {
-		if !op.IsRef(path) {
+		if !op.IsRef(path) && !pp.IsRef(path) {
 			allPaths = append(allPaths, path)
 		}
 	}
@@ -728,8 +783,9 @@ func (r *Resolver) collectOpTemplateRefs(
 	}
 }
 
-// buildOpSecretFile creates a ResolvedFile for a pre-resolved op:// secret.
-func (r *Resolver) buildOpSecretFile(ref, content string) (*ResolvedFile, error) {
+// buildDirectSecretFile creates a ResolvedFile for a pre-resolved
+// provider-backed secret (op:// or pass://).
+func (r *Resolver) buildDirectSecretFile(ref, content string) (*ResolvedFile, error) {
 	destPath, err := r.secretDestPath(ref)
 	if err != nil {
 		return nil, err

@@ -26,6 +26,7 @@ import (
 	"github.com/schjan/picolet/pkg/metrics"
 	mqttpkg "github.com/schjan/picolet/pkg/mqtt"
 	op "github.com/schjan/picolet/pkg/onepassword"
+	pp "github.com/schjan/picolet/pkg/protonpass"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/rollback"
@@ -352,7 +353,8 @@ func appendGitHubOptions(ctx context.Context, cfg *agentcfg.Config, opts []agent
 	}
 
 	var (
-		opReader resolver.OpSecretReader
+		opReader resolver.SecretRefReader
+		ppReader resolver.SecretRefReader
 		err      error
 	)
 	if cfg.HasGitHubAppRefs() {
@@ -361,8 +363,14 @@ func appendGitHubOptions(ctx context.Context, cfg *agentcfg.Config, opts []agent
 			return nil, fmt.Errorf("setting up 1password for github app auth: %w", err)
 		}
 	}
+	if cfg.HasGitHubAppPPRefs() {
+		ppReader, err = ppReaderFromConfig(ctx, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("setting up protonpass for github app auth: %w", err)
+		}
+	}
 
-	ghClient, appID, err := githubauth.NewClientFromConfig(ctx, cfg, opReader)
+	ghClient, appID, err := githubauth.NewClientFromConfig(ctx, cfg, opReader, ppReader)
 	if err != nil {
 		return nil, fmt.Errorf("creating GitHub client: %w", err)
 	}
@@ -375,16 +383,33 @@ func appendGitHubOptions(ctx context.Context, cfg *agentcfg.Config, opts []agent
 	return opts, nil
 }
 
-// opReaderFromConfig creates an OpSecretReader from agent config, or nil if 1Password is not configured.
+// opReaderFromConfig creates a SecretRefReader for 1Password, or nil if not configured.
 //
-//nolint:nilnil // nil reader signals "1Password not configured"; matches OpSecretReader convention
-func opReaderFromConfig(ctx context.Context, cfg *agentcfg.Config) (resolver.OpSecretReader, error) {
+//nolint:nilnil // nil reader signals "1Password not configured"
+func opReaderFromConfig(ctx context.Context, cfg *agentcfg.Config) (resolver.SecretRefReader, error) {
 	if cfg.OnePassword == nil {
 		return nil, nil
 	}
 	reader, err := op.NewReaderFromTokenFile(ctx, cfg.OnePassword.TokenPath)
 	if err != nil {
 		return nil, fmt.Errorf("setting up 1password: %w", err)
+	}
+	return reader, nil
+}
+
+// ppReaderFromConfig creates a SecretRefReader for Proton Pass, or nil if not configured.
+// Bounded with a 30s deadline so a hung pass-cli login cannot block startup.
+//
+//nolint:nilnil // nil reader signals "Proton Pass not configured"
+func ppReaderFromConfig(ctx context.Context, cfg *agentcfg.Config) (resolver.SecretRefReader, error) {
+	if cfg.ProtonPass == nil {
+		return nil, nil
+	}
+	initCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	reader, err := pp.NewReader(initCtx, cfg.ProtonPass.ToClientConfig())
+	if err != nil {
+		return nil, fmt.Errorf("setting up protonpass: %w", err)
 	}
 	return reader, nil
 }
@@ -400,6 +425,10 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 	if err != nil {
 		return nil, nil, false, err
 	}
+	ppReader, err := ppReaderFromConfig(ctx, cfg)
+	if err != nil {
+		return nil, nil, false, err
+	}
 
 	files, err := agent.LoadAndResolve(ctx, agent.ResolveParams{
 		RepoPath:       effectiveRepoDir(repoDir, cfg.RepoSubDir),
@@ -407,6 +436,7 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 		SecretsDir:     cfg.SecretsDir,
 		Rootless:       cfg.Rootless,
 		OpSecretReader: opReader,
+		PPSecretReader: ppReader,
 	})
 	if err != nil {
 		return nil, nil, false, err
@@ -670,6 +700,10 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	if err != nil {
 		return err
 	}
+	ppReader, err := ppReaderFromConfig(ctx, cfg)
+	if err != nil {
+		return err
+	}
 
 	resolved, err := agent.LoadAndResolveHost(ctx, agent.ResolveParams{
 		RepoPath:       effectiveRepoDir(repoDir, cfg.RepoSubDir),
@@ -677,6 +711,7 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		SecretsDir:     cfg.SecretsDir,
 		Rootless:       cfg.Rootless,
 		OpSecretReader: opReader,
+		PPSecretReader: ppReader,
 	})
 	if err != nil {
 		return err

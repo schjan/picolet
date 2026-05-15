@@ -42,7 +42,7 @@ func TestNewClientFromConfigDirect(t *testing.T) {
 		GitHubPrivateKeyPath: pemPath,
 	}
 
-	c, appID, err := NewClientFromConfig(context.Background(), cfg, nil)
+	c, appID, err := NewClientFromConfig(context.Background(), cfg, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, c)
 	assert.Equal(t, int64(12345), appID)
@@ -75,12 +75,62 @@ func TestNewClientFromConfigRefs(t *testing.T) {
 		}, nil
 	})
 
-	c, appID, err := NewClientFromConfig(context.Background(), cfg, reader)
+	c, appID, err := NewClientFromConfig(context.Background(), cfg, reader, nil)
 	require.NoError(t, err)
 	require.NotNil(t, c)
 	assert.Equal(t, int64(12345), appID)
 	assert.Equal(t, "org", c.Owner)
 	assert.Equal(t, "repo", c.Repo)
+}
+
+func TestNewClientFromConfigPPRefs(t *testing.T) {
+	t.Parallel()
+
+	cfg := &agentcfg.Config{
+		RepoURL: "https://github.com/org/repo.git",
+		ProtonPass: &agentcfg.ProtonPassConfig{
+			GitHubAppIDRef:        "pass://share/app/id",
+			GitHubInstallationRef: "pass://share/app/installation",
+			GitHubPrivateKeyRef:   "pass://share/app/private_key",
+		},
+	}
+
+	reader := resolver.SecretRefReader(func(_ context.Context, refs []string) (map[string]string, error) {
+		assert.ElementsMatch(t, []string{
+			"pass://share/app/id",
+			"pass://share/app/installation",
+			"pass://share/app/private_key",
+		}, refs)
+		return map[string]string{
+			"pass://share/app/id":           "54321",
+			"pass://share/app/installation": "98765",
+			"pass://share/app/private_key":  string(testPrivateKeyPEM(t)),
+		}, nil
+	})
+
+	c, appID, err := NewClientFromConfig(context.Background(), cfg, nil, reader)
+	require.NoError(t, err)
+	require.NotNil(t, c)
+	assert.Equal(t, int64(54321), appID)
+	assert.Equal(t, "org", c.Owner)
+	assert.Equal(t, "repo", c.Repo)
+}
+
+func TestNewClientFromConfigPPRefsRequireProtonPassReader(t *testing.T) {
+	t.Parallel()
+
+	cfg := &agentcfg.Config{
+		RepoURL: "https://github.com/org/repo.git",
+		ProtonPass: &agentcfg.ProtonPassConfig{
+			GitHubAppIDRef:        "pass://share/app/id",
+			GitHubInstallationRef: "pass://share/app/installation",
+			GitHubPrivateKeyRef:   "pass://share/app/private_key",
+		},
+	}
+
+	_, _, err := NewClientFromConfig(context.Background(), cfg, nil, nil)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "protonpass must be configured")
 }
 
 func TestNewClientFromConfigRefsRequireOnePasswordReader(t *testing.T) {
@@ -95,7 +145,7 @@ func TestNewClientFromConfigRefsRequireOnePasswordReader(t *testing.T) {
 		},
 	}
 
-	_, _, err := NewClientFromConfig(context.Background(), cfg, nil)
+	_, _, err := NewClientFromConfig(context.Background(), cfg, nil, nil)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "onepassword must be configured")
 }
@@ -119,7 +169,7 @@ func TestNewClientFromConfigRefsMissingResult(t *testing.T) {
 		}, nil
 	})
 
-	_, _, err := NewClientFromConfig(context.Background(), cfg, reader)
+	_, _, err := NewClientFromConfig(context.Background(), cfg, reader, nil)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "missing onepassword.github_installation_id_ref")
 }
@@ -144,7 +194,7 @@ func TestNewClientFromConfigRefsInvalidAppID(t *testing.T) {
 		}, nil
 	})
 
-	_, _, err := NewClientFromConfig(context.Background(), cfg, reader)
+	_, _, err := NewClientFromConfig(context.Background(), cfg, reader, nil)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "onepassword.github_app_id_ref is not a valid integer")
 }
@@ -169,7 +219,7 @@ func TestNewClientFromConfigRefsEmptyPrivateKey(t *testing.T) {
 		}, nil
 	})
 
-	_, _, err := NewClientFromConfig(context.Background(), cfg, reader)
+	_, _, err := NewClientFromConfig(context.Background(), cfg, reader, nil)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "resolved to an empty value")
 }
@@ -177,7 +227,7 @@ func TestNewClientFromConfigRefsEmptyPrivateKey(t *testing.T) {
 func TestNewClientFromConfigNilConfig(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := NewClientFromConfig(context.Background(), nil, nil)
+	_, _, err := NewClientFromConfig(context.Background(), nil, nil, nil)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "agent config is required")
 }

@@ -141,26 +141,28 @@ var (
 		[]string{"feature"},
 	)
 
-	OpDirectSecretsCount = prometheus.NewGauge(
+	SecretsManagedCount = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "picolet_op_direct_secrets_count",
-			Help: "Number of direct op:// secret assignments currently managed by picolet.",
+			Name: "picolet_secrets_managed_count",
+			Help: "Number of direct provider-backed secret assignments currently managed, per provider.",
 		},
+		[]string{"provider"},
 	)
 
-	OpSyncTotal = prometheus.NewCounterVec(
+	SecretSyncTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "picolet_op_sync_total",
-			Help: "Total 1Password sync attempts by result (success, failure).",
+			Name: "picolet_secret_sync_total",
+			Help: "Total secret-provider sync attempts by provider and result.",
 		},
-		[]string{"result"},
+		[]string{"provider", "result"},
 	)
 
-	OpLastSyncTimestamp = prometheus.NewGauge(
+	SecretLastSyncTimestamp = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "picolet_op_last_sync_timestamp",
-			Help: "Unix timestamp of the last successful 1Password secret sync.",
+			Name: "picolet_secret_last_sync_timestamp",
+			Help: "Unix timestamp of the last successful secret-provider sync, per provider.",
 		},
+		[]string{"provider"},
 	)
 
 	HookTotal = prometheus.NewCounterVec(
@@ -199,9 +201,9 @@ func Register(store *status.Store) {
 			DeploymentStatusTotal,
 			BuildInfo,
 			FeatureInfo,
-			OpDirectSecretsCount,
-			OpSyncTotal,
-			OpLastSyncTimestamp,
+			SecretsManagedCount,
+			SecretSyncTotal,
+			SecretLastSyncTimestamp,
 			HookTotal,
 			NewUnitHealthCollector(store),
 			NewUnitDependencyCollector(store),
