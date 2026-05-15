@@ -22,6 +22,7 @@
 | `picolet_secrets_managed_count` | Gauge | `provider` (`onepassword`/`protonpass`) | Number of direct provider-backed secret refs currently managed |
 | `picolet_secret_sync_total` | Counter | `provider`, `result` (`success`) | Successful secret-provider sync attempts |
 | `picolet_secret_last_sync_timestamp` | Gauge | `provider` | Unix timestamp of the last successful secret-provider sync |
+| `picolet_secret_credential_expires_at` | Gauge | `provider` | Unix timestamp at which the configured credential expires (only emitted when the operator records the expiry in config) |
 
 Dependency targets, file paths, hashes, recent error strings, and dashboard event history are intentionally not exported as labels to avoid high-cardinality or churn-heavy series.
 
@@ -49,6 +50,23 @@ groups:
         annotations:
           summary: "picolet has gated a SHA after 3 consecutive failures"
           description: "The current git HEAD has failed reconciliation 3+ times and is permanently skipped until a new commit arrives."
+
+      - alert: PicoletSecretCredentialNearExpiry
+        expr: picolet_secret_credential_expires_at - time() < 14 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.provider }} credential expires in less than 14 days"
+          description: "Rotate the {{ $labels.provider }} credential on {{ $labels.instance }} and update token_expires_at / pat_expires_at in config.yml."
+
+      - alert: PicoletSecretCredentialExpired
+        expr: picolet_secret_credential_expires_at - time() < 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.provider }} credential has expired"
+          description: "Secret resolution for {{ $labels.provider }} on {{ $labels.instance }} will fail until the credential is rotated."
 ```
 
 ## Split Rules Across Multiple Files

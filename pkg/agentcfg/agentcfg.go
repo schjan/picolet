@@ -25,6 +25,7 @@ type MQTTConfig struct {
 // OnePasswordConfig holds 1Password SDK settings.
 type OnePasswordConfig struct {
 	TokenPath             string        `yaml:"token_path"`                 // file path to service account token
+	TokenExpiresAt        time.Time     `yaml:"token_expires_at"`           // optional RFC3339; published as picolet_secret_credential_expires_at{provider="onepassword"}
 	RefreshInterval       time.Duration `yaml:"refresh_interval"`           // how often to re-fetch op:// secrets (default 6h)
 	GitTokenRef           string        `yaml:"git_token_ref"`              // op:// ref for git pull token; replaces git_token_path
 	GitHubAppIDRef        string        `yaml:"github_app_id_ref"`          // op:// ref for GitHub App ID
@@ -40,9 +41,15 @@ type OnePasswordConfig struct {
 //
 // EncryptionKeyPath is mandatory when PATPath is set; the contents seed
 // pass-cli's env-mode key provider.
+//
+// PATExpiresAt is optional but strongly recommended: Proton PATs have a
+// mandatory expiration and pass-cli does not expose it programmatically, so
+// the operator records it at provisioning time. Picolet publishes the value
+// as picolet_secret_credential_expires_at{provider="protonpass"} for alerts.
 type ProtonPassConfig struct {
 	CLIPath               string        `yaml:"cli_path"`                   // optional; default "pass-cli"
 	PATPath               string        `yaml:"pat_path"`                   // optional; empty = lazy mode
+	PATExpiresAt          time.Time     `yaml:"pat_expires_at"`             // optional RFC3339; published as picolet_secret_credential_expires_at{provider="protonpass"}
 	EncryptionKeyPath     string        `yaml:"encryption_key_path"`        // required when pat_path is set
 	SessionDir            string        `yaml:"session_dir"`                // optional; default /var/lib/picolet/protonpass/.session
 	RefreshInterval       time.Duration `yaml:"refresh_interval"`           // how often to re-fetch pass:// secrets (default 6h)

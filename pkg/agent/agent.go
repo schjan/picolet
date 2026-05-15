@@ -274,6 +274,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			return fmt.Errorf("setting up 1password: %w", err)
 		}
 		slog.Info("1password client initialized", "token_path", a.cfg.OnePassword.TokenPath)
+		publishCredentialExpiry("onepassword", a.cfg.OnePassword.TokenExpiresAt)
 	}
 
 	// Initialize Proton Pass client (if configured). EnsureSession runs inside
@@ -290,6 +291,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			"session_dir", a.cfg.ProtonPass.SessionDir,
 			"lazy_mode", a.cfg.ProtonPass.PATPath == "",
 		)
+		publishCredentialExpiry("protonpass", a.cfg.ProtonPass.PATExpiresAt)
 	}
 
 	// Initialize git poller
@@ -1207,6 +1209,21 @@ func countRefs(files []resolver.ResolvedFile, isRef func(string) bool) int {
 		}
 	}
 	return count
+}
+
+// publishCredentialExpiry sets the picolet_secret_credential_expires_at gauge
+// for the given provider when the operator has recorded the expiration in
+// config. Zero values are skipped (no series emitted), so dashboards can use
+// `absent_over_time(...)` to flag providers whose expiry was never declared.
+// Past expirations are still published — that is the signal the alert needs.
+func publishCredentialExpiry(provider string, expiresAt time.Time) {
+	if expiresAt.IsZero() {
+		return
+	}
+	metrics.SecretCredentialExpiresAt.WithLabelValues(provider).Set(float64(expiresAt.Unix()))
+	if time.Now().After(expiresAt) {
+		slog.Warn("secret-provider credential has expired", "provider", provider, "expired_at", expiresAt.Format(time.RFC3339))
+	}
 }
 
 func (a *Agent) recordHostMetadata(host *config.HostConfig) {

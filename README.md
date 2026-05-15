@@ -347,6 +347,7 @@ Refs can appear in two places:
 # /etc/picolet/config.yml
 onepassword:
   token_path: /etc/picolet/secrets/op-service-account-token  # required
+  token_expires_at: 2026-12-31T23:59:59Z   # optional but recommended (RFC3339)
   refresh_interval: 6h        # default 6h, minimum 1m
   git_token_ref: op://Infra/picolet-git/token  # optional: resolve git PAT via 1Password
 ```
@@ -361,11 +362,14 @@ For unattended use (recommended in containers):
 # /etc/picolet/config.yml
 protonpass:
   pat_path: /etc/picolet/secrets/pp-pat                 # PAT format: pst_…::TOKENKEY
+  pat_expires_at: 2026-09-15T00:00:00Z                   # optional but recommended (RFC3339)
   encryption_key_path: /etc/picolet/secrets/pp-enc-key  # 32+ chars random, host-local
   session_dir: /var/lib/picolet/protonpass/.session     # isolated from any host pass-cli session
   refresh_interval: 6h                                   # default 6h, minimum 1m
   git_token_ref: pass://abc.../item.../token             # optional: resolve git PAT via Proton Pass
 ```
+
+`token_expires_at` / `pat_expires_at` are surfaced as `picolet_secret_credential_expires_at{provider}` so you can alert before the credential lapses — see `docs/alerting.md` for the recommended rule. pass-cli does not expose PAT expiry programmatically, so this value must be entered manually at provisioning time and bumped on every rotation.
 
 For local development, leave `pat_path` empty (Lazy mode). Picolet then uses any pre-existing `pass-cli login` session in your home directory and never overwrites it.
 

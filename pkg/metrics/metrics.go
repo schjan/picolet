@@ -165,6 +165,14 @@ var (
 		[]string{"provider"},
 	)
 
+	SecretCredentialExpiresAt = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "picolet_secret_credential_expires_at",
+			Help: "Unix timestamp at which the configured credential (service-account token, PAT) expires, per provider. Only emitted when the operator records the expiry in config.",
+		},
+		[]string{"provider"},
+	)
+
 	HookTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "picolet_hook_total",
@@ -204,6 +212,7 @@ func Register(store *status.Store) {
 			SecretsManagedCount,
 			SecretSyncTotal,
 			SecretLastSyncTimestamp,
+			SecretCredentialExpiresAt,
 			HookTotal,
 			NewUnitHealthCollector(store),
 			NewUnitDependencyCollector(store),

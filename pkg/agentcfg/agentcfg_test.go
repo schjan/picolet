@@ -580,6 +580,39 @@ protonpass:
 				},
 			},
 		},
+		{
+			name: "credential expiry timestamps parsed",
+			content: `
+hostname: rpi5-1
+onepassword:
+  token_path: /etc/picolet/op-token
+  token_expires_at: 2026-12-31T23:59:59Z
+protonpass:
+  pat_path: /etc/picolet/pp-pat
+  encryption_key_path: /etc/picolet/pp-enc
+  pat_expires_at: 2026-09-15T00:00:00Z
+`,
+			want: Config{ //nolint:gosec // test fixture
+				Hostname:     "rpi5-1",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				SystemdUser:  new(false),
+				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture
+					TokenPath:       "/etc/picolet/op-token",
+					TokenExpiresAt:  time.Date(2026, 12, 31, 23, 59, 59, 0, time.UTC),
+					RefreshInterval: 6 * time.Hour,
+				},
+				ProtonPass: &ProtonPassConfig{
+					PATPath:           "/etc/picolet/pp-pat",
+					PATExpiresAt:      time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC),
+					EncryptionKeyPath: "/etc/picolet/pp-enc",
+					RefreshInterval:   6 * time.Hour,
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
