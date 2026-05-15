@@ -452,14 +452,9 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if pollResult.HeadSHA == st.FailedSHA && st.FailedCount >= maxRetries && time.Since(st.FailedAt) < failedSHAExpiry {
 		slog.Warn("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "failed_sha_gate", "failures", st.FailedCount)
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
-		// Still update lastOPRefresh/lastPPRefresh so the agent does not retry
-		// secret refreshes every tick while blocked by the failed-SHA gate.
-		if a.opReader != nil {
-			a.lastOPRefresh = time.Now()
-		}
-		if a.ppReader != nil {
-			a.lastPPRefresh = time.Now()
-		}
+		// Bump every provider's last-refresh timestamp so the agent does not
+		// retry secret refreshes every tick while blocked by the failed-SHA gate.
+		a.markRefreshAttempted()
 		a.recordEvent("failed_sha_gate", pollResult.HeadSHA, "skipped after repeated failures")
 		return nil
 	}
@@ -482,12 +477,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		// reconciliation failure: do not increment FailedCount, do not arm the
 		// failed-SHA gate, do not report a failed deployment.
 		a.reportDeploymentResult(ctx, deploymentID, nil)
-		if a.opReader != nil {
-			a.lastOPRefresh = time.Now()
-		}
-		if a.ppReader != nil {
-			a.lastPPRefresh = time.Now()
-		}
+		a.markRefreshAttempted()
 		slog.Warn("apply incomplete, hooks will retry on next tick", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
 		metrics.ReconciliationTotal.WithLabelValues("retry_pending").Inc()
 		a.recordEvent("retry_pending", pollResult.HeadSHA, err.Error())
@@ -516,20 +506,9 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return err
 	}
 
-	if a.opReader != nil {
-		a.lastOPRefresh = time.Now()
-		if result.OpSecretsCount > 0 {
-			metrics.SecretSyncTotal.WithLabelValues("onepassword", "success").Inc()
-			metrics.SecretLastSyncTimestamp.WithLabelValues("onepassword").SetToCurrentTime()
-		}
-	}
-	if a.ppReader != nil {
-		a.lastPPRefresh = time.Now()
-		if result.PPSecretsCount > 0 {
-			metrics.SecretSyncTotal.WithLabelValues("protonpass", "success").Inc()
-			metrics.SecretLastSyncTimestamp.WithLabelValues("protonpass").SetToCurrentTime()
-		}
-	}
+	a.markRefreshAttempted()
+	recordProviderSyncSuccess("onepassword", a.opReader != nil, result.OpSecretsCount)
+	recordProviderSyncSuccess("protonpass", a.ppReader != nil, result.PPSecretsCount)
 	metrics.ReconciliationTotal.WithLabelValues("success").Inc()
 	if result.HasChanges {
 		a.recordEvent("success", pollResult.HeadSHA, "reconciliation complete")
@@ -662,8 +641,8 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	a.recordHostMetadata(resolved.Host)
 
 	counts := refSecretsCounts{
-		Op: a.recordOpSecretsCount(files),
-		PP: a.recordPPSecretsCount(files),
+		Op: recordProviderRefCount("onepassword", a.opReader != nil, op.IsRef, files),
+		PP: recordProviderRefCount("protonpass", a.ppReader != nil, pp.IsRef, files),
 	}
 
 	changeset := reconciler.Diff(files, st)
@@ -1179,26 +1158,39 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	}
 }
 
-// recordOpSecretsCount updates the per-provider secrets-managed gauge for
-// 1Password and returns the count.
-func (a *Agent) recordOpSecretsCount(files []resolver.ResolvedFile) int {
-	if a.opReader == nil {
+// recordProviderRefCount publishes the per-provider managed-count gauge
+// and returns the count. Returns 0 when the provider is disabled.
+func recordProviderRefCount(provider string, enabled bool, isRef func(string) bool, files []resolver.ResolvedFile) int {
+	if !enabled {
 		return 0
 	}
-	count := countRefs(files, op.IsRef)
-	metrics.SecretsManagedCount.WithLabelValues("onepassword").Set(float64(count))
+	count := countRefs(files, isRef)
+	metrics.SecretsManagedCount.WithLabelValues(provider).Set(float64(count))
 	return count
 }
 
-// recordPPSecretsCount updates the per-provider secrets-managed gauge for
-// Proton Pass and returns the count.
-func (a *Agent) recordPPSecretsCount(files []resolver.ResolvedFile) int {
-	if a.ppReader == nil {
-		return 0
+// recordProviderSyncSuccess bumps the success counter and last-sync gauge
+// for a provider after a tick that actually resolved at least one ref.
+// Disabled providers and zero-count ticks are skipped.
+func recordProviderSyncSuccess(provider string, enabled bool, count int) {
+	if !enabled || count == 0 {
+		return
 	}
-	count := countRefs(files, pp.IsRef)
-	metrics.SecretsManagedCount.WithLabelValues("protonpass").Set(float64(count))
-	return count
+	metrics.SecretSyncTotal.WithLabelValues(provider, "success").Inc()
+	metrics.SecretLastSyncTimestamp.WithLabelValues(provider).SetToCurrentTime()
+}
+
+// markRefreshAttempted bumps every configured provider's last-refresh
+// timestamp so the agent does not loop tight on the refresh trigger while
+// a tick is gated, partial, or has just completed successfully.
+func (a *Agent) markRefreshAttempted() {
+	now := time.Now()
+	if a.opReader != nil {
+		a.lastOPRefresh = now
+	}
+	if a.ppReader != nil {
+		a.lastPPRefresh = now
+	}
 }
 
 func countRefs(files []resolver.ResolvedFile, isRef func(string) bool) int {
