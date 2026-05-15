@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -170,19 +171,8 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 	// once with placeholders, then batch-resolve, then render for real. Each
 	// provider has its own cache; rendering twice is cheap relative to the
 	// network/exec round-trips we save.
-	needsCollect := opCache != nil || ppCache != nil
-	if needsCollect {
-		r.collectTemplateRefs(registry, tmplData, expanded.FileSet, expanded.ManifestRefs, expanded.HookRefs)
-		if opCache != nil {
-			if err := opCache.Resolve(ctx); err != nil {
-				return nil, err
-			}
-		}
-		if ppCache != nil {
-			if err := ppCache.Resolve(ctx); err != nil {
-				return nil, err
-			}
-		}
+	if err := r.runTemplateRefCollection(ctx, registry, tmplData, expanded, opCache, ppCache); err != nil {
+		return nil, err
 	}
 
 	// Batch-resolve direct (non-template) secret refs in one call per provider.
@@ -206,6 +196,27 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 		Files:    files,
 		Hooks:    hooks,
 	}, nil
+}
+
+// runTemplateRefCollection executes the collect pass for any configured
+// providers and resolves each provider's cache. Pulled out of ResolveHost to
+// keep ResolveHost under the cyclop limit.
+func (r *Resolver) runTemplateRefCollection(ctx context.Context, registry *template.Template, tmplData *TemplateData, expanded *expandedResult, opCache, ppCache *RefCache) error {
+	if opCache == nil && ppCache == nil {
+		return nil
+	}
+	r.collectTemplateRefs(registry, tmplData, expanded.FileSet, expanded.ManifestRefs, expanded.HookRefs)
+	if opCache != nil {
+		if err := opCache.Resolve(ctx); err != nil {
+			return err
+		}
+	}
+	if ppCache != nil {
+		if err := ppCache.Resolve(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ResolveAll resolves all hosts and returns the results.
@@ -741,9 +752,7 @@ func (r *Resolver) resolveProviderRefs(ctx context.Context, name string, reader 
 	if err != nil {
 		return fmt.Errorf("resolving %s secrets: %w", name, err)
 	}
-	for k, v := range results {
-		into[k] = v
-	}
+	maps.Copy(into, results)
 	return nil
 }
 

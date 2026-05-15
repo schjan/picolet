@@ -10,8 +10,6 @@ import (
 //
 // EnsureSession is invoked here so a misconfigured client fails fast at agent
 // startup rather than on the first reconcile tick.
-//
-//nolint:nilnil // the (nil, nil) convention — "provider not configured" — is documented at call sites
 func NewReader(ctx context.Context, cfg ClientConfig) (func(context.Context, []string) (map[string]string, error), error) {
 	client, err := NewClient(cfg)
 	if err != nil {

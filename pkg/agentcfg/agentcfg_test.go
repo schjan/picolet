@@ -430,7 +430,7 @@ onepassword:
 hostname: rpi5-1
 protonpass: {}
 `,
-			want: Config{
+			want: Config{ //nolint:gosec // test fixture, not real credentials
 				Hostname:     "rpi5-1",
 				RepoBranch:   "main",
 				PollInterval: 5 * time.Minute,
@@ -541,7 +541,7 @@ protonpass:
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
 				SystemdUser:  new(false),
-				ProtonPass: &ProtonPassConfig{ //nolint:gosec // test fixture
+				ProtonPass: &ProtonPassConfig{
 					PATPath:               "/etc/picolet/pp-pat",
 					EncryptionKeyPath:     "/etc/picolet/pp-enc",
 					RefreshInterval:       6 * time.Hour,
@@ -573,7 +573,7 @@ protonpass:
 					TokenPath:       "/etc/picolet/op-token",
 					RefreshInterval: 6 * time.Hour,
 				},
-				ProtonPass: &ProtonPassConfig{ //nolint:gosec // test fixture
+				ProtonPass: &ProtonPassConfig{
 					PATPath:           "/etc/picolet/pp-pat",
 					EncryptionKeyPath: "/etc/picolet/pp-enc",
 					RefreshInterval:   6 * time.Hour,

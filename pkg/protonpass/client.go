@@ -276,8 +276,8 @@ func parseItemViewJSON(stdout []byte) (string, error) {
 type execRunner struct{}
 
 // Run executes name with args under the given env, returning captured stdout/stderr.
-//
-//nolint:gosec // G204: pass-cli binary is operator-trusted; refs are validated by ParseRef before reaching here
+// G204 is intentionally not suppressed: the binary path is operator-supplied,
+// and ref arguments are validated by ParseRef before reaching this method.
 func (execRunner) Run(ctx context.Context, env []string, name string, args ...string) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = env

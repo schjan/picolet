@@ -200,10 +200,10 @@ func (c *Config) validateProtonPass() error {
 		return errors.New("protonpass.refresh_interval must be at least 1m")
 	}
 	for key, ref := range map[string]string{
-		"protonpass.git_token_ref":               c.ProtonPass.GitTokenRef,
-		"protonpass.github_app_id_ref":           c.ProtonPass.GitHubAppIDRef,
-		"protonpass.github_installation_id_ref":  c.ProtonPass.GitHubInstallationRef,
-		"protonpass.github_private_key_ref":      c.ProtonPass.GitHubPrivateKeyRef,
+		"protonpass.git_token_ref":              c.ProtonPass.GitTokenRef,
+		"protonpass.github_app_id_ref":          c.ProtonPass.GitHubAppIDRef,
+		"protonpass.github_installation_id_ref": c.ProtonPass.GitHubInstallationRef,
+		"protonpass.github_private_key_ref":     c.ProtonPass.GitHubPrivateKeyRef,
 	} {
 		if err := validateOptionalPassRef(key, ref); err != nil {
 			return err
@@ -232,30 +232,42 @@ func (c *Config) validateGitTokenSources() error {
 }
 
 func (c *Config) validateGitHubApp() error {
-	directSet := countSet(c.GitHubAppID != 0, c.GitHubInstallationID != 0, c.GitHubPrivateKeyPath != "")
-	opRefSet := 0
-	ppRefSet := 0
-	if c.OnePassword != nil {
-		opRefSet = countSet(
-			c.OnePassword.GitHubAppIDRef != "",
-			c.OnePassword.GitHubInstallationRef != "",
-			c.OnePassword.GitHubPrivateKeyRef != "",
-		)
-	}
-	if c.ProtonPass != nil {
-		ppRefSet = countSet(
-			c.ProtonPass.GitHubAppIDRef != "",
-			c.ProtonPass.GitHubInstallationRef != "",
-			c.ProtonPass.GitHubPrivateKeyRef != "",
-		)
-	}
-
+	directSet, opRefSet, ppRefSet := c.githubAppCounts()
 	if err := validateGitHubAppMode(directSet, opRefSet, ppRefSet); err != nil {
 		return err
 	}
 	if directSet == 0 && opRefSet == 0 && ppRefSet == 0 {
 		return nil
 	}
+	if err := c.checkGitHubAppGitTokenExclusion(); err != nil {
+		return err
+	}
+	if directSet == 0 {
+		return nil
+	}
+	return validateGitHubAppDirectValues(c.GitHubAppID, c.GitHubInstallationID)
+}
+
+func (c *Config) githubAppCounts() (direct, op, pp int) {
+	direct = countSet(c.GitHubAppID != 0, c.GitHubInstallationID != 0, c.GitHubPrivateKeyPath != "")
+	if c.OnePassword != nil {
+		op = countSet(
+			c.OnePassword.GitHubAppIDRef != "",
+			c.OnePassword.GitHubInstallationRef != "",
+			c.OnePassword.GitHubPrivateKeyRef != "",
+		)
+	}
+	if c.ProtonPass != nil {
+		pp = countSet(
+			c.ProtonPass.GitHubAppIDRef != "",
+			c.ProtonPass.GitHubInstallationRef != "",
+			c.ProtonPass.GitHubPrivateKeyRef != "",
+		)
+	}
+	return direct, op, pp
+}
+
+func (c *Config) checkGitHubAppGitTokenExclusion() error {
 	if c.GitTokenPath != "" {
 		return errors.New("github_app_id and git_token_path are mutually exclusive")
 	}
@@ -265,10 +277,7 @@ func (c *Config) validateGitHubApp() error {
 	if c.ProtonPass != nil && c.ProtonPass.GitTokenRef != "" {
 		return errors.New("github_app_id and protonpass.git_token_ref are mutually exclusive")
 	}
-	if directSet == 0 {
-		return nil
-	}
-	return validateGitHubAppDirectValues(c.GitHubAppID, c.GitHubInstallationID)
+	return nil
 }
 
 // HasGitHubApp reports whether GitHub App authentication is configured.
@@ -335,19 +344,23 @@ func countSet(values ...bool) int {
 }
 
 func validateGitHubAppMode(directSet, opRefSet, ppRefSet int) error {
-	configured := 0
-	if directSet > 0 {
-		configured++
-	}
-	if opRefSet > 0 {
-		configured++
-	}
-	if ppRefSet > 0 {
-		configured++
-	}
-	if configured > 1 {
+	if countModesConfigured(directSet, opRefSet, ppRefSet) > 1 {
 		return errors.New("github app must be configured via exactly one of: direct fields, onepassword refs, or protonpass refs (each pair is mutually exclusive)")
 	}
+	return checkGitHubAppPartialTriples(directSet, opRefSet, ppRefSet)
+}
+
+func countModesConfigured(counts ...int) int {
+	var configured int
+	for _, n := range counts {
+		if n > 0 {
+			configured++
+		}
+	}
+	return configured
+}
+
+func checkGitHubAppPartialTriples(directSet, opRefSet, ppRefSet int) error {
 	switch {
 	case directSet > 0 && directSet < 3:
 		return errors.New("all GitHub App fields must be set together (github_app_id, github_installation_id, github_private_key_path)")

@@ -22,8 +22,8 @@ import (
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/mqtt"
 	op "github.com/schjan/picolet/pkg/onepassword"
-	pp "github.com/schjan/picolet/pkg/protonpass"
 	"github.com/schjan/picolet/pkg/orphan"
+	pp "github.com/schjan/picolet/pkg/protonpass"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/rollback"
@@ -983,6 +983,22 @@ func (a *Agent) resolvePollerAuth(ctx context.Context) (gitpoll.AuthProvider, er
 	// NOTE: the git token is resolved once at startup. If the underlying
 	// secret rotates, a picolet restart is required — the per-tick refresh
 	// cycle re-fetches assignment secrets but does NOT refresh the git token.
+	if auth, err := a.gitAuthFromSecretProvider(ctx); auth != nil || err != nil {
+		return auth, err
+	}
+	if gitpoll.IsSSHURL(a.cfg.RepoURL) {
+		return gitpoll.NewSSHAgentAuth(a.cfg.RepoURL), nil
+	}
+	return gitpoll.NewTokenFileAuth(a.cfg.GitTokenPath), nil
+}
+
+// gitAuthFromSecretProvider returns a static-token auth provider when one
+// of the configured secret providers supplies the git token ref. Returns
+// (nil, nil) when no provider is configured for git auth, so the caller
+// can fall through to SSH or file-based auth.
+//
+//nolint:nilnil // (nil, nil) signals "no provider auth configured"; caller handles fallback
+func (a *Agent) gitAuthFromSecretProvider(ctx context.Context) (gitpoll.AuthProvider, error) {
 	if a.opReader != nil && a.cfg.OnePassword != nil && a.cfg.OnePassword.GitTokenRef != "" {
 		token, err := resolveGitToken(ctx, "1password", a.opReader, a.cfg.OnePassword.GitTokenRef)
 		if err != nil {
@@ -997,11 +1013,7 @@ func (a *Agent) resolvePollerAuth(ctx context.Context) (gitpoll.AuthProvider, er
 		}
 		return gitpoll.NewStaticTokenAuth(a.cfg.RepoURL, token), nil
 	}
-
-	if gitpoll.IsSSHURL(a.cfg.RepoURL) {
-		return gitpoll.NewSSHAgentAuth(a.cfg.RepoURL), nil
-	}
-	return gitpoll.NewTokenFileAuth(a.cfg.GitTokenPath), nil
+	return nil, nil
 }
 
 // resolveGitToken fetches a single ref via the given provider reader and

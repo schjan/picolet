@@ -50,70 +50,100 @@ func TestNewClientFromConfigDirect(t *testing.T) {
 	assert.Equal(t, "repo", c.Repo)
 }
 
+// TestNewClientFromConfigRefs covers both OP-refs and PP-refs happy paths.
+// The two paths share enough structure that a table-driven test removes a
+// dupl finding while staying readable.
+//
+//nolint:funlen // table-driven test
 func TestNewClientFromConfigRefs(t *testing.T) {
 	t.Parallel()
 
-	cfg := &agentcfg.Config{
-		RepoURL: "https://github.com/org/repo.git",
-		OnePassword: &agentcfg.OnePasswordConfig{
-			GitHubAppIDRef:        "op://vault/app/id",
-			GitHubInstallationRef: "op://vault/app/installation",
-			GitHubPrivateKeyRef:   "op://vault/app/private_key",
+	tests := []struct {
+		name         string
+		cfg          *agentcfg.Config
+		expectedRefs []string
+		results      func(t *testing.T) map[string]string
+		wantAppID    int64
+		useOpReader  bool // true → pass reader as opReader arg; false → ppReader
+	}{
+		{
+			name: "OnePassword refs",
+			cfg: &agentcfg.Config{
+				RepoURL: "https://github.com/org/repo.git",
+				OnePassword: &agentcfg.OnePasswordConfig{
+					GitHubAppIDRef:        "op://vault/app/id",
+					GitHubInstallationRef: "op://vault/app/installation",
+					GitHubPrivateKeyRef:   "op://vault/app/private_key",
+				},
+			},
+			expectedRefs: []string{
+				"op://vault/app/id",
+				"op://vault/app/installation",
+				"op://vault/app/private_key",
+			},
+			results: func(t *testing.T) map[string]string {
+				t.Helper()
+				return map[string]string{
+					"op://vault/app/id":           "12345",
+					"op://vault/app/installation": "67890",
+					"op://vault/app/private_key":  string(testPrivateKeyPEM(t)),
+				}
+			},
+			wantAppID:   12345,
+			useOpReader: true,
+		},
+		{
+			name: "ProtonPass refs",
+			cfg: &agentcfg.Config{
+				RepoURL: "https://github.com/org/repo.git",
+				ProtonPass: &agentcfg.ProtonPassConfig{
+					GitHubAppIDRef:        "pass://share/app/id",
+					GitHubInstallationRef: "pass://share/app/installation",
+					GitHubPrivateKeyRef:   "pass://share/app/private_key",
+				},
+			},
+			expectedRefs: []string{
+				"pass://share/app/id",
+				"pass://share/app/installation",
+				"pass://share/app/private_key",
+			},
+			results: func(t *testing.T) map[string]string {
+				t.Helper()
+				return map[string]string{
+					"pass://share/app/id":           "54321",
+					"pass://share/app/installation": "98765",
+					"pass://share/app/private_key":  string(testPrivateKeyPEM(t)),
+				}
+			},
+			wantAppID:   54321,
+			useOpReader: false,
 		},
 	}
 
-	reader := resolver.OpSecretReader(func(_ context.Context, refs []string) (map[string]string, error) {
-		assert.ElementsMatch(t, []string{
-			"op://vault/app/id",
-			"op://vault/app/installation",
-			"op://vault/app/private_key",
-		}, refs)
-		return map[string]string{
-			"op://vault/app/id":           "12345",
-			"op://vault/app/installation": "67890",
-			"op://vault/app/private_key":  string(testPrivateKeyPEM(t)),
-		}, nil
-	})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	c, appID, err := NewClientFromConfig(context.Background(), cfg, reader, nil)
-	require.NoError(t, err)
-	require.NotNil(t, c)
-	assert.Equal(t, int64(12345), appID)
-	assert.Equal(t, "org", c.Owner)
-	assert.Equal(t, "repo", c.Repo)
-}
+			reader := resolver.SecretRefReader(func(_ context.Context, refs []string) (map[string]string, error) {
+				assert.ElementsMatch(t, tc.expectedRefs, refs)
+				return tc.results(t), nil
+			})
 
-func TestNewClientFromConfigPPRefs(t *testing.T) {
-	t.Parallel()
+			var opReader, ppReader resolver.SecretRefReader
+			if tc.useOpReader {
+				opReader = reader
+			} else {
+				ppReader = reader
+			}
 
-	cfg := &agentcfg.Config{
-		RepoURL: "https://github.com/org/repo.git",
-		ProtonPass: &agentcfg.ProtonPassConfig{
-			GitHubAppIDRef:        "pass://share/app/id",
-			GitHubInstallationRef: "pass://share/app/installation",
-			GitHubPrivateKeyRef:   "pass://share/app/private_key",
-		},
+			c, appID, err := NewClientFromConfig(context.Background(), tc.cfg, opReader, ppReader)
+			require.NoError(t, err)
+			require.NotNil(t, c)
+			assert.Equal(t, tc.wantAppID, appID)
+			assert.Equal(t, "org", c.Owner)
+			assert.Equal(t, "repo", c.Repo)
+		})
 	}
-
-	reader := resolver.SecretRefReader(func(_ context.Context, refs []string) (map[string]string, error) {
-		assert.ElementsMatch(t, []string{
-			"pass://share/app/id",
-			"pass://share/app/installation",
-			"pass://share/app/private_key",
-		}, refs)
-		return map[string]string{
-			"pass://share/app/id":           "54321",
-			"pass://share/app/installation": "98765",
-			"pass://share/app/private_key":  string(testPrivateKeyPEM(t)),
-		}, nil
-	})
-
-	c, appID, err := NewClientFromConfig(context.Background(), cfg, nil, reader)
-	require.NoError(t, err)
-	require.NotNil(t, c)
-	assert.Equal(t, int64(54321), appID)
-	assert.Equal(t, "org", c.Owner)
-	assert.Equal(t, "repo", c.Repo)
 }
 
 func TestNewClientFromConfigPPRefsRequireProtonPassReader(t *testing.T) {
