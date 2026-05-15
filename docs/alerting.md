@@ -19,6 +19,9 @@
 | `picolet_unit_dependency_count` | Gauge | `unit`, `relation` | Current generated systemd dependency count by managed unit and relation |
 | `picolet_host_info` | Gauge | `pi_type` | Resolved host metadata (value=1) |
 | `picolet_host_feature_info` | Gauge | `feature` | Resolved host feature metadata (value=1) |
+| `picolet_secrets_managed_count` | Gauge | `provider` (`onepassword`/`protonpass`) | Number of direct provider-backed secret refs currently managed |
+| `picolet_secret_sync_total` | Counter | `provider`, `result` (`success`) | Successful secret-provider sync attempts |
+| `picolet_secret_last_sync_timestamp` | Gauge | `provider` | Unix timestamp of the last successful secret-provider sync |
 
 Dependency targets, file paths, hashes, recent error strings, and dashboard event history are intentionally not exported as labels to avoid high-cardinality or churn-heavy series.
 

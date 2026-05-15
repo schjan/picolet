@@ -32,6 +32,11 @@ tasks:
     cmds:
       - go test -tags "{{.BUILD_TAGS}},onepassword_integration" ./pkg/onepassword/... -race -count=1 -v
 
+  test:protonpass:
+    desc: Run Proton Pass integration tests (requires PP_PERSONAL_ACCESS_TOKEN + PP_ENCRYPTION_KEY + PP_TEST_REF)
+    cmds:
+      - go test -tags "{{.BUILD_TAGS}},protonpass_integration" ./pkg/protonpass/... -race -count=1 -v
+
   lint:
     desc: Run golangci-lint
     cmds:
