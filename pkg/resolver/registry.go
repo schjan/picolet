@@ -24,37 +24,66 @@ const maxTemplateDepth = 10
 // Pass nil for placeholder mode (validate/CI).
 type SecretReader func(path string) (string, error)
 
-// OpSecretReader resolves 1Password secret references in batch.
+// SecretRefReader resolves secret references in batch (e.g. op:// or pass://).
 // Returns successfully resolved secrets and per-reference errors separately.
-// Pass nil to disable 1Password integration (readOpSecret returns a placeholder).
-type OpSecretReader func(ctx context.Context, refs []string) (map[string]string, error)
+// Pass nil to disable a provider (its template function returns a placeholder).
+type SecretRefReader func(ctx context.Context, refs []string) (map[string]string, error)
 
-const (
-	placeholderSecret          = "<secret>"
-	placeholderOpSecret        = "<op-secret>"
-	placeholderOpSecretPending = "<op-secret-pending>"
-)
+// OpSecretReader is a backward-compatible alias for SecretRefReader.
+type OpSecretReader = SecretRefReader
 
-// OpSecretCache manages two-phase op:// secret resolution for templates.
-// Avoids N individual SDK round-trips when templates use multiple readOpSecret calls.
-// Not goroutine-safe; template rendering must be serial (same constraint as renderTemplate).
-type OpSecretCache struct {
-	reader    OpSecretReader
-	collected []string
-	resolved  map[string]string // non-nil after Resolve(); doubles as phase indicator
+// ProviderTemplate describes a secret-provider integration for the template registry.
+//
+// FuncName is the Go template function name (e.g. "readOpSecret").
+// IsRef returns true when a string is a syntactically valid reference for the provider.
+// PlaceholderEmpty is returned when the provider is not configured (Reader == nil).
+// PlaceholderPending is returned during the collect phase before refs are resolved.
+type ProviderTemplate struct {
+	FuncName           string
+	Reader             SecretRefReader
+	IsRef              func(string) bool
+	PlaceholderEmpty   string
+	PlaceholderPending string
 }
 
-// Resolve batch-resolves all collected refs. After this call, readOpSecret returns cached values.
-func (c *OpSecretCache) Resolve(ctx context.Context) error {
+// OpProvider returns the standard 1Password provider template.
+// reader may be nil to disable the provider.
+func OpProvider(reader SecretRefReader) ProviderTemplate {
+	return ProviderTemplate{
+		FuncName:           "readOpSecret",
+		Reader:             reader,
+		IsRef:              op.IsRef,
+		PlaceholderEmpty:   "<op-secret>",
+		PlaceholderPending: "<op-secret-pending>",
+	}
+}
+
+const placeholderSecret = "<secret>"
+
+// RefCache manages two-phase resolution of secret references for templates.
+// Avoids N individual provider round-trips when templates use multiple
+// reader-function calls.
+//
+// Not goroutine-safe; template rendering must be serial (same constraint as renderTemplate).
+type RefCache struct {
+	reader             SecretRefReader
+	placeholderPending string
+	collected          []string
+	resolved           map[string]string // non-nil after Resolve(); doubles as phase indicator
+}
+
+// Resolve batch-resolves all collected refs. After this call, the cache returns
+// resolved values for any subsequent template execution.
+func (c *RefCache) Resolve(ctx context.Context) error {
 	if len(c.collected) == 0 {
 		c.resolved = make(map[string]string)
 		return nil
 	}
 	unique := sortedUnique(c.collected)
-	slog.Debug("batch-resolving template op:// secrets", "count", len(unique))
+	slog.Debug("batch-resolving template secrets", "count", len(unique))
 	results, err := c.reader(ctx, unique)
 	if err != nil {
-		return fmt.Errorf("resolving template 1password secrets: %w", err)
+		return fmt.Errorf("resolving template secrets: %w", err)
 	}
 	c.resolved = results
 	return nil
@@ -63,37 +92,26 @@ func (c *OpSecretCache) Resolve(ctx context.Context) error {
 // BuildRegistry collects all .tmpl files from the filesystem and builds
 // a shared template registry with Sprig + picolet-specific functions.
 //
-// When opSecretReader is non-nil, the returned OpSecretCache manages two-phase
-// resolution: callers must run a collect pass, call cache.Resolve, then run
-// the real render pass. When opSecretReader is nil, the cache is nil.
+// For each ProviderTemplate with a non-nil Reader, a RefCache is created and
+// the corresponding template function is registered. The returned cache slice
+// is parallel to the providers slice (same order, same length); entries are
+// nil for providers whose Reader is nil.
+//
+// Two-phase resolution: callers must run a collect pass, call cache.Resolve,
+// then run the real render pass.
 //
 //nolint:cyclop,funlen // funcmap registration is inherently branchy
-func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, opSecretReader OpSecretReader, dataDir string) (*template.Template, *OpSecretCache, error) {
-	sources := make(map[string]string)
-	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() && d.Name() == ".git" {
-			return fs.SkipDir
-		}
-		if d.IsDir() || !strings.HasSuffix(path, ".tmpl") {
-			return nil
-		}
-		data, err := fs.ReadFile(fsys, path)
-		if err != nil {
-			return fmt.Errorf("reading %s: %w", path, err)
-		}
-		sources[path] = string(data)
-		return nil
-	})
+func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string) (*template.Template, []*RefCache, error) {
+	sources, err := loadTemplateSources(fsys)
 	if err != nil {
-		return nil, nil, fmt.Errorf("walking templates: %w", err)
+		return nil, nil, err
 	}
 
-	var cache *OpSecretCache
-	if opSecretReader != nil {
-		cache = &OpSecretCache{reader: opSecretReader}
+	caches := make([]*RefCache, len(providers))
+	for i, p := range providers {
+		if p.Reader != nil {
+			caches[i] = &RefCache{reader: p.Reader, placeholderPending: p.PlaceholderPending}
+		}
 	}
 
 	var root *template.Template
@@ -120,32 +138,6 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 				return placeholderSecret, nil
 			}
 			return secretReader(path)
-		},
-		"readOpSecret": func(ref string) (string, error) {
-			if cache == nil {
-				return placeholderOpSecret, nil
-			}
-			if !op.IsRef(ref) {
-				return "", fmt.Errorf("readOpSecret: %q is not a valid op:// reference", ref)
-			}
-			if cache.resolved == nil {
-				cache.collected = append(cache.collected, ref)
-				return placeholderOpSecretPending, nil
-			}
-			if val, ok := cache.resolved[ref]; ok {
-				return val, nil
-			}
-			// Cache miss: dynamic ref not seen in collect phase.
-			slog.Debug("readOpSecret: cache miss, resolving individually", "ref", ref)
-			results, err := opSecretReader(ctx, []string{ref})
-			if err != nil {
-				return "", err
-			}
-			val, ok := results[ref]
-			if !ok {
-				return "", fmt.Errorf("readOpSecret: ref %q failed to resolve", ref)
-			}
-			return val, nil
 		},
 		"manifestPath": func(relPath string) (string, error) {
 			cleaned := path.Clean(relPath)
@@ -177,13 +169,75 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, o
 		}(),
 	})
 
+	for i := range providers {
+		registerProviderFunc(ctx, funcMap, providers[i], caches[i])
+	}
+
 	root = template.New("").Option("missingkey=error").Funcs(funcMap)
 	for name, src := range sources {
 		if _, err := root.New(name).Parse(src); err != nil {
 			return nil, nil, fmt.Errorf("parsing %s: %w", name, err)
 		}
 	}
-	return root, cache, nil
+	return root, caches, nil
+}
+
+func loadTemplateSources(fsys fs.FS) (map[string]string, error) {
+	sources := make(map[string]string)
+	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == ".git" {
+			return fs.SkipDir
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".tmpl") {
+			return nil
+		}
+		data, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", path, err)
+		}
+		sources[path] = string(data)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walking templates: %w", err)
+	}
+	return sources, nil
+}
+
+// registerProviderFunc adds a provider's template function to funcMap.
+// When the provider's Reader is nil (cache == nil), the function returns the
+// configured "empty" placeholder. Otherwise it participates in the two-phase
+// collect+resolve cycle.
+func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p ProviderTemplate, cache *RefCache) {
+	funcMap[p.FuncName] = func(ref string) (string, error) {
+		if cache == nil {
+			return p.PlaceholderEmpty, nil
+		}
+		if !p.IsRef(ref) {
+			return "", fmt.Errorf("%s: %q is not a valid reference for this provider", p.FuncName, ref)
+		}
+		if cache.resolved == nil {
+			cache.collected = append(cache.collected, ref)
+			return p.PlaceholderPending, nil
+		}
+		if val, ok := cache.resolved[ref]; ok {
+			return val, nil
+		}
+		// Cache miss: dynamic ref not seen in collect phase.
+		slog.Debug("cache miss, resolving individually", "func", p.FuncName, "ref", ref)
+		results, err := p.Reader(ctx, []string{ref})
+		if err != nil {
+			return "", err
+		}
+		val, ok := results[ref]
+		if !ok {
+			return "", fmt.Errorf("%s: ref %q failed to resolve", p.FuncName, ref)
+		}
+		return val, nil
+	}
 }
 
 func indentFunc(n int, s string) string {

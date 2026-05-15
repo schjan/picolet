@@ -145,10 +145,12 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 		return nil, err
 	}
 
-	registry, opCache, err := BuildRegistry(ctx, r.fsys, r.secretReader, r.opSecretReader, r.dataDir)
+	providers := []ProviderTemplate{OpProvider(r.opSecretReader)}
+	registry, caches, err := BuildRegistry(ctx, r.fsys, r.secretReader, providers, r.dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}
+	opCache := caches[0]
 
 	// Fail fast on destination collisions before paying for template rendering
 	// or 1Password SDK calls. DestPath is knowable from the file layout alone.

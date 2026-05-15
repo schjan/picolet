@@ -201,7 +201,8 @@ func TestRenderTemplateRecursion(t *testing.T) {
 
 	var buf bytes.Buffer
 	err = registry.ExecuteTemplate(&buf, "a.tmpl", nil)
-	require.Error(t, err)
+	require.Error(t, err) // recursion limit
+
 	require.ErrorContains(t, err, "recursion depth exceeded")
 }
 
@@ -1480,8 +1481,10 @@ func TestReadOpSecret(t *testing.T) {
 			}
 			return results, nil
 		}
-		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, reader, "/var/lib/picolet")
+		registry, caches, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
 		require.NoError(t, err)
+		require.Len(t, caches, 1)
+		cache := caches[0]
 		require.NotNil(t, cache)
 
 		// Phase 1: collect (output discarded).
@@ -1500,9 +1503,10 @@ func TestReadOpSecret(t *testing.T) {
 
 	t.Run("nil reader returns placeholder", func(t *testing.T) {
 		t.Parallel()
-		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, nil, "/var/lib/picolet")
+		registry, caches, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{OpProvider(nil)}, "/var/lib/picolet")
 		require.NoError(t, err)
-		assert.Nil(t, cache)
+		require.Len(t, caches, 1)
+		assert.Nil(t, caches[0])
 		var buf bytes.Buffer
 		require.NoError(t, registry.ExecuteTemplate(&buf, "secret.tmpl", nil))
 		assert.Equal(t, "pw=<op-secret>", buf.String())
@@ -1513,8 +1517,9 @@ func TestReadOpSecret(t *testing.T) {
 		reader := func(_ context.Context, _ []string) (map[string]string, error) {
 			return nil, fmt.Errorf("1password error")
 		}
-		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, reader, "/var/lib/picolet")
+		registry, caches, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
 		require.NoError(t, err)
+		cache := caches[0]
 
 		// Collect phase.
 		var discard bytes.Buffer
@@ -1534,12 +1539,12 @@ func TestReadOpSecret(t *testing.T) {
 		reader := func(_ context.Context, _ []string) (map[string]string, error) {
 			return nil, fmt.Errorf("should-not-be-called")
 		}
-		registry, _, err := BuildRegistry(t.Context(), invalidFS, nil, reader, "/var/lib/picolet")
+		registry, _, err := BuildRegistry(t.Context(), invalidFS, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
 		require.NoError(t, err)
 		var buf bytes.Buffer
 		err = registry.ExecuteTemplate(&buf, "bad.tmpl", nil)
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "is not a valid op:// reference")
+		assert.ErrorContains(t, err, "is not a valid reference")
 	})
 
 	t.Run("batches multiple refs in single call", func(t *testing.T) {
@@ -1558,8 +1563,9 @@ func TestReadOpSecret(t *testing.T) {
 			}
 			return results, nil
 		}
-		registry, cache, err := BuildRegistry(t.Context(), multiFS, nil, reader, "/var/lib/picolet")
+		registry, caches, err := BuildRegistry(t.Context(), multiFS, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
 		require.NoError(t, err)
+		cache := caches[0]
 
 		// Collect.
 		var discard bytes.Buffer
