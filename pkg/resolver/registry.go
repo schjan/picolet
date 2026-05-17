@@ -33,13 +33,23 @@ type SecretRefReader func(ctx context.Context, refs []string) (map[string]string
 // OpSecretReader is a backward-compatible alias for SecretRefReader.
 type OpSecretReader = SecretRefReader
 
+// ProviderKey identifies a secret provider inside the template registry.
+type ProviderKey string
+
+const (
+	ProviderOnePassword ProviderKey = "onepassword"
+	ProviderProtonPass  ProviderKey = "protonpass"
+)
+
 // ProviderTemplate describes a secret-provider integration for the template registry.
 //
+// Key is used only to return the provider's cache without relying on slice order.
 // FuncName is the Go template function name (e.g. "readOpSecret").
 // IsRef returns true when a string is a syntactically valid reference for the provider.
 // PlaceholderEmpty is returned when the provider is not configured (Reader == nil).
 // PlaceholderPending is returned during the collect phase before refs are resolved.
 type ProviderTemplate struct {
+	Key                ProviderKey
 	FuncName           string
 	Reader             SecretRefReader
 	IsRef              func(string) bool
@@ -51,6 +61,7 @@ type ProviderTemplate struct {
 // reader may be nil to disable the provider.
 func OpProvider(reader SecretRefReader) ProviderTemplate {
 	return ProviderTemplate{
+		Key:                ProviderOnePassword,
 		FuncName:           "readOpSecret",
 		Reader:             reader,
 		IsRef:              op.IsRef,
@@ -63,6 +74,7 @@ func OpProvider(reader SecretRefReader) ProviderTemplate {
 // reader may be nil to disable the provider.
 func PPProvider(reader SecretRefReader) ProviderTemplate {
 	return ProviderTemplate{
+		Key:                ProviderProtonPass,
 		FuncName:           "readProtonPassSecret",
 		Reader:             reader,
 		IsRef:              pp.IsRef,
@@ -83,6 +95,20 @@ type RefCache struct {
 	placeholderPending string
 	collected          []string
 	resolved           map[string]string // non-nil after Resolve(); doubles as phase indicator
+}
+
+// ProviderCaches stores per-provider caches by key so callers do not depend on
+// the provider slice order.
+type ProviderCaches map[ProviderKey]*RefCache
+
+// ResolveAll resolves all configured provider caches.
+func (c ProviderCaches) ResolveAll(ctx context.Context) error {
+	for _, key := range sortedCacheKeys(c) {
+		if err := c[key].Resolve(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Resolve batch-resolves all collected refs. After this call, the cache returns
@@ -106,24 +132,26 @@ func (c *RefCache) Resolve(ctx context.Context) error {
 // a shared template registry with Sprig + picolet-specific functions.
 //
 // For each ProviderTemplate with a non-nil Reader, a RefCache is created and
-// the corresponding template function is registered. The returned cache slice
-// is parallel to the providers slice (same order, same length); entries are
-// nil for providers whose Reader is nil.
+// the corresponding template function is registered. The returned caches map
+// contains entries only for providers whose Reader is non-nil.
 //
 // Two-phase resolution: callers must run a collect pass, call cache.Resolve,
 // then run the real render pass.
 //
 //nolint:cyclop,funlen // funcmap registration is inherently branchy
-func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string) (*template.Template, []*RefCache, error) {
+func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string) (*template.Template, ProviderCaches, error) {
 	sources, err := loadTemplateSources(fsys)
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := validateProviderKeys(providers); err != nil {
+		return nil, nil, err
+	}
 
-	caches := make([]*RefCache, len(providers))
-	for i, p := range providers {
+	caches := make(ProviderCaches)
+	for _, p := range providers {
 		if p.Reader != nil {
-			caches[i] = &RefCache{reader: p.Reader, placeholderPending: p.PlaceholderPending}
+			caches[p.Key] = &RefCache{reader: p.Reader, placeholderPending: p.PlaceholderPending}
 		}
 	}
 
@@ -183,7 +211,7 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, p
 	})
 
 	for i := range providers {
-		registerProviderFunc(ctx, funcMap, providers[i], caches[i])
+		registerProviderFunc(ctx, funcMap, providers[i], caches[providers[i].Key])
 	}
 
 	root = template.New("").Option("missingkey=error").Funcs(funcMap)
@@ -193,6 +221,26 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, p
 		}
 	}
 	return root, caches, nil
+}
+
+func validateProviderKeys(providers []ProviderTemplate) error {
+	seen := make(map[ProviderKey]string, len(providers))
+	for _, p := range providers {
+		if p.Key == "" {
+			return fmt.Errorf("provider %q has empty key", p.FuncName)
+		}
+		if prev, ok := seen[p.Key]; ok {
+			return fmt.Errorf("provider key %q used by both %q and %q", p.Key, prev, p.FuncName)
+		}
+		seen[p.Key] = p.FuncName
+	}
+	return nil
+}
+
+func sortedCacheKeys(c ProviderCaches) []ProviderKey {
+	keys := slices.Collect(maps.Keys(c))
+	slices.Sort(keys)
+	return keys
 }
 
 func loadTemplateSources(fsys fs.FS) (map[string]string, error) {

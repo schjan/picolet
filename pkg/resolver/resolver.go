@@ -158,7 +158,6 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}
-	opCache, ppCache := caches[0], caches[1]
 
 	// Fail fast on destination collisions before paying for template rendering
 	// or remote secret-provider calls. DestPath is knowable from the file layout alone.
@@ -171,7 +170,7 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 	// once with placeholders, then batch-resolve, then render for real. Each
 	// provider has its own cache; rendering twice is cheap relative to the
 	// network/exec round-trips we save.
-	if err := r.runTemplateRefCollection(ctx, registry, tmplData, expanded, opCache, ppCache); err != nil {
+	if err := r.runTemplateRefCollection(ctx, registry, tmplData, expanded, caches); err != nil {
 		return nil, err
 	}
 
@@ -201,22 +200,12 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 // runTemplateRefCollection executes the collect pass for any configured
 // providers and resolves each provider's cache. Pulled out of ResolveHost to
 // keep ResolveHost under the cyclop limit.
-func (r *Resolver) runTemplateRefCollection(ctx context.Context, registry *template.Template, tmplData *TemplateData, expanded *expandedResult, opCache, ppCache *RefCache) error {
-	if opCache == nil && ppCache == nil {
+func (r *Resolver) runTemplateRefCollection(ctx context.Context, registry *template.Template, tmplData *TemplateData, expanded *expandedResult, caches ProviderCaches) error {
+	if len(caches) == 0 {
 		return nil
 	}
 	r.collectTemplateRefs(registry, tmplData, expanded.FileSet, expanded.ManifestRefs, expanded.HookRefs)
-	if opCache != nil {
-		if err := opCache.Resolve(ctx); err != nil {
-			return err
-		}
-	}
-	if ppCache != nil {
-		if err := ppCache.Resolve(ctx); err != nil {
-			return err
-		}
-	}
-	return nil
+	return caches.ResolveAll(ctx)
 }
 
 // ResolveAll resolves all hosts and returns the results.

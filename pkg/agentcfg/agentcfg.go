@@ -51,7 +51,7 @@ type ProtonPassConfig struct {
 	PATPath               string        `yaml:"pat_path"`                   // optional; empty = lazy mode
 	PATExpiresAt          time.Time     `yaml:"pat_expires_at"`             // optional RFC3339; published as picolet_secret_credential_expires_at{provider="protonpass"}
 	EncryptionKeyPath     string        `yaml:"encryption_key_path"`        // required when pat_path is set
-	SessionDir            string        `yaml:"session_dir"`                // optional; default /var/lib/picolet/protonpass/.session
+	SessionDir            string        `yaml:"session_dir"`                // optional; PAT mode default /var/lib/picolet/protonpass/.session
 	RefreshInterval       time.Duration `yaml:"refresh_interval"`           // how often to re-fetch pass:// secrets (default 6h)
 	GitTokenRef           string        `yaml:"git_token_ref"`              // pass:// ref for git pull token
 	GitHubAppIDRef        string        `yaml:"github_app_id_ref"`          // pass:// ref for GitHub App ID
@@ -289,7 +289,8 @@ func (c *Config) checkGitHubAppGitTokenExclusion() error {
 
 // HasGitHubApp reports whether GitHub App authentication is configured.
 func (c *Config) HasGitHubApp() bool {
-	return (c.GitHubAppID != 0 && c.GitHubInstallationID != 0 && c.GitHubPrivateKeyPath != "") || c.HasGitHubAppRefs()
+	direct, opRefs, ppRefs := c.githubAppCounts()
+	return direct == 3 || opRefs == 3 || ppRefs == 3
 }
 
 // HasGitHubAppRefs reports whether GitHub App credentials are configured via 1Password refs.

@@ -216,3 +216,28 @@ func TestBuildRegistrySkipsGitDirectory(t *testing.T) {
 	assert.NotNil(t, registry.Lookup("main.tmpl"))
 	assert.Nil(t, registry.Lookup(".git/invalid.tmpl"))
 }
+
+func TestBuildRegistryRejectsInvalidProviderKeys(t *testing.T) {
+	t.Parallel()
+	fsys := fstest.MapFS{
+		"main.tmpl": &fstest.MapFile{Data: []byte("ok")},
+	}
+
+	_, _, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{
+		{FuncName: "readBrokenSecret"},
+	}, "/var/lib/picolet")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "empty key")
+
+	_, _, err = BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{
+		OpProvider(nil),
+		{
+			Key:              ProviderOnePassword,
+			FuncName:         "readOtherSecret",
+			IsRef:            func(string) bool { return true },
+			PlaceholderEmpty: "<other>",
+		},
+	}, "/var/lib/picolet")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "used by both")
+}

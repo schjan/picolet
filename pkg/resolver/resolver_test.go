@@ -1484,7 +1484,7 @@ func TestReadOpSecret(t *testing.T) {
 		registry, caches, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
 		require.NoError(t, err)
 		require.Len(t, caches, 1)
-		cache := caches[0]
+		cache := caches[ProviderOnePassword]
 		require.NotNil(t, cache)
 
 		// Phase 1: collect (output discarded).
@@ -1505,8 +1505,7 @@ func TestReadOpSecret(t *testing.T) {
 		t.Parallel()
 		registry, caches, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{OpProvider(nil)}, "/var/lib/picolet")
 		require.NoError(t, err)
-		require.Len(t, caches, 1)
-		assert.Nil(t, caches[0])
+		assert.Empty(t, caches)
 		var buf bytes.Buffer
 		require.NoError(t, registry.ExecuteTemplate(&buf, "secret.tmpl", nil))
 		assert.Equal(t, "pw=<op-secret>", buf.String())
@@ -1519,7 +1518,7 @@ func TestReadOpSecret(t *testing.T) {
 		}
 		registry, caches, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
 		require.NoError(t, err)
-		cache := caches[0]
+		cache := caches[ProviderOnePassword]
 
 		// Collect phase.
 		var discard bytes.Buffer
@@ -1565,7 +1564,7 @@ func TestReadOpSecret(t *testing.T) {
 		}
 		registry, caches, err := BuildRegistry(t.Context(), multiFS, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
 		require.NoError(t, err)
-		cache := caches[0]
+		cache := caches[ProviderOnePassword]
 
 		// Collect.
 		var discard bytes.Buffer
@@ -1613,7 +1612,7 @@ func TestReadProvidersCoexist(t *testing.T) {
 	}, "/var/lib/picolet")
 	require.NoError(t, err)
 	require.Len(t, caches, 2)
-	opCache, ppCache := caches[0], caches[1]
+	opCache, ppCache := caches[ProviderOnePassword], caches[ProviderProtonPass]
 	require.NotNil(t, opCache)
 	require.NotNil(t, ppCache)
 

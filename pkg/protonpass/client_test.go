@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -13,14 +14,17 @@ import (
 )
 
 // fakeRunner is a hand-written cmdRunner for unit tests. It dispatches based
-// on the args[0] verb (vault/login/item) so tests can configure each phase
+// on the args[0] verb (test/login/item) so tests can configure each phase
 // independently.
 type fakeRunner struct {
 	probeErr   error
+	probeErrs  []error
+	probeStder []byte
 	loginErr   error
 	loginStder []byte
 	resolveFn  func(ctx context.Context, env []string, ref string) (stdout []byte, stderr []byte, err error)
 	calls      atomic.Int32
+	probeCalls atomic.Int32
 	loginCalls atomic.Int32
 }
 
@@ -30,8 +34,15 @@ func (f *fakeRunner) Run(ctx context.Context, env []string, _ string, args ...st
 		return nil, nil, errors.New("no args")
 	}
 	switch args[0] {
-	case "vault":
-		return nil, nil, f.probeErr
+	case "test":
+		idx := int(f.probeCalls.Add(1)) - 1
+		if len(f.probeErrs) > 0 {
+			if idx < len(f.probeErrs) {
+				return nil, f.probeStder, f.probeErrs[idx]
+			}
+			return nil, f.probeStder, f.probeErrs[len(f.probeErrs)-1]
+		}
+		return nil, f.probeStder, f.probeErr
 	case "login":
 		f.loginCalls.Add(1)
 		return nil, f.loginStder, f.loginErr
@@ -72,8 +83,10 @@ func TestEnsureSessionAlreadyValid(t *testing.T) {
 	require.NoError(t, c.EnsureSession(t.Context()))
 	require.NoError(t, c.EnsureSession(t.Context())) // idempotent
 
-	// vault list called once (cached after success).
-	assert.Equal(t, int32(1), r.calls.Load())
+	// Session checks are intentionally not cached; expired sessions should be
+	// detected before later secret-resolution batches.
+	assert.Equal(t, int32(2), r.calls.Load())
+	assert.Equal(t, int32(2), r.probeCalls.Load())
 	assert.Equal(t, int32(0), r.loginCalls.Load())
 }
 
@@ -88,22 +101,55 @@ func TestEnsureSessionLoginRequiredButNoPAT(t *testing.T) {
 	assert.Equal(t, int32(0), r.loginCalls.Load())
 }
 
+func TestEnsureSessionProbeErrorSanitized(t *testing.T) {
+	t.Parallel()
+	r := &fakeRunner{
+		probeErr:   errors.New("exit status 1"),
+		probeStder: []byte("invalid session token abcdefghijklmnopqrstuvwxyz0123456789"),
+	}
+	c := newTestClient(t, r)
+
+	err := c.EnsureSession(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "<redacted>")
+	assert.NotContains(t, err.Error(), "abcdefghijklmnopqrstuvwxyz")
+}
+
 func TestEnsureSessionAutoLoginWithPATAndKey(t *testing.T) {
 	t.Parallel()
 	patPath := writeTempFileContent(t, "pat", "pst_test_token::keymaterial")
 	keyPath := writeTempFileContent(t, "key", "0123456789abcdef")
 
-	r := &fakeRunner{probeErr: errors.New("not logged in")}
-	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, EncryptionKeyPath: keyPath})
+	r := &fakeRunner{probeErrs: []error{errors.New("not logged in"), nil, nil}}
+	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, EncryptionKeyPath: keyPath, SessionDir: t.TempDir()})
 	require.NoError(t, err)
 	c.runner = r
 
 	require.NoError(t, c.EnsureSession(t.Context()))
 	assert.Equal(t, int32(1), r.loginCalls.Load())
+	assert.Equal(t, int32(2), r.probeCalls.Load())
 
-	// Idempotent — no second login.
+	// Later checks still run, but a valid session does not log in again.
 	require.NoError(t, c.EnsureSession(t.Context()))
 	assert.Equal(t, int32(1), r.loginCalls.Load())
+	assert.Equal(t, int32(3), r.probeCalls.Load())
+}
+
+func TestEnsureSessionAutoLoginRequiresPostLoginSession(t *testing.T) {
+	t.Parallel()
+	patPath := writeTempFileContent(t, "pat", "pst_test_token::keymaterial")
+	keyPath := writeTempFileContent(t, "key", "0123456789abcdef")
+
+	r := &fakeRunner{probeErrs: []error{errors.New("not logged in"), errors.New("still not logged in")}}
+	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, EncryptionKeyPath: keyPath, SessionDir: t.TempDir()})
+	require.NoError(t, err)
+	c.runner = r
+
+	err = c.EnsureSession(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "login completed but session check failed")
+	assert.Equal(t, int32(1), r.loginCalls.Load())
+	assert.Equal(t, int32(2), r.probeCalls.Load())
 }
 
 func TestEnsureSessionLoginFailsSurfacedSanitized(t *testing.T) {
@@ -116,7 +162,7 @@ func TestEnsureSessionLoginFailsSurfacedSanitized(t *testing.T) {
 		loginErr:   errors.New("exit status 1"),
 		loginStder: []byte("invalid token: pst_abcdefghijklmnopqrstuvwxyz0123456789=="),
 	}
-	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, EncryptionKeyPath: keyPath})
+	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, EncryptionKeyPath: keyPath, SessionDir: t.TempDir()})
 	require.NoError(t, err)
 	c.runner = r
 
@@ -232,4 +278,99 @@ func TestNewClientEmptyEncryptionKey(t *testing.T) {
 	_, err := NewClient(ClientConfig{PATPath: patPath, EncryptionKeyPath: keyPath})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "encryption key file is empty")
+}
+
+func TestBuildBaseEnvAllowlistsHostEnvAndStripsProtonSecrets(t *testing.T) {
+	t.Setenv("HOME", "/tmp/picolet-home")
+	t.Setenv("HTTPS_PROXY", "http://proxy.example")
+	t.Setenv("GITHUB_TOKEN", "must-not-leak")
+	t.Setenv("PROTON_PASS_PERSONAL_ACCESS_TOKEN", "from-env")
+	t.Setenv("PROTON_PASS_ENCRYPTION_KEY", "from-env")
+	t.Setenv("PROTON_PASS_KEY_PROVIDER", "from-env")
+	t.Setenv("PROTON_PASS_SESSION_DIR", "from-env")
+	t.Setenv("PROTON_PASS_NO_UPDATE_CHECK", "0")
+
+	env, err := buildBaseEnv(ClientConfig{})
+	require.NoError(t, err)
+
+	assertEnvContains(t, env, "HOME", "/tmp/picolet-home")
+	assertEnvContains(t, env, "HTTPS_PROXY", "http://proxy.example")
+	assertEnvContains(t, env, "PROTON_PASS_NO_UPDATE_CHECK", "1")
+	assertEnvMissing(t, env, "GITHUB_TOKEN")
+	assertEnvMissing(t, env, "PROTON_PASS_PERSONAL_ACCESS_TOKEN")
+	assertEnvMissing(t, env, "PROTON_PASS_ENCRYPTION_KEY")
+	assertEnvMissing(t, env, "PROTON_PASS_KEY_PROVIDER")
+	assertEnvMissing(t, env, "PROTON_PASS_SESSION_DIR")
+}
+
+func TestBuildBaseEnvPATModeOverlaysSessionAndKey(t *testing.T) {
+	t.Setenv("PROTON_PASS_ENCRYPTION_KEY", "from-env")
+	patPath := writeTempFileContent(t, "pat", "pst_test")
+	keyPath := writeTempFileContent(t, "key", "from-file")
+	sessionDir := filepath.Join(t.TempDir(), "session")
+
+	env, err := buildBaseEnv(ClientConfig{PATPath: patPath, EncryptionKeyPath: keyPath, SessionDir: sessionDir})
+	require.NoError(t, err)
+
+	assertEnvContains(t, env, "PROTON_PASS_SESSION_DIR", sessionDir)
+	assertEnvContains(t, env, "PROTON_PASS_KEY_PROVIDER", "env")
+	assertEnvContains(t, env, "PROTON_PASS_ENCRYPTION_KEY", "from-file")
+	assert.NoDirExists(t, sessionDir)
+}
+
+func TestEnsureSessionCreatesSessionDirOnUse(t *testing.T) {
+	t.Parallel()
+	patPath := writeTempFileContent(t, "pat", "pst_test_token::keymaterial")
+	keyPath := writeTempFileContent(t, "key", "0123456789abcdef")
+	sessionDir := filepath.Join(t.TempDir(), "session")
+	r := &fakeRunner{probeErrs: []error{nil}}
+	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, EncryptionKeyPath: keyPath, SessionDir: sessionDir})
+	require.NoError(t, err)
+	c.runner = r
+
+	require.NoError(t, c.EnsureSession(t.Context()))
+	assert.DirExists(t, sessionDir)
+	info, err := os.Stat(sessionDir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+}
+
+func TestNewClientPATModeDefaultSessionDir(t *testing.T) {
+	t.Parallel()
+	patPath := writeTempFileContent(t, "pat", "pst_test_token::keymaterial")
+	keyPath := writeTempFileContent(t, "key", "0123456789abcdef")
+
+	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, EncryptionKeyPath: keyPath})
+	require.NoError(t, err)
+	assert.Equal(t, DefaultSessionDir, c.sessionDir)
+	assertEnvContains(t, c.env, "PROTON_PASS_SESSION_DIR", DefaultSessionDir)
+}
+
+func TestEffectiveSessionDir(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "", effectiveSessionDir(ClientConfig{}))
+	assert.Equal(t, DefaultSessionDir, effectiveSessionDir(ClientConfig{PATPath: "/pat"}))
+	assert.Equal(t, "/custom", effectiveSessionDir(ClientConfig{PATPath: "/pat", SessionDir: "/custom"}))
+	assert.Equal(t, "/custom", effectiveSessionDir(ClientConfig{SessionDir: "/custom"}))
+}
+
+func assertEnvContains(t *testing.T, env []string, key, want string) {
+	t.Helper()
+	for _, entry := range env {
+		if strings.HasPrefix(entry, key+"=") {
+			assert.Equal(t, key+"="+want, entry)
+			return
+		}
+	}
+	assert.Failf(t, "missing env", "missing %s", key)
+}
+
+func assertEnvMissing(t *testing.T, env []string, key string) {
+	t.Helper()
+	for _, entry := range env {
+		if strings.HasPrefix(entry, key+"=") {
+			assert.Failf(t, "unexpected env", "unexpected %s", entry)
+			return
+		}
+	}
 }

@@ -364,27 +364,27 @@ protonpass:
   pat_path: /etc/picolet/secrets/pp-pat                 # PAT format: pst_…::TOKENKEY
   pat_expires_at: 2026-09-15T00:00:00Z                   # optional but recommended (RFC3339)
   encryption_key_path: /etc/picolet/secrets/pp-enc-key  # 32+ chars random, host-local
-  session_dir: /var/lib/picolet/protonpass/.session     # isolated from any host pass-cli session
+  session_dir: /var/lib/picolet/protonpass/.session     # optional in PAT mode; this is the default
   refresh_interval: 6h                                   # default 6h, minimum 1m
   git_token_ref: pass://abc.../item.../token             # optional: resolve git PAT via Proton Pass
 ```
 
 `token_expires_at` / `pat_expires_at` are surfaced as `picolet_secret_credential_expires_at{provider}` so you can alert before the credential lapses — see `docs/alerting.md` for the recommended rule. pass-cli does not expose PAT expiry programmatically, so this value must be entered manually at provisioning time and bumped on every rotation.
 
-For local development, leave `pat_path` empty (Lazy mode). Picolet then uses any pre-existing `pass-cli login` session in your home directory and never overwrites it.
+For local development, leave `pat_path` empty (Lazy mode). Picolet then uses any pre-existing `pass-cli login` session in your home directory and never overwrites it. Run `pass-cli test` to verify the same session check Picolet runs at startup.
 
 Find share IDs and item IDs with:
 
 ```bash
 pass-cli vault list
-pass-cli item list --vault <share-id>
+pass-cli item list --share-id <share-id>
 ```
 
 ### Limitations and operational notes
 
 - **PAT expiry.** Personal Access Tokens have a mandatory expiration. Rotate before they expire and `systemctl restart picolet` to pick up the new token.
 - **Online only.** Each reconcile that touches a `pass://` ref needs HTTPS to Proton.
-- **Per-vault PATs.** A single PAT scopes to one Proton Pass vault. Pre-1.0 Picolet supports one Proton Pass vault per host.
+- **Per-vault PATs.** A single PAT scopes to the vaults granted to it in Proton Pass. Make sure every `pass://` ref used by a host is accessible to the configured PAT.
 - **Architecture.** `pass-cli` requires 64-bit Linux (`linux/amd64` or `linux/arm64`); 32-bit RPi OS is not supported.
-- **Session directory exemption.** The `protonpass.session_dir` (default `/var/lib/picolet/protonpass/.session`) is owned by `pass-cli`, not by picolet. The orphan-cleanup scanner does not touch it.
+- **Session directory exemption.** In PAT mode, `protonpass.session_dir` defaults to `/var/lib/picolet/protonpass/.session`. It is owned by `pass-cli`, not by picolet, and the orphan-cleanup scanner does not touch it.
 - **Mutual exclusion.** Each authentication resource (`git_token`, GitHub App credentials) can be supplied by exactly one source — direct config, 1Password, or Proton Pass. Mixing for the same resource is rejected at startup.

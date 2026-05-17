@@ -647,6 +647,20 @@ not_a_field: true
 	require.ErrorContains(t, err, "not_a_field")
 }
 
+func TestHasGitHubAppIncludesProtonPassRefs(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		ProtonPass: &ProtonPassConfig{
+			GitHubAppIDRef:        "pass://share/app/id",
+			GitHubInstallationRef: "pass://share/app/installation",
+			GitHubPrivateKeyRef:   "pass://share/app/private_key",
+		},
+	}
+
+	assert.True(t, cfg.HasGitHubApp())
+	assert.True(t, cfg.HasGitHubAppPPRefs())
+}
+
 func TestLoadFileNotFound(t *testing.T) {
 	t.Parallel()
 	_, err := Load("/nonexistent/config.yml")
