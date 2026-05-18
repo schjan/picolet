@@ -296,8 +296,8 @@ func (c *Config) HasGitHubApp() bool {
 	return direct == 3 || opRefs == 3 || ppRefs == 3
 }
 
-// HasGitHubAppRefs reports whether GitHub App credentials are configured via 1Password refs.
-func (c *Config) HasGitHubAppRefs() bool {
+// HasGitHubAppOPRefs reports whether GitHub App credentials are configured via 1Password refs.
+func (c *Config) HasGitHubAppOPRefs() bool {
 	if c.OnePassword == nil {
 		return false
 	}

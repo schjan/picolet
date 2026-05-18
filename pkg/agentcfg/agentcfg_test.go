@@ -661,6 +661,21 @@ not_a_field: true
 	require.ErrorContains(t, err, "not_a_field")
 }
 
+func TestHasGitHubAppOPRefsDetectsConfigured(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		OnePassword: &OnePasswordConfig{
+			GitHubAppIDRef:        "op://vault/app/id",
+			GitHubInstallationRef: "op://vault/app/installation",
+			GitHubPrivateKeyRef:   "op://vault/app/private_key",
+		},
+	}
+
+	assert.True(t, cfg.HasGitHubApp())
+	assert.True(t, cfg.HasGitHubAppOPRefs())
+	assert.False(t, cfg.HasGitHubAppPPRefs())
+}
+
 func TestHasGitHubAppIncludesProtonPassRefs(t *testing.T) {
 	t.Parallel()
 	cfg := &Config{

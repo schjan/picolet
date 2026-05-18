@@ -27,7 +27,7 @@ func NewClientFromConfig(
 		return nil, 0, errors.New("agent config is required")
 	}
 
-	if cfg.HasGitHubAppRefs() {
+	if cfg.HasGitHubAppOPRefs() {
 		return newClientFromRefs(ctx, cfg, opReader, "onepassword", refTriple{
 			AppID:          cfg.OnePassword.GitHubAppIDRef,
 			InstallationID: cfg.OnePassword.GitHubInstallationRef,

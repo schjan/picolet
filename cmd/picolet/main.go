@@ -357,7 +357,7 @@ func appendGitHubOptions(ctx context.Context, cfg *agentcfg.Config, opts []agent
 		ppReader resolver.SecretRefReader
 		err      error
 	)
-	if cfg.HasGitHubAppRefs() {
+	if cfg.HasGitHubAppOPRefs() {
 		opReader, err = opReaderFromConfig(ctx, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("setting up 1password for github app auth: %w", err)
