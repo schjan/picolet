@@ -91,10 +91,9 @@ const placeholderSecret = "<secret>"
 //
 // Not goroutine-safe; template rendering must be serial (same constraint as renderTemplate).
 type RefCache struct {
-	reader             SecretRefReader
-	placeholderPending string
-	collected          []string
-	resolved           map[string]string // non-nil after Resolve(); doubles as phase indicator
+	reader    SecretRefReader
+	collected []string
+	resolved  map[string]string // non-nil after Resolve(); doubles as phase indicator
 }
 
 // ProviderCaches stores per-provider caches by key so callers do not depend on
@@ -151,7 +150,7 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, p
 	caches := make(ProviderCaches)
 	for _, p := range providers {
 		if p.Reader != nil {
-			caches[p.Key] = &RefCache{reader: p.Reader, placeholderPending: p.PlaceholderPending}
+			caches[p.Key] = &RefCache{reader: p.Reader}
 		}
 	}
 
