@@ -507,8 +507,8 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	}
 
 	a.markRefreshAttempted()
-	recordProviderSyncSuccess("onepassword", a.opReader != nil, result.OpSecretsCount)
-	recordProviderSyncSuccess("protonpass", a.ppReader != nil, result.PPSecretsCount)
+	recordProviderSyncSuccess("onepassword", result.OpSecretsCount)
+	recordProviderSyncSuccess("protonpass", result.PPSecretsCount)
 	metrics.ReconciliationTotal.WithLabelValues("success").Inc()
 	if result.HasChanges {
 		a.recordEvent("success", pollResult.HeadSHA, "reconciliation complete")
@@ -1171,9 +1171,11 @@ func recordProviderRefCount(provider string, enabled bool, isRef func(string) bo
 
 // recordProviderSyncSuccess bumps the success counter and last-sync gauge
 // for a provider after a tick that actually resolved at least one ref.
-// Disabled providers and zero-count ticks are skipped.
-func recordProviderSyncSuccess(provider string, enabled bool, count int) {
-	if !enabled || count == 0 {
+// A zero count means "nothing to record" — disabled providers always produce
+// zero counts via recordProviderRefCount, so a single count==0 check covers
+// both cases.
+func recordProviderSyncSuccess(provider string, count int) {
+	if count == 0 {
 		return
 	}
 	metrics.SecretSyncTotal.WithLabelValues(provider).Inc()
