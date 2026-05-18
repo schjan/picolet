@@ -39,9 +39,6 @@ type OnePasswordConfig struct {
 // the agent uses any pre-existing pass-cli session — useful for local
 // development where overwriting the user's session is undesirable.
 //
-// EncryptionKeyPath is mandatory when PATPath is set; the contents seed
-// pass-cli's env-mode key provider.
-//
 // PATExpiresAt is optional but strongly recommended: Proton PATs have a
 // mandatory expiration and pass-cli does not expose it programmatically, so
 // the operator records it at provisioning time. Picolet publishes the value
@@ -50,7 +47,6 @@ type ProtonPassConfig struct {
 	CLIPath               string        `yaml:"cli_path"`                   // optional; default "pass-cli"
 	PATPath               string        `yaml:"pat_path"`                   // optional; empty = lazy mode
 	PATExpiresAt          time.Time     `yaml:"pat_expires_at"`             // optional RFC3339; published as picolet_secret_credential_expires_at{provider="protonpass"}
-	EncryptionKeyPath     string        `yaml:"encryption_key_path"`        // required when pat_path is set
 	SessionDir            string        `yaml:"session_dir"`                // optional; PAT mode default /var/lib/picolet/protonpass/.session
 	RefreshInterval       time.Duration `yaml:"refresh_interval"`           // how often to re-fetch pass:// secrets (default 6h)
 	GitTokenRef           string        `yaml:"git_token_ref"`              // pass:// ref for git pull token
@@ -203,9 +199,6 @@ func (c *Config) validateOnePassword() error {
 }
 
 func (c *Config) validateProtonPass() error {
-	if c.ProtonPass.PATPath != "" && c.ProtonPass.EncryptionKeyPath == "" {
-		return errors.New("protonpass.encryption_key_path is required when pat_path is set")
-	}
 	if c.ProtonPass.RefreshInterval < time.Minute {
 		return errors.New("protonpass.refresh_interval must be at least 1m")
 	}
@@ -317,10 +310,9 @@ func (c *Config) HasGitHubAppPPRefs() bool {
 // graph one-way; this method bridges the two.
 func (c *ProtonPassConfig) ToClientConfig() pp.ClientConfig {
 	return pp.ClientConfig{
-		CLIPath:           c.CLIPath,
-		PATPath:           c.PATPath,
-		EncryptionKeyPath: c.EncryptionKeyPath,
-		SessionDir:        c.SessionDir,
+		CLIPath:    c.CLIPath,
+		PATPath:    c.PATPath,
+		SessionDir: c.SessionDir,
 	}
 }
 

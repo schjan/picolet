@@ -226,7 +226,6 @@ github_installation_id: 67890
 github_private_key_path: /etc/picolet/secrets/github-app.pem
 protonpass:
   pat_path: /etc/picolet/pp-pat
-  encryption_key_path: /etc/picolet/pp-enc
   git_token_ref: "pass://share/item/token"
 `,
 			wantErr: "GitHub App and protonpass.git_token_ref are mutually exclusive",
@@ -458,15 +457,6 @@ protonpass: {}
 			},
 		},
 		{
-			name: "protonpass with PAT requires encryption_key_path",
-			content: `
-hostname: rpi5-1
-protonpass:
-  pat_path: /etc/picolet/pp-pat
-`,
-			wantErr: "protonpass.encryption_key_path is required when pat_path is set",
-		},
-		{
 			name: "protonpass git_token_ref invalid format rejected",
 			content: `
 hostname: rpi5-1
@@ -542,7 +532,6 @@ protonpass:
 hostname: rpi5-1
 protonpass:
   pat_path: /etc/picolet/pp-pat
-  encryption_key_path: /etc/picolet/pp-enc
   github_app_id_ref: "pass://share/item/id"
   github_installation_id_ref: "pass://share/item/inst"
   github_private_key_ref: "pass://share/item/key"
@@ -557,7 +546,6 @@ protonpass:
 				SystemdUser:  new(false),
 				ProtonPass: &ProtonPassConfig{
 					PATPath:               "/etc/picolet/pp-pat",
-					EncryptionKeyPath:     "/etc/picolet/pp-enc",
 					RefreshInterval:       6 * time.Hour,
 					GitHubAppIDRef:        "pass://share/item/id",
 					GitHubInstallationRef: "pass://share/item/inst",
@@ -573,7 +561,6 @@ onepassword:
   token_path: /etc/picolet/op-token
 protonpass:
   pat_path: /etc/picolet/pp-pat
-  encryption_key_path: /etc/picolet/pp-enc
 `,
 			want: Config{ //nolint:gosec // test fixture
 				Hostname:     "rpi5-1",
@@ -588,9 +575,8 @@ protonpass:
 					RefreshInterval: 6 * time.Hour,
 				},
 				ProtonPass: &ProtonPassConfig{
-					PATPath:           "/etc/picolet/pp-pat",
-					EncryptionKeyPath: "/etc/picolet/pp-enc",
-					RefreshInterval:   6 * time.Hour,
+					PATPath:         "/etc/picolet/pp-pat",
+					RefreshInterval: 6 * time.Hour,
 				},
 			},
 		},
@@ -603,7 +589,6 @@ onepassword:
   token_expires_at: 2026-12-31T23:59:59Z
 protonpass:
   pat_path: /etc/picolet/pp-pat
-  encryption_key_path: /etc/picolet/pp-enc
   pat_expires_at: 2026-09-15T00:00:00Z
 `,
 			want: Config{ //nolint:gosec // test fixture
@@ -620,10 +605,9 @@ protonpass:
 					RefreshInterval: 6 * time.Hour,
 				},
 				ProtonPass: &ProtonPassConfig{
-					PATPath:           "/etc/picolet/pp-pat",
-					PATExpiresAt:      time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC),
-					EncryptionKeyPath: "/etc/picolet/pp-enc",
-					RefreshInterval:   6 * time.Hour,
+					PATPath:         "/etc/picolet/pp-pat",
+					PATExpiresAt:    time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC),
+					RefreshInterval: 6 * time.Hour,
 				},
 			},
 		},

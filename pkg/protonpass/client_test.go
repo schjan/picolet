@@ -115,13 +115,12 @@ func TestEnsureSessionProbeErrorSanitized(t *testing.T) {
 	assert.NotContains(t, err.Error(), "abcdefghijklmnopqrstuvwxyz")
 }
 
-func TestEnsureSessionAutoLoginWithPATAndKey(t *testing.T) {
+func TestEnsureSessionAutoLoginWithPAT(t *testing.T) {
 	t.Parallel()
 	patPath := writeTempFileContent(t, "pat", "pst_test_token::keymaterial")
-	keyPath := writeTempFileContent(t, "key", "0123456789abcdef")
 
 	r := &fakeRunner{probeErrs: []error{errors.New("not logged in"), nil, nil}}
-	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, EncryptionKeyPath: keyPath, SessionDir: t.TempDir()})
+	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, SessionDir: t.TempDir()})
 	require.NoError(t, err)
 	c.runner = r
 
@@ -138,10 +137,9 @@ func TestEnsureSessionAutoLoginWithPATAndKey(t *testing.T) {
 func TestEnsureSessionAutoLoginRequiresPostLoginSession(t *testing.T) {
 	t.Parallel()
 	patPath := writeTempFileContent(t, "pat", "pst_test_token::keymaterial")
-	keyPath := writeTempFileContent(t, "key", "0123456789abcdef")
 
 	r := &fakeRunner{probeErrs: []error{errors.New("not logged in"), errors.New("still not logged in")}}
-	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, EncryptionKeyPath: keyPath, SessionDir: t.TempDir()})
+	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, SessionDir: t.TempDir()})
 	require.NoError(t, err)
 	c.runner = r
 
@@ -155,14 +153,13 @@ func TestEnsureSessionAutoLoginRequiresPostLoginSession(t *testing.T) {
 func TestEnsureSessionLoginFailsSurfacedSanitized(t *testing.T) {
 	t.Parallel()
 	patPath := writeTempFileContent(t, "pat", "pst_test_token::keymaterial")
-	keyPath := writeTempFileContent(t, "key", "0123456789abcdef")
 
 	r := &fakeRunner{
 		probeErr:   errors.New("not logged in"),
 		loginErr:   errors.New("exit status 1"),
 		loginStder: []byte("invalid token: pst_abcdefghijklmnopqrstuvwxyz0123456789=="),
 	}
-	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, EncryptionKeyPath: keyPath, SessionDir: t.TempDir()})
+	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, SessionDir: t.TempDir()})
 	require.NoError(t, err)
 	c.runner = r
 
@@ -314,23 +311,6 @@ func TestParseItemViewJSONErrors(t *testing.T) {
 	}
 }
 
-func TestNewClientPATWithoutKey(t *testing.T) {
-	t.Parallel()
-	patPath := writeTempFileContent(t, "pat", "pst_test")
-	_, err := NewClient(ClientConfig{PATPath: patPath})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "encryption_key_path is required")
-}
-
-func TestNewClientEmptyEncryptionKey(t *testing.T) {
-	t.Parallel()
-	patPath := writeTempFileContent(t, "pat", "pst_test")
-	keyPath := writeTempFileContent(t, "key", "")
-	_, err := NewClient(ClientConfig{PATPath: patPath, EncryptionKeyPath: keyPath})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "encryption key file is empty")
-}
-
 func TestBuildBaseEnvAllowlistsHostEnvAndStripsProtonSecrets(t *testing.T) {
 	t.Setenv("HOME", "/tmp/picolet-home")
 	t.Setenv("HTTPS_PROXY", "http://proxy.example")
@@ -354,28 +334,25 @@ func TestBuildBaseEnvAllowlistsHostEnvAndStripsProtonSecrets(t *testing.T) {
 	assertEnvMissing(t, env, "PROTON_PASS_SESSION_DIR")
 }
 
-func TestBuildBaseEnvPATModeOverlaysSessionAndKey(t *testing.T) {
-	t.Setenv("PROTON_PASS_ENCRYPTION_KEY", "from-env")
+func TestBuildBaseEnvPATModeOverlaysSessionAndFsProvider(t *testing.T) {
 	patPath := writeTempFileContent(t, "pat", "pst_test")
-	keyPath := writeTempFileContent(t, "key", "from-file")
 	sessionDir := filepath.Join(t.TempDir(), "session")
 
-	env, err := buildBaseEnv(ClientConfig{PATPath: patPath, EncryptionKeyPath: keyPath, SessionDir: sessionDir})
+	env, err := buildBaseEnv(ClientConfig{PATPath: patPath, SessionDir: sessionDir})
 	require.NoError(t, err)
 
 	assertEnvContains(t, env, "PROTON_PASS_SESSION_DIR", sessionDir)
-	assertEnvContains(t, env, "PROTON_PASS_KEY_PROVIDER", "env")
-	assertEnvContains(t, env, "PROTON_PASS_ENCRYPTION_KEY", "from-file")
+	assertEnvContains(t, env, "PROTON_PASS_KEY_PROVIDER", "fs")
+	assertEnvMissing(t, env, "PROTON_PASS_ENCRYPTION_KEY")
 	assert.NoDirExists(t, sessionDir)
 }
 
 func TestEnsureSessionCreatesSessionDirOnUse(t *testing.T) {
 	t.Parallel()
 	patPath := writeTempFileContent(t, "pat", "pst_test_token::keymaterial")
-	keyPath := writeTempFileContent(t, "key", "0123456789abcdef")
 	sessionDir := filepath.Join(t.TempDir(), "session")
 	r := &fakeRunner{probeErrs: []error{nil}}
-	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, EncryptionKeyPath: keyPath, SessionDir: sessionDir})
+	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, SessionDir: sessionDir})
 	require.NoError(t, err)
 	c.runner = r
 
@@ -389,9 +366,8 @@ func TestEnsureSessionCreatesSessionDirOnUse(t *testing.T) {
 func TestNewClientPATModeDefaultSessionDir(t *testing.T) {
 	t.Parallel()
 	patPath := writeTempFileContent(t, "pat", "pst_test_token::keymaterial")
-	keyPath := writeTempFileContent(t, "key", "0123456789abcdef")
 
-	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath, EncryptionKeyPath: keyPath})
+	c, err := NewClient(ClientConfig{CLIPath: "pass-cli-test", PATPath: patPath})
 	require.NoError(t, err)
 	assert.Equal(t, DefaultSessionDir, c.sessionDir)
 	assertEnvContains(t, c.env, "PROTON_PASS_SESSION_DIR", DefaultSessionDir)

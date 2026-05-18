@@ -334,7 +334,7 @@ Picolet integrates with two secret managers so cleartext credentials never live 
 | Provider | Scheme | Underlying tool | Auth model |
 |----------|--------|-----------------|------------|
 | 1Password | `op://vault/item/field` | Official Go SDK | Service-account token |
-| Proton Pass | `pass://share/item/field` | `pass-cli` (bundled in the container image) | Personal Access Token + encryption key |
+| Proton Pass | `pass://share/item/field` | `pass-cli` (bundled in the container image) | Personal Access Token |
 
 Refs can appear in two places:
 
@@ -361,13 +361,14 @@ For unattended use (recommended in containers):
 ```yaml
 # /etc/picolet/config.yml
 protonpass:
-  pat_path: /etc/picolet/secrets/pp-pat                 # PAT format: pst_…::TOKENKEY
-  pat_expires_at: 2026-09-15T00:00:00Z                   # optional but recommended (RFC3339)
-  encryption_key_path: /etc/picolet/secrets/pp-enc-key  # 32+ chars random, host-local
-  session_dir: /var/lib/picolet/protonpass/.session     # optional in PAT mode; this is the default
-  refresh_interval: 6h                                   # default 6h, minimum 1m
-  git_token_ref: pass://abc.../item.../token             # optional: resolve git PAT via Proton Pass
+  pat_path: /etc/picolet/secrets/pp-pat              # PAT format: pst_…::TOKENKEY
+  pat_expires_at: 2026-09-15T00:00:00Z                # optional but recommended (RFC3339)
+  session_dir: /var/lib/picolet/protonpass/.session  # optional in PAT mode; this is the default
+  refresh_interval: 6h                                # default 6h, minimum 1m
+  git_token_ref: pass://abc.../item.../token          # optional: resolve git PAT via Proton Pass
 ```
+
+In PAT mode, picolet selects `pass-cli`'s filesystem-based local key provider (`PROTON_PASS_KEY_PROVIDER=fs`). `pass-cli` auto-generates and rotates a `local.key` inside `session_dir`, so there is nothing for the operator to provision beyond the PAT itself. A backup of `session_dir` restored to a different host will produce an unreadable session and force a re-login on next start — this is a session-invalidation failure, not a credential exposure.
 
 `token_expires_at` / `pat_expires_at` are surfaced as `picolet_secret_credential_expires_at{provider}` so you can alert before the credential lapses — see `docs/alerting.md` for the recommended rule. pass-cli does not expose PAT expiry programmatically, so this value must be entered manually at provisioning time and bumped on every rotation.
 

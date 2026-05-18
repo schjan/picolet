@@ -35,18 +35,15 @@ type cmdRunner interface {
 // empty (Lazy mode), the client uses any existing user session and never
 // attempts to log in.
 //
-// EncryptionKeyPath is required when PATPath is set. The file contents are
-// passed via PROTON_PASS_ENCRYPTION_KEY so pass-cli can store/read its session
-// state with the env-mode key provider.
-//
 // SessionDir isolates the pass-cli session from the host user's session
 // (PROTON_PASS_SESSION_DIR). Empty means "use pass-cli's default" in lazy mode
-// and DefaultSessionDir in PAT mode.
+// and DefaultSessionDir in PAT mode. In PAT mode the client selects pass-cli's
+// filesystem-based local key provider (PROTON_PASS_KEY_PROVIDER=fs), which
+// auto-generates and manages a local.key inside SessionDir.
 type ClientConfig struct {
-	CLIPath           string
-	PATPath           string
-	EncryptionKeyPath string
-	SessionDir        string
+	CLIPath    string
+	PATPath    string
+	SessionDir string
 }
 
 // Client wraps the pass-cli binary for batch secret resolution.
@@ -65,9 +62,9 @@ type Client struct {
 
 // NewClient constructs a Client from ClientConfig.
 //
-// The encryption key file is read once at construction; the value is held
-// in memory for the client's lifetime to be supplied to pass-cli on each
-// invocation via PROTON_PASS_ENCRYPTION_KEY.
+// In PAT mode, session-key management is delegated to pass-cli's
+// filesystem-based local key provider; the client itself holds no key
+// material in memory.
 func NewClient(cfg ClientConfig) (*Client, error) {
 	cliPath := cfg.CLIPath
 	if cliPath == "" {
@@ -92,34 +89,20 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 // It preserves only the host variables pass-cli commonly needs for PATH, HOME,
 // keyrings, proxy, and CA behavior, then applies Picolet-controlled
 // PROTON_PASS_* overlays.
+//
+// In PAT mode the filesystem-based local key provider is selected so pass-cli
+// manages its own local.key inside SessionDir. Lazy mode inherits pass-cli's
+// default key provider so a developer's existing session is undisturbed.
 func buildBaseEnv(cfg ClientConfig) ([]string, error) {
 	env := allowedHostEnv()
-
-	var encKey string
-	if cfg.PATPath != "" {
-		if cfg.EncryptionKeyPath == "" {
-			return nil, errors.New("protonpass: encryption_key_path is required when pat_path is set")
-		}
-		keyBytes, err := os.ReadFile(cfg.EncryptionKeyPath)
-		if err != nil {
-			return nil, fmt.Errorf("reading encryption key: %w", err)
-		}
-		encKey = strings.TrimSpace(string(keyBytes))
-		if encKey == "" {
-			return nil, errors.New("protonpass: encryption key file is empty")
-		}
-	}
 
 	if sessionDir := effectiveSessionDir(cfg); sessionDir != "" {
 		env = append(env, "PROTON_PASS_SESSION_DIR="+sessionDir)
 	}
 	env = append(env, "PROTON_PASS_NO_UPDATE_CHECK=1")
 
-	if encKey != "" {
-		env = append(env,
-			"PROTON_PASS_KEY_PROVIDER=env",
-			"PROTON_PASS_ENCRYPTION_KEY="+encKey,
-		)
+	if cfg.PATPath != "" {
+		env = append(env, "PROTON_PASS_KEY_PROVIDER=fs")
 	}
 	return env, nil
 }

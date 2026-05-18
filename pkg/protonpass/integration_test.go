@@ -20,24 +20,21 @@ func requireEnv(t *testing.T, key string) string {
 	return val
 }
 
-// newIntegrationClient builds a Client wired with a real pass-cli binary,
-// PAT, and encryption key from env vars. SessionDir is isolated to t.TempDir
-// so the test does not touch the developer's existing pass-cli session.
+// newIntegrationClient builds a Client wired with a real pass-cli binary
+// and a PAT from env vars. SessionDir is isolated to t.TempDir so the test
+// does not touch the developer's existing pass-cli session; pass-cli's
+// filesystem-based local key provider generates a fresh local.key inside it.
 func newIntegrationClient(t *testing.T) *Client {
 	t.Helper()
 	pat := requireEnv(t, "PP_PERSONAL_ACCESS_TOKEN")
-	key := requireEnv(t, "PP_ENCRYPTION_KEY")
 
 	dir := t.TempDir()
 	patPath := filepath.Join(dir, "pat")
-	keyPath := filepath.Join(dir, "key")
 	require.NoError(t, os.WriteFile(patPath, []byte(pat), 0o600))
-	require.NoError(t, os.WriteFile(keyPath, []byte(key), 0o600))
 
 	c, err := NewClient(ClientConfig{
-		PATPath:           patPath,
-		EncryptionKeyPath: keyPath,
-		SessionDir:        filepath.Join(dir, "session"),
+		PATPath:    patPath,
+		SessionDir: filepath.Join(dir, "session"),
 	})
 	require.NoError(t, err)
 	return c
