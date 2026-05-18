@@ -704,7 +704,7 @@ func (r *Resolver) batchResolveDirectSecrets(ctx context.Context, allSecrets []s
 	}
 
 	results := make(map[string]string)
-	if err := r.resolveProviderRefs(ctx, "1password", r.opSecretReader, opRefs, results); err != nil {
+	if err := r.resolveProviderRefs(ctx, "onepassword", r.opSecretReader, opRefs, results); err != nil {
 		return nil, err
 	}
 	if err := r.resolveProviderRefs(ctx, "protonpass", r.ppSecretReader, ppRefs, results); err != nil {

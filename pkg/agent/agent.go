@@ -981,7 +981,7 @@ func (a *Agent) resolvePollerAuth(ctx context.Context) (gitpoll.AuthProvider, er
 //nolint:nilnil // (nil, nil) signals "no provider auth configured"; caller handles fallback
 func (a *Agent) gitAuthFromSecretProvider(ctx context.Context) (gitpoll.AuthProvider, error) {
 	if a.opReader != nil && a.cfg.OnePassword != nil && a.cfg.OnePassword.GitTokenRef != "" {
-		token, err := resolveGitToken(ctx, "1password", a.opReader, a.cfg.OnePassword.GitTokenRef)
+		token, err := resolveGitToken(ctx, "onepassword", a.opReader, a.cfg.OnePassword.GitTokenRef)
 		if err != nil {
 			return nil, err
 		}

@@ -1810,7 +1810,7 @@ features: []
 
 		_, err = r.ResolveHost(t.Context(), "test-host")
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "resolving 1password secrets")
+		assert.ErrorContains(t, err, "resolving onepassword secrets")
 	})
 
 	t.Run("total failure returns error", func(t *testing.T) {
