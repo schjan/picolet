@@ -23,6 +23,7 @@ import (
 	"github.com/schjan/picolet/pkg/mqtt"
 	op "github.com/schjan/picolet/pkg/onepassword"
 	"github.com/schjan/picolet/pkg/orphan"
+	pp "github.com/schjan/picolet/pkg/protonpass"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/rollback"
@@ -89,9 +90,11 @@ type Agent struct {
 	systemdDirOverride string
 	dataDirOverride    string
 
-	opReader resolver.OpSecretReader // nil when 1Password not configured; initialized in Run
+	opReader resolver.SecretRefReader // nil when 1Password not configured; initialized in Run
+	ppReader resolver.SecretRefReader // nil when Proton Pass not configured; initialized in Run
 	// Accessed only by the agent tick loop, which runs serially.
 	lastOPRefresh time.Time // zero = never refreshed; in-memory only (restart always re-fetches)
+	lastPPRefresh time.Time // zero = never refreshed; in-memory only (restart always re-fetches)
 
 	webhookCh                 chan struct{}
 	ready                     atomic.Bool
@@ -271,6 +274,23 @@ func (a *Agent) Run(ctx context.Context) error {
 			return fmt.Errorf("setting up 1password: %w", err)
 		}
 		slog.Info("1password client initialized", "token_path", a.cfg.OnePassword.TokenPath)
+		publishCredentialExpiry(resolver.ProviderOnePassword, a.cfg.OnePassword.TokenExpiresAt)
+	}
+
+	// Bound pp.NewReader's EnsureSession with a deadline so a hung login can't block startup.
+	if a.cfg.ProtonPass != nil {
+		initCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		reader, err := pp.NewReader(initCtx, a.cfg.ProtonPass.ToClientConfig())
+		cancel()
+		if err != nil {
+			return fmt.Errorf("setting up protonpass: %w", err)
+		}
+		a.ppReader = reader
+		slog.Info("protonpass client initialized",
+			"session_dir", a.cfg.ProtonPass.SessionDir,
+			"lazy_mode", a.cfg.ProtonPass.PATPath == "",
+		)
+		publishCredentialExpiry(resolver.ProviderProtonPass, a.cfg.ProtonPass.PATExpiresAt)
 	}
 
 	// Initialize git poller
@@ -289,7 +309,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.scanOrphans(ctx, store)
 
 	metrics.FeatureInfo.WithLabelValues("mqtt").Set(boolToFloat(a.mqttClient != nil))
-	metrics.FeatureInfo.WithLabelValues("onepassword").Set(boolToFloat(a.opReader != nil))
+	metrics.FeatureInfo.WithLabelValues(string(resolver.ProviderOnePassword)).Set(boolToFloat(a.opReader != nil))
+	metrics.FeatureInfo.WithLabelValues(string(resolver.ProviderProtonPass)).Set(boolToFloat(a.ppReader != nil))
 
 	slog.Info("agent started",
 		"hostname", a.cfg.Hostname,
@@ -387,7 +408,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return fmt.Errorf("polling git: %w", err)
 	}
 
-	if !pollResult.Changed && !a.opRefreshDue() && len(st.PendingHooks) == 0 {
+	if !pollResult.Changed && !a.opRefreshDue() && !a.ppRefreshDue() && len(st.PendingHooks) == 0 {
 		metrics.GitPollTotal.WithLabelValues("noop").Inc()
 		slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
@@ -413,14 +434,14 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	case pollResult.Changed:
 		metrics.GitPollTotal.WithLabelValues("changed").Inc()
 	case len(st.PendingHooks) > 0:
-		// Pending-hook retry takes priority over OP refresh in the label even
-		// when both apply: the retry is the actionable reason this tick ran,
-		// and ReconcileOnce will refresh op:// secrets regardless.
+		// Pending-hook retry takes priority over secret-provider refresh in the
+		// label even when both apply: the retry is the actionable reason this
+		// tick ran, and ReconcileOnce will refresh secrets regardless.
 		slog.Info("forcing reconciliation for pending hook retry", "sha", pollResult.HeadSHA, "pending", st.PendingHooks)
 		metrics.GitPollTotal.WithLabelValues("pending_hook_retry").Inc()
 	default:
-		slog.Info("forcing reconciliation for 1password secret refresh", "sha", pollResult.HeadSHA)
-		metrics.GitPollTotal.WithLabelValues("op_refresh").Inc()
+		slog.Info("forcing reconciliation for secret-provider refresh", "sha", pollResult.HeadSHA)
+		metrics.GitPollTotal.WithLabelValues("secret_refresh").Inc()
 	}
 
 	// Skip only after >= 3 consecutive failures on the same SHA, with a 1-hour expiry
@@ -430,17 +451,15 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if pollResult.HeadSHA == st.FailedSHA && st.FailedCount >= maxRetries && time.Since(st.FailedAt) < failedSHAExpiry {
 		slog.Warn("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "failed_sha_gate", "failures", st.FailedCount)
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
-		// Still update lastOPRefresh so the agent does not retry OP refresh every tick
-		// while blocked by the failed-SHA gate.
-		if a.opReader != nil {
-			a.lastOPRefresh = time.Now()
-		}
+		// Bump every provider's last-refresh timestamp so the agent does not
+		// retry secret refreshes every tick while blocked by the failed-SHA gate.
+		a.markRefreshAttempted()
 		a.recordEvent("failed_sha_gate", pollResult.HeadSHA, "skipped after repeated failures")
 		return nil
 	}
 
 	// Report deployments only for new git SHAs; forced reconciliations on the
-	// same SHA (OP refresh, pending hook retry) are not deployments.
+	// same SHA (secret-provider refresh, pending hook retry) are not deployments.
 	var deploymentID int64
 	if pollResult.Changed {
 		slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
@@ -457,9 +476,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		// reconciliation failure: do not increment FailedCount, do not arm the
 		// failed-SHA gate, do not report a failed deployment.
 		a.reportDeploymentResult(ctx, deploymentID, nil)
-		if a.opReader != nil {
-			a.lastOPRefresh = time.Now()
-		}
+		a.markRefreshAttempted()
 		slog.Warn("apply incomplete, hooks will retry on next tick", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
 		metrics.ReconciliationTotal.WithLabelValues("retry_pending").Inc()
 		a.recordEvent("retry_pending", pollResult.HeadSHA, err.Error())
@@ -488,13 +505,9 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return err
 	}
 
-	if a.opReader != nil {
-		a.lastOPRefresh = time.Now()
-		if result.OpSecretsCount > 0 {
-			metrics.OpSyncTotal.WithLabelValues("success").Inc()
-			metrics.OpLastSyncTimestamp.SetToCurrentTime()
-		}
-	}
+	a.markRefreshAttempted()
+	recordProviderSyncSuccess(resolver.ProviderOnePassword, result.OpSecretsCount)
+	recordProviderSyncSuccess(resolver.ProviderProtonPass, result.PPSecretsCount)
 	metrics.ReconciliationTotal.WithLabelValues("success").Inc()
 	if result.HasChanges {
 		a.recordEvent("success", pollResult.HeadSHA, "reconciliation complete")
@@ -509,7 +522,8 @@ type ResolveParams struct {
 	Hostname       string
 	SecretsDir     string
 	Rootless       bool
-	OpSecretReader resolver.OpSecretReader
+	OpSecretReader resolver.SecretRefReader
+	PPSecretReader resolver.SecretRefReader
 
 	// QuadletDir, SystemdDir, and DataDir override the defaults computed by
 	// resolver.ResolveDirs. Empty fields fall back to the default. Used by
@@ -559,6 +573,7 @@ func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.Re
 		Config:         cfg,
 		SecretReader:   secretReader,
 		OpSecretReader: params.OpSecretReader,
+		PPSecretReader: params.PPSecretReader,
 		Rootless:       params.Rootless,
 		QuadletDir:     params.QuadletDir,
 		SystemdDir:     params.SystemdDir,
@@ -586,6 +601,7 @@ func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, err
 		SecretsDir:     a.cfg.SecretsDir,
 		Rootless:       a.cfg.Rootless,
 		OpSecretReader: a.opReader,
+		PPSecretReader: a.ppReader,
 		// Override fields are passed raw; resolver.New applies the
 		// ResolveDirs fallback for any field left empty.
 		QuadletDir: a.quadletDirOverride,
@@ -604,6 +620,14 @@ type ReconcileResult struct {
 	ApplyResult *applier.ApplyResult
 	// OpSecretsCount is the number of op:// secrets resolved in this cycle.
 	OpSecretsCount int
+	// PPSecretsCount is the number of pass:// secrets resolved in this cycle.
+	PPSecretsCount int
+}
+
+// refSecretsCounts groups the per-provider direct-secret counts that flow
+// through the reconcile helpers. Fewer parameters than (op, pp int) per call.
+type refSecretsCounts struct {
+	Op, PP int
 }
 
 // ReconcileOnce runs a single reconciliation cycle: load config, resolve, diff, validate, apply, save state.
@@ -615,15 +639,18 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	files := resolved.Files
 	a.recordHostMetadata(resolved.Host)
 
-	opCount := a.recordOpSecretsCount(files)
+	counts := refSecretsCounts{
+		Op: recordProviderRefCount(resolver.ProviderOnePassword, a.opReader != nil, op.IsRef, files),
+		PP: recordProviderRefCount(resolver.ProviderProtonPass, a.ppReader != nil, pp.IsRef, files),
+	}
 
 	changeset := reconciler.Diff(files, st)
 
 	if !changeset.HasChanges() {
 		if len(st.PendingHooks) > 0 {
-			return a.retryPendingHooks(ctx, resolved, st, store, changeset, opCount)
+			return a.retryPendingHooks(ctx, resolved, st, store, changeset, counts)
 		}
-		return a.reconcileNoChanges(headSHA, files, changeset, st, store, opCount)
+		return a.reconcileNoChanges(headSHA, files, changeset, st, store, counts)
 	}
 
 	slog.Info("changes detected",
@@ -648,10 +675,10 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	if err != nil {
 		return nil, err
 	}
-	return a.finalizeApply(headSHA, st, store, changeset, applyResult, deps, opCount, resolved.Hooks)
+	return a.finalizeApply(headSHA, st, store, changeset, applyResult, deps, counts, resolved.Hooks)
 }
 
-func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, opCount int, hooks []config.Hook) (*ReconcileResult, error) {
+func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, counts refSecretsCounts, hooks []config.Hook) (*ReconcileResult, error) {
 	// Set deps after a successful apply so the dashboard's dep map matches the
 	// deployed state. On apply failure (rollback) we keep the previous good
 	// map rather than advertising deps for a state we couldn't reach.
@@ -675,24 +702,25 @@ func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Stor
 		HasChanges:     true,
 		Summary:        changeset.Summary,
 		ApplyResult:    applyResult,
-		OpSecretsCount: opCount,
+		OpSecretsCount: counts.Op,
+		PPSecretsCount: counts.PP,
 	}, nil
 }
 
 // reconcileNoChanges handles a reconcile that found no file changes.
 // When the git SHA is new, it still marks that SHA as applied and persists it:
 // a host can legitimately receive a fleet commit that changes only docs or
-// other hosts. When the SHA is unchanged (e.g. OP refresh), it only bumps the
-// verified-OK timestamp in memory.
+// other hosts. When the SHA is unchanged (e.g. secret-provider refresh), it
+// only bumps the verified-OK timestamp in memory.
 //
 // Note on validation failure: this path treats it as a hard failure and
 // surfaces it through the failure-event/failed-SHA pipeline. The outer-tick
 // noop fast path (no_git_changes) is more lenient: validation errors there
 // during refreshResolvedSnapshot are logged and recorded as status_error
 // without aborting the verify-OK signal, because nothing triggered the tick.
-// Here, something *did* trigger the tick (OP refresh or git change that
-// rendered identically), so a bad render is actionable.
-func (a *Agent) reconcileNoChanges(headSHA string, files []resolver.ResolvedFile, changeset *reconciler.Changeset, st *state.State, store *state.Store, opCount int) (*ReconcileResult, error) {
+// Here, something *did* trigger the tick (secret-provider refresh or git
+// change that rendered identically), so a bad render is actionable.
+func (a *Agent) reconcileNoChanges(headSHA string, files []resolver.ResolvedFile, changeset *reconciler.Changeset, st *state.State, store *state.Store, counts refSecretsCounts) (*ReconcileResult, error) {
 	deps, err := validator.AnalyzeFiles(files, a.cfg.Rootless)
 	if err != nil {
 		a.recordEvent("failure", headSHA, fmt.Sprintf("validation failed: %v", err))
@@ -706,13 +734,13 @@ func (a *Agent) reconcileNoChanges(headSHA string, files []resolver.ResolvedFile
 		if err := store.Save(st); err != nil {
 			return nil, fmt.Errorf("saving state: %w", err)
 		}
-		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: opCount}, nil
+		return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: counts.Op, PPSecretsCount: counts.PP}, nil
 	}
 	now := time.Now()
 	st.LastSuccessfulReconciliationAt = now
 	metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
 	a.statusStore.SetVerifiedAt(now)
-	return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: opCount}, nil
+	return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: counts.Op, PPSecretsCount: counts.PP}, nil
 }
 
 // savePartialStateOnHookFailure persists state after a successful apply that
@@ -769,7 +797,7 @@ func mergePendingHooks(old map[string]int, result *applier.ApplyResult) map[stri
 // otherwise empty. It does NOT call UpdateState — that would wipe ManagedFiles
 // from an empty changeset. State is saved with the (possibly trimmed) pending
 // map. Returns ErrApplyIncomplete when hooks still fail under keep_running.
-func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.ResolvedHost, st *state.State, store *state.Store, changeset *reconciler.Changeset, opCount int) (*ReconcileResult, error) {
+func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.ResolvedHost, st *state.State, store *state.Store, changeset *reconciler.Changeset, counts refSecretsCounts) (*ReconcileResult, error) {
 	pendingNames := pendingHookNames(st.PendingHooks)
 	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, resolved.Hooks)
 	result := app.RunPendingHooks(ctx, pendingNames)
@@ -791,7 +819,8 @@ func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.Resolv
 		HasChanges:     len(result.RestartedUnits) > 0 || len(result.FallbackRestartedUnits) > 0,
 		Summary:        changeset.Summary,
 		ApplyResult:    result,
-		OpSecretsCount: opCount,
+		OpSecretsCount: counts.Op,
+		PPSecretsCount: counts.PP,
 	}
 
 	if len(result.RetryableErrors) > 0 {
@@ -929,28 +958,57 @@ func (a *Agent) resolvePollerAuth(ctx context.Context) (gitpoll.AuthProvider, er
 		return a.authProvider, nil
 	}
 
-	if a.opReader != nil && a.cfg.OnePassword != nil && a.cfg.OnePassword.GitTokenRef != "" {
-		// NOTE: The git token is resolved once at startup. If the underlying 1Password
-		// secret changes (e.g., GitHub PAT rotation), a picolet restart is required.
-		// The OP refresh cycle re-fetches secrets in assignments but does NOT refresh
-		// the git token.
-		ref := a.cfg.OnePassword.GitTokenRef
-		results, err := a.opReader(ctx, []string{ref})
-		if err != nil {
-			return nil, fmt.Errorf("resolving git token from 1password: %w", err)
-		}
-		token, ok := results[ref]
-		if !ok {
-			return nil, fmt.Errorf("resolving git token from 1password: ref %q not in response", ref)
-		}
-		slog.Info("git token resolved from 1password")
-		return gitpoll.NewStaticTokenAuth(a.cfg.RepoURL, token), nil
+	// Mutual exclusion is enforced by agentcfg.Validate, so at most one
+	// provider's git_token_ref is set; the file-based path is also excluded.
+	// NOTE: the git token is resolved once at startup. If the underlying
+	// secret rotates, a picolet restart is required — the per-tick refresh
+	// cycle re-fetches assignment secrets but does NOT refresh the git token.
+	if auth, err := a.gitAuthFromSecretProvider(ctx); auth != nil || err != nil {
+		return auth, err
 	}
-
 	if gitpoll.IsSSHURL(a.cfg.RepoURL) {
 		return gitpoll.NewSSHAgentAuth(a.cfg.RepoURL), nil
 	}
 	return gitpoll.NewTokenFileAuth(a.cfg.GitTokenPath), nil
+}
+
+// gitAuthFromSecretProvider returns a static-token auth provider when one
+// of the configured secret providers supplies the git token ref. Returns
+// (nil, nil) when no provider is configured for git auth, so the caller
+// can fall through to SSH or file-based auth.
+//
+//nolint:nilnil // (nil, nil) signals "no provider auth configured"; caller handles fallback
+func (a *Agent) gitAuthFromSecretProvider(ctx context.Context) (gitpoll.AuthProvider, error) {
+	if a.opReader != nil && a.cfg.OnePassword != nil && a.cfg.OnePassword.GitTokenRef != "" {
+		token, err := resolveGitToken(ctx, resolver.ProviderOnePassword, a.opReader, a.cfg.OnePassword.GitTokenRef)
+		if err != nil {
+			return nil, err
+		}
+		return gitpoll.NewStaticTokenAuth(a.cfg.RepoURL, token), nil
+	}
+	if a.ppReader != nil && a.cfg.ProtonPass != nil && a.cfg.ProtonPass.GitTokenRef != "" {
+		token, err := resolveGitToken(ctx, resolver.ProviderProtonPass, a.ppReader, a.cfg.ProtonPass.GitTokenRef)
+		if err != nil {
+			return nil, err
+		}
+		return gitpoll.NewStaticTokenAuth(a.cfg.RepoURL, token), nil
+	}
+	return nil, nil
+}
+
+// resolveGitToken fetches a single ref via the given provider reader and
+// validates that the response actually contains it.
+func resolveGitToken(ctx context.Context, provider resolver.ProviderKey, reader resolver.SecretRefReader, ref string) (string, error) {
+	results, err := reader(ctx, []string{ref})
+	if err != nil {
+		return "", fmt.Errorf("resolving git token from %s: %w", provider, err)
+	}
+	token, ok := results[ref]
+	if !ok {
+		return "", fmt.Errorf("resolving git token from %s: ref %q not in response", provider, ref)
+	}
+	slog.Info("git token resolved", "provider", string(provider))
+	return token, nil
 }
 
 // UpdateState rebuilds ManagedFiles and ServiceNames from the changeset.
@@ -1099,19 +1157,67 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	}
 }
 
-// recordOpSecretsCount updates the picolet_op_direct_secrets_count gauge and returns the count.
-func (a *Agent) recordOpSecretsCount(files []resolver.ResolvedFile) int {
-	if a.opReader == nil {
+// recordProviderRefCount publishes the per-provider managed-count gauge
+// and returns the count. Returns 0 when the provider is disabled.
+func recordProviderRefCount(provider resolver.ProviderKey, enabled bool, isRef func(string) bool, files []resolver.ResolvedFile) int {
+	if !enabled {
 		return 0
 	}
+	count := countRefs(files, isRef)
+	metrics.SecretsManagedCount.WithLabelValues(string(provider)).Set(float64(count))
+	return count
+}
+
+// recordProviderSyncSuccess bumps the success counter and last-sync gauge
+// for a provider after a tick that actually resolved at least one ref.
+// A zero count means "nothing to record" — disabled providers always produce
+// zero counts via recordProviderRefCount, so a single count==0 check covers
+// both cases.
+func recordProviderSyncSuccess(provider resolver.ProviderKey, count int) {
+	if count == 0 {
+		return
+	}
+	label := string(provider)
+	metrics.SecretSyncTotal.WithLabelValues(label).Inc()
+	metrics.SecretLastSyncTimestamp.WithLabelValues(label).SetToCurrentTime()
+}
+
+// markRefreshAttempted bumps every configured provider's last-refresh
+// timestamp so the agent does not loop tight on the refresh trigger while
+// a tick is gated, partial, or has just completed successfully.
+func (a *Agent) markRefreshAttempted() {
+	now := time.Now()
+	if a.opReader != nil {
+		a.lastOPRefresh = now
+	}
+	if a.ppReader != nil {
+		a.lastPPRefresh = now
+	}
+}
+
+func countRefs(files []resolver.ResolvedFile, isRef func(string) bool) int {
 	var count int
 	for _, f := range files {
-		if op.IsRef(f.SrcPath) {
+		if isRef(f.SrcPath) {
 			count++
 		}
 	}
-	metrics.OpDirectSecretsCount.Set(float64(count))
 	return count
+}
+
+// publishCredentialExpiry sets the picolet_secret_credential_expires_at gauge
+// for the given provider when the operator has recorded the expiration in
+// config. Zero values are skipped (no series emitted), so dashboards can use
+// `absent_over_time(...)` to flag providers whose expiry was never declared.
+// Past expirations are still published — that is the signal the alert needs.
+func publishCredentialExpiry(provider resolver.ProviderKey, expiresAt time.Time) {
+	if expiresAt.IsZero() {
+		return
+	}
+	metrics.SecretCredentialExpiresAt.WithLabelValues(string(provider)).Set(float64(expiresAt.Unix()))
+	if time.Now().After(expiresAt) {
+		slog.Warn("secret-provider credential has expired", "provider", provider, "expired_at", expiresAt.Format(time.RFC3339))
+	}
 }
 
 func (a *Agent) recordHostMetadata(host *config.HostConfig) {
@@ -1167,6 +1273,17 @@ func (a *Agent) opRefreshDue() bool {
 	}
 	interval := a.cfg.OnePassword.RefreshInterval
 	return a.lastOPRefresh.IsZero() || time.Since(a.lastOPRefresh) >= interval
+}
+
+// ppRefreshDue reports whether pass:// secrets should be re-fetched.
+// Returns true when Proton Pass is configured and the refresh interval has elapsed.
+// ppReader is non-nil iff cfg.ProtonPass is non-nil, so a single nil check suffices.
+func (a *Agent) ppRefreshDue() bool {
+	if a.ppReader == nil {
+		return false
+	}
+	interval := a.cfg.ProtonPass.RefreshInterval
+	return a.lastPPRefresh.IsZero() || time.Since(a.lastPPRefresh) >= interval
 }
 
 func (a *Agent) triggerReconcile() {

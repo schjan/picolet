@@ -304,6 +304,8 @@ Available data: `.Host` (hostname, pi_type, features), `.Images`, `.Ports`, `.Fl
 | `indent(n, str)` | Indent all non-empty lines by n spaces |
 | `nindent(n, str)` | Prepend a newline, then indent all non-empty lines by n spaces |
 | `readSecretFile(path)` | Read secret (placeholder in CI mode) |
+| `readOpSecret(ref)` | Resolve a 1Password reference, e.g. `op://vault/item/field` |
+| `readProtonPassSecret(ref)` | Resolve a Proton Pass reference, e.g. `pass://share/item/field` |
 | `manifestPath(relPath)` | Return the absolute deployed path for a manifest file (handles rootless/rootful automatically). `relPath` is relative to the service's `manifests/` dir |
 | `has(item, slice)` | Sprig: check if a value is present in a list |
 
@@ -324,3 +326,66 @@ All files are validated before deployment: quadlet files via Podman's own `quadl
 Secrets always require non-empty content. Repo-backed YAML secrets (`.yml` / `.yaml`, including `.tmpl`) are also syntax-validated after template rendering. External placeholder secrets in repo-only validation mode are skipped for YAML syntax checks.
 
 Run `./picolet validate` in CI to catch errors before pushing.
+
+## Secret Providers
+
+Picolet integrates with two secret managers so cleartext credentials never live in the fleet repo. Both providers can be configured at the same time; references are routed by URI scheme.
+
+| Provider | Scheme | Underlying tool | Auth model |
+|----------|--------|-----------------|------------|
+| 1Password | `op://vault/item/field` | Official Go SDK | Service-account token |
+| Proton Pass | `pass://share/item/field` | `pass-cli` (bundled in the container image) | Personal Access Token |
+
+Refs can appear in two places:
+
+- **Direct Podman secrets** in `assignments.yml` or `hosts/<name>/host.yml` under `secrets:` — Picolet resolves the value and creates a Podman secret named after the URI components (e.g. `vault_item_field` or `share_item_field`).
+- **Inside templates** via `{{ readOpSecret "op://..." }}` or `{{ readProtonPassSecret "pass://..." }}` — Picolet collects all calls in a first render pass, batches them per provider, then renders again with the resolved values.
+
+### 1Password setup
+
+```yaml
+# /etc/picolet/config.yml
+onepassword:
+  token_path: /etc/picolet/secrets/op-service-account-token  # required
+  token_expires_at: 2026-12-31T23:59:59Z   # optional but recommended (RFC3339)
+  refresh_interval: 6h        # default 6h, minimum 1m
+  git_token_ref: op://Infra/picolet-git/token  # optional: resolve git PAT via 1Password
+```
+
+### Proton Pass setup
+
+The container image ships the official `pass-cli` binary (multi-arch, version pinned and SHA-256-verified at build time). On a host without picolet's container, install it manually following https://protonpass.github.io/pass-cli/.
+
+For unattended use (recommended in containers):
+
+```yaml
+# /etc/picolet/config.yml
+protonpass:
+  pat_path: /etc/picolet/secrets/pp-pat              # PAT format: pst_…::TOKENKEY
+  pat_expires_at: 2026-09-15T00:00:00Z                # optional but recommended (RFC3339)
+  session_dir: /var/lib/picolet/protonpass/.session  # optional in PAT mode; this is the default
+  refresh_interval: 6h                                # default 6h, minimum 1m
+  git_token_ref: pass://abc.../item.../token          # optional: resolve git PAT via Proton Pass
+```
+
+In PAT mode, picolet selects `pass-cli`'s filesystem-based local key provider (`PROTON_PASS_KEY_PROVIDER=fs`). `pass-cli` auto-generates and rotates a `local.key` inside `session_dir`, so there is nothing for the operator to provision beyond the PAT itself. A backup of `session_dir` restored to a different host will produce an unreadable session and force a re-login on next start — this is a session-invalidation failure, not a credential exposure.
+
+`token_expires_at` / `pat_expires_at` are surfaced as `picolet_secret_credential_expires_at{provider}` so you can alert before the credential lapses — see `docs/alerting.md` for the recommended rule. pass-cli does not expose PAT expiry programmatically, so this value must be entered manually at provisioning time and bumped on every rotation.
+
+For local development, leave `pat_path` empty (Lazy mode). Picolet then uses any pre-existing `pass-cli login` session in your home directory and never overwrites it. Run `pass-cli test` to verify the same session check Picolet runs at startup.
+
+Find share IDs and item IDs with:
+
+```bash
+pass-cli vault list
+pass-cli item list --share-id <share-id>
+```
+
+### Limitations and operational notes
+
+- **PAT expiry.** Personal Access Tokens have a mandatory expiration. Rotate before they expire and `systemctl restart picolet` to pick up the new token.
+- **Online only.** Each reconcile that touches a `pass://` ref needs HTTPS to Proton.
+- **Per-vault PATs.** A single PAT scopes to the vaults granted to it in Proton Pass. Make sure every `pass://` ref used by a host is accessible to the configured PAT.
+- **Architecture.** `pass-cli` requires 64-bit Linux (`linux/amd64` or `linux/arm64`); 32-bit RPi OS is not supported.
+- **Session directory exemption.** In PAT mode, `protonpass.session_dir` defaults to `/var/lib/picolet/protonpass/.session`. It is owned by `pass-cli`, not by picolet, and the orphan-cleanup scanner does not touch it.
+- **Mutual exclusion.** Each authentication resource (`git_token`, GitHub App credentials) can be supplied by exactly one source — direct config, 1Password, or Proton Pass. Mixing for the same resource is rejected at startup.

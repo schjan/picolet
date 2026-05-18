@@ -201,7 +201,8 @@ func TestRenderTemplateRecursion(t *testing.T) {
 
 	var buf bytes.Buffer
 	err = registry.ExecuteTemplate(&buf, "a.tmpl", nil)
-	require.Error(t, err)
+	require.Error(t, err) // recursion limit
+
 	require.ErrorContains(t, err, "recursion depth exceeded")
 }
 
@@ -1480,8 +1481,10 @@ func TestReadOpSecret(t *testing.T) {
 			}
 			return results, nil
 		}
-		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, reader, "/var/lib/picolet")
+		registry, caches, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
 		require.NoError(t, err)
+		require.Len(t, caches, 1)
+		cache := caches[ProviderOnePassword]
 		require.NotNil(t, cache)
 
 		// Phase 1: collect (output discarded).
@@ -1500,9 +1503,9 @@ func TestReadOpSecret(t *testing.T) {
 
 	t.Run("nil reader returns placeholder", func(t *testing.T) {
 		t.Parallel()
-		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, nil, "/var/lib/picolet")
+		registry, caches, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{OpProvider(nil)}, "/var/lib/picolet")
 		require.NoError(t, err)
-		assert.Nil(t, cache)
+		assert.Empty(t, caches)
 		var buf bytes.Buffer
 		require.NoError(t, registry.ExecuteTemplate(&buf, "secret.tmpl", nil))
 		assert.Equal(t, "pw=<op-secret>", buf.String())
@@ -1513,8 +1516,9 @@ func TestReadOpSecret(t *testing.T) {
 		reader := func(_ context.Context, _ []string) (map[string]string, error) {
 			return nil, fmt.Errorf("1password error")
 		}
-		registry, cache, err := BuildRegistry(t.Context(), fsys, nil, reader, "/var/lib/picolet")
+		registry, caches, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
 		require.NoError(t, err)
+		cache := caches[ProviderOnePassword]
 
 		// Collect phase.
 		var discard bytes.Buffer
@@ -1534,12 +1538,12 @@ func TestReadOpSecret(t *testing.T) {
 		reader := func(_ context.Context, _ []string) (map[string]string, error) {
 			return nil, fmt.Errorf("should-not-be-called")
 		}
-		registry, _, err := BuildRegistry(t.Context(), invalidFS, nil, reader, "/var/lib/picolet")
+		registry, _, err := BuildRegistry(t.Context(), invalidFS, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
 		require.NoError(t, err)
 		var buf bytes.Buffer
 		err = registry.ExecuteTemplate(&buf, "bad.tmpl", nil)
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "is not a valid op:// reference")
+		assert.ErrorContains(t, err, "is not a valid reference")
 	})
 
 	t.Run("batches multiple refs in single call", func(t *testing.T) {
@@ -1558,8 +1562,9 @@ func TestReadOpSecret(t *testing.T) {
 			}
 			return results, nil
 		}
-		registry, cache, err := BuildRegistry(t.Context(), multiFS, nil, reader, "/var/lib/picolet")
+		registry, caches, err := BuildRegistry(t.Context(), multiFS, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
 		require.NoError(t, err)
+		cache := caches[ProviderOnePassword]
 
 		// Collect.
 		var discard bytes.Buffer
@@ -1574,6 +1579,56 @@ func TestReadOpSecret(t *testing.T) {
 		require.NoError(t, registry.ExecuteTemplate(&buf, "multi.tmpl", nil))
 		assert.Equal(t, `a=val-op://v/a/f b=val-op://v/b/f`, buf.String())
 	})
+}
+
+// TestReadProvidersCoexist exercises the two-phase resolution machinery with
+// both providers active simultaneously and a template that calls each.
+func TestReadProvidersCoexist(t *testing.T) {
+	t.Parallel()
+	fsys := fstest.MapFS{
+		"both.tmpl": &fstest.MapFile{Data: []byte(
+			`op={{readOpSecret "op://v/i/f"}} pp={{readProtonPassSecret "pass://s/i/f"}}`,
+		)},
+	}
+
+	opReader := func(_ context.Context, refs []string) (map[string]string, error) {
+		out := make(map[string]string, len(refs))
+		for _, r := range refs {
+			out[r] = "op-" + r
+		}
+		return out, nil
+	}
+	ppReader := func(_ context.Context, refs []string) (map[string]string, error) {
+		out := make(map[string]string, len(refs))
+		for _, r := range refs {
+			out[r] = "pp-" + r
+		}
+		return out, nil
+	}
+
+	registry, caches, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{
+		OpProvider(opReader),
+		PPProvider(ppReader),
+	}, "/var/lib/picolet")
+	require.NoError(t, err)
+	require.Len(t, caches, 2)
+	opCache, ppCache := caches[ProviderOnePassword], caches[ProviderProtonPass]
+	require.NotNil(t, opCache)
+	require.NotNil(t, ppCache)
+
+	// Collect phase.
+	var discard bytes.Buffer
+	require.NoError(t, registry.ExecuteTemplate(&discard, "both.tmpl", nil))
+	assert.Equal(t, "op=<op-secret-pending> pp=<pp-secret-pending>", discard.String())
+
+	// Resolve both caches.
+	require.NoError(t, opCache.Resolve(t.Context()))
+	require.NoError(t, ppCache.Resolve(t.Context()))
+
+	// Render phase.
+	var buf bytes.Buffer
+	require.NoError(t, registry.ExecuteTemplate(&buf, "both.tmpl", nil))
+	assert.Equal(t, "op=op-op://v/i/f pp=pp-pass://s/i/f", buf.String())
 }
 
 func TestResolveHostSkipsOpSecretWhenNotConfigured(t *testing.T) {
@@ -1755,7 +1810,7 @@ features: []
 
 		_, err = r.ResolveHost(t.Context(), "test-host")
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "resolving 1password secrets")
+		assert.ErrorContains(t, err, "resolving onepassword secrets")
 	})
 
 	t.Run("total failure returns error", func(t *testing.T) {

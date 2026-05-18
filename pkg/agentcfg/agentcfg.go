@@ -11,6 +11,7 @@ import (
 	"go.yaml.in/yaml/v4"
 
 	op "github.com/schjan/picolet/pkg/onepassword"
+	pp "github.com/schjan/picolet/pkg/protonpass"
 )
 
 // MQTTConfig holds MQTT broker connection settings.
@@ -24,11 +25,34 @@ type MQTTConfig struct {
 // OnePasswordConfig holds 1Password SDK settings.
 type OnePasswordConfig struct {
 	TokenPath             string        `yaml:"token_path"`                 // file path to service account token
+	TokenExpiresAt        time.Time     `yaml:"token_expires_at"`           // optional RFC3339; published as picolet_secret_credential_expires_at{provider="onepassword"}
 	RefreshInterval       time.Duration `yaml:"refresh_interval"`           // how often to re-fetch op:// secrets (default 6h)
 	GitTokenRef           string        `yaml:"git_token_ref"`              // op:// ref for git pull token; replaces git_token_path
 	GitHubAppIDRef        string        `yaml:"github_app_id_ref"`          // op:// ref for GitHub App ID
 	GitHubInstallationRef string        `yaml:"github_installation_id_ref"` // op:// ref for GitHub installation ID
 	GitHubPrivateKeyRef   string        `yaml:"github_private_key_ref"`     // op:// ref for GitHub App PEM private key
+}
+
+// ProtonPassConfig holds Proton Pass CLI settings.
+//
+// PATPath enables non-interactive auto-login (containers/CI). When empty,
+// the agent uses any pre-existing pass-cli session — useful for local
+// development where overwriting the user's session is undesirable.
+//
+// PATExpiresAt is optional but strongly recommended: Proton PATs have a
+// mandatory expiration and pass-cli does not expose it programmatically, so
+// the operator records it at provisioning time. Picolet publishes the value
+// as picolet_secret_credential_expires_at{provider="protonpass"} for alerts.
+type ProtonPassConfig struct {
+	CLIPath               string        `yaml:"cli_path"`                   // optional; default "pass-cli"
+	PATPath               string        `yaml:"pat_path"`                   // optional; empty = lazy mode
+	PATExpiresAt          time.Time     `yaml:"pat_expires_at"`             // optional RFC3339; published as picolet_secret_credential_expires_at{provider="protonpass"}
+	SessionDir            string        `yaml:"session_dir"`                // optional; PAT mode default /var/lib/picolet/protonpass/.session
+	RefreshInterval       time.Duration `yaml:"refresh_interval"`           // how often to re-fetch pass:// secrets (default 6h)
+	GitTokenRef           string        `yaml:"git_token_ref"`              // pass:// ref for git pull token
+	GitHubAppIDRef        string        `yaml:"github_app_id_ref"`          // pass:// ref for GitHub App ID
+	GitHubInstallationRef string        `yaml:"github_installation_id_ref"` // pass:// ref for GitHub installation ID
+	GitHubPrivateKeyRef   string        `yaml:"github_private_key_ref"`     // pass:// ref for GitHub App PEM private key
 }
 
 // Config holds the agent runtime configuration from /etc/picolet/config.yml.
@@ -48,6 +72,7 @@ type Config struct {
 	DataDir              string             `yaml:"data_dir"`     // optional override for repo, state, and lock files
 	MQTT                 *MQTTConfig        `yaml:"mqtt"`
 	OnePassword          *OnePasswordConfig `yaml:"onepassword"`
+	ProtonPass           *ProtonPassConfig  `yaml:"protonpass"`
 	GitHubAppID          int64              `yaml:"github_app_id"`
 	GitHubInstallationID int64              `yaml:"github_installation_id"`
 	GitHubPrivateKeyPath string             `yaml:"github_private_key_path"`
@@ -93,6 +118,9 @@ func (c *Config) setDefaults() {
 	if c.OnePassword != nil && c.OnePassword.RefreshInterval == 0 {
 		c.OnePassword.RefreshInterval = 6 * time.Hour
 	}
+	if c.ProtonPass != nil && c.ProtonPass.RefreshInterval == 0 {
+		c.ProtonPass.RefreshInterval = 6 * time.Hour
+	}
 	if c.SystemdUser == nil {
 		c.SystemdUser = new(c.Rootless)
 	}
@@ -107,10 +135,13 @@ func (c *Config) UseSystemdUser() bool {
 	return *c.SystemdUser
 }
 
-// Validate checks that required fields are set.
+// Validate checks that required fields are set. setDefaults is invoked
+// first so Validate can be called directly on a programmatically-constructed
+// Config without having to know that defaults must run beforehand.
 //
 //nolint:cyclop // sequential field checks; splitting would obscure the validation logic
 func (c *Config) Validate() error {
+	c.setDefaults()
 	if c.Hostname == "" {
 		return errors.New("hostname is required")
 	}
@@ -131,6 +162,14 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	if c.ProtonPass != nil {
+		if err := c.validateProtonPass(); err != nil {
+			return err
+		}
+	}
+	if err := c.validateGitTokenSources(); err != nil {
+		return err
+	}
 	if err := c.validateGitHubApp(); err != nil {
 		return err
 	}
@@ -147,11 +186,6 @@ func (c *Config) validateOnePassword() error {
 	if err := validateOptionalOpRef("onepassword.git_token_ref", c.OnePassword.GitTokenRef); err != nil {
 		return err
 	}
-	if c.OnePassword.GitTokenRef != "" {
-		if c.GitTokenPath != "" {
-			return errors.New("git_token_path and onepassword.git_token_ref are mutually exclusive")
-		}
-	}
 	for key, ref := range map[string]string{
 		"onepassword.github_app_id_ref":          c.OnePassword.GitHubAppIDRef,
 		"onepassword.github_installation_id_ref": c.OnePassword.GitHubInstallationRef,
@@ -164,28 +198,49 @@ func (c *Config) validateOnePassword() error {
 	return nil
 }
 
-func (c *Config) validateGitHubApp() error {
-	directSet := countSet(c.GitHubAppID != 0, c.GitHubInstallationID != 0, c.GitHubPrivateKeyPath != "")
-	refSet := 0
-	if c.OnePassword != nil {
-		refSet = countSet(
-			c.OnePassword.GitHubAppIDRef != "",
-			c.OnePassword.GitHubInstallationRef != "",
-			c.OnePassword.GitHubPrivateKeyRef != "",
-		)
+func (c *Config) validateProtonPass() error {
+	if c.ProtonPass.RefreshInterval < time.Minute {
+		return errors.New("protonpass.refresh_interval must be at least 1m")
 	}
+	for key, ref := range map[string]string{
+		"protonpass.git_token_ref":              c.ProtonPass.GitTokenRef,
+		"protonpass.github_app_id_ref":          c.ProtonPass.GitHubAppIDRef,
+		"protonpass.github_installation_id_ref": c.ProtonPass.GitHubInstallationRef,
+		"protonpass.github_private_key_ref":     c.ProtonPass.GitHubPrivateKeyRef,
+	} {
+		if err := validateOptionalPassRef(key, ref); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	if err := validateGitHubAppMode(directSet, refSet); err != nil {
+// validateGitTokenSources enforces that at most one source is configured for
+// the git pull token: file (git_token_path), 1Password ref, or Proton Pass ref.
+func (c *Config) validateGitTokenSources() error {
+	opRef := c.OnePassword != nil && c.OnePassword.GitTokenRef != ""
+	ppRef := c.ProtonPass != nil && c.ProtonPass.GitTokenRef != ""
+	switch {
+	case c.GitTokenPath != "" && opRef:
+		return errors.New("git_token_path and onepassword.git_token_ref are mutually exclusive")
+	case c.GitTokenPath != "" && ppRef:
+		return errors.New("git_token_path and protonpass.git_token_ref are mutually exclusive")
+	case opRef && ppRef:
+		return errors.New("onepassword.git_token_ref and protonpass.git_token_ref are mutually exclusive")
+	}
+	return nil
+}
+
+func (c *Config) validateGitHubApp() error {
+	directSet, opRefSet, ppRefSet := c.githubAppCounts()
+	if err := validateGitHubAppMode(directSet, opRefSet, ppRefSet); err != nil {
 		return err
 	}
-	if directSet == 0 && refSet == 0 {
+	if directSet == 0 && opRefSet == 0 && ppRefSet == 0 {
 		return nil
 	}
-	if c.GitTokenPath != "" {
-		return errors.New("github_app_id and git_token_path are mutually exclusive")
-	}
-	if c.OnePassword != nil && c.OnePassword.GitTokenRef != "" {
-		return errors.New("github_app_id and onepassword.git_token_ref are mutually exclusive")
+	if err := c.checkGitHubAppGitTokenExclusion(); err != nil {
+		return err
 	}
 	if directSet == 0 {
 		return nil
@@ -193,17 +248,65 @@ func (c *Config) validateGitHubApp() error {
 	return validateGitHubAppDirectValues(c.GitHubAppID, c.GitHubInstallationID)
 }
 
-// HasGitHubApp reports whether GitHub App authentication is configured.
-func (c *Config) HasGitHubApp() bool {
-	return (c.GitHubAppID != 0 && c.GitHubInstallationID != 0 && c.GitHubPrivateKeyPath != "") || c.HasGitHubAppRefs()
+func (c *Config) githubAppCounts() (direct, op, pp int) {
+	direct = countSet(c.GitHubAppID != 0, c.GitHubInstallationID != 0, c.GitHubPrivateKeyPath != "")
+	return direct, c.OnePassword.githubAppRefCount(), c.ProtonPass.githubAppRefCount()
 }
 
-// HasGitHubAppRefs reports whether GitHub App credentials are configured via 1Password refs.
-func (c *Config) HasGitHubAppRefs() bool {
-	if c.OnePassword == nil {
-		return false
+// githubAppRefCount returns 0..3 for the number of GitHub App ref fields set.
+// Nil-receiver-safe so callers can avoid an outer nil check.
+func (c *OnePasswordConfig) githubAppRefCount() int {
+	if c == nil {
+		return 0
 	}
-	return c.OnePassword.GitHubAppIDRef != "" && c.OnePassword.GitHubInstallationRef != "" && c.OnePassword.GitHubPrivateKeyRef != ""
+	return countSet(c.GitHubAppIDRef != "", c.GitHubInstallationRef != "", c.GitHubPrivateKeyRef != "")
+}
+
+func (c *ProtonPassConfig) githubAppRefCount() int {
+	if c == nil {
+		return 0
+	}
+	return countSet(c.GitHubAppIDRef != "", c.GitHubInstallationRef != "", c.GitHubPrivateKeyRef != "")
+}
+
+func (c *Config) checkGitHubAppGitTokenExclusion() error {
+	if c.GitTokenPath != "" {
+		return errors.New("GitHub App and git_token_path are mutually exclusive")
+	}
+	if c.OnePassword != nil && c.OnePassword.GitTokenRef != "" {
+		return errors.New("GitHub App and onepassword.git_token_ref are mutually exclusive")
+	}
+	if c.ProtonPass != nil && c.ProtonPass.GitTokenRef != "" {
+		return errors.New("GitHub App and protonpass.git_token_ref are mutually exclusive")
+	}
+	return nil
+}
+
+// HasGitHubApp reports whether GitHub App authentication is configured.
+func (c *Config) HasGitHubApp() bool {
+	direct, opRefs, ppRefs := c.githubAppCounts()
+	return direct == 3 || opRefs == 3 || ppRefs == 3
+}
+
+// HasGitHubAppOPRefs reports whether GitHub App credentials are fully configured via 1Password refs.
+func (c *Config) HasGitHubAppOPRefs() bool {
+	return c.OnePassword.githubAppRefCount() == 3
+}
+
+// HasGitHubAppPPRefs reports whether GitHub App credentials are fully configured via Proton Pass refs.
+func (c *Config) HasGitHubAppPPRefs() bool {
+	return c.ProtonPass.githubAppRefCount() == 3
+}
+
+// ToClientConfig converts ProtonPassConfig into the internal pass-cli ClientConfig.
+// The pass-cli package does not depend on agentcfg to keep the dependency
+// graph one-way; this method bridges the two.
+func (c *ProtonPassConfig) ToClientConfig() pp.ClientConfig {
+	return pp.ClientConfig{
+		CLIPath:    c.CLIPath,
+		PATPath:    c.PATPath,
+		SessionDir: c.SessionDir,
+	}
 }
 
 func validateOptionalOpRef(name, ref string) error {
@@ -211,6 +314,16 @@ func validateOptionalOpRef(name, ref string) error {
 		return nil
 	}
 	if _, err := op.ParseOpRef(ref); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return nil
+}
+
+func validateOptionalPassRef(name, ref string) error {
+	if ref == "" {
+		return nil
+	}
+	if _, err := pp.ParseRef(ref); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	return nil
@@ -226,17 +339,33 @@ func countSet(values ...bool) int {
 	return set
 }
 
-func validateGitHubAppMode(directSet, refSet int) error {
+func validateGitHubAppMode(directSet, opRefSet, ppRefSet int) error {
+	if countModesConfigured(directSet, opRefSet, ppRefSet) > 1 {
+		return errors.New("github app must be configured via exactly one of: direct fields, onepassword refs, or protonpass refs (each pair is mutually exclusive)")
+	}
+	return checkGitHubAppPartialTriples(directSet, opRefSet, ppRefSet)
+}
+
+func countModesConfigured(counts ...int) int {
+	var configured int
+	for _, n := range counts {
+		if n > 0 {
+			configured++
+		}
+	}
+	return configured
+}
+
+func checkGitHubAppPartialTriples(directSet, opRefSet, ppRefSet int) error {
 	switch {
-	case directSet > 0 && refSet > 0:
-		return errors.New("github app direct fields and onepassword github app refs are mutually exclusive")
 	case directSet > 0 && directSet < 3:
 		return errors.New("all GitHub App fields must be set together (github_app_id, github_installation_id, github_private_key_path)")
-	case refSet > 0 && refSet < 3:
+	case opRefSet > 0 && opRefSet < 3:
 		return errors.New("all onepassword github app refs must be set together (onepassword.github_app_id_ref, onepassword.github_installation_id_ref, onepassword.github_private_key_ref)")
-	default:
-		return nil
+	case ppRefSet > 0 && ppRefSet < 3:
+		return errors.New("all protonpass github app refs must be set together (protonpass.github_app_id_ref, protonpass.github_installation_id_ref, protonpass.github_private_key_ref)")
 	}
+	return nil
 }
 
 func validateGitHubAppDirectValues(appID, installationID int64) error {

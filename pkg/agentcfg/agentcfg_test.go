@@ -215,7 +215,20 @@ onepassword:
   token_path: /etc/picolet/op-token
   git_token_ref: "op://vault/item/token"
 `,
-			wantErr: "github_app_id and onepassword.git_token_ref are mutually exclusive",
+			wantErr: "GitHub App and onepassword.git_token_ref are mutually exclusive",
+		},
+		{
+			name: "github app and protonpass git_token_ref mutually exclusive",
+			content: `
+hostname: rpi5-1
+github_app_id: 12345
+github_installation_id: 67890
+github_private_key_path: /etc/picolet/secrets/github-app.pem
+protonpass:
+  pat_path: /etc/picolet/pp-pat
+  git_token_ref: "pass://share/item/token"
+`,
+			wantErr: "GitHub App and protonpass.git_token_ref are mutually exclusive",
 		},
 		{
 			name: "github app id must be positive",
@@ -424,6 +437,180 @@ onepassword:
 				},
 			},
 		},
+		{
+			name: "protonpass lazy mode (no PAT) valid",
+			content: `
+hostname: rpi5-1
+protonpass: {}
+`,
+			want: Config{ //nolint:gosec // test fixture, not real credentials
+				Hostname:     "rpi5-1",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				SystemdUser:  new(false),
+				ProtonPass: &ProtonPassConfig{
+					RefreshInterval: 6 * time.Hour,
+				},
+			},
+		},
+		{
+			name: "protonpass git_token_ref invalid format rejected",
+			content: `
+hostname: rpi5-1
+protonpass:
+  git_token_ref: "not-a-pass-ref"
+`,
+			wantErr: "missing pass:// prefix",
+		},
+		{
+			name: "git_token_path and protonpass git_token_ref mutually exclusive",
+			content: `
+hostname: rpi5-1
+git_token_path: /etc/picolet/git-token
+protonpass:
+  git_token_ref: "pass://share/item/token"
+`,
+			wantErr: "git_token_path and protonpass.git_token_ref are mutually exclusive",
+		},
+		{
+			name: "onepassword and protonpass git_token_ref mutually exclusive",
+			content: `
+hostname: rpi5-1
+onepassword:
+  token_path: /etc/picolet/op-token
+  git_token_ref: "op://vault/item/token"
+protonpass:
+  git_token_ref: "pass://share/item/token"
+`,
+			wantErr: "onepassword.git_token_ref and protonpass.git_token_ref are mutually exclusive",
+		},
+		{
+			name: "protonpass github app refs partial rejected",
+			content: `
+hostname: rpi5-1
+protonpass:
+  github_app_id_ref: "pass://share/item/id"
+`,
+			wantErr: "all protonpass github app refs must be set together",
+		},
+		{
+			name: "protonpass github app refs and direct fields mutually exclusive",
+			content: `
+hostname: rpi5-1
+github_app_id: 12345
+github_installation_id: 67890
+github_private_key_path: /etc/picolet/key.pem
+protonpass:
+  github_app_id_ref: "pass://share/item/id"
+  github_installation_id_ref: "pass://share/item/inst"
+  github_private_key_ref: "pass://share/item/key"
+`,
+			wantErr: "github app must be configured via exactly one",
+		},
+		{
+			name: "protonpass and onepassword github app refs mutually exclusive",
+			content: `
+hostname: rpi5-1
+onepassword:
+  token_path: /etc/picolet/op-token
+  github_app_id_ref: "op://vault/item/id"
+  github_installation_id_ref: "op://vault/item/inst"
+  github_private_key_ref: "op://vault/item/key"
+protonpass:
+  github_app_id_ref: "pass://share/item/id"
+  github_installation_id_ref: "pass://share/item/inst"
+  github_private_key_ref: "pass://share/item/key"
+`,
+			wantErr: "github app must be configured via exactly one",
+		},
+		{
+			name: "protonpass github app refs valid",
+			content: `
+hostname: rpi5-1
+protonpass:
+  pat_path: /etc/picolet/pp-pat
+  github_app_id_ref: "pass://share/item/id"
+  github_installation_id_ref: "pass://share/item/inst"
+  github_private_key_ref: "pass://share/item/key"
+`,
+			want: Config{ //nolint:gosec // test fixture
+				Hostname:     "rpi5-1",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				SystemdUser:  new(false),
+				ProtonPass: &ProtonPassConfig{
+					PATPath:               "/etc/picolet/pp-pat",
+					RefreshInterval:       6 * time.Hour,
+					GitHubAppIDRef:        "pass://share/item/id",
+					GitHubInstallationRef: "pass://share/item/inst",
+					GitHubPrivateKeyRef:   "pass://share/item/key",
+				},
+			},
+		},
+		{
+			name: "onepassword and protonpass coexist when no resource conflicts",
+			content: `
+hostname: rpi5-1
+onepassword:
+  token_path: /etc/picolet/op-token
+protonpass:
+  pat_path: /etc/picolet/pp-pat
+`,
+			want: Config{ //nolint:gosec // test fixture
+				Hostname:     "rpi5-1",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				SystemdUser:  new(false),
+				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture
+					TokenPath:       "/etc/picolet/op-token",
+					RefreshInterval: 6 * time.Hour,
+				},
+				ProtonPass: &ProtonPassConfig{
+					PATPath:         "/etc/picolet/pp-pat",
+					RefreshInterval: 6 * time.Hour,
+				},
+			},
+		},
+		{
+			name: "credential expiry timestamps parsed",
+			content: `
+hostname: rpi5-1
+onepassword:
+  token_path: /etc/picolet/op-token
+  token_expires_at: 2026-12-31T23:59:59Z
+protonpass:
+  pat_path: /etc/picolet/pp-pat
+  pat_expires_at: 2026-09-15T00:00:00Z
+`,
+			want: Config{ //nolint:gosec // test fixture
+				Hostname:     "rpi5-1",
+				RepoBranch:   "main",
+				PollInterval: 5 * time.Minute,
+				MetricsPort:  9417,
+				SecretsDir:   "/etc/picolet/secrets",
+				PodmanSocket: "/run/podman/podman.sock",
+				SystemdUser:  new(false),
+				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture
+					TokenPath:       "/etc/picolet/op-token",
+					TokenExpiresAt:  time.Date(2026, 12, 31, 23, 59, 59, 0, time.UTC),
+					RefreshInterval: 6 * time.Hour,
+				},
+				ProtonPass: &ProtonPassConfig{
+					PATPath:         "/etc/picolet/pp-pat",
+					PATExpiresAt:    time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC),
+					RefreshInterval: 6 * time.Hour,
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -458,8 +645,51 @@ not_a_field: true
 	require.ErrorContains(t, err, "not_a_field")
 }
 
+func TestHasGitHubAppOPRefsDetectsConfigured(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		OnePassword: &OnePasswordConfig{
+			GitHubAppIDRef:        "op://vault/app/id",
+			GitHubInstallationRef: "op://vault/app/installation",
+			GitHubPrivateKeyRef:   "op://vault/app/private_key",
+		},
+	}
+
+	assert.True(t, cfg.HasGitHubApp())
+	assert.True(t, cfg.HasGitHubAppOPRefs())
+	assert.False(t, cfg.HasGitHubAppPPRefs())
+}
+
+func TestHasGitHubAppIncludesProtonPassRefs(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		ProtonPass: &ProtonPassConfig{
+			GitHubAppIDRef:        "pass://share/app/id",
+			GitHubInstallationRef: "pass://share/app/installation",
+			GitHubPrivateKeyRef:   "pass://share/app/private_key",
+		},
+	}
+
+	assert.True(t, cfg.HasGitHubApp())
+	assert.True(t, cfg.HasGitHubAppPPRefs())
+}
+
 func TestLoadFileNotFound(t *testing.T) {
 	t.Parallel()
 	_, err := Load("/nonexistent/config.yml")
 	require.Error(t, err)
+}
+
+func TestValidateAppliesDefaultsForZeroRefreshInterval(t *testing.T) {
+	t.Parallel()
+	// Validate must be safe to call directly on a programmatically-constructed
+	// Config without first invoking Load (which would have run setDefaults).
+	cfg := &Config{
+		Hostname:    "rpi5-1",
+		OnePassword: &OnePasswordConfig{TokenPath: "/tmp/op"},
+		ProtonPass:  &ProtonPassConfig{}, // RefreshInterval zero
+	}
+	require.NoError(t, cfg.Validate())
+	assert.Equal(t, 6*time.Hour, cfg.OnePassword.RefreshInterval)
+	assert.Equal(t, 6*time.Hour, cfg.ProtonPass.RefreshInterval)
 }

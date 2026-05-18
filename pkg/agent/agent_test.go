@@ -263,7 +263,7 @@ func TestRetryPendingHooksClearsListOnSuccess(t *testing.T) {
 	}
 	changeset := &reconciler.Changeset{Summary: map[reconciler.Action]int{}}
 
-	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, 0)
+	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, refSecretsCounts{})
 	require.NoError(t, err)
 
 	loaded, err := store.Load()
@@ -373,7 +373,7 @@ func TestRetryPendingHooksDropsStaleNamesAndKeepsFailures(t *testing.T) {
 	}
 	changeset := &reconciler.Changeset{Summary: map[reconciler.Action]int{}}
 
-	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, 0)
+	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, refSecretsCounts{})
 	require.ErrorIs(t, err, applier.ErrApplyIncomplete)
 
 	loaded, err := store.Load()
@@ -1612,6 +1612,39 @@ func TestSetFilesManagedMetric(t *testing.T) {
 	}
 }
 
+func TestPublishCredentialExpiry(t *testing.T) {
+	t.Parallel()
+
+	provider := resolver.ProviderKey("test-provider-" + t.Name()) // unique label so parallel tests don't clobber each other
+	expiry := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	// Zero value: gauge is not touched, no series emitted.
+	publishCredentialExpiry(provider+"-zero", time.Time{})
+	zero, err := metrics.SecretCredentialExpiresAt.GetMetricWithLabelValues(string(provider) + "-zero")
+	require.NoError(t, err)
+	assert.InDelta(t, 0.0, testutil.ToFloat64(zero), 0, "no value should be set for zero time.Time")
+
+	// Future value: gauge holds the Unix timestamp.
+	publishCredentialExpiry(provider, expiry)
+	got, err := metrics.SecretCredentialExpiresAt.GetMetricWithLabelValues(string(provider))
+	require.NoError(t, err)
+	assert.InDelta(t, float64(expiry.Unix()), testutil.ToFloat64(got), 0)
+
+	// Past value: still published (alerts need to see it), no error.
+	pastProvider := provider + "-past"
+	past := time.Now().Add(-24 * time.Hour)
+	publishCredentialExpiry(pastProvider, past)
+	gotPast, err := metrics.SecretCredentialExpiresAt.GetMetricWithLabelValues(string(pastProvider))
+	require.NoError(t, err)
+	assert.InDelta(t, float64(past.Unix()), testutil.ToFloat64(gotPast), 0)
+}
+
+// Intentional structural twin of TestPpRefreshDue below; collapsing into a
+// parametrized helper would have to thread the method (opRefreshDue vs
+// ppRefreshDue) and field-set callbacks through a closure, which obscures the
+// per-provider symmetry the tests are documenting.
+//
+//nolint:dupl // see comment above
 func TestOpRefreshDue(t *testing.T) {
 	t.Parallel()
 
@@ -1669,6 +1702,67 @@ func TestOpRefreshDue(t *testing.T) {
 				lastOPRefresh: tc.lastOPRefresh,
 			}
 			assert.Equal(t, tc.want, a.opRefreshDue())
+		})
+	}
+}
+
+//nolint:dupl // structural twin of TestOpRefreshDue; see comment there
+func TestPpRefreshDue(t *testing.T) {
+	t.Parallel()
+
+	dummyReader := resolver.SecretRefReader(func(_ context.Context, _ []string) (map[string]string, error) {
+		return nil, nil //nolint:nilnil // test stub
+	})
+	ppCfg := &agentcfg.ProtonPassConfig{RefreshInterval: 10 * time.Minute}
+
+	tests := []struct {
+		name          string
+		ppReader      resolver.SecretRefReader
+		protonPass    *agentcfg.ProtonPassConfig
+		lastPPRefresh time.Time
+		want          bool
+	}{
+		{
+			name:       "nil ppReader always returns false",
+			ppReader:   nil,
+			protonPass: ppCfg, // populated to prove the nil-reader guard triggers first
+			want:       false,
+		},
+		{
+			name:          "zero lastPPRefresh returns true (first run)",
+			ppReader:      dummyReader,
+			protonPass:    ppCfg,
+			lastPPRefresh: time.Time{},
+			want:          true,
+		},
+		{
+			name:          "interval not yet elapsed returns false",
+			ppReader:      dummyReader,
+			protonPass:    ppCfg,
+			lastPPRefresh: time.Now().Add(-5 * time.Minute),
+			want:          false,
+		},
+		{
+			name:          "interval elapsed returns true",
+			ppReader:      dummyReader,
+			protonPass:    ppCfg,
+			lastPPRefresh: time.Now().Add(-11 * time.Minute),
+			want:          true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := &Agent{
+				ppReader: tc.ppReader,
+				cfg: &agentcfg.Config{
+					Hostname:   "test-host",
+					ProtonPass: tc.protonPass,
+				},
+				lastPPRefresh: tc.lastPPRefresh,
+			}
+			assert.Equal(t, tc.want, a.ppRefreshDue())
 		})
 	}
 }

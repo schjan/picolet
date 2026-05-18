@@ -13,7 +13,7 @@ import (
 func renderRegistryTemplate(tb testing.TB, fsys fstest.MapFS, name string, data any) (string, error) {
 	tb.Helper()
 
-	registry, _, err := BuildRegistry(tb.Context(), fsys, nil, nil, "/var/lib/picolet")
+	registry, _, err := BuildRegistry(tb.Context(), fsys, nil, []ProviderTemplate{OpProvider(nil)}, "/var/lib/picolet")
 	require.NoError(tb, err)
 
 	var buf bytes.Buffer
@@ -211,8 +211,33 @@ func TestBuildRegistrySkipsGitDirectory(t *testing.T) {
 		"nested/plain.txt":  &fstest.MapFile{Data: []byte("ignored")},
 	}
 
-	registry, _, err := BuildRegistry(t.Context(), fsys, nil, nil, "/var/lib/picolet")
+	registry, _, err := BuildRegistry(t.Context(), fsys, nil, nil, "/var/lib/picolet") // nil providers OK
 	require.NoError(t, err)
 	assert.NotNil(t, registry.Lookup("main.tmpl"))
 	assert.Nil(t, registry.Lookup(".git/invalid.tmpl"))
+}
+
+func TestBuildRegistryRejectsInvalidProviderKeys(t *testing.T) {
+	t.Parallel()
+	fsys := fstest.MapFS{
+		"main.tmpl": &fstest.MapFile{Data: []byte("ok")},
+	}
+
+	_, _, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{
+		{FuncName: "readBrokenSecret"},
+	}, "/var/lib/picolet")
+	require.Error(t, err)
+	require.ErrorContains(t, err, "empty key")
+
+	_, _, err = BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{
+		OpProvider(nil),
+		{
+			Key:              ProviderOnePassword,
+			FuncName:         "readOtherSecret",
+			IsRef:            func(string) bool { return true },
+			PlaceholderEmpty: "<other>",
+		},
+	}, "/var/lib/picolet")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "used by both")
 }

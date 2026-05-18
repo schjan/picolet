@@ -13,26 +13,33 @@ import (
 )
 
 // NewClientFromConfig creates a GitHub App client from direct config fields
-// or from 1Password references.
+// or from secret-provider references (1Password or Proton Pass).
+//
+// Mutual exclusion between modes is enforced upstream by agentcfg.Validate;
+// this function chooses the first configured source it finds.
 func NewClientFromConfig(
 	ctx context.Context,
 	cfg *agentcfg.Config,
-	opReader resolver.OpSecretReader,
+	opReader resolver.SecretRefReader,
+	ppReader resolver.SecretRefReader,
 ) (*github.Client, int64, error) {
 	if cfg == nil {
 		return nil, 0, errors.New("agent config is required")
 	}
 
-	if cfg.HasGitHubAppRefs() {
-		appID, installationID, privateKeyPEM, err := resolveGitHubAppFromOnePassword(ctx, cfg, opReader)
-		if err != nil {
-			return nil, 0, err
-		}
-		client, err := github.NewClientFromPEM(appID, installationID, privateKeyPEM, cfg.RepoURL)
-		if err != nil {
-			return nil, 0, err
-		}
-		return client, appID, nil
+	if cfg.HasGitHubAppOPRefs() {
+		return newClientFromRefs(ctx, cfg, opReader, resolver.ProviderOnePassword, refTriple{
+			AppID:          cfg.OnePassword.GitHubAppIDRef,
+			InstallationID: cfg.OnePassword.GitHubInstallationRef,
+			PrivateKey:     cfg.OnePassword.GitHubPrivateKeyRef,
+		})
+	}
+	if cfg.HasGitHubAppPPRefs() {
+		return newClientFromRefs(ctx, cfg, ppReader, resolver.ProviderProtonPass, refTriple{
+			AppID:          cfg.ProtonPass.GitHubAppIDRef,
+			InstallationID: cfg.ProtonPass.GitHubInstallationRef,
+			PrivateKey:     cfg.ProtonPass.GitHubPrivateKeyRef,
+		})
 	}
 
 	client, err := github.NewClient(cfg.GitHubAppID, cfg.GitHubInstallationID, cfg.GitHubPrivateKeyPath, cfg.RepoURL)
@@ -42,65 +49,82 @@ func NewClientFromConfig(
 	return client, cfg.GitHubAppID, nil
 }
 
-func resolveGitHubAppFromOnePassword(
+// refTriple groups the three refs needed for GitHub App authentication so
+// they can be passed to a generic resolver.
+type refTriple struct {
+	AppID          string
+	InstallationID string
+	PrivateKey     string
+}
+
+func newClientFromRefs(ctx context.Context, cfg *agentcfg.Config, reader resolver.SecretRefReader, provider resolver.ProviderKey, refs refTriple) (*github.Client, int64, error) {
+	appID, installationID, privateKeyPEM, err := resolveGitHubAppFromRefs(ctx, reader, provider, refs)
+	if err != nil {
+		return nil, 0, err
+	}
+	client, err := github.NewClientFromPEM(appID, installationID, privateKeyPEM, cfg.RepoURL)
+	if err != nil {
+		return nil, 0, err
+	}
+	return client, appID, nil
+}
+
+func resolveGitHubAppFromRefs(
 	ctx context.Context,
-	cfg *agentcfg.Config,
-	opReader resolver.OpSecretReader,
+	reader resolver.SecretRefReader,
+	provider resolver.ProviderKey,
+	refs refTriple,
 ) (int64, int64, []byte, error) {
-	appIDRaw, installationRaw, privateKeyRaw, err := resolveGitHubAppRefValues(ctx, cfg, opReader)
+	appIDRaw, installationRaw, privateKeyRaw, err := resolveGitHubAppRefValues(ctx, reader, provider, refs)
 	if err != nil {
 		return 0, 0, nil, err
 	}
-	return parseGitHubAppRefValues(appIDRaw, installationRaw, privateKeyRaw)
+	return parseGitHubAppRefValues(appIDRaw, installationRaw, privateKeyRaw, provider)
 }
 
 func resolveGitHubAppRefValues(
 	ctx context.Context,
-	cfg *agentcfg.Config,
-	opReader resolver.OpSecretReader,
+	reader resolver.SecretRefReader,
+	provider resolver.ProviderKey,
+	refs refTriple,
 ) (string, string, string, error) {
-	if opReader == nil || cfg.OnePassword == nil {
-		return "", "", "", errors.New("onepassword must be configured to resolve github app refs")
+	if reader == nil {
+		return "", "", "", fmt.Errorf("%s must be configured to resolve github app refs", provider)
 	}
 
-	refs := []string{
-		cfg.OnePassword.GitHubAppIDRef,
-		cfg.OnePassword.GitHubInstallationRef,
-		cfg.OnePassword.GitHubPrivateKeyRef,
-	}
-	results, err := opReader(ctx, refs)
+	results, err := reader(ctx, []string{refs.AppID, refs.InstallationID, refs.PrivateKey})
 	if err != nil {
-		return "", "", "", fmt.Errorf("resolving github app refs from 1password: %w", err)
+		return "", "", "", fmt.Errorf("resolving github app refs from %s: %w", provider, err)
 	}
 
-	appIDRaw, err := resolvedRef(results, cfg.OnePassword.GitHubAppIDRef, "onepassword.github_app_id_ref")
+	appIDRaw, err := resolvedRef(results, refs.AppID, string(provider)+".github_app_id_ref")
 	if err != nil {
 		return "", "", "", err
 	}
-	installationRaw, err := resolvedRef(results, cfg.OnePassword.GitHubInstallationRef, "onepassword.github_installation_id_ref")
+	installationRaw, err := resolvedRef(results, refs.InstallationID, string(provider)+".github_installation_id_ref")
 	if err != nil {
 		return "", "", "", err
 	}
-	privateKeyRaw, err := resolvedRef(results, cfg.OnePassword.GitHubPrivateKeyRef, "onepassword.github_private_key_ref")
+	privateKeyRaw, err := resolvedRef(results, refs.PrivateKey, string(provider)+".github_private_key_ref")
 	if err != nil {
 		return "", "", "", err
 	}
 	return appIDRaw, installationRaw, privateKeyRaw, nil
 }
 
-func parseGitHubAppRefValues(appIDRaw, installationRaw, privateKeyRaw string) (int64, int64, []byte, error) {
-	appID, err := parsePositiveInt64("onepassword.github_app_id_ref", appIDRaw)
+func parseGitHubAppRefValues(appIDRaw, installationRaw, privateKeyRaw string, provider resolver.ProviderKey) (int64, int64, []byte, error) {
+	appID, err := parsePositiveInt64(string(provider)+".github_app_id_ref", appIDRaw)
 	if err != nil {
 		return 0, 0, nil, err
 	}
-	installationID, err := parsePositiveInt64("onepassword.github_installation_id_ref", installationRaw)
+	installationID, err := parsePositiveInt64(string(provider)+".github_installation_id_ref", installationRaw)
 	if err != nil {
 		return 0, 0, nil, err
 	}
 
 	privateKey := strings.TrimSpace(privateKeyRaw)
 	if privateKey == "" {
-		return 0, 0, nil, errors.New("onepassword.github_private_key_ref resolved to an empty value")
+		return 0, 0, nil, fmt.Errorf("%s.github_private_key_ref resolved to an empty value", provider)
 	}
 
 	return appID, installationID, []byte(privateKey), nil
@@ -109,7 +133,7 @@ func parseGitHubAppRefValues(appIDRaw, installationRaw, privateKeyRaw string) (i
 func resolvedRef(results map[string]string, ref, fieldName string) (string, error) {
 	value, ok := results[ref]
 	if !ok {
-		return "", fmt.Errorf("resolving github app refs from 1password: missing %s (%q)", fieldName, ref)
+		return "", fmt.Errorf("resolving github app refs: missing %s (%q)", fieldName, ref)
 	}
 	return value, nil
 }

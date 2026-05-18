@@ -19,10 +19,26 @@
 | `picolet_unit_dependency_count` | Gauge | `unit`, `relation` | Current generated systemd dependency count by managed unit and relation |
 | `picolet_host_info` | Gauge | `pi_type` | Resolved host metadata (value=1) |
 | `picolet_host_feature_info` | Gauge | `feature` | Resolved host feature metadata (value=1) |
+| `picolet_secrets_managed_count` | Gauge | `provider` (`onepassword`/`protonpass`) | Number of direct provider-backed secret refs currently managed |
+| `picolet_secret_sync_total` | Counter | `provider` | Successful secret-provider sync attempts (failures counted on `picolet_reconciliation_total{result="failure"}`) |
+| `picolet_secret_last_sync_timestamp` | Gauge | `provider` | Unix timestamp of the last successful secret-provider sync |
+| `picolet_secret_credential_expires_at` | Gauge | `provider` | Unix timestamp at which the configured credential expires (only emitted when the operator records the expiry in config) |
 
 Dependency targets, file paths, hashes, recent error strings, and dashboard event history are intentionally not exported as labels to avoid high-cardinality or churn-heavy series.
 
 > **Self-update monitoring:** use node-exporter's `systemd_unit_start_time_seconds` for `picolet.service` to detect restart failures.
+
+## Upgrading from 1Password-only metrics
+
+The previous `picolet_op_*` metric family has been replaced with a provider-labeled family. Existing dashboards and rules need to be remapped:
+
+| Old (removed) | New |
+|---|---|
+| `picolet_op_direct_secrets_count` | `picolet_secrets_managed_count{provider="onepassword"}` |
+| `picolet_op_sync_total` (`result="success"` only) | `picolet_secret_sync_total{provider="onepassword"}` (the `result` label is dropped; failures live on `picolet_reconciliation_total{result="failure"}`) |
+| `picolet_op_last_sync_timestamp` | `picolet_secret_last_sync_timestamp{provider="onepassword"}` |
+
+The new `picolet_secret_credential_expires_at{provider}` gauge is opt-in: it is only emitted when `onepassword.token_expires_at` or `protonpass.pat_expires_at` is set in `config.yml`. Use `absent_over_time(picolet_secret_credential_expires_at{provider="..."}[1h])` to flag providers whose expiry was never declared.
 
 ## Recommended Alert Rules
 
@@ -46,6 +62,23 @@ groups:
         annotations:
           summary: "picolet has gated a SHA after 3 consecutive failures"
           description: "The current git HEAD has failed reconciliation 3+ times and is permanently skipped until a new commit arrives."
+
+      - alert: PicoletSecretCredentialNearExpiry
+        expr: picolet_secret_credential_expires_at - time() < 14 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.provider }} credential expires in less than 14 days"
+          description: "Rotate the {{ $labels.provider }} credential on {{ $labels.instance }} and update token_expires_at / pat_expires_at in config.yml."
+
+      - alert: PicoletSecretCredentialExpired
+        expr: picolet_secret_credential_expires_at - time() < 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.provider }} credential has expired"
+          description: "Secret resolution for {{ $labels.provider }} on {{ $labels.instance }} will fail until the credential is rotated."
 ```
 
 ## Split Rules Across Multiple Files

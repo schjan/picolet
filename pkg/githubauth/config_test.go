@@ -42,7 +42,7 @@ func TestNewClientFromConfigDirect(t *testing.T) {
 		GitHubPrivateKeyPath: pemPath,
 	}
 
-	c, appID, err := NewClientFromConfig(context.Background(), cfg, nil)
+	c, appID, err := NewClientFromConfig(context.Background(), cfg, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, c)
 	assert.Equal(t, int64(12345), appID)
@@ -50,37 +50,117 @@ func TestNewClientFromConfigDirect(t *testing.T) {
 	assert.Equal(t, "repo", c.Repo)
 }
 
+// TestNewClientFromConfigRefs covers both OP-refs and PP-refs happy paths.
+// The two paths share enough structure that a table-driven test removes a
+// dupl finding while staying readable.
+//
+//nolint:funlen // table-driven test
 func TestNewClientFromConfigRefs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		cfg          *agentcfg.Config
+		expectedRefs []string
+		results      func(t *testing.T) map[string]string
+		wantAppID    int64
+		useOpReader  bool // true → pass reader as opReader arg; false → ppReader
+	}{
+		{
+			name: "OnePassword refs",
+			cfg: &agentcfg.Config{
+				RepoURL: "https://github.com/org/repo.git",
+				OnePassword: &agentcfg.OnePasswordConfig{
+					GitHubAppIDRef:        "op://vault/app/id",
+					GitHubInstallationRef: "op://vault/app/installation",
+					GitHubPrivateKeyRef:   "op://vault/app/private_key",
+				},
+			},
+			expectedRefs: []string{
+				"op://vault/app/id",
+				"op://vault/app/installation",
+				"op://vault/app/private_key",
+			},
+			results: func(t *testing.T) map[string]string {
+				t.Helper()
+				return map[string]string{
+					"op://vault/app/id":           "12345",
+					"op://vault/app/installation": "67890",
+					"op://vault/app/private_key":  string(testPrivateKeyPEM(t)),
+				}
+			},
+			wantAppID:   12345,
+			useOpReader: true,
+		},
+		{
+			name: "ProtonPass refs",
+			cfg: &agentcfg.Config{
+				RepoURL: "https://github.com/org/repo.git",
+				ProtonPass: &agentcfg.ProtonPassConfig{
+					GitHubAppIDRef:        "pass://share/app/id",
+					GitHubInstallationRef: "pass://share/app/installation",
+					GitHubPrivateKeyRef:   "pass://share/app/private_key",
+				},
+			},
+			expectedRefs: []string{
+				"pass://share/app/id",
+				"pass://share/app/installation",
+				"pass://share/app/private_key",
+			},
+			results: func(t *testing.T) map[string]string {
+				t.Helper()
+				return map[string]string{
+					"pass://share/app/id":           "54321",
+					"pass://share/app/installation": "98765",
+					"pass://share/app/private_key":  string(testPrivateKeyPEM(t)),
+				}
+			},
+			wantAppID:   54321,
+			useOpReader: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			reader := resolver.SecretRefReader(func(_ context.Context, refs []string) (map[string]string, error) {
+				assert.ElementsMatch(t, tc.expectedRefs, refs)
+				return tc.results(t), nil
+			})
+
+			var opReader, ppReader resolver.SecretRefReader
+			if tc.useOpReader {
+				opReader = reader
+			} else {
+				ppReader = reader
+			}
+
+			c, appID, err := NewClientFromConfig(context.Background(), tc.cfg, opReader, ppReader)
+			require.NoError(t, err)
+			require.NotNil(t, c)
+			assert.Equal(t, tc.wantAppID, appID)
+			assert.Equal(t, "org", c.Owner)
+			assert.Equal(t, "repo", c.Repo)
+		})
+	}
+}
+
+func TestNewClientFromConfigPPRefsRequireProtonPassReader(t *testing.T) {
 	t.Parallel()
 
 	cfg := &agentcfg.Config{
 		RepoURL: "https://github.com/org/repo.git",
-		OnePassword: &agentcfg.OnePasswordConfig{
-			GitHubAppIDRef:        "op://vault/app/id",
-			GitHubInstallationRef: "op://vault/app/installation",
-			GitHubPrivateKeyRef:   "op://vault/app/private_key",
+		ProtonPass: &agentcfg.ProtonPassConfig{
+			GitHubAppIDRef:        "pass://share/app/id",
+			GitHubInstallationRef: "pass://share/app/installation",
+			GitHubPrivateKeyRef:   "pass://share/app/private_key",
 		},
 	}
 
-	reader := resolver.OpSecretReader(func(_ context.Context, refs []string) (map[string]string, error) {
-		assert.ElementsMatch(t, []string{
-			"op://vault/app/id",
-			"op://vault/app/installation",
-			"op://vault/app/private_key",
-		}, refs)
-		return map[string]string{
-			"op://vault/app/id":           "12345",
-			"op://vault/app/installation": "67890",
-			"op://vault/app/private_key":  string(testPrivateKeyPEM(t)),
-		}, nil
-	})
-
-	c, appID, err := NewClientFromConfig(context.Background(), cfg, reader)
-	require.NoError(t, err)
-	require.NotNil(t, c)
-	assert.Equal(t, int64(12345), appID)
-	assert.Equal(t, "org", c.Owner)
-	assert.Equal(t, "repo", c.Repo)
+	_, _, err := NewClientFromConfig(context.Background(), cfg, nil, nil)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "protonpass must be configured")
 }
 
 func TestNewClientFromConfigRefsRequireOnePasswordReader(t *testing.T) {
@@ -95,7 +175,7 @@ func TestNewClientFromConfigRefsRequireOnePasswordReader(t *testing.T) {
 		},
 	}
 
-	_, _, err := NewClientFromConfig(context.Background(), cfg, nil)
+	_, _, err := NewClientFromConfig(context.Background(), cfg, nil, nil)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "onepassword must be configured")
 }
@@ -119,7 +199,7 @@ func TestNewClientFromConfigRefsMissingResult(t *testing.T) {
 		}, nil
 	})
 
-	_, _, err := NewClientFromConfig(context.Background(), cfg, reader)
+	_, _, err := NewClientFromConfig(context.Background(), cfg, reader, nil)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "missing onepassword.github_installation_id_ref")
 }
@@ -144,7 +224,7 @@ func TestNewClientFromConfigRefsInvalidAppID(t *testing.T) {
 		}, nil
 	})
 
-	_, _, err := NewClientFromConfig(context.Background(), cfg, reader)
+	_, _, err := NewClientFromConfig(context.Background(), cfg, reader, nil)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "onepassword.github_app_id_ref is not a valid integer")
 }
@@ -169,7 +249,7 @@ func TestNewClientFromConfigRefsEmptyPrivateKey(t *testing.T) {
 		}, nil
 	})
 
-	_, _, err := NewClientFromConfig(context.Background(), cfg, reader)
+	_, _, err := NewClientFromConfig(context.Background(), cfg, reader, nil)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "resolved to an empty value")
 }
@@ -177,7 +257,7 @@ func TestNewClientFromConfigRefsEmptyPrivateKey(t *testing.T) {
 func TestNewClientFromConfigNilConfig(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := NewClientFromConfig(context.Background(), nil, nil)
+	_, _, err := NewClientFromConfig(context.Background(), nil, nil, nil)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "agent config is required")
 }
