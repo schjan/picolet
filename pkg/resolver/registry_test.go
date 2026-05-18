@@ -227,7 +227,7 @@ func TestBuildRegistryRejectsInvalidProviderKeys(t *testing.T) {
 		{FuncName: "readBrokenSecret"},
 	}, "/var/lib/picolet")
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "empty key")
+	require.ErrorContains(t, err, "empty key")
 
 	_, _, err = BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{
 		OpProvider(nil),

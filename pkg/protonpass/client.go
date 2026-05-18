@@ -95,9 +95,7 @@ func buildBaseEnv(cfg ClientConfig) ([]string, error) {
 	env := allowedHostEnv()
 
 	var encKey string
-	if cfg.PATPath == "" {
-		// Lazy mode uses pass-cli's default key provider/session behavior.
-	} else {
+	if cfg.PATPath != "" {
 		if cfg.EncryptionKeyPath == "" {
 			return nil, errors.New("ProtonPass: encryption_key_path is required when pat_path is set")
 		}

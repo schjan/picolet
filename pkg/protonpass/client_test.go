@@ -348,7 +348,7 @@ func TestNewClientPATModeDefaultSessionDir(t *testing.T) {
 
 func TestEffectiveSessionDir(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, "", effectiveSessionDir(ClientConfig{}))
+	assert.Empty(t, effectiveSessionDir(ClientConfig{}))
 	assert.Equal(t, DefaultSessionDir, effectiveSessionDir(ClientConfig{PATPath: "/pat"}))
 	assert.Equal(t, "/custom", effectiveSessionDir(ClientConfig{PATPath: "/pat", SessionDir: "/custom"}))
 	assert.Equal(t, "/custom", effectiveSessionDir(ClientConfig{SessionDir: "/custom"}))
