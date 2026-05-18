@@ -28,6 +28,18 @@ Dependency targets, file paths, hashes, recent error strings, and dashboard even
 
 > **Self-update monitoring:** use node-exporter's `systemd_unit_start_time_seconds` for `picolet.service` to detect restart failures.
 
+## Upgrading from 1Password-only metrics
+
+The previous `picolet_op_*` metric family has been replaced with a provider-labeled family. Existing dashboards and rules need to be remapped:
+
+| Old (removed) | New |
+|---|---|
+| `picolet_op_direct_secrets_count` | `picolet_secrets_managed_count{provider="onepassword"}` |
+| `picolet_op_sync_total` (`result="success"` only) | `picolet_secret_sync_total{provider="onepassword"}` (the `result` label is dropped; failures live on `picolet_reconciliation_total{result="failure"}`) |
+| `picolet_op_last_sync_timestamp` | `picolet_secret_last_sync_timestamp{provider="onepassword"}` |
+
+The new `picolet_secret_credential_expires_at{provider}` gauge is opt-in: it is only emitted when `onepassword.token_expires_at` or `protonpass.pat_expires_at` is set in `config.yml`. Use `absent_over_time(picolet_secret_credential_expires_at{provider="..."}[1h])` to flag providers whose expiry was never declared.
+
 ## Recommended Alert Rules
 
 ```yaml
