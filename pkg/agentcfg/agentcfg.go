@@ -279,13 +279,13 @@ func (c *Config) githubAppCounts() (direct, op, pp int) {
 
 func (c *Config) checkGitHubAppGitTokenExclusion() error {
 	if c.GitTokenPath != "" {
-		return errors.New("github_app_id and git_token_path are mutually exclusive")
+		return errors.New("GitHub App and git_token_path are mutually exclusive")
 	}
 	if c.OnePassword != nil && c.OnePassword.GitTokenRef != "" {
-		return errors.New("github_app_id and onepassword.git_token_ref are mutually exclusive")
+		return errors.New("GitHub App and onepassword.git_token_ref are mutually exclusive")
 	}
 	if c.ProtonPass != nil && c.ProtonPass.GitTokenRef != "" {
-		return errors.New("github_app_id and protonpass.git_token_ref are mutually exclusive")
+		return errors.New("GitHub App and protonpass.git_token_ref are mutually exclusive")
 	}
 	return nil
 }
