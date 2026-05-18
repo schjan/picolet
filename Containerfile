@@ -20,13 +20,14 @@ RUN --mount=type=cache,target=/go/pkg/mod/ \
     -ldflags="-X github.com/schjan/picolet/pkg/version.Version=${VERSION} -X github.com/schjan/picolet/pkg/version.GitSHA=${GIT_SHA} -s -w" -o /picolet ./cmd/picolet
 
 # Dedicated stage to fetch the pinned pass-cli binary. The version + per-arch
-# SHA-256 hashes are managed by Renovate (see renovate.json customDatasource).
-# When bumping PASS_CLI_VERSION, refresh the hashes from
-# https://proton.me/download/pass-cli/versions.json before merging.
+# SHA-256 hashes are manually pinned. To bump:
+#   1. Fetch the new version metadata from https://proton.me/download/pass-cli/versions.json
+#   2. Download pass-cli-linux-x86_64 and pass-cli-linux-aarch64 for that version
+#   3. Run `sha256sum` on each; paste the values into PASS_CLI_SHA256_AMD64 / _ARM64
+#   4. Verify the build still succeeds via `task build` and a container build smoke
 FROM docker.io/library/debian:trixie-slim AS passcli
 ARG TARGETARCH
 
-# renovate: datasource=custom.protonpass-cli depName=pass-cli versioning=semver
 ARG PASS_CLI_VERSION=2.0.2
 ARG PASS_CLI_SHA256_AMD64=fd60a5041e642a7b1135ef6878c3d7ce3523b083210ea8100eee5c3701017ed9
 ARG PASS_CLI_SHA256_ARM64=c12c531adb823d4eae4f6e69065c6e767b10ed71328a1b3fa625a4897ae3b38c

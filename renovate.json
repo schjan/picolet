@@ -1,14 +1,5 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended", ":semanticCommits", "schedule:monthly"],
-  "postUpdateOptions": ["gomodTidy"],
-  "customDatasources": {
-    "protonpass-cli": {
-      "defaultRegistryUrlTemplate": "https://proton.me/download/pass-cli/versions.json",
-      "format": "json",
-      "transformTemplates": [
-        "{\"releases\":[{\"version\": $.passCliVersions.version}]}"
-      ]
-    }
-  }
+  "postUpdateOptions": ["gomodTidy"]
 }
