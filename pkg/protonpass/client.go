@@ -3,13 +3,11 @@ package protonpass
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
-	"path"
 	"strings"
 	"sync"
 )
@@ -244,8 +242,11 @@ func (c *Client) loginLocked(ctx context.Context) error {
 }
 
 // Resolve returns the secret value for a single pass:// reference.
-// Calls EnsureSession on first use. Output is parsed from --output=json
-// rather than human-readable form so we can rely on a stable schema.
+// Calls EnsureSession on first use. pass-cli emits the field as raw text
+// when the URI ends in /FIELD (regardless of --output), so the returned
+// value is the literal field contents — JSON-shaped secrets pass through
+// unchanged. --output=json is set as a hedge against future formatting
+// changes to human mode.
 //
 // Invalid refs are rejected inside resolveLocked via ParseRef, so a bogus
 // input takes the EnsureSession round-trip before failing — an acceptable
@@ -290,70 +291,30 @@ func (c *Client) ResolveAll(ctx context.Context, refs []string) (map[string]stri
 
 // resolveLocked invokes pass-cli for one ref. Caller must hold sessionMu.
 func (c *Client) resolveLocked(ctx context.Context, ref string) (string, error) {
-	parsed, err := ParseRef(ref)
-	if err != nil {
+	if _, err := ParseRef(ref); err != nil {
 		return "", fmt.Errorf("protonpass resolve %q: %w", ref, err)
 	}
 	stdout, stderr, err := c.runner.Run(ctx, c.env, c.cliPath, "item", "view", ref, "--output=json")
 	if err != nil {
 		return "", fmt.Errorf("protonpass resolve %q: %s: %w", ref, sanitizeStderr(stderr), err)
 	}
-	val, err := parseItemViewJSON(stdout, parsed)
+	val, err := parseItemViewOutput(stdout)
 	if err != nil {
 		return "", fmt.Errorf("protonpass resolve %q: %w", ref, err)
 	}
 	return val, nil
 }
 
-// parseItemViewJSON extracts a string secret from `pass-cli item view --output=json`.
-//
-// Accepted shapes:
-//   - raw text (not JSON-encoded). pass-cli 2.0.2 emits the literal value
-//     when the URI ends in /FIELD, even with --output=json, because the
-//     field-extraction path bypasses item-shape serialization.
-//   - a JSON-encoded string ("password-value")
-//   - an object with a single string-typed field
-//   - an object with multiple fields, of which one's key matches the tail
-//     segment of ref.Field (path.Base) — picked by name to survive future
-//     pass-cli versions that add metadata alongside the value.
-func parseItemViewJSON(stdout []byte, ref PassRef) (string, error) {
+// parseItemViewOutput returns the trimmed pass-cli stdout as the literal
+// secret value. pass-cli emits the field as raw text whenever the URI
+// includes a /FIELD component (which picolet's ParseRef requires), so any
+// JSON-shaped output the user stored in the field passes through unchanged.
+func parseItemViewOutput(stdout []byte) (string, error) {
 	trimmed := bytes.TrimSpace(stdout)
 	if len(trimmed) == 0 {
 		return "", errors.New("empty pass-cli output")
 	}
-
-	if !json.Valid(trimmed) {
-		return string(trimmed), nil
-	}
-
-	var asString string
-	if err := json.Unmarshal(trimmed, &asString); err == nil {
-		return asString, nil
-	}
-
-	var asObj map[string]any
-	if err := json.Unmarshal(trimmed, &asObj); err != nil {
-		return "", fmt.Errorf("decoding pass-cli output: %w", err)
-	}
-	if len(asObj) == 1 {
-		for _, v := range asObj {
-			s, ok := v.(string)
-			if !ok {
-				return "", fmt.Errorf("pass-cli output: field value is %T, want string", v)
-			}
-			return s, nil
-		}
-	}
-	wantKey := path.Base(ref.Field)
-	val, ok := asObj[wantKey]
-	if !ok {
-		return "", fmt.Errorf("pass-cli output: field %q not present in response", wantKey)
-	}
-	s, ok := val.(string)
-	if !ok {
-		return "", fmt.Errorf("pass-cli output: field %q value is %T, want string", wantKey, val)
-	}
-	return s, nil
+	return string(trimmed), nil
 }
 
 // execRunner is the production cmdRunner backed by os/exec.

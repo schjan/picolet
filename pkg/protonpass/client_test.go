@@ -184,7 +184,7 @@ func TestResolveHappyPath(t *testing.T) {
 	r := &fakeRunner{
 		resolveFn: func(_ context.Context, _ []string, ref string) ([]byte, []byte, error) {
 			assert.Equal(t, "pass://share/item/password", ref)
-			return []byte(`"s3cret"`), nil, nil
+			return []byte("s3cret\n"), nil, nil
 		},
 	}
 	c := newTestClient(t, r)
@@ -194,18 +194,21 @@ func TestResolveHappyPath(t *testing.T) {
 	assert.Equal(t, "s3cret", val)
 }
 
-func TestResolveAcceptsObjectShape(t *testing.T) {
+func TestResolveReturnsJSONShapedValueVerbatim(t *testing.T) {
 	t.Parallel()
+	const stored = `{"password": "from-object"}`
 	r := &fakeRunner{
 		resolveFn: func(_ context.Context, _ []string, _ string) ([]byte, []byte, error) {
-			return []byte(`{"password": "from-object"}`), nil, nil
+			return []byte(stored), nil, nil
 		},
 	}
 	c := newTestClient(t, r)
 
 	val, err := c.Resolve(t.Context(), "pass://share/item/password")
 	require.NoError(t, err)
-	assert.Equal(t, "from-object", val)
+	// Byte-for-byte equality, not JSON-equivalence: a value that happens to
+	// look like JSON must pass through unchanged.
+	assert.Equal(t, stored, val) //nolint:testifylint // intentional literal-string compare
 }
 
 func TestResolveAllPartialFailure(t *testing.T) {
@@ -215,7 +218,7 @@ func TestResolveAllPartialFailure(t *testing.T) {
 			if ref == "pass://share/bad/field" {
 				return nil, []byte("not found"), errors.New("exit status 1")
 			}
-			return []byte(`"value-of-` + ref + `"`), nil, nil
+			return []byte("value-of-" + ref), nil, nil
 		},
 	}
 	c := newTestClient(t, r)
@@ -248,7 +251,7 @@ func TestResolveAllRejectsInvalidRef(t *testing.T) {
 	t.Parallel()
 	r := &fakeRunner{
 		resolveFn: func(_ context.Context, _ []string, ref string) ([]byte, []byte, error) {
-			return []byte(`"value-of-` + ref + `"`), nil, nil
+			return []byte("value-of-" + ref), nil, nil
 		},
 	}
 	c := newTestClient(t, r)
@@ -264,52 +267,34 @@ func TestResolveAllRejectsInvalidRef(t *testing.T) {
 	assert.False(t, hasBad)
 }
 
-func TestParseItemViewJSONHappyPaths(t *testing.T) {
+func TestParseItemViewOutput(t *testing.T) {
 	t.Parallel()
-	ref := PassRef{Share: "s", Item: "i", Field: "section/password"}
 	cases := []struct {
 		name string
 		in   string
 		want string
 	}{
-		{"raw value (pass-cli 2.0.2 field URI)", "https://outlook.office.com/webhook/abc", "https://outlook.office.com/webhook/abc"},
-		{"raw value with surrounding whitespace", "  raw-bare-value\n", "raw-bare-value"},
-		{"JSON string", `"raw-value"`, "raw-value"},
-		{"single-field object", `{"password":"single-value"}`, "single-value"},
-		{"multi-field object matching tail segment", `{"password":"matched","modified_at":"2026-05-18"}`, "matched"},
+		{"webhook URL", "https://outlook.office.com/webhook/abc", "https://outlook.office.com/webhook/abc"},
+		{"trims surrounding whitespace", "  raw-bare-value\n", "raw-bare-value"},
+		{"JSON-shaped value passes through unchanged", `{"key":"value"}`, `{"key":"value"}`},
+		{"value with leading quote passes through unchanged", `"quoted-secret"`, `"quoted-secret"`},
+		{"bare scalar (number)", "42", "42"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := parseItemViewJSON([]byte(tc.in), ref)
+			got, err := parseItemViewOutput([]byte(tc.in))
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got)
 		})
 	}
 }
 
-func TestParseItemViewJSONErrors(t *testing.T) {
+func TestParseItemViewOutputEmpty(t *testing.T) {
 	t.Parallel()
-	ref := PassRef{Share: "s", Item: "i", Field: "password"}
-	cases := []struct {
-		name    string
-		in      string
-		wantMsg string
-	}{
-		{"empty", "", "empty"},
-		{"empty object", `{}`, "field \"password\" not present"},
-		{"multi-field object missing target", `{"login":"x","note":"y"}`, "field \"password\" not present"},
-		{"multi-field object non-string target", `{"password":42,"note":"y"}`, "value is float64"},
-		{"single-field object non-string value", `{"password":42}`, "field value is float64"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			_, err := parseItemViewJSON([]byte(tc.in), ref)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tc.wantMsg)
-		})
-	}
+	_, err := parseItemViewOutput([]byte("   \n\t  "))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty pass-cli output")
 }
 
 func TestBuildBaseEnvAllowlistsHostEnvAndStripsProtonSecrets(t *testing.T) {

@@ -14,17 +14,17 @@ import (
 )
 
 // Shared client logged in once for all integration tests in this package.
-// Each test would otherwise build its own Client and call `pass-cli login`
-// in parallel, hammering Proton's auth endpoint and risking per-PAT
-// rate limiting / server-side serialization.
+// Per-test clients would each call `pass-cli login` in parallel, hammering
+// Proton's auth endpoint and risking per-PAT rate limiting.
+//
+// Written by TestMain before m.Run; read-only thereafter, so no mutex needed.
 var (
 	sharedClient    *Client
 	sharedClientErr error
 )
 
-// TestMain logs in once and shares the resulting Client with every test.
-// The shared SessionDir lives in os.MkdirTemp (not t.TempDir, which has no
-// suitable owning test) and is removed at process exit.
+// TestMain owns the shared client. SessionDir lives in os.MkdirTemp because
+// t.TempDir has no suitable owning test, and is removed at process exit.
 func TestMain(m *testing.M) {
 	cleanup := setupSharedClient()
 	code := m.Run()
@@ -79,6 +79,7 @@ func integrationClient(t *testing.T) *Client {
 		t.Skip("PP_PERSONAL_ACCESS_TOKEN not set")
 	}
 	require.NoError(t, sharedClientErr)
+	require.NotNil(t, sharedClient, "shared client unexpectedly nil after setup")
 	return sharedClient
 }
 
