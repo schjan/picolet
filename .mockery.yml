@@ -32,6 +32,3 @@ packages:
     interfaces:
       MQTTClient: ~
       DeploymentReporter: ~
-  github.com/schjan/picolet/pkg/protonpass:
-    interfaces:
-      cmdRunner: ~
