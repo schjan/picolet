@@ -308,6 +308,9 @@ func (c *Client) resolveLocked(ctx context.Context, ref string) (string, error) 
 // parseItemViewJSON extracts a string secret from `pass-cli item view --output=json`.
 //
 // Accepted shapes:
+//   - raw text (not JSON-encoded). pass-cli 2.0.2 emits the literal value
+//     when the URI ends in /FIELD, even with --output=json, because the
+//     field-extraction path bypasses item-shape serialization.
 //   - a JSON-encoded string ("password-value")
 //   - an object with a single string-typed field
 //   - an object with multiple fields, of which one's key matches the tail
@@ -317,6 +320,10 @@ func parseItemViewJSON(stdout []byte, ref PassRef) (string, error) {
 	trimmed := bytes.TrimSpace(stdout)
 	if len(trimmed) == 0 {
 		return "", errors.New("empty pass-cli output")
+	}
+
+	if !json.Valid(trimmed) {
+		return string(trimmed), nil
 	}
 
 	var asString string

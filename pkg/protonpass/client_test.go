@@ -272,7 +272,9 @@ func TestParseItemViewJSONHappyPaths(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"raw string", `"raw-value"`, "raw-value"},
+		{"raw value (pass-cli 2.0.2 field URI)", "https://outlook.office.com/webhook/abc", "https://outlook.office.com/webhook/abc"},
+		{"raw value with surrounding whitespace", "  raw-bare-value\n", "raw-bare-value"},
+		{"JSON string", `"raw-value"`, "raw-value"},
 		{"single-field object", `{"password":"single-value"}`, "single-value"},
 		{"multi-field object matching tail segment", `{"password":"matched","modified_at":"2026-05-18"}`, "matched"},
 	}
@@ -295,7 +297,6 @@ func TestParseItemViewJSONErrors(t *testing.T) {
 		wantMsg string
 	}{
 		{"empty", "", "empty"},
-		{"not json", "raw text", "decoding"},
 		{"empty object", `{}`, "field \"password\" not present"},
 		{"multi-field object missing target", `{"login":"x","note":"y"}`, "field \"password\" not present"},
 		{"multi-field object non-string target", `{"password":42,"note":"y"}`, "value is float64"},
