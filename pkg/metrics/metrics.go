@@ -152,9 +152,9 @@ var (
 	SecretSyncTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "picolet_secret_sync_total",
-			Help: "Total secret-provider sync attempts by provider and result.",
+			Help: "Successful secret-provider sync attempts, per provider. Failures are counted on picolet_reconciliation_total{result=\"failure\"}.",
 		},
-		[]string{"provider", "result"},
+		[]string{"provider"},
 	)
 
 	SecretLastSyncTimestamp = prometheus.NewGaugeVec(

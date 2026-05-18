@@ -1176,7 +1176,7 @@ func recordProviderSyncSuccess(provider string, enabled bool, count int) {
 	if !enabled || count == 0 {
 		return
 	}
-	metrics.SecretSyncTotal.WithLabelValues(provider, "success").Inc()
+	metrics.SecretSyncTotal.WithLabelValues(provider).Inc()
 	metrics.SecretLastSyncTimestamp.WithLabelValues(provider).SetToCurrentTime()
 }
 

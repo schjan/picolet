@@ -20,7 +20,7 @@
 | `picolet_host_info` | Gauge | `pi_type` | Resolved host metadata (value=1) |
 | `picolet_host_feature_info` | Gauge | `feature` | Resolved host feature metadata (value=1) |
 | `picolet_secrets_managed_count` | Gauge | `provider` (`onepassword`/`protonpass`) | Number of direct provider-backed secret refs currently managed |
-| `picolet_secret_sync_total` | Counter | `provider`, `result` (`success`) | Successful secret-provider sync attempts |
+| `picolet_secret_sync_total` | Counter | `provider` | Successful secret-provider sync attempts (failures counted on `picolet_reconciliation_total{result="failure"}`) |
 | `picolet_secret_last_sync_timestamp` | Gauge | `provider` | Unix timestamp of the last successful secret-provider sync |
 | `picolet_secret_credential_expires_at` | Gauge | `provider` | Unix timestamp at which the configured credential expires (only emitted when the operator records the expiry in config) |
 
