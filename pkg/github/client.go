@@ -9,7 +9,7 @@ import (
 	ghinstallation "github.com/bradleyfalzon/ghinstallation/v2"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
-	gogithub "github.com/google/go-github/v86/github"
+	gogithub "github.com/google/go-github/v87/github"
 )
 
 // Client wraps go-github with GitHub App auth.
@@ -41,7 +41,10 @@ func NewClientFromPEM(appID, installationID int64, privateKeyPEM []byte, repoURL
 		return nil, fmt.Errorf("creating GitHub App transport: %w", err)
 	}
 
-	gh := gogithub.NewClient(&http.Client{Transport: itr})
+	gh, err := gogithub.NewClient(gogithub.WithHTTPClient(&http.Client{Transport: itr}))
+	if err != nil {
+		return nil, fmt.Errorf("creating GitHub App client: %w", err)
+	}
 
 	return &Client{
 		gh:        gh,
@@ -73,7 +76,7 @@ func newClientWithBaseURL(
 
 	itr.BaseURL = baseURL
 
-	gh, err := gogithub.NewClient(&http.Client{Transport: itr}).WithEnterpriseURLs(baseURL, baseURL)
+	gh, err := gogithub.NewClient(gogithub.WithHTTPClient(&http.Client{Transport: itr}), gogithub.WithEnterpriseURLs(baseURL, baseURL))
 	if err != nil {
 		return nil, fmt.Errorf("configuring GitHub API URL: %w", err)
 	}
