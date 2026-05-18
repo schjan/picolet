@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path"
 	"strings"
 	"sync"
 )
@@ -305,11 +306,15 @@ func (c *Client) ResolveAll(ctx context.Context, refs []string) (map[string]stri
 
 // resolveLocked invokes pass-cli for one ref. Caller must hold sessionMu.
 func (c *Client) resolveLocked(ctx context.Context, ref string) (string, error) {
+	parsed, err := ParseRef(ref)
+	if err != nil {
+		return "", fmt.Errorf("protonpass resolve %q: %w", ref, err)
+	}
 	stdout, stderr, err := c.runner.Run(ctx, c.env, c.cliPath, "item", "view", ref, "--output=json")
 	if err != nil {
 		return "", fmt.Errorf("protonpass resolve %q: %s: %w", ref, sanitizeStderr(stderr), err)
 	}
-	val, err := parseItemViewJSON(stdout)
+	val, err := parseItemViewJSON(stdout, parsed)
 	if err != nil {
 		return "", fmt.Errorf("protonpass resolve %q: %w", ref, err)
 	}
@@ -318,13 +323,13 @@ func (c *Client) resolveLocked(ctx context.Context, ref string) (string, error) 
 
 // parseItemViewJSON extracts a string secret from `pass-cli item view --output=json`.
 //
-// The CLI's output for a single field returns either:
+// Accepted shapes:
 //   - a JSON-encoded string ("password-value")
-//   - an object with a single field (e.g. {"password": "..."})
-//
-// This parser handles both shapes and rejects non-string / multi-field results
-// to surface unexpected schema changes early.
-func parseItemViewJSON(stdout []byte) (string, error) {
+//   - an object with a single string-typed field
+//   - an object with multiple fields, of which one's key matches the tail
+//     segment of ref.Field (path.Base) — picked by name to survive future
+//     pass-cli versions that add metadata alongside the value.
+func parseItemViewJSON(stdout []byte, ref PassRef) (string, error) {
 	trimmed := bytes.TrimSpace(stdout)
 	if len(trimmed) == 0 {
 		return "", errors.New("empty pass-cli output")
@@ -339,18 +344,25 @@ func parseItemViewJSON(stdout []byte) (string, error) {
 	if err := json.Unmarshal(trimmed, &asObj); err != nil {
 		return "", fmt.Errorf("decoding pass-cli output: %w", err)
 	}
-	if len(asObj) != 1 {
-		return "", fmt.Errorf("pass-cli output: expected single field, got %d", len(asObj))
-	}
-	for _, v := range asObj {
-		s, ok := v.(string)
-		if !ok {
-			return "", fmt.Errorf("pass-cli output: field value is %T, want string", v)
+	if len(asObj) == 1 {
+		for _, v := range asObj {
+			s, ok := v.(string)
+			if !ok {
+				return "", fmt.Errorf("pass-cli output: field value is %T, want string", v)
+			}
+			return s, nil
 		}
-		return s, nil
 	}
-	// Unreachable — len check above guarantees one entry.
-	return "", errors.New("pass-cli output: unexpected empty object")
+	wantKey := path.Base(ref.Field)
+	val, ok := asObj[wantKey]
+	if !ok {
+		return "", fmt.Errorf("pass-cli output: field %q not present in response", wantKey)
+	}
+	s, ok := val.(string)
+	if !ok {
+		return "", fmt.Errorf("pass-cli output: field %q value is %T, want string", wantKey, val)
+	}
+	return s, nil
 }
 
 // execRunner is the production cmdRunner backed by os/exec.

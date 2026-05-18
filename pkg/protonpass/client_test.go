@@ -243,22 +243,73 @@ func TestResolveAllEmpty(t *testing.T) {
 	assert.Nil(t, results)
 }
 
-func TestParseItemViewJSONErrors(t *testing.T) {
+// Since ResolveAll lacks an upfront IsRef check, the new ParseRef inside
+// resolveLocked is the validation point for batch callers. Anchor that
+// contract here so a future refactor cannot silently let invalid refs reach
+// the pass-cli subprocess.
+func TestResolveAllRejectsInvalidRef(t *testing.T) {
 	t.Parallel()
+	r := &fakeRunner{
+		resolveFn: func(_ context.Context, _ []string, ref string) ([]byte, []byte, error) {
+			return []byte(`"value-of-` + ref + `"`), nil, nil
+		},
+	}
+	c := newTestClient(t, r)
+
+	results, err := c.ResolveAll(t.Context(), []string{
+		"pass://share/good/field",
+		"not-a-pass-ref",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing pass:// prefix")
+	assert.Equal(t, "value-of-pass://share/good/field", results["pass://share/good/field"])
+	_, hasBad := results["not-a-pass-ref"]
+	assert.False(t, hasBad)
+}
+
+func TestParseItemViewJSONHappyPaths(t *testing.T) {
+	t.Parallel()
+	ref := PassRef{Share: "s", Item: "i", Field: "section/password"}
 	cases := []struct {
 		name string
 		in   string
+		want string
 	}{
-		{"empty", ""},
-		{"not json", "raw text"},
-		{"object with two fields", `{"a":"x","b":"y"}`},
-		{"object with non-string value", `{"a":42}`},
+		{"raw string", `"raw-value"`, "raw-value"},
+		{"single-field object", `{"password":"single-value"}`, "single-value"},
+		{"multi-field object matching tail segment", `{"password":"matched","modified_at":"2026-05-18"}`, "matched"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := parseItemViewJSON([]byte(tc.in))
-			assert.Error(t, err)
+			got, err := parseItemViewJSON([]byte(tc.in), ref)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestParseItemViewJSONErrors(t *testing.T) {
+	t.Parallel()
+	ref := PassRef{Share: "s", Item: "i", Field: "password"}
+	cases := []struct {
+		name    string
+		in      string
+		wantMsg string
+	}{
+		{"empty", "", "empty"},
+		{"not json", "raw text", "decoding"},
+		{"empty object", `{}`, "field \"password\" not present"},
+		{"multi-field object missing target", `{"login":"x","note":"y"}`, "field \"password\" not present"},
+		{"multi-field object non-string target", `{"password":42,"note":"y"}`, "value is float64"},
+		{"single-field object non-string value", `{"password":42}`, "field value is float64"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := parseItemViewJSON([]byte(tc.in), ref)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantMsg)
 		})
 	}
 }
