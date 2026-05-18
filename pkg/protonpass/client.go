@@ -98,7 +98,7 @@ func buildBaseEnv(cfg ClientConfig) ([]string, error) {
 	var encKey string
 	if cfg.PATPath != "" {
 		if cfg.EncryptionKeyPath == "" {
-			return nil, errors.New("ProtonPass: encryption_key_path is required when pat_path is set")
+			return nil, errors.New("protonpass: encryption_key_path is required when pat_path is set")
 		}
 		keyBytes, err := os.ReadFile(cfg.EncryptionKeyPath)
 		if err != nil {
@@ -106,7 +106,7 @@ func buildBaseEnv(cfg ClientConfig) ([]string, error) {
 		}
 		encKey = strings.TrimSpace(string(keyBytes))
 		if encKey == "" {
-			return nil, errors.New("ProtonPass: encryption key file is empty")
+			return nil, errors.New("protonpass: encryption key file is empty")
 		}
 	}
 
