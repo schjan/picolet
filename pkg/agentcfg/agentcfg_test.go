@@ -666,3 +666,17 @@ func TestLoadFileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/config.yml")
 	require.Error(t, err)
 }
+
+func TestValidateAppliesDefaultsForZeroRefreshInterval(t *testing.T) {
+	t.Parallel()
+	// Validate must be safe to call directly on a programmatically-constructed
+	// Config without first invoking Load (which would have run setDefaults).
+	cfg := &Config{
+		Hostname:    "rpi5-1",
+		OnePassword: &OnePasswordConfig{TokenPath: "/tmp/op"},
+		ProtonPass:  &ProtonPassConfig{}, // RefreshInterval zero
+	}
+	require.NoError(t, cfg.Validate())
+	assert.Equal(t, 6*time.Hour, cfg.OnePassword.RefreshInterval)
+	assert.Equal(t, 6*time.Hour, cfg.ProtonPass.RefreshInterval)
+}

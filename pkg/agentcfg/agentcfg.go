@@ -139,10 +139,13 @@ func (c *Config) UseSystemdUser() bool {
 	return *c.SystemdUser
 }
 
-// Validate checks that required fields are set.
+// Validate checks that required fields are set. setDefaults is invoked
+// first so Validate can be called directly on a programmatically-constructed
+// Config without having to know that defaults must run beforehand.
 //
 //nolint:cyclop // sequential field checks; splitting would obscure the validation logic
 func (c *Config) Validate() error {
+	c.setDefaults()
 	if c.Hostname == "" {
 		return errors.New("hostname is required")
 	}
