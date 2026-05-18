@@ -217,7 +217,7 @@ func (c *Client) EnsureSession(ctx context.Context) error {
 	}
 
 	slog.Info("protonpass session not active, logging in", "cli_path", c.cliPath)
-	if err := c.ensureLoginLocked(ctx); err != nil {
+	if err := c.loginLocked(ctx); err != nil {
 		return err
 	}
 	if err := c.probeSession(ctx); err != nil {
@@ -240,10 +240,10 @@ func (c *Client) probeSession(ctx context.Context) error {
 	return nil
 }
 
-// ensureLoginLocked reads the PAT from disk and runs `pass-cli login` with the
+// loginLocked reads the PAT from disk and runs `pass-cli login` with the
 // token supplied via PROTON_PASS_PERSONAL_ACCESS_TOKEN (env, never argv).
 // Caller must hold sessionMu.
-func (c *Client) ensureLoginLocked(ctx context.Context) error {
+func (c *Client) loginLocked(ctx context.Context) error {
 	patBytes, err := os.ReadFile(c.patPath)
 	if err != nil {
 		return fmt.Errorf("reading proton pass PAT: %w", err)
@@ -263,10 +263,11 @@ func (c *Client) ensureLoginLocked(ctx context.Context) error {
 // Resolve returns the secret value for a single pass:// reference.
 // Calls EnsureSession on first use. Output is parsed from --output=json
 // rather than human-readable form so we can rely on a stable schema.
+//
+// Invalid refs are rejected inside resolveLocked via ParseRef, so a bogus
+// input takes the EnsureSession round-trip before failing — an acceptable
+// trade for keeping a single validation point that also covers ResolveAll.
 func (c *Client) Resolve(ctx context.Context, ref string) (string, error) {
-	if !IsRef(ref) {
-		return "", fmt.Errorf("protonpass: %q is not a valid pass:// reference", ref)
-	}
 	if err := c.EnsureSession(ctx); err != nil {
 		return "", err
 	}

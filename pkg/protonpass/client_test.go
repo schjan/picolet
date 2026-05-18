@@ -179,7 +179,7 @@ func TestResolveInvalidRef(t *testing.T) {
 
 	_, err := c.Resolve(t.Context(), "not-a-pass-ref")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not a valid pass:// reference")
+	assert.Contains(t, err.Error(), "missing pass:// prefix")
 }
 
 func TestResolveHappyPath(t *testing.T) {
