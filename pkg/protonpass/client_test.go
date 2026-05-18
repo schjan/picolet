@@ -307,8 +307,7 @@ func TestBuildBaseEnvAllowlistsHostEnvAndStripsProtonSecrets(t *testing.T) {
 	t.Setenv("PROTON_PASS_SESSION_DIR", "from-env")
 	t.Setenv("PROTON_PASS_NO_UPDATE_CHECK", "0")
 
-	env, err := buildBaseEnv(ClientConfig{})
-	require.NoError(t, err)
+	env := buildBaseEnv(ClientConfig{}, "")
 
 	assertEnvContains(t, env, "HOME", "/tmp/picolet-home")
 	assertEnvContains(t, env, "HTTPS_PROXY", "http://proxy.example")
@@ -323,9 +322,9 @@ func TestBuildBaseEnvAllowlistsHostEnvAndStripsProtonSecrets(t *testing.T) {
 func TestBuildBaseEnvPATModeOverlaysSessionAndFsProvider(t *testing.T) {
 	patPath := writeTempFileContent(t, "pat", "pst_test")
 	sessionDir := filepath.Join(t.TempDir(), "session")
+	cfg := ClientConfig{PATPath: patPath, SessionDir: sessionDir}
 
-	env, err := buildBaseEnv(ClientConfig{PATPath: patPath, SessionDir: sessionDir})
-	require.NoError(t, err)
+	env := buildBaseEnv(cfg, effectiveSessionDir(cfg))
 
 	assertEnvContains(t, env, "PROTON_PASS_SESSION_DIR", sessionDir)
 	assertEnvContains(t, env, "PROTON_PASS_KEY_PROVIDER", "fs")

@@ -217,9 +217,6 @@ func (c *Config) validateProtonPass() error {
 
 // validateGitTokenSources enforces that at most one source is configured for
 // the git pull token: file (git_token_path), 1Password ref, or Proton Pass ref.
-//
-// Existing OP-only error message is preserved for backward compatibility with
-// tests; the PP variants use parallel wording.
 func (c *Config) validateGitTokenSources() error {
 	opRef := c.OnePassword != nil && c.OnePassword.GitTokenRef != ""
 	ppRef := c.ProtonPass != nil && c.ProtonPass.GitTokenRef != ""
@@ -253,21 +250,23 @@ func (c *Config) validateGitHubApp() error {
 
 func (c *Config) githubAppCounts() (direct, op, pp int) {
 	direct = countSet(c.GitHubAppID != 0, c.GitHubInstallationID != 0, c.GitHubPrivateKeyPath != "")
-	if c.OnePassword != nil {
-		op = countSet(
-			c.OnePassword.GitHubAppIDRef != "",
-			c.OnePassword.GitHubInstallationRef != "",
-			c.OnePassword.GitHubPrivateKeyRef != "",
-		)
+	return direct, c.OnePassword.githubAppRefCount(), c.ProtonPass.githubAppRefCount()
+}
+
+// githubAppRefCount returns 0..3 for the number of GitHub App ref fields set.
+// Nil-receiver-safe so callers can avoid an outer nil check.
+func (c *OnePasswordConfig) githubAppRefCount() int {
+	if c == nil {
+		return 0
 	}
-	if c.ProtonPass != nil {
-		pp = countSet(
-			c.ProtonPass.GitHubAppIDRef != "",
-			c.ProtonPass.GitHubInstallationRef != "",
-			c.ProtonPass.GitHubPrivateKeyRef != "",
-		)
+	return countSet(c.GitHubAppIDRef != "", c.GitHubInstallationRef != "", c.GitHubPrivateKeyRef != "")
+}
+
+func (c *ProtonPassConfig) githubAppRefCount() int {
+	if c == nil {
+		return 0
 	}
-	return direct, op, pp
+	return countSet(c.GitHubAppIDRef != "", c.GitHubInstallationRef != "", c.GitHubPrivateKeyRef != "")
 }
 
 func (c *Config) checkGitHubAppGitTokenExclusion() error {
@@ -289,20 +288,14 @@ func (c *Config) HasGitHubApp() bool {
 	return direct == 3 || opRefs == 3 || ppRefs == 3
 }
 
-// HasGitHubAppOPRefs reports whether GitHub App credentials are configured via 1Password refs.
+// HasGitHubAppOPRefs reports whether GitHub App credentials are fully configured via 1Password refs.
 func (c *Config) HasGitHubAppOPRefs() bool {
-	if c.OnePassword == nil {
-		return false
-	}
-	return c.OnePassword.GitHubAppIDRef != "" && c.OnePassword.GitHubInstallationRef != "" && c.OnePassword.GitHubPrivateKeyRef != ""
+	return c.OnePassword.githubAppRefCount() == 3
 }
 
-// HasGitHubAppPPRefs reports whether GitHub App credentials are configured via Proton Pass refs.
+// HasGitHubAppPPRefs reports whether GitHub App credentials are fully configured via Proton Pass refs.
 func (c *Config) HasGitHubAppPPRefs() bool {
-	if c.ProtonPass == nil {
-		return false
-	}
-	return c.ProtonPass.GitHubAppIDRef != "" && c.ProtonPass.GitHubInstallationRef != "" && c.ProtonPass.GitHubPrivateKeyRef != ""
+	return c.ProtonPass.githubAppRefCount() == 3
 }
 
 // ToClientConfig converts ProtonPassConfig into the internal pass-cli ClientConfig.

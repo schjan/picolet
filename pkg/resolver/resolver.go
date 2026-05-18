@@ -704,10 +704,10 @@ func (r *Resolver) batchResolveDirectSecrets(ctx context.Context, allSecrets []s
 	}
 
 	results := make(map[string]string)
-	if err := r.resolveProviderRefs(ctx, "onepassword", r.opSecretReader, opRefs, results); err != nil {
+	if err := r.resolveProviderRefs(ctx, ProviderOnePassword, r.opSecretReader, opRefs, results); err != nil {
 		return nil, err
 	}
-	if err := r.resolveProviderRefs(ctx, "protonpass", r.ppSecretReader, ppRefs, results); err != nil {
+	if err := r.resolveProviderRefs(ctx, ProviderProtonPass, r.ppSecretReader, ppRefs, results); err != nil {
 		return nil, err
 	}
 	if len(results) == 0 {
@@ -728,7 +728,7 @@ func splitDirectRefs(allSecrets []string) (opRefs, ppRefs []string) {
 	return opRefs, ppRefs
 }
 
-func (r *Resolver) resolveProviderRefs(ctx context.Context, name string, reader SecretRefReader, refs []string, into map[string]string) error {
+func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, reader SecretRefReader, refs []string, into map[string]string) error {
 	if len(refs) == 0 {
 		return nil
 	}

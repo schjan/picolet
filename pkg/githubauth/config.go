@@ -28,14 +28,14 @@ func NewClientFromConfig(
 	}
 
 	if cfg.HasGitHubAppOPRefs() {
-		return newClientFromRefs(ctx, cfg, opReader, "onepassword", refTriple{
+		return newClientFromRefs(ctx, cfg, opReader, resolver.ProviderOnePassword, refTriple{
 			AppID:          cfg.OnePassword.GitHubAppIDRef,
 			InstallationID: cfg.OnePassword.GitHubInstallationRef,
 			PrivateKey:     cfg.OnePassword.GitHubPrivateKeyRef,
 		})
 	}
 	if cfg.HasGitHubAppPPRefs() {
-		return newClientFromRefs(ctx, cfg, ppReader, "protonpass", refTriple{
+		return newClientFromRefs(ctx, cfg, ppReader, resolver.ProviderProtonPass, refTriple{
 			AppID:          cfg.ProtonPass.GitHubAppIDRef,
 			InstallationID: cfg.ProtonPass.GitHubInstallationRef,
 			PrivateKey:     cfg.ProtonPass.GitHubPrivateKeyRef,
@@ -57,7 +57,7 @@ type refTriple struct {
 	PrivateKey     string
 }
 
-func newClientFromRefs(ctx context.Context, cfg *agentcfg.Config, reader resolver.SecretRefReader, provider string, refs refTriple) (*github.Client, int64, error) {
+func newClientFromRefs(ctx context.Context, cfg *agentcfg.Config, reader resolver.SecretRefReader, provider resolver.ProviderKey, refs refTriple) (*github.Client, int64, error) {
 	appID, installationID, privateKeyPEM, err := resolveGitHubAppFromRefs(ctx, reader, provider, refs)
 	if err != nil {
 		return nil, 0, err
@@ -72,7 +72,7 @@ func newClientFromRefs(ctx context.Context, cfg *agentcfg.Config, reader resolve
 func resolveGitHubAppFromRefs(
 	ctx context.Context,
 	reader resolver.SecretRefReader,
-	provider string,
+	provider resolver.ProviderKey,
 	refs refTriple,
 ) (int64, int64, []byte, error) {
 	appIDRaw, installationRaw, privateKeyRaw, err := resolveGitHubAppRefValues(ctx, reader, provider, refs)
@@ -85,7 +85,7 @@ func resolveGitHubAppFromRefs(
 func resolveGitHubAppRefValues(
 	ctx context.Context,
 	reader resolver.SecretRefReader,
-	provider string,
+	provider resolver.ProviderKey,
 	refs refTriple,
 ) (string, string, string, error) {
 	if reader == nil {
@@ -97,27 +97,27 @@ func resolveGitHubAppRefValues(
 		return "", "", "", fmt.Errorf("resolving github app refs from %s: %w", provider, err)
 	}
 
-	appIDRaw, err := resolvedRef(results, refs.AppID, provider+".github_app_id_ref")
+	appIDRaw, err := resolvedRef(results, refs.AppID, string(provider)+".github_app_id_ref")
 	if err != nil {
 		return "", "", "", err
 	}
-	installationRaw, err := resolvedRef(results, refs.InstallationID, provider+".github_installation_id_ref")
+	installationRaw, err := resolvedRef(results, refs.InstallationID, string(provider)+".github_installation_id_ref")
 	if err != nil {
 		return "", "", "", err
 	}
-	privateKeyRaw, err := resolvedRef(results, refs.PrivateKey, provider+".github_private_key_ref")
+	privateKeyRaw, err := resolvedRef(results, refs.PrivateKey, string(provider)+".github_private_key_ref")
 	if err != nil {
 		return "", "", "", err
 	}
 	return appIDRaw, installationRaw, privateKeyRaw, nil
 }
 
-func parseGitHubAppRefValues(appIDRaw, installationRaw, privateKeyRaw, provider string) (int64, int64, []byte, error) {
-	appID, err := parsePositiveInt64(provider+".github_app_id_ref", appIDRaw)
+func parseGitHubAppRefValues(appIDRaw, installationRaw, privateKeyRaw string, provider resolver.ProviderKey) (int64, int64, []byte, error) {
+	appID, err := parsePositiveInt64(string(provider)+".github_app_id_ref", appIDRaw)
 	if err != nil {
 		return 0, 0, nil, err
 	}
-	installationID, err := parsePositiveInt64(provider+".github_installation_id_ref", installationRaw)
+	installationID, err := parsePositiveInt64(string(provider)+".github_installation_id_ref", installationRaw)
 	if err != nil {
 		return 0, 0, nil, err
 	}

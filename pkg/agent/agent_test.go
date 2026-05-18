@@ -1615,18 +1615,18 @@ func TestSetFilesManagedMetric(t *testing.T) {
 func TestPublishCredentialExpiry(t *testing.T) {
 	t.Parallel()
 
-	provider := "test-provider-" + t.Name() // unique label so parallel tests don't clobber each other
+	provider := resolver.ProviderKey("test-provider-" + t.Name()) // unique label so parallel tests don't clobber each other
 	expiry := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
 
 	// Zero value: gauge is not touched, no series emitted.
 	publishCredentialExpiry(provider+"-zero", time.Time{})
-	zero, err := metrics.SecretCredentialExpiresAt.GetMetricWithLabelValues(provider + "-zero")
+	zero, err := metrics.SecretCredentialExpiresAt.GetMetricWithLabelValues(string(provider) + "-zero")
 	require.NoError(t, err)
 	assert.InDelta(t, 0.0, testutil.ToFloat64(zero), 0, "no value should be set for zero time.Time")
 
 	// Future value: gauge holds the Unix timestamp.
 	publishCredentialExpiry(provider, expiry)
-	got, err := metrics.SecretCredentialExpiresAt.GetMetricWithLabelValues(provider)
+	got, err := metrics.SecretCredentialExpiresAt.GetMetricWithLabelValues(string(provider))
 	require.NoError(t, err)
 	assert.InDelta(t, float64(expiry.Unix()), testutil.ToFloat64(got), 0)
 
@@ -1634,7 +1634,7 @@ func TestPublishCredentialExpiry(t *testing.T) {
 	pastProvider := provider + "-past"
 	past := time.Now().Add(-24 * time.Hour)
 	publishCredentialExpiry(pastProvider, past)
-	gotPast, err := metrics.SecretCredentialExpiresAt.GetMetricWithLabelValues(pastProvider)
+	gotPast, err := metrics.SecretCredentialExpiresAt.GetMetricWithLabelValues(string(pastProvider))
 	require.NoError(t, err)
 	assert.InDelta(t, float64(past.Unix()), testutil.ToFloat64(gotPast), 0)
 }

@@ -274,11 +274,10 @@ func (a *Agent) Run(ctx context.Context) error {
 			return fmt.Errorf("setting up 1password: %w", err)
 		}
 		slog.Info("1password client initialized", "token_path", a.cfg.OnePassword.TokenPath)
-		publishCredentialExpiry("onepassword", a.cfg.OnePassword.TokenExpiresAt)
+		publishCredentialExpiry(resolver.ProviderOnePassword, a.cfg.OnePassword.TokenExpiresAt)
 	}
 
-	// Initialize Proton Pass client (if configured). EnsureSession runs inside
-	// pp.NewReader; bound it with a deadline so a hung login cannot block startup.
+	// Bound pp.NewReader's EnsureSession with a deadline so a hung login can't block startup.
 	if a.cfg.ProtonPass != nil {
 		initCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		reader, err := pp.NewReader(initCtx, a.cfg.ProtonPass.ToClientConfig())
@@ -291,7 +290,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			"session_dir", a.cfg.ProtonPass.SessionDir,
 			"lazy_mode", a.cfg.ProtonPass.PATPath == "",
 		)
-		publishCredentialExpiry("protonpass", a.cfg.ProtonPass.PATExpiresAt)
+		publishCredentialExpiry(resolver.ProviderProtonPass, a.cfg.ProtonPass.PATExpiresAt)
 	}
 
 	// Initialize git poller
@@ -310,8 +309,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.scanOrphans(ctx, store)
 
 	metrics.FeatureInfo.WithLabelValues("mqtt").Set(boolToFloat(a.mqttClient != nil))
-	metrics.FeatureInfo.WithLabelValues("onepassword").Set(boolToFloat(a.opReader != nil))
-	metrics.FeatureInfo.WithLabelValues("protonpass").Set(boolToFloat(a.ppReader != nil))
+	metrics.FeatureInfo.WithLabelValues(string(resolver.ProviderOnePassword)).Set(boolToFloat(a.opReader != nil))
+	metrics.FeatureInfo.WithLabelValues(string(resolver.ProviderProtonPass)).Set(boolToFloat(a.ppReader != nil))
 
 	slog.Info("agent started",
 		"hostname", a.cfg.Hostname,
@@ -435,9 +434,9 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	case pollResult.Changed:
 		metrics.GitPollTotal.WithLabelValues("changed").Inc()
 	case len(st.PendingHooks) > 0:
-		// Pending-hook retry takes priority over OP refresh in the label even
-		// when both apply: the retry is the actionable reason this tick ran,
-		// and ReconcileOnce will refresh op:// secrets regardless.
+		// Pending-hook retry takes priority over secret-provider refresh in the
+		// label even when both apply: the retry is the actionable reason this
+		// tick ran, and ReconcileOnce will refresh secrets regardless.
 		slog.Info("forcing reconciliation for pending hook retry", "sha", pollResult.HeadSHA, "pending", st.PendingHooks)
 		metrics.GitPollTotal.WithLabelValues("pending_hook_retry").Inc()
 	default:
@@ -460,7 +459,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	}
 
 	// Report deployments only for new git SHAs; forced reconciliations on the
-	// same SHA (OP refresh, pending hook retry) are not deployments.
+	// same SHA (secret-provider refresh, pending hook retry) are not deployments.
 	var deploymentID int64
 	if pollResult.Changed {
 		slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
@@ -507,8 +506,8 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	}
 
 	a.markRefreshAttempted()
-	recordProviderSyncSuccess("onepassword", result.OpSecretsCount)
-	recordProviderSyncSuccess("protonpass", result.PPSecretsCount)
+	recordProviderSyncSuccess(resolver.ProviderOnePassword, result.OpSecretsCount)
+	recordProviderSyncSuccess(resolver.ProviderProtonPass, result.PPSecretsCount)
 	metrics.ReconciliationTotal.WithLabelValues("success").Inc()
 	if result.HasChanges {
 		a.recordEvent("success", pollResult.HeadSHA, "reconciliation complete")
@@ -641,8 +640,8 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	a.recordHostMetadata(resolved.Host)
 
 	counts := refSecretsCounts{
-		Op: recordProviderRefCount("onepassword", a.opReader != nil, op.IsRef, files),
-		PP: recordProviderRefCount("protonpass", a.ppReader != nil, pp.IsRef, files),
+		Op: recordProviderRefCount(resolver.ProviderOnePassword, a.opReader != nil, op.IsRef, files),
+		PP: recordProviderRefCount(resolver.ProviderProtonPass, a.ppReader != nil, pp.IsRef, files),
 	}
 
 	changeset := reconciler.Diff(files, st)
@@ -711,16 +710,16 @@ func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Stor
 // reconcileNoChanges handles a reconcile that found no file changes.
 // When the git SHA is new, it still marks that SHA as applied and persists it:
 // a host can legitimately receive a fleet commit that changes only docs or
-// other hosts. When the SHA is unchanged (e.g. OP refresh), it only bumps the
-// verified-OK timestamp in memory.
+// other hosts. When the SHA is unchanged (e.g. secret-provider refresh), it
+// only bumps the verified-OK timestamp in memory.
 //
 // Note on validation failure: this path treats it as a hard failure and
 // surfaces it through the failure-event/failed-SHA pipeline. The outer-tick
 // noop fast path (no_git_changes) is more lenient: validation errors there
 // during refreshResolvedSnapshot are logged and recorded as status_error
 // without aborting the verify-OK signal, because nothing triggered the tick.
-// Here, something *did* trigger the tick (OP refresh or git change that
-// rendered identically), so a bad render is actionable.
+// Here, something *did* trigger the tick (secret-provider refresh or git
+// change that rendered identically), so a bad render is actionable.
 func (a *Agent) reconcileNoChanges(headSHA string, files []resolver.ResolvedFile, changeset *reconciler.Changeset, st *state.State, store *state.Store, counts refSecretsCounts) (*ReconcileResult, error) {
 	deps, err := validator.AnalyzeFiles(files, a.cfg.Rootless)
 	if err != nil {
@@ -981,14 +980,14 @@ func (a *Agent) resolvePollerAuth(ctx context.Context) (gitpoll.AuthProvider, er
 //nolint:nilnil // (nil, nil) signals "no provider auth configured"; caller handles fallback
 func (a *Agent) gitAuthFromSecretProvider(ctx context.Context) (gitpoll.AuthProvider, error) {
 	if a.opReader != nil && a.cfg.OnePassword != nil && a.cfg.OnePassword.GitTokenRef != "" {
-		token, err := resolveGitToken(ctx, "onepassword", a.opReader, a.cfg.OnePassword.GitTokenRef)
+		token, err := resolveGitToken(ctx, resolver.ProviderOnePassword, a.opReader, a.cfg.OnePassword.GitTokenRef)
 		if err != nil {
 			return nil, err
 		}
 		return gitpoll.NewStaticTokenAuth(a.cfg.RepoURL, token), nil
 	}
 	if a.ppReader != nil && a.cfg.ProtonPass != nil && a.cfg.ProtonPass.GitTokenRef != "" {
-		token, err := resolveGitToken(ctx, "protonpass", a.ppReader, a.cfg.ProtonPass.GitTokenRef)
+		token, err := resolveGitToken(ctx, resolver.ProviderProtonPass, a.ppReader, a.cfg.ProtonPass.GitTokenRef)
 		if err != nil {
 			return nil, err
 		}
@@ -999,7 +998,7 @@ func (a *Agent) gitAuthFromSecretProvider(ctx context.Context) (gitpoll.AuthProv
 
 // resolveGitToken fetches a single ref via the given provider reader and
 // validates that the response actually contains it.
-func resolveGitToken(ctx context.Context, provider string, reader resolver.SecretRefReader, ref string) (string, error) {
+func resolveGitToken(ctx context.Context, provider resolver.ProviderKey, reader resolver.SecretRefReader, ref string) (string, error) {
 	results, err := reader(ctx, []string{ref})
 	if err != nil {
 		return "", fmt.Errorf("resolving git token from %s: %w", provider, err)
@@ -1008,7 +1007,7 @@ func resolveGitToken(ctx context.Context, provider string, reader resolver.Secre
 	if !ok {
 		return "", fmt.Errorf("resolving git token from %s: ref %q not in response", provider, ref)
 	}
-	slog.Info("git token resolved", "provider", provider)
+	slog.Info("git token resolved", "provider", string(provider))
 	return token, nil
 }
 
@@ -1160,12 +1159,12 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 
 // recordProviderRefCount publishes the per-provider managed-count gauge
 // and returns the count. Returns 0 when the provider is disabled.
-func recordProviderRefCount(provider string, enabled bool, isRef func(string) bool, files []resolver.ResolvedFile) int {
+func recordProviderRefCount(provider resolver.ProviderKey, enabled bool, isRef func(string) bool, files []resolver.ResolvedFile) int {
 	if !enabled {
 		return 0
 	}
 	count := countRefs(files, isRef)
-	metrics.SecretsManagedCount.WithLabelValues(provider).Set(float64(count))
+	metrics.SecretsManagedCount.WithLabelValues(string(provider)).Set(float64(count))
 	return count
 }
 
@@ -1174,12 +1173,13 @@ func recordProviderRefCount(provider string, enabled bool, isRef func(string) bo
 // A zero count means "nothing to record" — disabled providers always produce
 // zero counts via recordProviderRefCount, so a single count==0 check covers
 // both cases.
-func recordProviderSyncSuccess(provider string, count int) {
+func recordProviderSyncSuccess(provider resolver.ProviderKey, count int) {
 	if count == 0 {
 		return
 	}
-	metrics.SecretSyncTotal.WithLabelValues(provider).Inc()
-	metrics.SecretLastSyncTimestamp.WithLabelValues(provider).SetToCurrentTime()
+	label := string(provider)
+	metrics.SecretSyncTotal.WithLabelValues(label).Inc()
+	metrics.SecretLastSyncTimestamp.WithLabelValues(label).SetToCurrentTime()
 }
 
 // markRefreshAttempted bumps every configured provider's last-refresh
@@ -1210,11 +1210,11 @@ func countRefs(files []resolver.ResolvedFile, isRef func(string) bool) int {
 // config. Zero values are skipped (no series emitted), so dashboards can use
 // `absent_over_time(...)` to flag providers whose expiry was never declared.
 // Past expirations are still published — that is the signal the alert needs.
-func publishCredentialExpiry(provider string, expiresAt time.Time) {
+func publishCredentialExpiry(provider resolver.ProviderKey, expiresAt time.Time) {
 	if expiresAt.IsZero() {
 		return
 	}
-	metrics.SecretCredentialExpiresAt.WithLabelValues(provider).Set(float64(expiresAt.Unix()))
+	metrics.SecretCredentialExpiresAt.WithLabelValues(string(provider)).Set(float64(expiresAt.Unix()))
 	if time.Now().After(expiresAt) {
 		slog.Warn("secret-provider credential has expired", "provider", provider, "expired_at", expiresAt.Format(time.RFC3339))
 	}

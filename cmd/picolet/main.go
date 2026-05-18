@@ -406,8 +406,8 @@ func ppReaderFromConfig(ctx context.Context, cfg *agentcfg.Config) (resolver.Sec
 		return nil, nil
 	}
 	initCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	reader, err := pp.NewReader(initCtx, cfg.ProtonPass.ToClientConfig())
+	cancel()
 	if err != nil {
 		return nil, fmt.Errorf("setting up protonpass: %w", err)
 	}

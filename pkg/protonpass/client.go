@@ -18,6 +18,17 @@ const DefaultCLIPath = "pass-cli"
 // DefaultSessionDir is the path used in PAT mode when ClientConfig.SessionDir is empty.
 const DefaultSessionDir = "/var/lib/picolet/protonpass/.session"
 
+// pass-cli environment-variable names. Bare strings would silently drift if
+// renamed only here or only at a test site; centralising them keeps prod and
+// tests in lock-step.
+const (
+	envSessionDir     = "PROTON_PASS_SESSION_DIR"
+	envNoUpdateCheck  = "PROTON_PASS_NO_UPDATE_CHECK"
+	envKeyProvider    = "PROTON_PASS_KEY_PROVIDER"
+	envEncryptionKey  = "PROTON_PASS_ENCRYPTION_KEY"
+	envPersonalAccess = "PROTON_PASS_PERSONAL_ACCESS_TOKEN"
+)
+
 // cmdRunner abstracts exec.CommandContext so unit tests can supply a fake
 // process runner. Callers receive stdout, stderr, and the exec error.
 type cmdRunner interface {
@@ -68,18 +79,13 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if cliPath == "" {
 		cliPath = DefaultCLIPath
 	}
-	env, err := buildBaseEnv(cfg)
-	if err != nil {
-		return nil, err
-	}
+	sessionDir := effectiveSessionDir(cfg)
 	return &Client{
-		runner:  execRunner{},
-		cliPath: cliPath,
-		env:     env,
-		patPath: cfg.PATPath,
-		// Duplicate effectiveSessionDir after buildBaseEnv so directory creation
-		// stays tied to session use instead of construction.
-		sessionDir: effectiveSessionDir(cfg),
+		runner:     execRunner{},
+		cliPath:    cliPath,
+		env:        buildBaseEnv(cfg, sessionDir),
+		patPath:    cfg.PATPath,
+		sessionDir: sessionDir,
 	}, nil
 }
 
@@ -91,18 +97,18 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 // In PAT mode the filesystem-based local key provider is selected so pass-cli
 // manages its own local.key inside SessionDir. Lazy mode inherits pass-cli's
 // default key provider so a developer's existing session is undisturbed.
-func buildBaseEnv(cfg ClientConfig) ([]string, error) {
+func buildBaseEnv(cfg ClientConfig, sessionDir string) []string {
 	env := allowedHostEnv()
 
-	if sessionDir := effectiveSessionDir(cfg); sessionDir != "" {
-		env = append(env, "PROTON_PASS_SESSION_DIR="+sessionDir)
+	if sessionDir != "" {
+		env = append(env, envSessionDir+"="+sessionDir)
 	}
-	env = append(env, "PROTON_PASS_NO_UPDATE_CHECK=1")
+	env = append(env, envNoUpdateCheck+"=1")
 
 	if cfg.PATPath != "" {
-		env = append(env, "PROTON_PASS_KEY_PROVIDER=fs")
+		env = append(env, envKeyProvider+"=fs")
 	}
-	return env, nil
+	return env
 }
 
 func effectiveSessionDir(cfg ClientConfig) string {
@@ -233,7 +239,7 @@ func (c *Client) loginLocked(ctx context.Context) error {
 	if pat == "" {
 		return errors.New("protonpass: PAT file is empty")
 	}
-	loginEnv := append(append([]string{}, c.env...), "PROTON_PASS_PERSONAL_ACCESS_TOKEN="+pat)
+	loginEnv := append(append([]string{}, c.env...), envPersonalAccess+"="+pat)
 	_, stderr, err := c.runner.Run(ctx, loginEnv, c.cliPath, "login")
 	if err != nil {
 		return fmt.Errorf("protonpass login failed: %s: %w", sanitizeStderr(stderr), err)
