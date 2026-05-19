@@ -136,7 +136,7 @@ require (
 	github.com/opencontainers/runc v1.3.4 // indirect
 	github.com/opencontainers/runtime-spec v1.3.0 // indirect
 	github.com/opencontainers/runtime-tools v0.9.1-0.20250523060157-0ea5ed0382a2 // indirect
-	github.com/opencontainers/selinux v1.14.0 // indirect
+	github.com/opencontainers/selinux v1.14.1 // indirect
 	github.com/pjbgf/sha1cd v0.6.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pkg/sftp v1.13.9 // indirect
@@ -218,6 +218,6 @@ tool github.com/vektra/mockery/v3
 // filepath-securejoin v0.6.1. Storage main has the pathrs-lite migration;
 // runtime-spec is held back because Podman v5's runtime-tools does not compile
 // against runtime-spec v1.3.0.
-replace go.podman.io/storage => go.podman.io/storage v1.62.1-0.20260507172113-abe824d0032c
+replace go.podman.io/storage => go.podman.io/storage v1.62.1-0.20260519201413-7e9ee2072844
 
 replace github.com/opencontainers/runtime-spec => github.com/opencontainers/runtime-spec v1.2.1
