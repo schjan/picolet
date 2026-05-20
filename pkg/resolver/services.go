@@ -13,21 +13,29 @@ import (
 )
 
 type bundleSubdir struct {
-	Subdir       string
-	Category     config.Category
-	AllowNesting bool
+	Subdir   string
+	Category config.Category
 }
 
-var bundleSubdirs = []bundleSubdir{
-	{Subdir: "containers", Category: config.CategoryContainer, AllowNesting: false},
-	{Subdir: "volumes", Category: config.CategoryVolume, AllowNesting: false},
-	{Subdir: "networks", Category: config.CategoryNetwork, AllowNesting: false},
-	{Subdir: "kube", Category: config.CategoryKube, AllowNesting: false},
-	{Subdir: "systemd", Category: config.CategorySystemd, AllowNesting: false},
-	{Subdir: "secrets", Category: config.CategorySecret, AllowNesting: false},
-	{Subdir: "manifests", Category: config.CategoryManifest, AllowNesting: true},
-	{Subdir: "files", Category: config.CategoryFile, AllowNesting: true},
-}
+func (b bundleSubdir) AllowNesting() bool { return b.Category.UsesRelPath() }
+
+var bundleSubdirs = func() []bundleSubdir {
+	cats := []config.Category{
+		config.CategoryContainer,
+		config.CategoryVolume,
+		config.CategoryNetwork,
+		config.CategoryKube,
+		config.CategorySystemd,
+		config.CategorySecret,
+		config.CategoryManifest,
+		config.CategoryFile,
+	}
+	out := make([]bundleSubdir, 0, len(cats))
+	for _, c := range cats {
+		out = append(out, bundleSubdir{Subdir: c.BundleSubdir(), Category: c})
+	}
+	return out
+}()
 
 var bundleSubdirsByName = func() map[string]bundleSubdir {
 	byName := make(map[string]bundleSubdir, len(bundleSubdirs))
@@ -266,7 +274,7 @@ func (b *expandedBundles) fileCount() int {
 
 func (b *expandedBundles) readSubdir(fsys fs.FS, service string, subdir bundleSubdir) error {
 	root := path.Join("services", service, subdir.Subdir)
-	if subdir.AllowNesting {
+	if subdir.AllowNesting() {
 		return b.readNestedSubdir(fsys, root, service, subdir)
 	}
 	return b.readFlatSubdir(fsys, root, subdir.Category)

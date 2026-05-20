@@ -224,13 +224,7 @@ func shouldValidateSecretYAML(f resolver.ResolvedFile, trimmedContent string) bo
 	if trimmedContent == unresolvedSecretPlaceholder {
 		return false
 	}
-	effectivePath := strings.TrimSuffix(strings.ToLower(f.SrcPath), ".tmpl")
-	switch filepath.Ext(effectivePath) {
-	case ".yml", ".yaml":
-		return true
-	default:
-		return false
-	}
+	return isYAMLSource(f.SrcPath)
 }
 
 // validateFile checks opaque container-mounted files. Empty content is allowed
@@ -238,13 +232,21 @@ func shouldValidateSecretYAML(f resolver.ResolvedFile, trimmedContent string) bo
 // .yml or .yaml (after stripping .tmpl) are syntax-checked; anything else is
 // considered opaque and not inspected.
 func validateFile(f resolver.ResolvedFile) error {
-	effectivePath := strings.TrimSuffix(strings.ToLower(f.SrcPath), ".tmpl")
-	switch filepath.Ext(effectivePath) {
-	case ".yml", ".yaml":
-		return validateYAMLSyntax(f.DestPath, []byte(f.Content))
-	default:
+	if !isYAMLSource(f.SrcPath) {
 		return nil
 	}
+	return validateYAMLSyntax(f.DestPath, []byte(f.Content))
+}
+
+// isYAMLSource reports whether a source path's effective extension (after
+// stripping a trailing .tmpl) is .yml or .yaml.
+func isYAMLSource(srcPath string) bool {
+	effective := strings.TrimSuffix(srcPath, ".tmpl")
+	switch strings.ToLower(filepath.Ext(effective)) {
+	case ".yml", ".yaml":
+		return true
+	}
+	return false
 }
 
 func validateYAMLSyntax(path string, content []byte) error {

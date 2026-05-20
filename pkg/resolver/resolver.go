@@ -273,10 +273,10 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.Resol
 
 	bundleFileRefs := make([]bundleFileRef, 0, len(fileSet.Manifests)+len(fileSet.Files)+len(expanded.NestedRefs))
 	for _, srcPath := range fileSet.Manifests {
-		bundleFileRefs = append(bundleFileRefs, newLegacyBundleFileRef(srcPath, config.CategoryManifest, "manifests"))
+		bundleFileRefs = append(bundleFileRefs, newLegacyBundleFileRef(srcPath, config.CategoryManifest))
 	}
 	for _, srcPath := range fileSet.Files {
-		bundleFileRefs = append(bundleFileRefs, newLegacyBundleFileRef(srcPath, config.CategoryFile, "files"))
+		bundleFileRefs = append(bundleFileRefs, newLegacyBundleFileRef(srcPath, config.CategoryFile))
 	}
 	bundleFileRefs = append(bundleFileRefs, expanded.NestedRefs...)
 	return merged, uniqueBundleFileRefs(bundleFileRefs), expanded.Hooks, nil
@@ -285,12 +285,12 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.Resol
 // newLegacyBundleFileRef constructs a bundleFileRef for a legacy (non-bundled)
 // data path, where the source and logical paths are the same. Bundled refs set
 // a stripped LogicalPath and are built in readNestedSubdir.
-func newLegacyBundleFileRef(srcPath string, category config.Category, subdir string) bundleFileRef {
+func newLegacyBundleFileRef(srcPath string, category config.Category) bundleFileRef {
 	return bundleFileRef{
 		SrcPath:     srcPath,
 		LogicalPath: srcPath,
 		Category:    category,
-		RelPath:     stripSubdirPrefix(deployedLogicalPath(srcPath), subdir),
+		RelPath:     stripSubdirPrefix(deployedLogicalPath(srcPath), category.BundleSubdir()),
 	}
 }
 

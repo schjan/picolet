@@ -553,7 +553,7 @@ func TestValidateFileTruthTable(t *testing.T) {
 				SrcPath:  tt.srcPath,
 				DestPath: "/var/lib/picolet/" + tt.srcPath,
 				Content:  tt.content,
-				Category: "file",
+				Category: config.CategoryFile,
 			}
 			_, err := AnalyzeFiles([]resolver.ResolvedFile{f}, false)
 			if tt.wantErr == "" {

@@ -132,8 +132,7 @@ type Option func(*Applier)
 // Its presence in a create/update changeset triggers a self-restart via picolet.service.
 const selfContainerFile = "picolet.container"
 
-// categoryOrder is the canonical apply-phase ordering. Exposed via
-// CategoryOrder() so callers cannot mutate the package-level slice.
+// categoryOrder is the canonical apply-phase ordering.
 var categoryOrder = []config.Category{
 	config.CategoryNetwork,
 	config.CategoryVolume,
@@ -145,9 +144,8 @@ var categoryOrder = []config.Category{
 	config.CategoryKube,
 }
 
-// CategoryOrder returns a copy of the canonical apply-phase ordering. Other
-// packages (e.g. pkg/dashboard) consume this so they group by the same
-// sequence the applier uses without being able to mutate it.
+// CategoryOrder returns the canonical apply-phase ordering. The result is a
+// fresh copy so callers cannot mutate the package-level slice.
 func CategoryOrder() []config.Category {
 	return slices.Clone(categoryOrder)
 }
@@ -269,7 +267,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		// For non-secret deletes: stop the unit before removing the file so that
 		// systemd terminates the managed container cleanly. daemon-reload alone does
 		// not stop running services — it only removes the unit definition.
-		if change.Action == reconciler.ActionDelete && change.Category != "secret" {
+		if change.Action == reconciler.ActionDelete && change.Category != config.CategorySecret {
 			if unitName := unitNameForDelete(change); unitName != "" {
 				if stopErr := a.systemd.StopUnit(ctx, unitName); stopErr != nil {
 					slog.Warn("stopping unit before file removal", "unit", unitName, "error", stopErr)
@@ -289,10 +287,9 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
 			recordChangedRel(p.ChangedRels, change.Category, change.RelPath)
 		}
-		// Manifests and data files are consumed by application hooks or future
-		// restarts; they are not systemd unit definitions and do not require
-		// daemon-reload.
-		p.NeedsReload = p.NeedsReload || (change.Category != config.CategoryFile && change.Category != config.CategoryManifest)
+		// Manifest and file categories are consumed by application hooks; they
+		// are not systemd unit definitions and do not require daemon-reload.
+		p.NeedsReload = p.NeedsReload || !change.Category.UsesRelPath()
 		if change.Action == reconciler.ActionDelete {
 			// Deleted units must NOT be restarted — the unit no longer exists after
 			// daemon-reload. StopUnit above already terminated the running service.
@@ -309,25 +306,21 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 }
 
 func recordChangedRel(changedRels map[config.Category]map[string]struct{}, category config.Category, relPath string) {
-	if !categoryUsesRelPath(category) || relPath == "" {
+	if !category.UsesRelPath() || relPath == "" {
 		return
 	}
-	// Lazy inner-map init: only insert when there is a rel to record, so the
-	// len(changedRels) == 0 check in runHooksWithPending stays a reliable guard.
+	// Lazy inner-map init keeps len(changedRels) == 0 a reliable guard in
+	// runHooksWithPending: only categories with a recorded rel-path enter the map.
 	if changedRels[category] == nil {
 		changedRels[category] = make(map[string]struct{})
 	}
 	changedRels[category][relPath] = struct{}{}
 }
 
-func categoryUsesRelPath(category config.Category) bool {
-	return category == config.CategoryManifest || category == config.CategoryFile
-}
-
 // unitNameForDelete returns the systemd unit name to stop before a file is removed.
 // Quadlet categories use the pre-computed ServiceName from state.
 // Systemd category: the filename IS the unit name (no parse needed).
-// Secrets and data files don't have associated units.
+// Secrets, manifests, and files have no associated unit.
 func unitNameForDelete(change reconciler.Change) string {
 	switch change.Category {
 	case config.CategoryContainer, config.CategoryNetwork, config.CategoryVolume, config.CategoryKube:
@@ -549,13 +542,15 @@ func hookMatchesChange(hook config.Hook, changedSecrets map[string]struct{}, cha
 			return true
 		}
 	}
+	changedManifests := changedRels[config.CategoryManifest]
 	for _, manifest := range hook.Manifests {
-		if _, ok := changedRels[config.CategoryManifest][manifest]; ok {
+		if _, ok := changedManifests[manifest]; ok {
 			return true
 		}
 	}
+	changedFiles := changedRels[config.CategoryFile]
 	for _, file := range hook.Files {
-		if _, ok := changedRels[config.CategoryFile][file]; ok {
+		if _, ok := changedFiles[file]; ok {
 			return true
 		}
 	}

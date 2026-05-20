@@ -1013,7 +1013,7 @@ func TestApplyManifestTriggeredHookFires(t *testing.T) {
 
 	result, err := a.Apply(t.Context(), &reconciler.Changeset{
 		Changes: []reconciler.Change{
-			{DestPath: "/var/lib/picolet/manifests/config/scrape.yml", Category: "manifest", Action: reconciler.ActionUpdate, NewContent: "x", RelPath: "config/scrape.yml"},
+			{DestPath: "/var/lib/picolet/manifests/config/scrape.yml", Category: config.CategoryManifest, Action: reconciler.ActionUpdate, NewContent: "x", RelPath: "config/scrape.yml"},
 		},
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
 	})
@@ -1101,12 +1101,12 @@ func TestApplyFiresFilesOnlyHook(t *testing.T) {
 
 	result, err := a.Apply(t.Context(), &reconciler.Changeset{
 		Changes: []reconciler.Change{
-			{DestPath: "/var/lib/picolet/files/config/scrape.yml", Category: "file", Action: reconciler.ActionUpdate, NewContent: "x", RelPath: "config/scrape.yml"},
+			{DestPath: "/var/lib/picolet/files/config/scrape.yml", Category: config.CategoryFile, Action: reconciler.ActionUpdate, NewContent: "x", RelPath: "config/scrape.yml"},
 		},
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, int32(1), reloads.Load(), "files-only hook must fire (regression: applier.go:391 early-exit)")
+	assert.Equal(t, int32(1), reloads.Load(), "files-only hook must fire")
 	assert.ElementsMatch(t, []string{"scrape-reload"}, result.AttemptedHookNames)
 }
 
