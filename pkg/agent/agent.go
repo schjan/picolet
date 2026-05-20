@@ -974,8 +974,6 @@ func markAppliedWithMetrics(st *state.State, headSHA string) {
 	metrics.RecordAppliedSHA(headSHA)
 }
 
-// scanOrphans detects and removes files/secrets placed by a previous picolet run that
-// are no longer tracked in state. Runs once at startup; errors are logged, not fatal.
 // applyDirOverrides applies the agent's WithQuadletDir/WithSystemdDir/WithDataDir
 // overrides on top of already-resolved directory defaults. Mirrors the same
 // logic that resolver.New applies to Config.QuadletDir/SystemdDir/DataDir;
@@ -994,6 +992,10 @@ func (a *Agent) applyDirOverrides(quadletDir, systemdDir, dataDir string) (strin
 	return quadletDir, systemdDir, dataDir
 }
 
+// scanOrphans detects and removes files/secrets placed by a previous picolet run
+// that are no longer tracked in state. Runs once at startup; errors are logged,
+// not fatal. Uses applyDirOverrides to ensure paths match what loadAndResolve
+// just wrote to.
 func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	if a.dryRun {
 		return
