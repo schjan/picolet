@@ -225,6 +225,8 @@ features: []
 	require.NoError(t, err)
 	assert.Equal(t, map[string]int{"app-sighup": 1}, loaded.PendingHooks, "failed hook name persisted for retry")
 	assert.NotEmpty(t, loaded.ManagedFiles, "successfully-applied secret recorded so next tick does not re-write it")
+	assert.True(t, loaded.LastSuccessfulReconciliationAt.IsZero(),
+		"an incomplete apply (pending hook) must not advance the last-successful timestamp")
 	// Files applied successfully — mark the SHA so gitpoll stops reporting
 	// "Changed" on every retry tick (which would otherwise produce duplicate
 	// deployment records and "new git commit detected" log spam).
@@ -463,6 +465,8 @@ features: []
 	}
 	assert.Equal(t, "head-sha", loaded.AppliedSHA, "SHA marked applied on the partial-apply path")
 	assert.NotEmpty(t, loaded.ManagedFiles, "applied file recorded so the next tick does not re-write it")
+	assert.True(t, loaded.LastSuccessfulReconciliationAt.IsZero(),
+		"an incomplete apply must not advance the last-successful timestamp")
 }
 
 func TestFinalizeApplyPrunesPendingUnitsForDeletedUnit(t *testing.T) {

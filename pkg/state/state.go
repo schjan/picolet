@@ -66,14 +66,30 @@ func NewState() *State {
 	}
 }
 
-// MarkApplied resets failure tracking and records the SHA as successfully applied.
-func (s *State) MarkApplied(headSHA string) {
+// markApplied records the SHA and clears failure tracking. It does not touch
+// the last-successful timestamp; callers decide whether the reconciliation
+// fully converged.
+func (s *State) markApplied(headSHA string) {
 	s.AppliedSHA = headSHA
 	s.AppliedAt = time.Now()
-	s.LastSuccessfulReconciliationAt = s.AppliedAt
 	s.FailedSHA = ""
 	s.FailedCount = 0
 	s.FailedAt = time.Time{}
+}
+
+// MarkApplied records the SHA as a fully successful reconciliation, advancing
+// the last-successful timestamp.
+func (s *State) MarkApplied(headSHA string) {
+	s.markApplied(headSHA)
+	s.LastSuccessfulReconciliationAt = s.AppliedAt
+}
+
+// MarkAppliedIncomplete records the SHA after an apply that did not fully
+// converge (a keep_running hook or a unit restart is still failing). The SHA is
+// recorded so gitpoll stops reporting "Changed", but the last-successful
+// timestamp is NOT advanced — the fleet has not converged.
+func (s *State) MarkAppliedIncomplete(headSHA string) {
+	s.markApplied(headSHA)
 }
 
 // Store manages atomic reads and writes of the state file.

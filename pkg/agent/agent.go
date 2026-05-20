@@ -808,8 +808,9 @@ func (a *Agent) savePartialState(headSHA string, st *state.State, store *state.S
 	// Prune against the just-rebuilt ServiceNames so a unit removed from the
 	// fleet drops its pending record (health-enforce cannot see removals).
 	st.PendingUnits = prunePendingUnits(mergePendingUnits(st.PendingUnits, applyResult, headSHA, time.Now()), st.ServiceNames)
-	markAppliedWithMetrics(st, headSHA)
-	a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
+	// Record the SHA without advancing the last-successful timestamp: the apply
+	// is incomplete, so staleness alerts must keep firing until it converges.
+	markAppliedIncompleteWithMetrics(st, headSHA)
 	if saveErr := store.Save(st); saveErr != nil {
 		slog.Error("saving partial state after incomplete apply", "error", saveErr)
 	}
@@ -1106,10 +1107,19 @@ func UpdateState(st *state.State, changeset *reconciler.Changeset) {
 	}
 }
 
-// markAppliedWithMetrics records a successful SHA application in both state and metrics.
+// markAppliedWithMetrics records a fully successful SHA application in both
+// state and metrics.
 func markAppliedWithMetrics(st *state.State, headSHA string) {
 	st.MarkApplied(headSHA)
 	metrics.RecordAppliedSHA(headSHA)
+}
+
+// markAppliedIncompleteWithMetrics records a SHA whose apply did not fully
+// converge. The SHA is recorded so gitpoll stops reporting "Changed", but the
+// last-successful timestamp (state and metric) is not advanced.
+func markAppliedIncompleteWithMetrics(st *state.State, headSHA string) {
+	st.MarkAppliedIncomplete(headSHA)
+	metrics.RecordAppliedSHAIncomplete(headSHA)
 }
 
 // scanOrphans detects and removes files/secrets placed by a previous picolet run

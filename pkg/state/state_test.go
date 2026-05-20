@@ -112,6 +112,21 @@ func TestSaveAndLoadPendingUnits(t *testing.T) {
 	assert.True(t, pu.LastAttemptAt.Equal(last))
 }
 
+func TestMarkAppliedIncompleteLeavesLastSuccessful(t *testing.T) {
+	t.Parallel()
+	st := NewState()
+
+	st.MarkApplied("sha-1")
+	converged := st.LastSuccessfulReconciliationAt
+	require.False(t, converged.IsZero(), "MarkApplied advances the last-successful timestamp")
+
+	st.MarkAppliedIncomplete("sha-2")
+	assert.Equal(t, "sha-2", st.AppliedSHA, "incomplete apply still records the SHA")
+	assert.Equal(t, 0, st.FailedCount, "incomplete apply still clears failure tracking")
+	assert.True(t, st.LastSuccessfulReconciliationAt.Equal(converged),
+		"incomplete apply must not advance the last-successful timestamp")
+}
+
 func TestLoad_CorruptJSON_ReturnsErrCorrupt(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.json")

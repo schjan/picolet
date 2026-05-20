@@ -105,8 +105,11 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State,
 		delete(st.PendingUnits, unit)
 	case "inactive", "deactivating", "reloading", "maintenance":
 		// Expected for timer-activated services between runs, completed oneshots,
-		// or units in condition-check failure. Do not restart.
+		// or units in condition-check failure. Do not restart. health-enforce
+		// no longer retries the unit in this state, so clear any pending
+		// restart-failure record — keeping it would loop retry_pending forever.
 		result.Inactive = append(result.Inactive, unit)
+		delete(st.PendingUnits, unit)
 	default:
 		// "failed" and any unexpected state — restart conservatively.
 		slog.Warn("unit unhealthy", "unit", unit, "active_state", status.ActiveState, "sub_state", status.SubState)

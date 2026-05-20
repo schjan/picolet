@@ -268,12 +268,21 @@ func SetAppliedSHA(sha string) {
 	appliedSHA.mu.Unlock()
 }
 
-// RecordAppliedSHA records a successful SHA application: sets the applied SHA,
-// resets the consecutive failure count, and updates the last successful timestamp.
+// RecordAppliedSHA records a fully successful SHA application: sets the applied
+// SHA, resets the consecutive failure count, and advances the last-successful
+// timestamp.
 func RecordAppliedSHA(sha string) {
+	RecordAppliedSHAIncomplete(sha)
+	LastSuccessfulReconciliation.SetToCurrentTime()
+}
+
+// RecordAppliedSHAIncomplete records a SHA whose apply did not fully converge
+// (a keep_running hook or a unit restart is still failing): the applied SHA and
+// the reset failure count are recorded, but the last-successful timestamp is
+// NOT advanced, so staleness alerts keep firing until the fleet converges.
+func RecordAppliedSHAIncomplete(sha string) {
 	SetAppliedSHA(sha)
 	FailedSHAConsecutiveCount.Set(0)
-	LastSuccessfulReconciliation.SetToCurrentTime()
 }
 
 // RecordFailedSHA records a reconciliation failure for the given consecutive count.

@@ -273,6 +273,26 @@ func TestEnforceClearsPendingUnitWhenHealthy(t *testing.T) {
 	assert.Empty(t, st.PendingUnits, "a healthy unit must clear its pending record")
 }
 
+func TestEnforceClearsPendingUnitWhenInactive(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{ActiveState: "inactive", SubState: "dead"}, nil)
+
+	c := New(sys)
+	st := &state.State{
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
+		},
+		PendingUnits: map[string]state.PendingUnit{
+			"foo.service": {SHA: "sha-abc", Attempts: 9, FirstFailedAt: time.Now(), LastAttemptAt: time.Now()},
+		},
+	}
+
+	_, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.Empty(t, st.PendingUnits, "an inactive unit is no longer retried, so its pending record must clear")
+}
+
 func TestEnforcePersistentCooldownAcrossNewChecker(t *testing.T) {
 	t.Parallel()
 	sys := appliermocks.NewMockSystemdManager(t)
