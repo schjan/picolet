@@ -425,6 +425,92 @@ func TestApplyWithRollbackReturnsIncompleteOnFailedUnitRestart(t *testing.T) {
 	assert.Equal(t, []string{"app.service"}, result.FailedRestartUnits)
 }
 
+func TestApplyWithRollbackCompletesWhenUnmanagedHookUnitRestartFails(t *testing.T) {
+	t.Parallel()
+	sys, pod, fw := newBareMocks(t)
+	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
+	sys.EXPECT().RestartUnit(mock.Anything, "nginx.service").Return(assert.AnError)
+
+	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
+	result, err := a.applyWithRollback(t.Context(), "sha", &reconciler.Changeset{
+		Changes: []reconciler.Change{{
+			DestPath:   "secret:app_config",
+			Category:   "secret",
+			Action:     reconciler.ActionUpdate,
+			NewContent: "new",
+		}},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	}, []config.Hook{{
+		Name:    "nginx-reload",
+		Secrets: []string{"app_config"},
+		Unit:    "nginx.service",
+		Action:  config.HookActionRestart,
+	}}, nil)
+
+	// nginx.service is not a picolet-managed quadlet — it is absent from the
+	// changeset's ServiceNames, so health-enforce could never retry it. Its
+	// failed restart stays a logged non-retryable error and must not wedge the
+	// apply into an incomplete state with no convergence path.
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, []string{"nginx.service"}, result.FailedRestartUnits)
+}
+
+func TestApplyIncompleteError(t *testing.T) {
+	t.Parallel()
+	managed := map[string]struct{}{"app.service": {}}
+
+	tests := []struct {
+		name        string
+		result      *applier.ApplyResult
+		wantErr     bool
+		wantMessage string
+	}{
+		{
+			name:    "clean apply returns nil",
+			result:  &applier.ApplyResult{},
+			wantErr: false,
+		},
+		{
+			name:        "managed restart failure is incomplete",
+			result:      &applier.ApplyResult{FailedRestartUnits: []string{"app.service"}},
+			wantErr:     true,
+			wantMessage: "units failed to restart: [app.service]",
+		},
+		{
+			name:    "unmanaged restart failure alone is complete",
+			result:  &applier.ApplyResult{FailedRestartUnits: []string{"nginx.service"}},
+			wantErr: false,
+		},
+		{
+			name:        "unmanaged restart failure omitted from incomplete message",
+			result:      &applier.ApplyResult{FailedRestartUnits: []string{"nginx.service", "app.service"}},
+			wantErr:     true,
+			wantMessage: "units failed to restart: [app.service]",
+		},
+		{
+			name:    "retryable hook error is incomplete regardless of managed set",
+			result:  &applier.ApplyResult{RetryableErrors: []error{assert.AnError}},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := applyIncompleteError(tt.result, managed)
+			if !tt.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, applier.ErrApplyIncomplete)
+			if tt.wantMessage != "" {
+				assert.Contains(t, err.Error(), tt.wantMessage)
+			}
+		})
+	}
+}
+
 func TestReconcileOnceSavesPendingUnitsOnFailedRestart(t *testing.T) {
 	t.Parallel()
 	repoDir := t.TempDir()

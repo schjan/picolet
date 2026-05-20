@@ -1031,12 +1031,12 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 			a.statusStore.DeleteUnit(change.ServiceName)
 		}
 	}
-	if incompleteErr := applyIncompleteError(result); incompleteErr != nil {
+	if incompleteErr := applyIncompleteError(result, changesetUnitNames(changeset)); incompleteErr != nil {
 		logNonRetryableApplyErrors(result)
 		// tick() logs the user-facing "apply incomplete" message with sha + duration.
-		// Failed unit restarts are recorded in state.PendingUnits and retried by
-		// health-enforce; they make the apply incomplete but do not roll back
-		// (the files on disk are correct — only runtime convergence is pending).
+		// Failed restarts of managed units are recorded in state.PendingUnits and
+		// retried by health-enforce; they make the apply incomplete but do not roll
+		// back (the files on disk are correct — only runtime convergence is pending).
 		return result, incompleteErr
 	}
 
@@ -1049,20 +1049,46 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	return result, nil
 }
 
+// changesetUnitNames returns the set of systemd service names the changeset
+// manages. It mirrors the ServiceNames map UpdateState rebuilds, so the
+// managed-unit check in applyIncompleteError agrees with prunePendingUnits on
+// which units count as managed (and are therefore retryable by health-enforce).
+func changesetUnitNames(changeset *reconciler.Changeset) map[string]struct{} {
+	names := make(map[string]struct{})
+	for _, change := range changeset.Changes {
+		if change.Action != reconciler.ActionDelete && change.ServiceName != "" {
+			names[change.ServiceName] = struct{}{}
+		}
+	}
+	return names
+}
+
 // applyIncompleteError returns an ErrApplyIncomplete-wrapped error when the
-// apply did not fully converge — keep_running hooks failed, or a unit restart
-// failed — and nil otherwise. Failed unit restarts are surfaced as a single
-// joined error; per-unit detail lives in state.PendingUnits.
-func applyIncompleteError(result *applier.ApplyResult) error {
-	if len(result.RetryableErrors) == 0 && len(result.FailedRestartUnits) == 0 {
+// apply did not fully converge — keep_running hooks failed, or a restart of a
+// picolet-managed unit failed — and nil otherwise. Only managed units (those
+// in the changeset's ServiceNames) gate this: health-enforce retries them via
+// state.PendingUnits, so an incomplete apply has a convergence path. A failed
+// restart of a hook-only unit — one not managed as a quadlet, e.g. a host
+// service whose config picolet writes via the file category — has no retry
+// path, so it stays a logged non-retryable error (result.Errors) rather than
+// wedging the apply incomplete forever. Failed managed restarts are surfaced as
+// a single joined error; per-unit detail lives in state.PendingUnits.
+func applyIncompleteError(result *applier.ApplyResult, managed map[string]struct{}) error {
+	failedManaged := make([]string, 0, len(result.FailedRestartUnits))
+	for _, unit := range result.FailedRestartUnits {
+		if _, ok := managed[unit]; ok {
+			failedManaged = append(failedManaged, unit)
+		}
+	}
+	if len(result.RetryableErrors) == 0 && len(failedManaged) == 0 {
 		return nil
 	}
 	incompleteErrs := slices.Clone(result.RetryableErrors)
-	if len(result.FailedRestartUnits) > 0 {
+	if len(failedManaged) > 0 {
 		// FailedRestartUnits comes from a map iteration in restartUnits; sort so
 		// the error string (logged and recorded as an event) is stable.
-		failed := slices.Sorted(slices.Values(result.FailedRestartUnits))
-		incompleteErrs = append(incompleteErrs, fmt.Errorf("units failed to restart: %v", failed))
+		slices.Sort(failedManaged)
+		incompleteErrs = append(incompleteErrs, fmt.Errorf("units failed to restart: %v", failedManaged))
 	}
 	return fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(incompleteErrs...))
 }
