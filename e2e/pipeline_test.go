@@ -1,6 +1,6 @@
 //go:build e2e
 
-package picolet_test
+package e2e_test
 
 import (
 	"cmp"
