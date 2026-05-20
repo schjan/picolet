@@ -875,7 +875,8 @@ func TestE2EResolverRootlessPaths(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 
-	repoFS := os.DirFS("testdata/example-fleet")
+	// `go test` sets CWD to this package dir (./e2e); testdata lives at the repo root.
+	repoFS := os.DirFS("../testdata/example-fleet")
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
