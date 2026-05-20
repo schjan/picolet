@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -50,8 +49,7 @@ type DeploymentReporter interface {
 }
 
 const (
-	defaultRepoPath         = "/var/lib/picolet/repo"
-	deploymentReportTimeout = 10 * time.Second
+	defaultRepoPath = "/var/lib/picolet/repo"
 
 	// DefaultLockPath is the default cross-process lock for mutating commands.
 	DefaultLockPath = "/var/lib/picolet/reconciliation.lock"
@@ -59,12 +57,12 @@ const (
 	// DefaultStatePath is the default location for the reconciliation state file.
 	// Exported so that CLI subcommands (e.g. dry-run) can read from the same path.
 	DefaultStatePath = "/var/lib/picolet/state.json"
-
-	// healthFailureThreshold is the number of consecutive all-error health ticks
-	// before /health returns 503 to trigger a container restart.
-	healthFailureThreshold = 3
 )
 
+// errRollbackPerformed is returned by applyWithRollback when an apply failure
+// triggered (and finished) a rollback. github.go uses it via
+// shouldReportDeploymentError to distinguish rollback-after-failure from a
+// plain failure when reporting GitHub Deployment status.
 var errRollbackPerformed = errors.New("rollback performed")
 
 // Agent is the main reconciliation loop.
@@ -90,19 +88,23 @@ type Agent struct {
 	systemdDirOverride string
 	dataDirOverride    string
 
-	opReader resolver.SecretRefReader // nil when 1Password not configured; initialized in Run
-	ppReader resolver.SecretRefReader // nil when Proton Pass not configured; initialized in Run
+	opReader resolver.SecretRefReader // nil when 1Password not configured; initialized in Run, consumed in secrets.go
+	ppReader resolver.SecretRefReader // nil when Proton Pass not configured; initialized in Run, consumed in secrets.go
 	// Accessed only by the agent tick loop, which runs serially.
 	lastOPRefresh time.Time // zero = never refreshed; in-memory only (restart always re-fetches)
 	lastPPRefresh time.Time // zero = never refreshed; in-memory only (restart always re-fetches)
 
-	webhookCh                 chan struct{}
-	ready                     atomic.Bool
-	paused                    atomic.Bool          // set by MQTT pause subscription
-	seededSuccessfulAt        atomic.Bool          // guards one-time gauge seed from persisted state
-	mqttClient                MQTTClient           // nil when MQTT not configured
-	deployReporter            DeploymentReporter   // nil when GitHub App not configured
-	authProvider              gitpoll.AuthProvider // nil = use default SSH/token logic
+	webhookCh chan struct{}
+	// ready: written by Run() after first successful tick; read by /health handler (http.go).
+	ready atomic.Bool
+	// paused: written by MQTT pause subscription (mqttClient.Start); read in tick() and by /health handler (http.go).
+	paused atomic.Bool
+	// seededSuccessfulAt: written and read only in tick(); guards one-time gauge seed from persisted state.
+	seededSuccessfulAt atomic.Bool
+	mqttClient         MQTTClient           // nil when MQTT not configured
+	deployReporter     DeploymentReporter   // nil when GitHub App not configured; consumed in github.go
+	authProvider       gitpoll.AuthProvider // nil = use default SSH/token logic
+	// consecutiveHealthFailures: written by updateHealthFailures (http.go); read by /health handler (http.go).
 	consecutiveHealthFailures atomic.Int32
 	routeRegistrar            RouteRegistrar // nil = no extra HTTP routes
 	statusStore               *status.Store
@@ -292,6 +294,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		)
 		publishCredentialExpiry(resolver.ProviderProtonPass, a.cfg.ProtonPass.PATExpiresAt)
 	}
+
+	// Required invariant: opReader/ppReader must be non-nil here before resolvePollerAuth()
+	// (defined in secrets.go) is called below. The secrets.go helpers read these fields and
+	// silently fall through to SSH/file-based auth if nil — moving this init block later, or
+	// reordering it past resolvePollerAuth, will produce a quiet auth misroute.
 
 	// Initialize git poller
 	auth, err := a.resolvePollerAuth(ctx)
@@ -944,73 +951,6 @@ func logNonRetryableApplyErrors(result *applier.ApplyResult) {
 	}
 }
 
-func recordHookMetrics(result *applier.ApplyResult) {
-	if result == nil {
-		return
-	}
-	for _, o := range result.HookOutcomes {
-		metrics.HookTotal.WithLabelValues(o.Name, o.Action, o.Result).Inc()
-	}
-}
-
-func (a *Agent) resolvePollerAuth(ctx context.Context) (gitpoll.AuthProvider, error) {
-	if a.authProvider != nil {
-		return a.authProvider, nil
-	}
-
-	// Mutual exclusion is enforced by agentcfg.Validate, so at most one
-	// provider's git_token_ref is set; the file-based path is also excluded.
-	// NOTE: the git token is resolved once at startup. If the underlying
-	// secret rotates, a picolet restart is required — the per-tick refresh
-	// cycle re-fetches assignment secrets but does NOT refresh the git token.
-	if auth, err := a.gitAuthFromSecretProvider(ctx); auth != nil || err != nil {
-		return auth, err
-	}
-	if gitpoll.IsSSHURL(a.cfg.RepoURL) {
-		return gitpoll.NewSSHAgentAuth(a.cfg.RepoURL), nil
-	}
-	return gitpoll.NewTokenFileAuth(a.cfg.GitTokenPath), nil
-}
-
-// gitAuthFromSecretProvider returns a static-token auth provider when one
-// of the configured secret providers supplies the git token ref. Returns
-// (nil, nil) when no provider is configured for git auth, so the caller
-// can fall through to SSH or file-based auth.
-//
-//nolint:nilnil // (nil, nil) signals "no provider auth configured"; caller handles fallback
-func (a *Agent) gitAuthFromSecretProvider(ctx context.Context) (gitpoll.AuthProvider, error) {
-	if a.opReader != nil && a.cfg.OnePassword != nil && a.cfg.OnePassword.GitTokenRef != "" {
-		token, err := resolveGitToken(ctx, resolver.ProviderOnePassword, a.opReader, a.cfg.OnePassword.GitTokenRef)
-		if err != nil {
-			return nil, err
-		}
-		return gitpoll.NewStaticTokenAuth(a.cfg.RepoURL, token), nil
-	}
-	if a.ppReader != nil && a.cfg.ProtonPass != nil && a.cfg.ProtonPass.GitTokenRef != "" {
-		token, err := resolveGitToken(ctx, resolver.ProviderProtonPass, a.ppReader, a.cfg.ProtonPass.GitTokenRef)
-		if err != nil {
-			return nil, err
-		}
-		return gitpoll.NewStaticTokenAuth(a.cfg.RepoURL, token), nil
-	}
-	return nil, nil
-}
-
-// resolveGitToken fetches a single ref via the given provider reader and
-// validates that the response actually contains it.
-func resolveGitToken(ctx context.Context, provider resolver.ProviderKey, reader resolver.SecretRefReader, ref string) (string, error) {
-	results, err := reader(ctx, []string{ref})
-	if err != nil {
-		return "", fmt.Errorf("resolving git token from %s: %w", provider, err)
-	}
-	token, ok := results[ref]
-	if !ok {
-		return "", fmt.Errorf("resolving git token from %s: ref %q not in response", provider, ref)
-	}
-	slog.Info("git token resolved", "provider", string(provider))
-	return token, nil
-}
-
 // UpdateState rebuilds ManagedFiles and ServiceNames from the changeset.
 // It does NOT call MarkApplied or touch timestamps/metrics — callers must handle that
 // (the agent uses markAppliedWithMetrics; CLI commands call st.MarkApplied directly).
@@ -1032,67 +972,6 @@ func UpdateState(st *state.State, changeset *reconciler.Changeset) {
 func markAppliedWithMetrics(st *state.State, headSHA string) {
 	st.MarkApplied(headSHA)
 	metrics.RecordAppliedSHA(headSHA)
-}
-
-// setFilesManagedMetric overwrites FilesManagedTotal for every known category.
-// Because the label set is fixed, each call is a pure Set — no Reset() needed,
-// so a concurrent Prometheus scrape never sees zero or partial values.
-func setFilesManagedMetric(counts map[string]float64) {
-	for _, cat := range reconciler.Categories() {
-		category := cat.String()
-		metrics.FilesManagedTotal.WithLabelValues(category).Set(counts[category])
-	}
-}
-
-func (a *Agent) updateHealthFailures(hr *health.CheckResult) {
-	if hr.AllFailed() {
-		a.consecutiveHealthFailures.Add(1)
-	} else {
-		a.consecutiveHealthFailures.Store(0)
-	}
-}
-
-func (a *Agent) recordHealthMetrics(hr *health.CheckResult) {
-	for _, u := range hr.Healthy {
-		metrics.HealthCheckTotal.WithLabelValues(u, "healthy").Inc()
-	}
-	for _, u := range hr.Unhealthy {
-		metrics.HealthCheckTotal.WithLabelValues(u, "unhealthy").Inc()
-	}
-	for _, u := range hr.Inactive {
-		metrics.HealthCheckTotal.WithLabelValues(u, "inactive").Inc()
-	}
-	for _, u := range hr.Restarted {
-		metrics.HealthEnforcementTotal.WithLabelValues(u, "restart").Inc()
-	}
-	for _, u := range hr.Skipped {
-		metrics.HealthEnforcementTotal.WithLabelValues(u, "skip_cooldown").Inc()
-	}
-	// Status store is the single source of truth for per-unit health.
-	// metrics.NewUnitHealthCollector reads its scrape data from the store.
-	a.statusStore.SetUnits(unitStatusesFromHealth(hr.Statuses))
-
-	metrics.HealthCheckErrorsTotal.Add(float64(len(hr.Errors)))
-
-	if hr.AllFailed() {
-		a.statusStore.ClearUnits()
-	}
-}
-
-func unitStatusesFromHealth(statuses map[string]applier.UnitStatus) map[string]status.UnitRuntimeStatus {
-	out := make(map[string]status.UnitRuntimeStatus, len(statuses))
-	for unit, st := range statuses {
-		out[unit] = status.UnitRuntimeStatus{ActiveState: st.ActiveState, SubState: st.SubState}
-	}
-	return out
-}
-
-func countCategoriesFromState(managed map[string]state.ManagedFile) map[string]float64 {
-	counts := make(map[string]float64, len(reconciler.Categories()))
-	for _, mf := range managed {
-		counts[mf.Category.String()]++
-	}
-	return counts
 }
 
 // scanOrphans detects and removes files/secrets placed by a previous picolet run that
@@ -1158,80 +1037,6 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	}
 }
 
-// recordProviderRefCount publishes the per-provider managed-count gauge
-// and returns the count. Returns 0 when the provider is disabled.
-func recordProviderRefCount(provider resolver.ProviderKey, enabled bool, isRef func(string) bool, files []resolver.ResolvedFile) int {
-	if !enabled {
-		return 0
-	}
-	count := countRefs(files, isRef)
-	metrics.SecretsManagedCount.WithLabelValues(string(provider)).Set(float64(count))
-	return count
-}
-
-// recordProviderSyncSuccess bumps the success counter and last-sync gauge
-// for a provider after a tick that actually resolved at least one ref.
-// A zero count means "nothing to record" — disabled providers always produce
-// zero counts via recordProviderRefCount, so a single count==0 check covers
-// both cases.
-func recordProviderSyncSuccess(provider resolver.ProviderKey, count int) {
-	if count == 0 {
-		return
-	}
-	label := string(provider)
-	metrics.SecretSyncTotal.WithLabelValues(label).Inc()
-	metrics.SecretLastSyncTimestamp.WithLabelValues(label).SetToCurrentTime()
-}
-
-// markRefreshAttempted bumps every configured provider's last-refresh
-// timestamp so the agent does not loop tight on the refresh trigger while
-// a tick is gated, partial, or has just completed successfully.
-func (a *Agent) markRefreshAttempted() {
-	now := time.Now()
-	if a.opReader != nil {
-		a.lastOPRefresh = now
-	}
-	if a.ppReader != nil {
-		a.lastPPRefresh = now
-	}
-}
-
-func countRefs(files []resolver.ResolvedFile, isRef func(string) bool) int {
-	var count int
-	for _, f := range files {
-		if isRef(f.SrcPath) {
-			count++
-		}
-	}
-	return count
-}
-
-// publishCredentialExpiry sets the picolet_secret_credential_expires_at gauge
-// for the given provider when the operator has recorded the expiration in
-// config. Zero values are skipped (no series emitted), so dashboards can use
-// `absent_over_time(...)` to flag providers whose expiry was never declared.
-// Past expirations are still published — that is the signal the alert needs.
-func publishCredentialExpiry(provider resolver.ProviderKey, expiresAt time.Time) {
-	if expiresAt.IsZero() {
-		return
-	}
-	metrics.SecretCredentialExpiresAt.WithLabelValues(string(provider)).Set(float64(expiresAt.Unix()))
-	if time.Now().After(expiresAt) {
-		slog.Warn("secret-provider credential has expired", "provider", provider, "expired_at", expiresAt.Format(time.RFC3339))
-	}
-}
-
-func (a *Agent) recordHostMetadata(host *config.HostConfig) {
-	if host == nil {
-		return
-	}
-	a.statusStore.SetHost(status.HostMetadata{
-		PiType:           host.PiType,
-		Features:         host.Features,
-		ExternalHostname: host.ExternalHostname,
-	})
-}
-
 func (a *Agent) statusNeedsResolvedSnapshot() bool {
 	return !a.statusStore.Snapshot().Bootstrapped
 }
@@ -1265,28 +1070,6 @@ func (a *Agent) recordEvent(result, sha, message string) {
 	})
 }
 
-// opRefreshDue reports whether op:// secrets should be re-fetched.
-// Returns true when 1Password is configured and the refresh interval has elapsed.
-// opReader is non-nil iff cfg.OnePassword is non-nil, so a single nil check suffices.
-func (a *Agent) opRefreshDue() bool {
-	if a.opReader == nil {
-		return false
-	}
-	interval := a.cfg.OnePassword.RefreshInterval
-	return a.lastOPRefresh.IsZero() || time.Since(a.lastOPRefresh) >= interval
-}
-
-// ppRefreshDue reports whether pass:// secrets should be re-fetched.
-// Returns true when Proton Pass is configured and the refresh interval has elapsed.
-// ppReader is non-nil iff cfg.ProtonPass is non-nil, so a single nil check suffices.
-func (a *Agent) ppRefreshDue() bool {
-	if a.ppReader == nil {
-		return false
-	}
-	interval := a.cfg.ProtonPass.RefreshInterval
-	return a.lastPPRefresh.IsZero() || time.Since(a.lastPPRefresh) >= interval
-}
-
 func (a *Agent) triggerReconcile() {
 	select {
 	case a.webhookCh <- struct{}{}:
@@ -1313,143 +1096,12 @@ func (a *Agent) publishMQTTStatus(ctx context.Context, st *state.State, tickTime
 	}
 }
 
-func (a *Agent) newMux() *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", metrics.Handler())
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if !a.ready.Load() {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"status":"starting"}`))
-			return
-		}
-		if !a.paused.Load() && a.consecutiveHealthFailures.Load() >= healthFailureThreshold {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"status":"systemd_unreachable"}`))
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-	mux.Handle("/webhook", webhookHandler(a.triggerReconcile, a.cfg.WebhookSecretPath))
-	if a.routeRegistrar != nil {
-		a.routeRegistrar.Register(mux)
-	}
-	return mux
-}
-
-func (a *Agent) startHTTP() (func(context.Context), error) {
-	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", a.cfg.MetricsPort),
-		Handler:           a.newMux(),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-
-	ln, err := net.Listen("tcp", srv.Addr)
-	if err != nil {
-		return nil, fmt.Errorf("starting http listener on %s: %w", srv.Addr, err)
-	}
-
-	slog.Info("http server starting", "port", a.cfg.MetricsPort)
-	go func() {
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			slog.Error("http server error", "error", err)
-		}
-	}()
-
-	return func(ctx context.Context) {
-		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Warn("http server shutdown error", "error", err)
-		}
-	}, nil
-}
-
+// boolToFloat is a trivial 0/1 conversion used by Run() startup to seed
+// FeatureInfo gauges. Kept in agent.go (not metrics.go) because it has no
+// metrics-package dependency and lives next to its only caller.
 func boolToFloat(b bool) float64 {
 	if b {
 		return 1
 	}
 	return 0
-}
-
-// createDeployment creates a GitHub deployment and reports in_progress if a reporter is configured.
-// Returns 0 when no reporter is set or when deployment creation itself fails.
-func (a *Agent) createDeployment(ctx context.Context, sha string) int64 {
-	if a.deployReporter == nil {
-		return 0
-	}
-	deploymentID, err := a.deployReporter.CreateDeployment(ctx, sha)
-	if err == nil {
-		metrics.DeploymentStatusTotal.WithLabelValues("pending").Inc()
-	}
-	if err != nil {
-		slog.Warn("deployment status: create failed", "error", err)
-		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
-		if deploymentID == 0 {
-			return 0
-		}
-		slog.Info("deployment status: continuing with created deployment despite pending status error", "deployment_id", deploymentID)
-	}
-
-	if err := a.deployReporter.ReportInProgress(ctx, deploymentID); err != nil {
-		slog.Warn("deployment status: in_progress failed", "error", err)
-		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
-	} else {
-		metrics.DeploymentStatusTotal.WithLabelValues("in_progress").Inc()
-	}
-	return deploymentID
-}
-
-// reportDeploymentResult reports the final deployment status (success/failure) if a deployment was created.
-func (a *Agent) reportDeploymentResult(ctx context.Context, deploymentID int64, reconcileErr error) {
-	if deploymentID == 0 || a.deployReporter == nil {
-		return
-	}
-	reportCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deploymentReportTimeout)
-	defer cancel()
-
-	if reconcileErr == nil {
-		a.reportDeploymentSuccess(reportCtx, deploymentID)
-		return
-	}
-	if shouldReportDeploymentError(reconcileErr) {
-		a.reportDeploymentError(reportCtx, deploymentID, reconcileErr)
-		return
-	}
-	a.reportDeploymentFailure(reportCtx, deploymentID, reconcileErr)
-}
-
-func (a *Agent) reportDeploymentSuccess(ctx context.Context, deploymentID int64) {
-	if err := a.deployReporter.ReportSuccess(ctx, deploymentID); err != nil {
-		slog.Warn("deployment status: success report failed", "error", err)
-		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
-		return
-	}
-	metrics.DeploymentStatusTotal.WithLabelValues("success").Inc()
-}
-
-func (a *Agent) reportDeploymentFailure(ctx context.Context, deploymentID int64, reconcileErr error) {
-	if err := a.deployReporter.ReportFailure(ctx, deploymentID, reconcileErr); err != nil {
-		slog.Warn("deployment status: failure report failed", "error", err)
-		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
-		return
-	}
-	metrics.DeploymentStatusTotal.WithLabelValues("failure").Inc()
-}
-
-func (a *Agent) reportDeploymentError(ctx context.Context, deploymentID int64, reconcileErr error) {
-	if err := a.deployReporter.ReportError(ctx, deploymentID, reconcileErr); err != nil {
-		slog.Warn("deployment status: error report failed", "error", err)
-		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
-		return
-	}
-	metrics.DeploymentStatusTotal.WithLabelValues("error").Inc()
-}
-
-func shouldReportDeploymentError(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	return errors.Is(err, errRollbackPerformed)
 }
