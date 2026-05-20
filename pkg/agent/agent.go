@@ -1030,17 +1030,13 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 			a.statusStore.DeleteUnit(change.ServiceName)
 		}
 	}
-	if len(result.RetryableErrors) > 0 || len(result.FailedRestartUnits) > 0 {
+	if incompleteErr := applyIncompleteError(result); incompleteErr != nil {
 		logNonRetryableApplyErrors(result)
 		// tick() logs the user-facing "apply incomplete" message with sha + duration.
 		// Failed unit restarts are recorded in state.PendingUnits and retried by
 		// health-enforce; they make the apply incomplete but do not roll back
 		// (the files on disk are correct — only runtime convergence is pending).
-		incompleteErrs := slices.Clone(result.RetryableErrors)
-		if len(result.FailedRestartUnits) > 0 {
-			incompleteErrs = append(incompleteErrs, fmt.Errorf("units failed to restart: %v", result.FailedRestartUnits))
-		}
-		return result, fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(incompleteErrs...))
+		return result, incompleteErr
 	}
 
 	slog.Info("apply complete",
@@ -1050,6 +1046,21 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	)
 
 	return result, nil
+}
+
+// applyIncompleteError returns an ErrApplyIncomplete-wrapped error when the
+// apply did not fully converge — keep_running hooks failed, or a unit restart
+// failed — and nil otherwise. Failed unit restarts are surfaced as a single
+// joined error; per-unit detail lives in state.PendingUnits.
+func applyIncompleteError(result *applier.ApplyResult) error {
+	if len(result.RetryableErrors) == 0 && len(result.FailedRestartUnits) == 0 {
+		return nil
+	}
+	incompleteErrs := slices.Clone(result.RetryableErrors)
+	if len(result.FailedRestartUnits) > 0 {
+		incompleteErrs = append(incompleteErrs, fmt.Errorf("units failed to restart: %v", result.FailedRestartUnits))
+	}
+	return fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(incompleteErrs...))
 }
 
 func logNonRetryableApplyErrors(result *applier.ApplyResult) {

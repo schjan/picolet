@@ -1476,7 +1476,7 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 // tickPendingUnitFixture clones the network-only test repo, pre-seeds state at
 // the current SHA (empty diff) with one pending unit, and returns the store plus
 // the pending unit's name.
-func tickPendingUnitFixture(t *testing.T, a *Agent, poller *gitpoll.Poller, repoDir, statePath, secretsDir string) (*state.Store, string) {
+func tickPendingUnitFixture(t *testing.T, poller *gitpoll.Poller, repoDir, statePath, secretsDir string) (*state.Store, string) {
 	t.Helper()
 	ctx := t.Context()
 	initial, err := poller.Poll(ctx, "")
@@ -1530,7 +1530,7 @@ func TestTickReportsRetryPendingWhenUnitsPending(t *testing.T) {
 	ctx := t.Context()
 	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
 	require.NoError(t, poller.Init(ctx))
-	store, _ := tickPendingUnitFixture(t, a, poller, repoDir, statePath, cfg.SecretsDir)
+	store, _ := tickPendingUnitFixture(t, poller, repoDir, statePath, cfg.SecretsDir)
 
 	preTick, err := store.Load()
 	require.NoError(t, err)
@@ -1576,7 +1576,7 @@ func TestTickClearsPendingUnitWhenHealthy(t *testing.T) {
 	ctx := t.Context()
 	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
 	require.NoError(t, poller.Init(ctx))
-	store, _ := tickPendingUnitFixture(t, a, poller, repoDir, statePath, cfg.SecretsDir)
+	store, _ := tickPendingUnitFixture(t, poller, repoDir, statePath, cfg.SecretsDir)
 
 	healthChecker := health.New(sys)
 	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
