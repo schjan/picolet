@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -372,7 +373,11 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 
 	// Seed managed-files metrics from state on every tick
 	metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
-	setFilesManagedMetric(countCategoriesFromState(st.ManagedFiles))
+	managedByCategory := make(map[string]float64, len(reconciler.Categories()))
+	for _, mf := range st.ManagedFiles {
+		managedByCategory[mf.Category.String()]++
+	}
+	setFilesManagedMetric(managedByCategory)
 	metrics.SetAppliedSHA(st.AppliedSHA)
 	// Seed once from persisted state (not every tick — prevents backward jumps when
 	// noop timestamps are in-memory only and store.Load() returns the older persisted value).
@@ -419,7 +424,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		metrics.GitPollTotal.WithLabelValues("noop").Inc()
 		slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
-		if a.statusNeedsResolvedSnapshot() {
+		if !a.statusStore.Snapshot().Bootstrapped {
 			if err := a.refreshResolvedSnapshot(ctx); err != nil {
 				slog.Warn("refreshing runtime status snapshot failed", "error", err)
 				a.recordEvent("status_error", pollResult.HeadSHA, err.Error())
@@ -974,28 +979,11 @@ func markAppliedWithMetrics(st *state.State, headSHA string) {
 	metrics.RecordAppliedSHA(headSHA)
 }
 
-// applyDirOverrides applies the agent's WithQuadletDir/WithSystemdDir/WithDataDir
-// overrides on top of already-resolved directory defaults. Mirrors the same
-// logic that resolver.New applies to Config.QuadletDir/SystemdDir/DataDir;
-// scanOrphans must stay in sync with that path so it never deletes files the
-// resolver just wrote into a custom directory.
-func (a *Agent) applyDirOverrides(quadletDir, systemdDir, dataDir string) (string, string, string) {
-	if a.quadletDirOverride != "" {
-		quadletDir = a.quadletDirOverride
-	}
-	if a.systemdDirOverride != "" {
-		systemdDir = a.systemdDirOverride
-	}
-	if a.dataDirOverride != "" {
-		dataDir = a.dataDirOverride
-	}
-	return quadletDir, systemdDir, dataDir
-}
-
 // scanOrphans detects and removes files/secrets placed by a previous picolet run
 // that are no longer tracked in state. Runs once at startup; errors are logged,
-// not fatal. Uses applyDirOverrides to ensure paths match what loadAndResolve
-// just wrote to.
+// not fatal. The dir overrides applied below mirror the fallback logic that
+// resolver.New applies to Config.QuadletDir/SystemdDir/DataDir, so scanOrphans
+// never deletes files the resolver just wrote into a test-only custom directory.
 func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	if a.dryRun {
 		return
@@ -1006,7 +994,12 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 		a.statusStore.SetOrphanScan(status.OrphanScan{Ran: true, Error: err.Error()})
 		return
 	}
-	quadletDir, systemdDir, dataDir = a.applyDirOverrides(quadletDir, systemdDir, dataDir)
+	// cmp.Or returns the first non-empty value: a test-only override when set,
+	// otherwise the production default from resolver.ResolveDirs. Keeps
+	// scanOrphans pointed at exactly the directories the resolver just wrote to.
+	quadletDir = cmp.Or(a.quadletDirOverride, quadletDir)
+	systemdDir = cmp.Or(a.systemdDirOverride, systemdDir)
+	dataDir = cmp.Or(a.dataDirOverride, dataDir)
 	st, err := store.Load()
 	if err != nil {
 		slog.Warn("loading state for orphan scan failed", "error", err)
@@ -1037,10 +1030,6 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 			slog.Warn("daemon-reload after orphan cleanup failed", "error", err)
 		}
 	}
-}
-
-func (a *Agent) statusNeedsResolvedSnapshot() bool {
-	return !a.statusStore.Snapshot().Bootstrapped
 }
 
 func (a *Agent) refreshResolvedSnapshot(ctx context.Context) error {

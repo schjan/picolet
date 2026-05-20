@@ -32,7 +32,7 @@ import (
 	"github.com/schjan/picolet/pkg/version"
 )
 
-func runAgent(ctx context.Context, configPath string, dryRun bool) error {
+func runAgent(ctx context.Context, configPath string) error {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
 		return err
@@ -58,7 +58,6 @@ func runAgent(ctx context.Context, configPath string, dryRun bool) error {
 	}
 
 	opts := []agent.Option{
-		agent.WithDryRun(dryRun),
 		agent.WithSystemd(systemd),
 		agent.WithPodman(podman),
 		agent.WithFileWriter(applier.NewAtomicFileWriter()),
@@ -214,7 +213,7 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 	}
 
 	files, err := agent.LoadAndResolve(ctx, agent.ResolveParams{
-		RepoPath:       effectiveRepoDir(repoDir, cfg.RepoSubDir),
+		RepoPath:       filepath.Join(repoDir, cfg.RepoSubDir),
 		Hostname:       hostname,
 		SecretsDir:     cfg.SecretsDir,
 		Rootless:       cfg.Rootless,
@@ -399,14 +398,6 @@ func runTrigger(_ context.Context, configPath, urlOverride string) error {
 	}
 }
 
-// effectiveRepoDir applies an optional subdirectory to the repo root.
-func effectiveRepoDir(repoDir, subDir string) string {
-	if subDir != "" {
-		return filepath.Join(repoDir, subDir)
-	}
-	return repoDir
-}
-
 // dataDirFromConfig returns the runtime data directory using data_dir or a rootless-aware default.
 func dataDirFromConfig(cfg *agentcfg.Config) (string, error) {
 	if cfg.DataDir != "" {
@@ -498,7 +489,7 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	}
 
 	resolved, err := agent.LoadAndResolveHost(ctx, agent.ResolveParams{
-		RepoPath:       effectiveRepoDir(repoDir, cfg.RepoSubDir),
+		RepoPath:       filepath.Join(repoDir, cfg.RepoSubDir),
 		Hostname:       hostname,
 		SecretsDir:     cfg.SecretsDir,
 		Rootless:       cfg.Rootless,

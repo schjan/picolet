@@ -10,7 +10,6 @@ import (
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
-	"github.com/schjan/picolet/pkg/state"
 	"github.com/schjan/picolet/pkg/status"
 )
 
@@ -32,29 +31,17 @@ func (a *Agent) recordHealthMetrics(hr *health.CheckResult) {
 	}
 	// Status store is the single source of truth for per-unit health.
 	// metrics.NewUnitHealthCollector reads its scrape data from the store.
-	a.statusStore.SetUnits(unitStatusesFromHealth(hr.Statuses))
+	unitStatuses := make(map[string]status.UnitRuntimeStatus, len(hr.Statuses))
+	for unit, st := range hr.Statuses {
+		unitStatuses[unit] = status.UnitRuntimeStatus{ActiveState: st.ActiveState, SubState: st.SubState}
+	}
+	a.statusStore.SetUnits(unitStatuses)
 
 	metrics.HealthCheckErrorsTotal.Add(float64(len(hr.Errors)))
 
 	if hr.AllFailed() {
 		a.statusStore.ClearUnits()
 	}
-}
-
-func unitStatusesFromHealth(statuses map[string]applier.UnitStatus) map[string]status.UnitRuntimeStatus {
-	out := make(map[string]status.UnitRuntimeStatus, len(statuses))
-	for unit, st := range statuses {
-		out[unit] = status.UnitRuntimeStatus{ActiveState: st.ActiveState, SubState: st.SubState}
-	}
-	return out
-}
-
-func countCategoriesFromState(managed map[string]state.ManagedFile) map[string]float64 {
-	counts := make(map[string]float64, len(reconciler.Categories()))
-	for _, mf := range managed {
-		counts[mf.Category.String()]++
-	}
-	return counts
 }
 
 // setFilesManagedMetric overwrites FilesManagedTotal for every known category.

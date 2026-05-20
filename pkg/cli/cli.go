@@ -139,7 +139,7 @@ func runCmd() *cli.Command {
 		},
 		Before: jsonLogging,
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			return runAgent(ctx, cmd.String("config"), false)
+			return runAgent(ctx, cmd.String("config"))
 		},
 	}
 }

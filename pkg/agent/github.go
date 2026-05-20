@@ -51,11 +51,13 @@ func (a *Agent) reportDeploymentResult(ctx context.Context, deploymentID int64, 
 		a.reportDeploymentSuccess(reportCtx, deploymentID)
 		return
 	}
+	label := "failure"
+	report := a.deployReporter.ReportFailure
 	if shouldReportDeploymentError(reconcileErr) {
-		a.reportDeploymentError(reportCtx, deploymentID, reconcileErr)
-		return
+		label = "error"
+		report = a.deployReporter.ReportError
 	}
-	a.reportDeploymentFailure(reportCtx, deploymentID, reconcileErr)
+	a.reportTerminalStatus(reportCtx, deploymentID, reconcileErr, label, report)
 }
 
 func (a *Agent) reportDeploymentSuccess(ctx context.Context, deploymentID int64) {
@@ -67,22 +69,16 @@ func (a *Agent) reportDeploymentSuccess(ctx context.Context, deploymentID int64)
 	metrics.DeploymentStatusTotal.WithLabelValues("success").Inc()
 }
 
-func (a *Agent) reportDeploymentFailure(ctx context.Context, deploymentID int64, reconcileErr error) {
-	if err := a.deployReporter.ReportFailure(ctx, deploymentID, reconcileErr); err != nil {
-		slog.Warn("deployment status: failure report failed", "error", err)
+// reportTerminalStatus reports the terminal status of a reconcile (failure or
+// error) and increments the matching DeploymentStatusTotal label.
+// shouldReportDeploymentError picks the label upstream.
+func (a *Agent) reportTerminalStatus(ctx context.Context, deploymentID int64, reconcileErr error, label string, report func(context.Context, int64, error) error) {
+	if err := report(ctx, deploymentID, reconcileErr); err != nil {
+		slog.Warn("deployment status: "+label+" report failed", "error", err)
 		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
 		return
 	}
-	metrics.DeploymentStatusTotal.WithLabelValues("failure").Inc()
-}
-
-func (a *Agent) reportDeploymentError(ctx context.Context, deploymentID int64, reconcileErr error) {
-	if err := a.deployReporter.ReportError(ctx, deploymentID, reconcileErr); err != nil {
-		slog.Warn("deployment status: error report failed", "error", err)
-		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
-		return
-	}
-	metrics.DeploymentStatusTotal.WithLabelValues("error").Inc()
+	metrics.DeploymentStatusTotal.WithLabelValues(label).Inc()
 }
 
 // shouldReportDeploymentError distinguishes the two GitHub Deployment error
