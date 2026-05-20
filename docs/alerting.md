@@ -7,7 +7,7 @@
 | `picolet_reconciliation_total` | Counter | `result` (success/failure/noop/retry_pending/paused) | Total reconciliation attempts |
 | `picolet_reconciliation_duration_seconds` | Histogram | — | Duration of reconciliation cycles |
 | `picolet_last_successful_reconciliation_timestamp` | Gauge | — | Unix timestamp of last successful reconciliation |
-| `picolet_git_poll_total` | Counter | `result` (changed/noop/error) | Total git poll attempts |
+| `picolet_git_poll_total` | Counter | `result` (changed/noop/error/secret_refresh/pending_hook_retry/pending_unit_retry) | Total git poll attempts |
 | `picolet_files_applied_total` | Counter | `action`, `category` | Files applied per action (create/update/delete) and category |
 | `picolet_files_managed_total` | Gauge | `category` | Current managed files by category |
 | `picolet_failed_sha_consecutive_count` | Gauge | — | Consecutive failures for current SHA (gates at 3) |

@@ -1058,7 +1058,10 @@ func applyIncompleteError(result *applier.ApplyResult) error {
 	}
 	incompleteErrs := slices.Clone(result.RetryableErrors)
 	if len(result.FailedRestartUnits) > 0 {
-		incompleteErrs = append(incompleteErrs, fmt.Errorf("units failed to restart: %v", result.FailedRestartUnits))
+		// FailedRestartUnits comes from a map iteration in restartUnits; sort so
+		// the error string (logged and recorded as an event) is stable.
+		failed := slices.Sorted(slices.Values(result.FailedRestartUnits))
+		incompleteErrs = append(incompleteErrs, fmt.Errorf("units failed to restart: %v", failed))
 	}
 	return fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(incompleteErrs...))
 }
