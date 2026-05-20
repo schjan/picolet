@@ -12,7 +12,6 @@ import (
 
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
-	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
 )
 
@@ -162,7 +161,7 @@ func hasPicoletMarker(path string) bool {
 		return false
 	}
 	defer f.Close()
-	buf := make([]byte, len(resolver.PicoletMarker))
+	buf := make([]byte, len(config.PicoletMarker))
 	_, err = io.ReadFull(f, buf)
-	return err == nil && string(buf) == resolver.PicoletMarker
+	return err == nil && string(buf) == config.PicoletMarker
 }

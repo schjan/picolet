@@ -11,6 +11,9 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
+// PicoletMarker is the comment header prepended to systemd unit files managed by picolet.
+const PicoletMarker = "# Managed by picolet"
+
 // Config holds all loaded configuration.
 type Config struct {
 	Fleet       *FleetConfig

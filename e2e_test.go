@@ -228,7 +228,7 @@ func TestE2EPipeline(t *testing.T) {
 
 		// 2. Plant orphan systemd file WITH picolet marker (shared dir — marker required)
 		orphanSystemd := filepath.Join(systemdDir, "orphan-picolet.service")
-		content := resolver.PicoletMarker + "\n[Unit]\nDescription=orphan\n"
+		content := config.PicoletMarker + "\n[Unit]\nDescription=orphan\n"
 		require.NoError(t, os.WriteFile(orphanSystemd, []byte(content), 0o644))
 
 		// 3. Plant foreign systemd file WITHOUT marker — must NOT be removed
