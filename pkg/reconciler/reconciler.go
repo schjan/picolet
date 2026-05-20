@@ -3,8 +3,10 @@ package reconciler
 import (
 	"crypto/sha256"
 	"fmt"
+	"slices"
 	"strings"
 
+	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
 )
@@ -21,14 +23,14 @@ const (
 
 // Change represents a single file change.
 type Change struct {
-	DestPath        string
-	Category        string
-	Action          Action
-	NewContent      string // empty for delete
-	OldHash         string // from state, empty for create
-	NewHash         string // sha256 of NewContent
-	ServiceName     string // "foo.service"; "" for non-quadlets/secrets
-	ManifestRelPath string // relative path within manifests/ dir; "" for non-manifests
+	DestPath    string
+	Category    config.Category
+	Action      Action
+	NewContent  string // empty for delete
+	OldHash     string // from state, empty for create
+	NewHash     string // sha256 of NewContent
+	ServiceName string // "foo.service"; "" for non-quadlets/secrets
+	RelPath     string // relative to category dir; "" for non-manifest/file changes
 }
 
 // Changeset is the complete set of changes to apply.
@@ -79,12 +81,12 @@ func classifyFile(f resolver.ResolvedFile, currentState *state.State) Change {
 	mf, managed := currentState.ManagedFiles[f.DestPath]
 
 	c := Change{
-		DestPath:        f.DestPath,
-		Category:        f.Category,
-		OldHash:         mf.Hash,
-		NewHash:         newHash,
-		ServiceName:     f.ServiceName,
-		ManifestRelPath: f.ManifestRelPath,
+		DestPath:    f.DestPath,
+		Category:    f.Category,
+		OldHash:     mf.Hash,
+		NewHash:     newHash,
+		ServiceName: f.ServiceName,
+		RelPath:     f.RelPath,
 	}
 
 	switch {
@@ -119,9 +121,18 @@ func SecretNameFromPath(destPath string) string {
 	return destPath
 }
 
-var categories = []string{"container", "network", "volume", "kube", "systemd", "manifest", "secret"}
+var categories = []config.Category{
+	config.CategoryContainer,
+	config.CategoryNetwork,
+	config.CategoryVolume,
+	config.CategoryKube,
+	config.CategorySystemd,
+	config.CategoryManifest,
+	config.CategoryFile,
+	config.CategorySecret,
+}
 
 // Categories returns the fixed set of known file categories used for metric labels.
-func Categories() []string {
-	return categories
+func Categories() []config.Category {
+	return slices.Clone(categories)
 }

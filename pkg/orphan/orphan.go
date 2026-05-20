@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/schjan/picolet/pkg/applier"
+	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
 )
@@ -47,28 +48,29 @@ type ScanResult struct {
 // Directory-scan errors are returned because they indicate a systemic problem.
 func (s *Scanner) Scan(ctx context.Context, managedFiles map[string]state.ManagedFile) (ScanResult, error) {
 	var result ScanResult
-	r1, err := s.scanOwnedDir(s.quadletDir, managedFiles)
-	result.FilesRemoved += r1
+	ownedDirs := []string{s.quadletDir}
+	for _, cat := range []config.Category{config.CategoryManifest, config.CategoryFile} {
+		ownedDirs = append(ownedDirs, filepath.Join(s.dataDir, cat.BundleSubdir()))
+	}
+	for _, dir := range ownedDirs {
+		removed, err := s.scanOwnedDir(dir, managedFiles)
+		result.FilesRemoved += removed
+		if err != nil {
+			return result, err
+		}
+	}
+	removed, err := s.scanMarkedDir(s.systemdDir, managedFiles)
+	result.FilesRemoved += removed
 	if err != nil {
 		return result, err
 	}
-	r2, err := s.scanOwnedDir(filepath.Join(s.dataDir, "manifests"), managedFiles)
-	result.FilesRemoved += r2
-	if err != nil {
-		return result, err
-	}
-	r3, err := s.scanMarkedDir(s.systemdDir, managedFiles)
-	result.FilesRemoved += r3
-	if err != nil {
-		return result, err
-	}
-	r4, err := s.scanSecrets(ctx, managedFiles)
-	result.SecretsRemoved += r4
+	secretsRemoved, err := s.scanSecrets(ctx, managedFiles)
+	result.SecretsRemoved += secretsRemoved
 	return result, err
 }
 
 // scanOwnedDir removes any file in a picolet-owned directory that is absent from managedFiles.
-// Uses WalkDir so nested manifest subdirectories are covered.
+// Uses WalkDir so nested data subdirectories are covered.
 func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]state.ManagedFile) (int, error) {
 	var removed int
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {

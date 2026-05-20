@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"maps"
-	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,9 +14,24 @@ import (
 
 	sprig "github.com/Masterminds/sprig/v3"
 
+	"github.com/schjan/picolet/pkg/config"
 	op "github.com/schjan/picolet/pkg/onepassword"
 	pp "github.com/schjan/picolet/pkg/protonpass"
 )
+
+// bundleFilePathFunc returns a template func that resolves a relative path
+// inside a bundle category's deployed subdirectory (e.g. dataDir/manifests/...).
+// funcName is included in error messages for clarity to template authors.
+func bundleFilePathFunc(funcName, dataDir string, category config.Category) func(string) (string, error) {
+	subdir := category.BundleSubdir()
+	return func(relPath string) (string, error) {
+		cleaned, err := config.ValidateRelPath(relPath)
+		if err != nil {
+			return "", fmt.Errorf("%s %q: %w", funcName, relPath, err)
+		}
+		return filepath.Join(dataDir, subdir, filepath.FromSlash(cleaned)), nil
+	}
+}
 
 const maxTemplateDepth = 10
 
@@ -179,17 +193,8 @@ func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, p
 			}
 			return secretReader(path)
 		},
-		"manifestPath": func(relPath string) (string, error) {
-			cleaned := path.Clean(relPath)
-			if relPath != cleaned ||
-				cleaned == "." ||
-				cleaned == ".." ||
-				strings.HasPrefix(cleaned, "/") ||
-				strings.HasPrefix(cleaned, "../") {
-				return "", fmt.Errorf("manifestPath %q: must be a clean relative path", relPath)
-			}
-			return filepath.Join(dataDir, "manifests", filepath.FromSlash(cleaned)), nil
-		},
+		"manifestPath": bundleFilePathFunc("manifestPath", dataDir, config.CategoryManifest),
+		"filePath":     bundleFilePathFunc("filePath", dataDir, config.CategoryFile),
 		// renderTemplate uses a closure depth counter to prevent infinite recursion.
 		// Not goroutine-safe; template rendering must be serial.
 		"renderTemplate": func() any {

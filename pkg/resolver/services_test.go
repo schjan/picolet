@@ -34,16 +34,20 @@ func TestExpandServiceBundlesHappyPath(t *testing.T) {
 	assert.Equal(t, []string{"services/web/kube/app.kube.tmpl"}, expanded.Kube)
 	assert.Equal(t, []string{"services/web/secrets/config.yml.tmpl"}, expanded.Secrets)
 	assert.Equal(t, []hookRef{{Service: "web", SrcPath: "services/web/picolet.yml"}}, expanded.Hooks)
-	assert.Equal(t, []manifestRef{
+	assert.Equal(t, []bundleFileRef{
 		{
 			SrcPath:     "services/web/manifests/app/configs/app.conf",
 			LogicalPath: "manifests/app/configs/app.conf",
+			Category:    "manifest",
+			RelPath:     "app/configs/app.conf",
 		},
 		{
 			SrcPath:     "services/web/manifests/app/deployment.yml.tmpl",
 			LogicalPath: "manifests/app/deployment.yml.tmpl",
+			Category:    "manifest",
+			RelPath:     "app/deployment.yml",
 		},
-	}, expanded.Manifests)
+	}, expanded.NestedRefs)
 }
 
 func TestExpandServiceBundlesMetadataOnlyIsEmpty(t *testing.T) {
@@ -187,12 +191,14 @@ func TestExpandServiceBundlesManifestNestingAllowed(t *testing.T) {
 
 	expanded, err := expandServiceBundles(fsys, []string{"web"})
 	require.NoError(t, err)
-	assert.Equal(t, []manifestRef{
+	assert.Equal(t, []bundleFileRef{
 		{
 			SrcPath:     "services/web/manifests/app/config/settings.yml",
 			LogicalPath: "manifests/app/config/settings.yml",
+			Category:    "manifest",
+			RelPath:     "app/config/settings.yml",
 		},
-	}, expanded.Manifests)
+	}, expanded.NestedRefs)
 }
 
 func TestExpandServiceBundlesRejectsSymlink(t *testing.T) {
@@ -311,4 +317,30 @@ func TestStripServicePrefix(t *testing.T) {
 		stripServicePrefix("services/web/manifests/app/deployment.yml.tmpl", "web"))
 	assert.Equal(t, "containers/web.container",
 		stripServicePrefix("services/web/containers/web.container", "web"))
+}
+
+func TestExpandServiceBundlesIncludesFilesCategory(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"services/web/containers/web.container": &fstest.MapFile{Data: []byte("c")},
+		"services/web/files/scrape.yml":         &fstest.MapFile{Data: []byte("a: 1")},
+		"services/web/files/rules/alerts.yml":   &fstest.MapFile{Data: []byte("b: 2")},
+	}
+
+	expanded, err := expandServiceBundles(fsys, []string{"web"})
+	require.NoError(t, err)
+	require.Len(t, expanded.NestedRefs, 2)
+	assert.Equal(t, bundleFileRef{
+		SrcPath:     "services/web/files/rules/alerts.yml",
+		LogicalPath: "files/rules/alerts.yml",
+		Category:    "file",
+		RelPath:     "rules/alerts.yml",
+	}, expanded.NestedRefs[0])
+	assert.Equal(t, bundleFileRef{
+		SrcPath:     "services/web/files/scrape.yml",
+		LogicalPath: "files/scrape.yml",
+		Category:    "file",
+		RelPath:     "scrape.yml",
+	}, expanded.NestedRefs[1])
 }

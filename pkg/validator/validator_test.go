@@ -6,13 +6,15 @@ import (
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/resolver"
 )
 
 // newParsedFile returns a ResolvedFile with ParsedUnit populated, for use in test fixtures.
-func newParsedFile(t *testing.T, category, destPath, content string) resolver.ResolvedFile {
+func newParsedFile(t *testing.T, category config.Category, destPath, content string) resolver.ResolvedFile {
 	t.Helper()
 	unit := parser.NewUnitFile()
 	unit.Filename = filepath.Base(destPath)
@@ -520,6 +522,46 @@ func TestValidateSecret(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestValidateFileTruthTable(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		srcPath string
+		content string
+		wantErr string
+	}{
+		{name: "plain text passes", srcPath: "files/notes.txt", content: "hello"},
+		{name: "yml valid passes", srcPath: "files/scrape.yml", content: "scrape_configs:\n  - job_name: x\n"},
+		{name: "yaml valid passes", srcPath: "files/scrape.yaml", content: "scrape_configs: []\n"},
+		{name: "uppercase yml validates", srcPath: "files/Mixed.YML", content: "scrape_configs: []\n"},
+		{name: "uppercase yaml tmpl validates", srcPath: "files/Mixed.YAML.TMPL", content: "scrape_configs: []\n"},
+		{name: "yml invalid fails", srcPath: "files/bad.yml", content: "scrape_configs: [\n - broken\n", wantErr: "YAML parse error"},
+		{name: "yml.tmpl validates rendered", srcPath: "files/x.yml.tmpl", content: ":\n  - bad\n", wantErr: "YAML parse error"},
+		{name: "empty file passes", srcPath: "files/empty.yml", content: ""},
+		{name: "whitespace-only yml passes", srcPath: "files/blank.yml", content: " \n\t\n"},
+		{name: "non-yaml extension skips validation", srcPath: "files/raw.bin", content: "\x00\x01not yaml\x02"},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := resolver.ResolvedFile{
+				SrcPath:  tt.srcPath,
+				DestPath: "/var/lib/picolet/" + tt.srcPath,
+				Content:  tt.content,
+				Category: config.CategoryFile,
+			}
+			_, err := AnalyzeFiles([]resolver.ResolvedFile{f}, false)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
 }

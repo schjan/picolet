@@ -20,6 +20,7 @@ type AssignmentGroup struct {
 	Containers []string `yaml:"containers"`
 	Kube       []string `yaml:"kube"`
 	Manifests  []string `yaml:"manifests"`
+	Files      []string `yaml:"files"`
 	Secrets    []string `yaml:"secrets"`
 	Services   []string `yaml:"services"`
 }
@@ -32,6 +33,7 @@ type ResolvedFileSet struct {
 	Containers []string
 	Kube       []string
 	Manifests  []string
+	Files      []string
 	Secrets    []string
 	Services   []string
 }
@@ -64,6 +66,7 @@ func (r *ResolvedFileSet) deduplicate() {
 	r.Containers = sortedUnique(r.Containers)
 	r.Kube = sortedUnique(r.Kube)
 	r.Manifests = sortedUnique(r.Manifests)
+	r.Files = sortedUnique(r.Files)
 	r.Secrets = sortedUnique(r.Secrets)
 	r.Services = sortedUnique(r.Services)
 }
@@ -80,6 +83,7 @@ func (r *ResolvedFileSet) merge(g AssignmentGroup) {
 	r.Containers = append(r.Containers, g.Containers...)
 	r.Kube = append(r.Kube, g.Kube...)
 	r.Manifests = append(r.Manifests, g.Manifests...)
+	r.Files = append(r.Files, g.Files...)
 	r.Secrets = append(r.Secrets, g.Secrets...)
 	r.Services = append(r.Services, g.Services...)
 }

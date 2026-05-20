@@ -317,6 +317,76 @@ func TestSecretHookNormalizeValidatesURLScheme(t *testing.T) {
 	}
 }
 
+func TestAssignmentsResolveMergesFiles(t *testing.T) {
+	t.Parallel()
+	a := &Assignments{
+		Base: AssignmentGroup{Files: []string{"shared/base.yml"}},
+		Features: map[string]AssignmentGroup{
+			"observability": {Files: []string{"shared/obs.yml"}},
+		},
+	}
+	host := &HostConfig{Hostname: "h", PiType: "p", Features: []string{"observability"}}
+	resolved := a.Resolve(host)
+	assert.Equal(t, []string{"shared/base.yml", "shared/obs.yml"}, resolved.Files)
+}
+
+func TestHookNormalizeValidatesFiles(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		file    string
+		wantErr string
+	}{
+		{name: "simple file", file: "scrape.yml"},
+		{name: "nested file", file: "config/scrape.yml"},
+		{name: "absolute path rejected", file: "/etc/passwd", wantErr: "must be a clean relative path"},
+		{name: "traversal rejected", file: "../etc/passwd", wantErr: "must be a clean relative path"},
+		{name: "embedded traversal rejected", file: "a/../b", wantErr: "must be a clean relative path"},
+		{name: "double slash rejected", file: "a//b.yml", wantErr: "must be a clean relative path"},
+		{name: "dot rejected", file: ".", wantErr: "must be a clean relative path"},
+		{name: "empty rejected", file: "", wantErr: "must be a clean relative path"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := Hook{
+				Name:   "hook",
+				Files:  []string{tt.file},
+				Unit:   "app.service",
+				Action: HookActionRestart,
+			}
+			err := h.Normalize()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestHookNormalizeRequiresAtLeastOneTrigger(t *testing.T) {
+	t.Parallel()
+	h := Hook{Name: "hook", Unit: "app.service", Action: HookActionRestart}
+	err := h.Normalize()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at least one of secrets, manifests, or files is required")
+}
+
+func TestHookNormalizeFilesOnlyTrigger(t *testing.T) {
+	t.Parallel()
+	h := Hook{
+		Name:   "hook",
+		Files:  []string{"config/foo.yml"},
+		Unit:   "app.service",
+		Action: HookActionRestart,
+	}
+	require.NoError(t, h.Normalize())
+}
+
 func TestHookNormalizeValidatesManifests(t *testing.T) {
 	t.Parallel()
 

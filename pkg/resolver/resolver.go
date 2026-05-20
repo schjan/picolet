@@ -40,14 +40,15 @@ type ResolvedFile struct {
 	// Content is the rendered file content.
 	Content string
 	// Category describes the file type (network, container, kube, manifest, etc.).
-	Category string
+	Category config.Category
 	// ParsedUnit is the parsed quadlet unit file; nil for non-quadlet files or on parse error.
 	ParsedUnit *parser.UnitFile
 	// ServiceName is the derived systemd service name (e.g. "foo.service"); "" for non-quadlets.
 	ServiceName string
-	// ManifestRelPath is the manifest path relative to the manifests/ directory
-	// (e.g. "config/scrape.yml"). Only set for manifest-category files.
-	ManifestRelPath string
+	// RelPath is the file's path relative to its bundle category directory
+	// (e.g. "config/scrape.yml" for a manifest at manifests/config/scrape.yml).
+	// Only set for manifest- and file-category resolved files.
+	RelPath string
 }
 
 // ResolvedHost is the complete desired state for a single host.
@@ -180,7 +181,7 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 		return nil, err
 	}
 
-	files, err := r.buildFiles(registry, tmplData, expanded.FileSet, expanded.ManifestRefs, resolvedDirect)
+	files, err := r.buildFiles(registry, tmplData, expanded.FileSet, expanded.BundleFileRefs, resolvedDirect)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +205,7 @@ func (r *Resolver) runTemplateRefCollection(ctx context.Context, registry *templ
 	if len(caches) == 0 {
 		return nil
 	}
-	r.collectTemplateRefs(registry, tmplData, expanded.FileSet, expanded.ManifestRefs, expanded.HookRefs)
+	r.collectTemplateRefs(registry, tmplData, expanded.FileSet, expanded.BundleFileRefs, expanded.HookRefs)
 	return caches.ResolveAll(ctx)
 }
 
@@ -223,19 +224,19 @@ func (r *Resolver) ResolveAll(ctx context.Context) (map[string]*ResolvedHost, er
 
 // expandedResult holds the outputs of bundle expansion and validation.
 type expandedResult struct {
-	FileSet      *config.ResolvedFileSet
-	ManifestRefs []manifestRef
-	HookRefs     []hookRef
+	FileSet        *config.ResolvedFileSet
+	BundleFileRefs []bundleFileRef
+	HookRefs       []hookRef
 }
 
 // expandAndValidate expands service bundles into the file set and fails fast
 // if any two sources resolve to the same destination path.
 func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*expandedResult, error) {
-	merged, manifestRefs, hookRefs, err := r.expandFileSet(fileSet)
+	merged, bundleFileRefs, hookRefs, err := r.expandFileSet(fileSet)
 	if err != nil {
 		return nil, err
 	}
-	skeletons, err := r.buildFileSkeletons(merged, manifestRefs)
+	skeletons, err := r.buildFileSkeletons(merged, bundleFileRefs)
 	if err != nil {
 		return nil, err
 	}
@@ -243,18 +244,19 @@ func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*expanded
 		return nil, err
 	}
 	return &expandedResult{
-		FileSet:      merged,
-		ManifestRefs: manifestRefs,
-		HookRefs:     hookRefs,
+		FileSet:        merged,
+		BundleFileRefs: bundleFileRefs,
+		HookRefs:       hookRefs,
 	}, nil
 }
 
 // expandFileSet returns a new ResolvedFileSet merged with any service bundles,
-// plus the full list of manifest refs (legacy + bundled). The input fileSet is
-// not mutated. Manifests and Services are left nil: manifest paths flow through
-// manifestRefs, and Services is already flattened into the category slices.
+// plus the full list of nested data refs (legacy + bundled). The input fileSet
+// is not mutated. Manifests, Files, and Services are left nil: nested data paths
+// flow through bundleFileRefs, and Services is already flattened into the
+// category slices.
 // Populating them would let a future caller miss bundle contents.
-func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []manifestRef, []hookRef, error) {
+func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []bundleFileRef, []hookRef, error) {
 	expanded, err := expandServiceBundles(r.fsys, fileSet.Services)
 	if err != nil {
 		return nil, nil, nil, err
@@ -269,37 +271,45 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.Resol
 		Secrets:    sortedUnique(slices.Concat(fileSet.Secrets, expanded.Secrets)),
 	}
 
-	manifestRefs := make([]manifestRef, 0, len(fileSet.Manifests)+len(expanded.Manifests))
+	bundleFileRefs := make([]bundleFileRef, 0, len(fileSet.Manifests)+len(fileSet.Files)+len(expanded.NestedRefs))
 	for _, srcPath := range fileSet.Manifests {
-		manifestRefs = append(manifestRefs, newLegacyManifestRef(srcPath))
+		bundleFileRefs = append(bundleFileRefs, newLegacyBundleFileRef(srcPath, config.CategoryManifest))
 	}
-	manifestRefs = append(manifestRefs, expanded.Manifests...)
-	return merged, uniqueManifestRefs(manifestRefs), expanded.Hooks, nil
+	for _, srcPath := range fileSet.Files {
+		bundleFileRefs = append(bundleFileRefs, newLegacyBundleFileRef(srcPath, config.CategoryFile))
+	}
+	bundleFileRefs = append(bundleFileRefs, expanded.NestedRefs...)
+	return merged, uniqueBundleFileRefs(bundleFileRefs), expanded.Hooks, nil
 }
 
-// newLegacyManifestRef constructs a manifestRef for a legacy (non-bundled)
-// manifest path, where the source and logical paths are the same. Bundled
-// refs set a stripped LogicalPath and are built in readManifestSubdir.
-func newLegacyManifestRef(srcPath string) manifestRef {
-	return manifestRef{SrcPath: srcPath, LogicalPath: srcPath}
+// newLegacyBundleFileRef constructs a bundleFileRef for a legacy (non-bundled)
+// data path, where the source and logical paths are the same. Bundled refs set
+// a stripped LogicalPath and are built in readNestedSubdir.
+func newLegacyBundleFileRef(srcPath string, category config.Category) bundleFileRef {
+	return bundleFileRef{
+		SrcPath:     srcPath,
+		LogicalPath: srcPath,
+		Category:    category,
+		RelPath:     stripSubdirPrefix(deployedLogicalPath(srcPath), category.BundleSubdir()),
+	}
 }
 
 // buildFileSkeletons returns SrcPath/Category/DestPath tuples for every file
 // the host will deploy. It does not render templates, read files, or call the
 // 1Password SDK, so it's safe (and cheap) to run before expensive operations.
-func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, manifestRefs []manifestRef) ([]ResolvedFile, error) {
+func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, bundleFileRefs []bundleFileRef) ([]ResolvedFile, error) {
 	total := len(fileSet.Networks) + len(fileSet.Systemd) + len(fileSet.Volumes) +
-		len(fileSet.Containers) + len(fileSet.Kube) + len(manifestRefs) + len(fileSet.Secrets)
+		len(fileSet.Containers) + len(fileSet.Kube) + len(bundleFileRefs) + len(fileSet.Secrets)
 	skeletons := make([]ResolvedFile, 0, total)
 
 	quadletCats := []struct {
-		category string
+		category config.Category
 		paths    []string
 	}{
-		{"network", fileSet.Networks},
-		{"volume", fileSet.Volumes},
-		{"container", fileSet.Containers},
-		{"kube", fileSet.Kube},
+		{config.CategoryNetwork, fileSet.Networks},
+		{config.CategoryVolume, fileSet.Volumes},
+		{config.CategoryContainer, fileSet.Containers},
+		{config.CategoryKube, fileSet.Kube},
 	}
 	for _, g := range quadletCats {
 		for _, srcPath := range g.paths {
@@ -310,13 +320,13 @@ func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, manifestR
 	}
 	for _, srcPath := range fileSet.Systemd {
 		skeletons = append(skeletons, ResolvedFile{
-			SrcPath: srcPath, Category: "systemd", DestPath: r.systemdDestPath(srcPath),
+			SrcPath: srcPath, Category: config.CategorySystemd, DestPath: r.systemdDestPath(srcPath),
 		})
 	}
-	for _, ref := range manifestRefs {
+	for _, ref := range bundleFileRefs {
 		skeletons = append(skeletons, ResolvedFile{
-			SrcPath: ref.SrcPath, Category: "manifest", DestPath: r.manifestDestPath(ref.LogicalPath),
-			ManifestRelPath: manifestRelPath(ref.LogicalPath),
+			SrcPath: ref.SrcPath, Category: ref.Category, DestPath: r.dataDestPath(ref.LogicalPath),
+			RelPath: ref.RelPath,
 		})
 	}
 	for _, srcPath := range fileSet.Secrets {
@@ -325,7 +335,7 @@ func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, manifestR
 			return nil, fmt.Errorf("resolving secret %s: %w", srcPath, err)
 		}
 		skeletons = append(skeletons, ResolvedFile{
-			SrcPath: srcPath, Category: "secret", DestPath: dest,
+			SrcPath: srcPath, Category: config.CategorySecret, DestPath: dest,
 		})
 	}
 	return skeletons, nil
@@ -339,8 +349,12 @@ func (r *Resolver) systemdDestPath(srcPath string) string {
 	return filepath.Join(r.systemdDir, destFilename(srcPath))
 }
 
-func (r *Resolver) manifestDestPath(logicalPath string) string {
-	return filepath.Join(r.dataDir, filepath.FromSlash(strings.TrimSuffix(logicalPath, ".tmpl")))
+func (r *Resolver) dataDestPath(logicalPath string) string {
+	return filepath.Join(r.dataDir, filepath.FromSlash(deployedLogicalPath(logicalPath)))
+}
+
+func deployedLogicalPath(logicalPath string) string {
+	return strings.TrimSuffix(logicalPath, ".tmpl")
 }
 
 // secretDestPath returns the DestPath for either a provider-backed ref
@@ -364,14 +378,14 @@ func (r *Resolver) secretDestPath(srcPath string) (string, error) {
 	return "secret:" + strings.TrimSuffix(filename, filepath.Ext(filename)), nil
 }
 
-func uniqueManifestRefs(refs []manifestRef) []manifestRef {
-	slices.SortFunc(refs, func(a, b manifestRef) int {
+func uniqueBundleFileRefs(refs []bundleFileRef) []bundleFileRef {
+	slices.SortFunc(refs, func(a, b bundleFileRef) int {
 		if diff := strings.Compare(a.LogicalPath, b.LogicalPath); diff != 0 {
 			return diff
 		}
 		return strings.Compare(a.SrcPath, b.SrcPath)
 	})
-	return slices.CompactFunc(refs, func(a, b manifestRef) bool {
+	return slices.CompactFunc(refs, func(a, b bundleFileRef) bool {
 		return a == b
 	})
 }
@@ -380,7 +394,7 @@ func (r *Resolver) buildFiles(
 	registry *template.Template,
 	tmplData *TemplateData,
 	fileSet *config.ResolvedFileSet,
-	manifestRefs []manifestRef,
+	bundleFileRefs []bundleFileRef,
 	opResolved map[string]string,
 ) ([]ResolvedFile, error) {
 	var files []ResolvedFile
@@ -391,8 +405,8 @@ func (r *Resolver) buildFiles(
 	}
 	files = append(files, standardFiles...)
 
-	for _, ref := range manifestRefs {
-		f, err := r.resolveManifestRef(registry, tmplData, ref)
+	for _, ref := range bundleFileRefs {
+		f, err := r.resolveNestedRef(registry, tmplData, ref)
 		if err != nil {
 			return nil, err
 		}
@@ -415,15 +429,15 @@ func (r *Resolver) buildStandardFiles(
 ) ([]ResolvedFile, error) {
 	fileGroups := []struct {
 		paths    []string
-		cat      string
+		cat      config.Category
 		destPath func(string) string
 		quadlet  bool
 	}{
-		{fileSet.Networks, "network", r.quadletDestPath, true},
-		{fileSet.Systemd, "systemd", r.systemdDestPath, false},
-		{fileSet.Volumes, "volume", r.quadletDestPath, true},
-		{fileSet.Containers, "container", r.quadletDestPath, true},
-		{fileSet.Kube, "kube", r.quadletDestPath, true},
+		{fileSet.Networks, config.CategoryNetwork, r.quadletDestPath, true},
+		{fileSet.Systemd, config.CategorySystemd, r.systemdDestPath, false},
+		{fileSet.Volumes, config.CategoryVolume, r.quadletDestPath, true},
+		{fileSet.Containers, config.CategoryContainer, r.quadletDestPath, true},
+		{fileSet.Kube, config.CategoryKube, r.quadletDestPath, true},
 	}
 
 	var files []ResolvedFile
@@ -491,13 +505,13 @@ func detectCollisions(files []ResolvedFile) error {
 	return errors.Join(errs...)
 }
 
-func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateData, srcPath, category, destPath string, quadlet bool) (*ResolvedFile, error) {
+func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateData, srcPath string, category config.Category, destPath string, quadlet bool) (*ResolvedFile, error) {
 	content, err := r.renderOrRead(registry, tmplData, srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving %s: %w", srcPath, err)
 	}
 
-	if !quadlet && category == "systemd" {
+	if !quadlet && category == config.CategorySystemd {
 		content = PicoletMarker + "\n" + content
 	}
 
@@ -596,28 +610,19 @@ func destFilename(srcPath string) string {
 	return strings.TrimSuffix(path.Base(srcPath), ".tmpl")
 }
 
-func (r *Resolver) resolveManifestRef(registry *template.Template, tmplData *TemplateData, ref manifestRef) (*ResolvedFile, error) {
+func (r *Resolver) resolveNestedRef(registry *template.Template, tmplData *TemplateData, ref bundleFileRef) (*ResolvedFile, error) {
 	content, err := r.renderOrRead(registry, tmplData, ref.SrcPath)
 	if err != nil {
-		return nil, fmt.Errorf("resolving manifest %s: %w", ref.SrcPath, err)
+		return nil, fmt.Errorf("resolving %s %s: %w", ref.Category, ref.SrcPath, err)
 	}
 
 	return &ResolvedFile{
-		SrcPath:         ref.SrcPath,
-		DestPath:        r.manifestDestPath(ref.LogicalPath),
-		Content:         content,
-		Category:        "manifest",
-		ManifestRelPath: manifestRelPath(ref.LogicalPath),
+		SrcPath:  ref.SrcPath,
+		DestPath: r.dataDestPath(ref.LogicalPath),
+		Content:  content,
+		Category: ref.Category,
+		RelPath:  ref.RelPath,
 	}, nil
-}
-
-// manifestRelPath strips the leading "manifests/" prefix from a logical path
-// to produce the user-facing relative path (e.g. "config/scrape.yml").
-func manifestRelPath(logicalPath string) string {
-	if rel, ok := strings.CutPrefix(logicalPath, "manifests/"); ok {
-		return rel
-	}
-	return logicalPath
 }
 
 func (r *Resolver) buildHooks(registry *template.Template, tmplData *TemplateData, refs []hookRef, files []ResolvedFile) ([]config.Hook, error) {
@@ -685,7 +690,7 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 		SrcPath:  srcPath,
 		DestPath: destPath,
 		Content:  content,
-		Category: "secret",
+		Category: config.CategorySecret,
 	}, nil
 }
 
@@ -752,14 +757,14 @@ func (r *Resolver) collectTemplateRefs(
 	registry *template.Template,
 	tmplData *TemplateData,
 	fileSet *config.ResolvedFileSet,
-	manifestRefs []manifestRef,
+	bundleFileRefs []bundleFileRef,
 	hookRefs []hookRef,
 ) {
 	allPaths := slices.Concat(
 		fileSet.Networks, fileSet.Systemd, fileSet.Volumes,
 		fileSet.Containers, fileSet.Kube,
 	)
-	for _, ref := range manifestRefs {
+	for _, ref := range bundleFileRefs {
 		allPaths = append(allPaths, ref.SrcPath)
 	}
 	for _, ref := range hookRefs {
@@ -792,7 +797,7 @@ func (r *Resolver) buildDirectSecretFile(ref, content string) (*ResolvedFile, er
 		SrcPath:  ref,
 		DestPath: destPath,
 		Content:  content,
-		Category: "secret",
+		Category: config.CategorySecret,
 	}, nil
 }
 

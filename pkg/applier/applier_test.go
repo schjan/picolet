@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -984,7 +985,6 @@ func TestApplyManifestTriggeredHookFires(t *testing.T) {
 		return http.StatusOK
 	})
 	sys := appliermocks.NewMockSystemdManager(t)
-	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 	sys.EXPECT().GetUnitStatus(mock.Anything, "vm.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
 	pod := appliermocks.NewMockPodmanClient(t)
 	fw := newMemFileWriter()
@@ -1013,7 +1013,7 @@ func TestApplyManifestTriggeredHookFires(t *testing.T) {
 
 	result, err := a.Apply(t.Context(), &reconciler.Changeset{
 		Changes: []reconciler.Change{
-			{DestPath: "/var/lib/picolet/manifests/config/scrape.yml", Category: "manifest", Action: reconciler.ActionUpdate, NewContent: "x", ManifestRelPath: "config/scrape.yml"},
+			{DestPath: "/var/lib/picolet/manifests/config/scrape.yml", Category: config.CategoryManifest, Action: reconciler.ActionUpdate, NewContent: "x", RelPath: "config/scrape.yml"},
 		},
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
 	})
@@ -1061,4 +1061,135 @@ func TestSecretHookReloaderHonorsHealthDelayCancellation(t *testing.T) {
 			assert.Equal(t, tt.shouldRestart, shouldRestart)
 		})
 	}
+}
+
+func TestCategoryOrderIncludesFileNextToManifest(t *testing.T) {
+	t.Parallel()
+	order := applier.CategoryOrder()
+	manifestIdx := slices.Index(order, config.CategoryManifest)
+	fileIdx := slices.Index(order, config.CategoryFile)
+	require.NotEqual(t, -1, manifestIdx, "manifest must be present")
+	require.NotEqual(t, -1, fileIdx, "file must be present")
+	assert.Equal(t, manifestIdx+1, fileIdx, "file must come immediately after manifest")
+}
+
+func TestApplyFiresFilesOnlyHook(t *testing.T) {
+	t.Parallel()
+
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+
+	var reloads atomic.Int32
+	client := testHTTPClient(func(_ *http.Request) int {
+		reloads.Add(1)
+		return http.StatusOK
+	})
+
+	hooks := []config.Hook{{
+		Name:      "scrape-reload",
+		Files:     []string{"config/scrape.yml"},
+		Unit:      "app.service",
+		Action:    config.HookActionHTTP,
+		Method:    http.MethodPost,
+		URL:       "http://example.test/reload",
+		OnFailure: config.HookOnFailureKeepRunning,
+	}}
+	reloader := applier.NewHookReloader(sys, pod).WithHTTPClient(client).WithHealthDelay(0)
+	a := applier.New(sys, pod, fw, false, hooks, applier.WithHookReloader(reloader))
+
+	result, err := a.Apply(t.Context(), &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "/var/lib/picolet/files/config/scrape.yml", Category: config.CategoryFile, Action: reconciler.ActionUpdate, NewContent: "x", RelPath: "config/scrape.yml"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), reloads.Load(), "files-only hook must fire")
+	assert.ElementsMatch(t, []string{"scrape-reload"}, result.AttemptedHookNames)
+}
+
+func TestApplyRelPathDeleteDoesNotFireHooks(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		category   config.Category
+		destPath   string
+		relPath    string
+		hook       config.Hook
+		wantReload bool
+	}{
+		{
+			name:     "manifest",
+			category: config.CategoryManifest,
+			destPath: "/var/lib/picolet/manifests/config/scrape.yml",
+			relPath:  "config/scrape.yml",
+			hook: config.Hook{
+				Name:      "manifest-reload",
+				Manifests: []string{"config/scrape.yml"},
+				Unit:      "app.service",
+				Action:    config.HookActionHTTP,
+				Method:    http.MethodPost,
+				URL:       "http://example.test/reload",
+				OnFailure: config.HookOnFailureKeepRunning,
+			},
+		},
+		{
+			name:     "file",
+			category: config.CategoryFile,
+			destPath: "/var/lib/picolet/files/config/scrape.yml",
+			relPath:  "config/scrape.yml",
+			hook: config.Hook{
+				Name:      "file-reload",
+				Files:     []string{"config/scrape.yml"},
+				Unit:      "app.service",
+				Action:    config.HookActionHTTP,
+				Method:    http.MethodPost,
+				URL:       "http://example.test/reload",
+				OnFailure: config.HookOnFailureKeepRunning,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assertRelPathDeleteDoesNotFireHook(t, tt.category, tt.destPath, tt.relPath, tt.hook, tt.wantReload)
+		})
+	}
+}
+
+func assertRelPathDeleteDoesNotFireHook(
+	t *testing.T,
+	category config.Category,
+	destPath, relPath string,
+	hook config.Hook,
+	wantReload bool,
+) {
+	t.Helper()
+	var reloads atomic.Int32
+	client := testHTTPClient(func(_ *http.Request) int {
+		reloads.Add(1)
+		return http.StatusOK
+	})
+	sys := appliermocks.NewMockSystemdManager(t)
+	if wantReload {
+		sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	}
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	reloader := applier.NewHookReloader(sys, pod).WithHTTPClient(client).WithHealthDelay(0)
+	a := applier.New(sys, pod, fw, false, []config.Hook{hook}, applier.WithHookReloader(reloader))
+
+	result, err := a.Apply(t.Context(), &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: destPath, Category: category, Action: reconciler.ActionDelete, RelPath: relPath},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionDelete: 1},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), reloads.Load(), "rel-path delete hooks are intentionally not fired")
+	assert.Empty(t, result.AttemptedHookNames)
+	assert.Equal(t, []string{destPath}, fw.removed)
 }

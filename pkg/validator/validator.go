@@ -78,7 +78,7 @@ func ValidateAll(ctx context.Context, r *resolver.Resolver, cfg *config.Config) 
 func analyzeFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo, rootless bool) (status.UnitDependencies, error) {
 	slog.Debug("validating file", "path", f.DestPath, "category", f.Category)
 	switch f.Category {
-	case "network", "volume", "container", "kube":
+	case config.CategoryNetwork, config.CategoryVolume, config.CategoryContainer, config.CategoryKube:
 		if f.ParsedUnit == nil {
 			return status.UnitDependencies{}, fmt.Errorf("%s: quadlet unit could not be parsed (invalid INI syntax)", f.DestPath)
 		}
@@ -87,15 +87,17 @@ func analyzeFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo
 			return status.UnitDependencies{}, err
 		}
 		return dependenciesFromUnit(generated), nil
-	case "manifest":
+	case config.CategoryManifest:
 		return status.UnitDependencies{}, validateManifest(f.DestPath, []byte(f.Content))
-	case "systemd":
+	case config.CategorySystemd:
 		if err := validateSystemdUnit(f.DestPath, f.Content); err != nil {
 			return status.UnitDependencies{}, err
 		}
 		return dependenciesFromSystemd(f), nil
-	case "secret":
+	case config.CategorySecret:
 		return status.UnitDependencies{}, validateSecret(f)
+	case config.CategoryFile:
+		return status.UnitDependencies{}, validateFile(f)
 	default:
 		return status.UnitDependencies{}, fmt.Errorf("%s: unknown file category %q", f.DestPath, f.Category)
 	}
@@ -133,11 +135,11 @@ func buildUnitsInfoFromFiles(files []resolver.ResolvedFile, rootless bool) map[s
 		}
 		var err error
 		switch f.Category {
-		case "network":
+		case config.CategoryNetwork:
 			_, _, err = quadlet.ConvertNetwork(f.ParsedUnit, units, rootless)
-		case "volume":
+		case config.CategoryVolume:
 			_, _, err = quadlet.ConvertVolume(f.ParsedUnit, units, rootless)
-		case "kube":
+		case config.CategoryKube:
 			_, err = quadlet.ConvertKube(f.ParsedUnit, units, rootless)
 		}
 		if err != nil {
@@ -198,7 +200,7 @@ func unitNameForAnalysis(f resolver.ResolvedFile) string {
 			return info.ServiceFileName()
 		}
 	}
-	if f.Category == "systemd" {
+	if f.Category == config.CategorySystemd {
 		return filepath.Base(f.DestPath)
 	}
 	return ""
@@ -222,13 +224,29 @@ func shouldValidateSecretYAML(f resolver.ResolvedFile, trimmedContent string) bo
 	if trimmedContent == unresolvedSecretPlaceholder {
 		return false
 	}
-	effectivePath := strings.TrimSuffix(strings.ToLower(f.SrcPath), ".tmpl")
-	switch filepath.Ext(effectivePath) {
+	return isYAMLSource(f.SrcPath)
+}
+
+// validateFile checks opaque container-mounted files. Empty content is allowed
+// (legitimate for empty allowlists/rule sets). Files whose source extension is
+// .yml or .yaml (after stripping .tmpl) are syntax-checked; anything else is
+// considered opaque and not inspected.
+func validateFile(f resolver.ResolvedFile) error {
+	if !isYAMLSource(f.SrcPath) {
+		return nil
+	}
+	return validateYAMLSyntax(f.DestPath, []byte(f.Content))
+}
+
+// isYAMLSource reports whether a source path's effective extension (after
+// stripping a trailing .tmpl) is .yml or .yaml.
+func isYAMLSource(srcPath string) bool {
+	effective := strings.TrimSuffix(srcPath, ".tmpl")
+	switch strings.ToLower(filepath.Ext(effective)) {
 	case ".yml", ".yaml":
 		return true
-	default:
-		return false
 	}
+	return false
 }
 
 func validateYAMLSyntax(path string, content []byte) error {

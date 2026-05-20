@@ -158,7 +158,8 @@ Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a co
 | `quadlets/volumes/` | `.volume` | `/etc/containers/systemd/picolet/` |
 | `quadlets/containers/` | `.container` | `/etc/containers/systemd/picolet/` |
 | `quadlets/kube/` | `.kube` | `/etc/containers/systemd/picolet/` |
-| `manifests/<app>/` | `.yml` | `/var/lib/picolet/manifests/<app>/` |
+| `manifests/<app>/` | `.yml` (Kubernetes resources only) | `/var/lib/picolet/manifests/<app>/` |
+| `files/<app>/` | any | `/var/lib/picolet/files/<app>/` |
 | `secrets/` | `.yml` | Podman secrets |
 | `systemd/` | `.socket` | `/etc/systemd/system/` |
 
@@ -179,11 +180,12 @@ services/<name>/
   kube/
   systemd/
   secrets/
-  manifests/
+  manifests/    # K8s YAML only — validated against k8s.io/api types
+  files/        # opaque, container-mounted files; validated only as YAML if .yml/.yaml
   picolet.yml
 ```
 
-`manifests/` may contain nested directories. The other six category directories
+`manifests/` and `files/` may contain nested directories. The other six category directories
 must contain files directly.
 
 `picolet.yml` is optional service metadata. It does not deploy a resource by
@@ -198,21 +200,22 @@ Strict bundle rules:
 | empty bundle | error |
 | unknown entry at bundle root | error |
 | category-named file at bundle root | error |
-| nested directory under non-`manifests/` category | error |
+| nested directory under any category except `manifests/` and `files/` | error |
 | two sources resolving to the same destination | error |
 
 Dotfiles and loose files are not special-cased. Keep the bundle directory clean
 or ignore those files at the repo level before they land in the fleet repo.
 
-Bundled manifests keep their real repo path for template rendering, but Picolet
+Bundled manifests and files keep their real repo path for template rendering, but Picolet
 strips the `services/<name>/` prefix when deriving the deployed destination. For
 example, `services/web/manifests/app/deployment.yml.tmpl` deploys to
-`/var/lib/picolet/manifests/app/deployment.yml`.
+`/var/lib/picolet/manifests/app/deployment.yml`; `services/web/files/rules.yml.tmpl`
+deploys to `/var/lib/picolet/files/rules.yml`.
 
 Collision detection happens during `resolve` / `validate`. Picolet rejects:
 
 - quadlet files that would overwrite another file in the shared quadlet directory
-- manifest files that normalize to the same deployed path
+- manifest or file entries that normalize to the same deployed path within their category
 - secrets that normalize to the same `secret:<name>` destination, such as
   `foo.yml` and `foo.yaml`
 
@@ -227,8 +230,8 @@ legacy paths in the same commit that introduces `services: [<name>]`.
 
 ### Hooks
 
-Service bundles can declare actions to run after assigned Podman secrets or
-manifest files change. Put them in `services/<name>/picolet.yml` or
+Service bundles can declare actions to run after assigned Podman secrets,
+manifests, or opaque files change. Put them in `services/<name>/picolet.yml` or
 `services/<name>/picolet.yml.tmpl` (only one of the two — bundles containing
 both are rejected). The example below uses Go template syntax, so it must be in
 a `.tmpl` file:
@@ -245,7 +248,7 @@ hooks:
     health_url: 'http://localhost:{{ index .Ports "vmalert" }}/vmalert/health'
 
   - name: victoriametrics-scrape-reload
-    manifests: [config/scrape.yml]
+    files: [config/scrape.yml]
     unit: victoriametrics.service
     action: http
     method: GET
@@ -253,26 +256,31 @@ hooks:
     health_url: 'http://localhost:{{ index .Ports "victoriametrics" }}/prometheus/health'
 ```
 
-Hooks run after secret/manifest writes and before normal unit restarts. If
-multiple changed secrets or manifests match one hook, Picolet runs that hook
-once. If the unit is already scheduled for restart because its Quadlet changed,
-Picolet skips reload hooks for that unit.
+Hooks run after secret, manifest, or file creates/updates and before normal unit
+restarts. If multiple changed secrets, manifests, or files match one hook,
+Picolet runs that hook once. File and manifest deletes do not fire hooks. If the
+unit is already scheduled for restart because its Quadlet changed, Picolet skips
+reload hooks for that unit.
 
 Hook names must be unique across all service bundles assigned to a host.
 
-Each hook must specify at least one trigger — `secrets`, `manifests`, or both.
-When both are set, the hook fires if ANY listed secret OR manifest changed.
+Each hook must specify at least one trigger — `secrets`, `manifests`, or `files`.
+When more than one is set, the hook fires if ANY listed secret OR manifest OR file changed.
 
 The `manifests` field uses paths relative to the service bundle's `manifests/`
-directory (e.g., `config/scrape.yml`).
+directory (e.g., `app/deployment.yml`); use `manifests/` only for Kubernetes
+resources fed to `podman kube play`. The `files` field uses paths relative to
+the service bundle's `files/` directory (e.g., `config/scrape.yml`); use `files/`
+for arbitrary container-mounted config (Prometheus scrape configs, vmalert rules,
+etc.).
 
 Supported actions:
 
 | Action | Required fields | Behavior |
 |--------|-----------------|----------|
-| `http` | `unit`, `url`, at least one trigger (`secrets` and/or `manifests`) | Send `method` (`POST` by default, `GET` also supported), then `GET health_url` when set |
-| `signal` | `unit`, `container`, at least one trigger | Send `signal` (`HUP` by default) to the Podman container |
-| `restart` | `unit`, at least one trigger | Restart the systemd unit after applying changes |
+| `http` | `unit`, `url`, at least one trigger (`secrets`, `manifests`, and/or `files`) | Send `method` (`POST` by default, `GET` also supported), then `GET health_url` when set |
+| `signal` | `unit`, `container`, at least one trigger (`secrets`, `manifests`, and/or `files`) | Send `signal` (`HUP` by default) to the Podman container |
+| `restart` | `unit`, at least one trigger (`secrets`, `manifests`, and/or `files`) | Restart the systemd unit after applying changes |
 
 By default hook failures are non-fatal and keep the current process running:
 `on_failure: keep_running`. Use `on_failure: restart` only when a failed reload
@@ -307,6 +315,7 @@ Available data: `.Host` (hostname, pi_type, features), `.Images`, `.Ports`, `.Fl
 | `readOpSecret(ref)` | Resolve a 1Password reference, e.g. `op://vault/item/field` |
 | `readProtonPassSecret(ref)` | Resolve a Proton Pass reference, e.g. `pass://share/item/field` |
 | `manifestPath(relPath)` | Return the absolute deployed path for a manifest file (handles rootless/rootful automatically). `relPath` is relative to the service's `manifests/` dir |
+| `filePath(relPath)` | Return the absolute deployed path for a file (handles rootless/rootful automatically). `relPath` is relative to the service's `files/` dir |
 | `has(item, slice)` | Sprig: check if a value is present in a list |
 
 Use this when runtime expects one file but you want many repo fragments. Example:
@@ -321,7 +330,7 @@ Keep fragments unindented (`- name: ...`) and let the template handle indentatio
 
 ### Validation
 
-All files are validated before deployment: quadlet files via Podman's own `quadlet.Convert*()`, K8s manifests via strict unmarshalling into `k8s.io/api` types, systemd units structurally, and templates at render time (`missingkey=error`).
+All files are validated before deployment: quadlet files via Podman's own `quadlet.Convert*()`, K8s manifests via strict unmarshalling into `k8s.io/api` types, opaque files as YAML syntax only when their rendered source extension is `.yml` or `.yaml`, systemd units structurally, and templates at render time (`missingkey=error`).
 
 Secrets always require non-empty content. Repo-backed YAML secrets (`.yml` / `.yaml`, including `.tmpl`) are also syntax-validated after template rendering. External placeholder secrets in repo-only validation mode are skipped for YAML syntax checks.
 

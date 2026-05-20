@@ -1,0 +1,5 @@
+groups:
+  - name: web-app
+    rules:
+      - alert: WebAppDown
+        expr: up{job="web-app"} == 0

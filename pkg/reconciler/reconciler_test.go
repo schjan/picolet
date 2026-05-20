@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
 )
@@ -86,7 +87,7 @@ func TestDiffDeleteRemovedFiles(t *testing.T) {
 
 	require.True(t, cs.HasChanges())
 	assert.Equal(t, 1, cs.Summary[ActionDelete])
-	assert.Equal(t, "container", cs.Changes[0].Category)
+	assert.Equal(t, config.CategoryContainer, cs.Changes[0].Category)
 	assert.Equal(t, "old.service", cs.Changes[0].ServiceName)
 }
 
@@ -161,4 +162,9 @@ func TestDiffServiceNamePropagated(t *testing.T) {
 
 	require.Equal(t, 1, cs.Summary[ActionCreate])
 	assert.Equal(t, "app.service", cs.Changes[0].ServiceName)
+}
+
+func TestCategoriesIncludesFile(t *testing.T) {
+	t.Parallel()
+	assert.Contains(t, Categories(), config.CategoryFile)
 }

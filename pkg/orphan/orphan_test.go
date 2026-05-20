@@ -57,6 +57,31 @@ func TestScanOwnedDir_DirNotExist(t *testing.T) {
 	assert.Equal(t, 0, result.SecretsRemoved)
 }
 
+func TestScanFilesDir_RemovesOnlyOrphanedFiles(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	filesDir := filepath.Join(dataDir, "files", "config")
+	require.NoError(t, os.MkdirAll(filesDir, 0o755))
+
+	orphanPath := filepath.Join(filesDir, "old.yml")
+	require.NoError(t, os.WriteFile(orphanPath, []byte("old: true\n"), 0o600))
+	managedPath := filepath.Join(filesDir, "current.yml")
+	require.NoError(t, os.WriteFile(managedPath, []byte("current: true\n"), 0o600))
+
+	fw := appliermocks.NewMockFileWriter(t)
+	fw.EXPECT().Remove(orphanPath).Return(nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
+
+	s := orphan.New(fw, pod, t.TempDir(), t.TempDir(), dataDir)
+	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{
+		managedPath: {Hash: "sha256:abc", Category: "file"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.FilesRemoved)
+	assert.Equal(t, 0, result.SecretsRemoved)
+}
+
 func TestScanMarkedDir_RemovesOrphans(t *testing.T) {
 	t.Parallel()
 	systemdDir := t.TempDir()
