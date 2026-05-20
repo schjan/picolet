@@ -1,12 +1,11 @@
 //go:build e2e
 
-package picolet_test
+package e2e_test
 
 import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,20 +17,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/pkg/applier"
+	"github.com/schjan/picolet/pkg/cli"
 	"github.com/schjan/picolet/pkg/state"
 )
-
-// podmanBuildTags are required to compile cmd/picolet against the Podman bindings.
-const podmanBuildTags = "remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper"
-
-func buildPicoletBinary(t *testing.T) string {
-	t.Helper()
-	bin := filepath.Join(t.TempDir(), "picolet")
-	cmd := exec.Command("go", "build", "-tags", podmanBuildTags, "-o", bin, "./cmd/picolet")
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "building picolet binary: %s", out)
-	return bin
-}
 
 // setupApplyDownFleet creates a minimal fleet repo in fleetDir with unique resource names
 // that don't conflict with TestE2EPipeline's resources (different container name, secret,
@@ -82,15 +70,28 @@ WantedBy=default.target
 	}
 }
 
+// runCLI invokes the picolet CLI in-process via cli.Execute. The args slice must
+// start with the subcommand (no leading "picolet"; runCLI adds it).
+//
+// Note: cli.Execute's Before hook calls slog.SetDefault, so concurrent invocations
+// from parallel tests would race on the global logger. TestE2EApplyDown therefore
+// runs serially (no t.Parallel()).
+func runCLI(t *testing.T, args ...string) error {
+	t.Helper()
+	return cli.Execute(t.Context(), append([]string{"picolet"}, args...))
+}
+
 // TestE2EApplyDown exercises the `picolet apply` and `picolet down` CLI commands end-to-end:
 // apply → verify resources → idempotent re-apply → down → verify cleanup.
 //
-//nolint:funlen,tparallel // E2E test with intentionally sequential sub-tests
+// Runs serially (no t.Parallel) because each cli.Execute call mutates slog's default
+// logger and would race with other parallel cli.Execute callers. Structural
+// assertions (container running, files written, state contents) replace the
+// previous log-content assertions.
+//
+//nolint:funlen // E2E test with intentionally sequential sub-tests
 func TestE2EApplyDown(t *testing.T) {
-	t.Parallel()
-
 	socketPath := podmanSocketPath(t)
-	bin := buildPicoletBinary(t)
 
 	dataDir := t.TempDir()
 	fleetDir := filepath.Join(t.TempDir(), "fleet")
@@ -118,9 +119,9 @@ func TestE2EApplyDown(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		// Best-effort: run down to clean managed resources
-		downCmd := exec.Command(bin, "down", "--config", configPath)
-		_ = downCmd.Run()
+		// Best-effort: run down to clean managed resources.
+		// Use Background-derived context (not t.Context — already cancelled at cleanup).
+		_ = cli.Execute(context.Background(), []string{"picolet", "down", "--config", configPath})
 		_ = podman.ContainerRemove(cleanupCtx, "picolet-apply-test", true)
 		_ = podman.SecretRemove(cleanupCtx, "apply_secret")
 	})
@@ -128,13 +129,8 @@ func TestE2EApplyDown(t *testing.T) {
 	statePath := filepath.Join(dataDir, "state.json")
 
 	t.Run("apply", func(t *testing.T) {
-		cmd := exec.Command(bin, "apply",
-			"--host", "apply-host",
-			"--repo-dir", fleetDir,
-			"--config", configPath)
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "apply failed: %s", out)
-		assert.Contains(t, string(out), "apply complete")
+		err := runCLI(t, "apply", "--host", "apply-host", "--repo-dir", fleetDir, "--config", configPath)
+		require.NoError(t, err, "apply should succeed")
 	})
 
 	t.Run("verify", func(t *testing.T) {
@@ -171,20 +167,20 @@ func TestE2EApplyDown(t *testing.T) {
 	})
 
 	t.Run("idempotent", func(t *testing.T) {
-		cmd := exec.Command(bin, "apply",
-			"--host", "apply-host",
-			"--repo-dir", fleetDir,
-			"--config", configPath)
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "idempotent apply failed: %s", out)
-		assert.Contains(t, string(out), "no changes to apply")
+		preSHA := loadAppliedSHA(t, statePath)
+
+		err := runCLI(t, "apply", "--host", "apply-host", "--repo-dir", fleetDir, "--config", configPath)
+		require.NoError(t, err, "idempotent apply should succeed")
+
+		// No-op apply must NOT advance AppliedSHA — that's how we know nothing was applied
+		// (the only place AppliedSHA changes is after a successful change-producing apply).
+		postSHA := loadAppliedSHA(t, statePath)
+		assert.Equal(t, preSHA, postSHA, "no-op apply must not advance AppliedSHA")
 	})
 
 	t.Run("down", func(t *testing.T) {
-		cmd := exec.Command(bin, "down", "--config", configPath)
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "down failed: %s", out)
-		assert.Contains(t, string(out), "down complete")
+		err := runCLI(t, "down", "--config", configPath)
+		require.NoError(t, err, "down should succeed")
 	})
 
 	t.Run("verify_cleanup", func(t *testing.T) {
@@ -217,10 +213,15 @@ func TestE2EApplyDown(t *testing.T) {
 		})
 
 		t.Run("down_idempotent", func(t *testing.T) {
-			cmd := exec.Command(bin, "down", "--config", configPath)
-			out, err := cmd.CombinedOutput()
-			require.NoError(t, err, "idempotent down failed: %s", out)
-			assert.Contains(t, string(out), "nothing to tear down")
+			err := runCLI(t, "down", "--config", configPath)
+			require.NoError(t, err, "idempotent down should succeed")
 		})
 	})
+}
+
+func loadAppliedSHA(t *testing.T, statePath string) string {
+	t.Helper()
+	st, err := state.NewStore(statePath).Load()
+	require.NoError(t, err)
+	return st.AppliedSHA
 }

@@ -1,6 +1,6 @@
 //go:build e2e
 
-package picolet_test
+package e2e_test
 
 import (
 	"cmp"
@@ -228,7 +228,7 @@ func TestE2EPipeline(t *testing.T) {
 
 		// 2. Plant orphan systemd file WITH picolet marker (shared dir — marker required)
 		orphanSystemd := filepath.Join(systemdDir, "orphan-picolet.service")
-		content := resolver.PicoletMarker + "\n[Unit]\nDescription=orphan\n"
+		content := config.PicoletMarker + "\n[Unit]\nDescription=orphan\n"
 		require.NoError(t, os.WriteFile(orphanSystemd, []byte(content), 0o644))
 
 		// 3. Plant foreign systemd file WITHOUT marker — must NOT be removed
@@ -875,7 +875,8 @@ func TestE2EResolverRootlessPaths(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 
-	repoFS := os.DirFS("testdata/example-fleet")
+	// `go test` sets CWD to this package dir (./e2e); testdata lives at the repo root.
+	repoFS := os.DirFS("../testdata/example-fleet")
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 

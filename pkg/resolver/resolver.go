@@ -25,12 +25,6 @@ import (
 	pp "github.com/schjan/picolet/pkg/protonpass"
 )
 
-// PicoletMarker is the comment header prepended to systemd unit files managed by picolet.
-// Including it in Content (and thus in the state hash) ensures orphan detection works
-// correctly: a one-time ActionUpdate rewrites any pre-existing file with the marker,
-// after which the hash remains stable.
-const PicoletMarker = "# Managed by picolet"
-
 // ResolvedFile represents a single rendered file with its destination path.
 type ResolvedFile struct {
 	// SrcPath is the source template/file path within the repo.
@@ -512,7 +506,7 @@ func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateDa
 	}
 
 	if !quadlet && category == config.CategorySystemd {
-		content = PicoletMarker + "\n" + content
+		content = config.PicoletMarker + "\n" + content
 	}
 
 	filename := destFilename(srcPath)
