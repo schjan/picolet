@@ -206,15 +206,16 @@ Strict bundle rules:
 Dotfiles and loose files are not special-cased. Keep the bundle directory clean
 or ignore those files at the repo level before they land in the fleet repo.
 
-Bundled manifests keep their real repo path for template rendering, but Picolet
+Bundled manifests and files keep their real repo path for template rendering, but Picolet
 strips the `services/<name>/` prefix when deriving the deployed destination. For
 example, `services/web/manifests/app/deployment.yml.tmpl` deploys to
-`/var/lib/picolet/manifests/app/deployment.yml`.
+`/var/lib/picolet/manifests/app/deployment.yml`; `services/web/files/rules.yml.tmpl`
+deploys to `/var/lib/picolet/files/rules.yml`.
 
 Collision detection happens during `resolve` / `validate`. Picolet rejects:
 
 - quadlet files that would overwrite another file in the shared quadlet directory
-- manifest files that normalize to the same deployed path
+- manifest or file entries that normalize to the same deployed path within their category
 - secrets that normalize to the same `secret:<name>` destination, such as
   `foo.yml` and `foo.yaml`
 
@@ -229,8 +230,8 @@ legacy paths in the same commit that introduces `services: [<name>]`.
 
 ### Hooks
 
-Service bundles can declare actions to run after assigned Podman secrets or
-manifest files change. Put them in `services/<name>/picolet.yml` or
+Service bundles can declare actions to run after assigned Podman secrets,
+manifests, or opaque files change. Put them in `services/<name>/picolet.yml` or
 `services/<name>/picolet.yml.tmpl` (only one of the two — bundles containing
 both are rejected). The example below uses Go template syntax, so it must be in
 a `.tmpl` file:
@@ -255,10 +256,11 @@ hooks:
     health_url: 'http://localhost:{{ index .Ports "victoriametrics" }}/prometheus/health'
 ```
 
-Hooks run after secret/manifest writes and before normal unit restarts. If
-multiple changed secrets or manifests match one hook, Picolet runs that hook
-once. If the unit is already scheduled for restart because its Quadlet changed,
-Picolet skips reload hooks for that unit.
+Hooks run after secret, manifest, or file creates/updates and before normal unit
+restarts. If multiple changed secrets, manifests, or files match one hook,
+Picolet runs that hook once. File and manifest deletes do not fire hooks. If the
+unit is already scheduled for restart because its Quadlet changed, Picolet skips
+reload hooks for that unit.
 
 Hook names must be unique across all service bundles assigned to a host.
 
@@ -328,7 +330,7 @@ Keep fragments unindented (`- name: ...`) and let the template handle indentatio
 
 ### Validation
 
-All files are validated before deployment: quadlet files via Podman's own `quadlet.Convert*()`, K8s manifests via strict unmarshalling into `k8s.io/api` types, systemd units structurally, and templates at render time (`missingkey=error`).
+All files are validated before deployment: quadlet files via Podman's own `quadlet.Convert*()`, K8s manifests via strict unmarshalling into `k8s.io/api` types, opaque files as YAML syntax only when their rendered source extension is `.yml` or `.yaml`, systemd units structurally, and templates at render time (`missingkey=error`).
 
 Secrets always require non-empty content. Repo-backed YAML secrets (`.yml` / `.yaml`, including `.tmpl`) are also syntax-validated after template rendering. External placeholder secrets in repo-only validation mode are skipped for YAML syntax checks.
 

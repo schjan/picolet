@@ -122,16 +122,16 @@ func TestResolveHost(t *testing.T) {
 	}
 
 	// Check network file (static)
-	assert.Equal(t, "network", net.Category)
+	assert.Equal(t, config.CategoryNetwork, net.Category)
 	assert.Contains(t, net.Content, "Internal=true")
 
 	// Check container file (templated)
-	assert.Equal(t, "container", cont.Category)
+	assert.Equal(t, config.CategoryContainer, cont.Category)
 	assert.Contains(t, cont.Content, "Image=traefik:v3.6.9")
 	assert.Equal(t, "/etc/containers/systemd/picolet/test.container", cont.DestPath)
 
 	// Check manifest (templated)
-	assert.Equal(t, "manifest", manifest.Category)
+	assert.Equal(t, config.CategoryManifest, manifest.Category)
 	assert.Contains(t, manifest.Content, "image: \"traefik:v3.6.9\"")
 	assert.Contains(t, manifest.Content, "containerPort: 12345")
 }
@@ -829,8 +829,50 @@ data:
 
 	manifest := findByDest(t, resolved.Files, "/var/lib/picolet/manifests/app/deployment.yml")
 	assert.Equal(t, "services/web/manifests/app/deployment.yml.tmpl", manifest.SrcPath)
+	assert.Equal(t, "app/deployment.yml", manifest.RelPath)
 	assert.Contains(t, manifest.Content, "image: app:v2")
 	assert.Contains(t, manifest.Content, "host: test-host")
+}
+
+func TestResolveHostBundleFileTemplateUsesDeployedRelPath(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte(`
+images: {}
+ports:
+  http: 8080
+`)},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base:
+  services:
+    - web
+pi_types: {}
+features: {}
+`)},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: test-host
+external_hostname: test-host.example.net
+pi_type: node
+features: []
+`)},
+		"services/web/files/config/scrape.yml.tmpl": &fstest.MapFile{Data: []byte(`target: {{ .Host.Hostname }}:{{ index .Ports "http" }}
+`)},
+	}
+
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
+	require.NoError(t, err)
+
+	file := findByDest(t, resolved.Files, "/var/lib/picolet/files/config/scrape.yml")
+	assert.Equal(t, "services/web/files/config/scrape.yml.tmpl", file.SrcPath)
+	assert.Equal(t, config.CategoryFile, file.Category)
+	assert.Equal(t, "config/scrape.yml", file.RelPath)
+	assert.Contains(t, file.Content, "target: test-host:8080")
 }
 
 func TestResolveHostBundleManifestNormalizesPath(t *testing.T) {
@@ -1256,13 +1298,13 @@ stringData:
 type resolvedTuple struct {
 	SrcPath  string
 	DestPath string
-	Category string
+	Category config.Category
 	Content  string
 }
 
 type resolvedOutput struct {
 	DestPath string
-	Category string
+	Category config.Category
 	Content  string
 }
 
@@ -1298,7 +1340,7 @@ func resolvedOutputs(files []ResolvedFile) []resolvedOutput {
 		if diff := strings.Compare(a.DestPath, b.DestPath); diff != 0 {
 			return diff
 		}
-		return strings.Compare(a.Category, b.Category)
+		return strings.Compare(a.Category.String(), b.Category.String())
 	})
 	return outputs
 }
@@ -1364,7 +1406,7 @@ func TestStaticRepoSecret(t *testing.T) {
 	require.NoError(t, err)
 
 	f := findByDest(t, resolved.Files, "secret:static_config")
-	assert.Equal(t, "secret", f.Category)
+	assert.Equal(t, config.CategorySecret, f.Category)
 	assert.Equal(t, string(fsys["secrets/static_config.yml"].Data), f.Content,
 		"static secret must be copied verbatim without template rendering")
 }
@@ -1379,7 +1421,7 @@ func TestTemplateSecret(t *testing.T) {
 	require.NoError(t, err)
 
 	f := findByDest(t, resolved.Files, "secret:rendered")
-	assert.Equal(t, "secret", f.Category)
+	assert.Equal(t, config.CategorySecret, f.Category)
 	assert.Contains(t, f.Content, "endpoint: https://test-host.ts.net:8080")
 }
 
@@ -1399,7 +1441,7 @@ func TestHostOnlySecretWithReader(t *testing.T) {
 	require.NoError(t, err)
 
 	f := findByDest(t, resolved.Files, "secret:host_only")
-	assert.Equal(t, "secret", f.Category)
+	assert.Equal(t, config.CategorySecret, f.Category)
 	assert.Equal(t, "host-secret-data", f.Content)
 }
 
@@ -1734,7 +1776,7 @@ func TestResolveOpSecret(t *testing.T) {
 		assert.Equal(t, ref, f.SrcPath)
 		assert.Equal(t, "secret:vault_item_field", f.DestPath)
 		assert.Equal(t, "resolved-value", f.Content)
-		assert.Equal(t, "secret", f.Category)
+		assert.Equal(t, config.CategorySecret, f.Category)
 	})
 
 	t.Run("nil reader skips op secret", func(t *testing.T) {

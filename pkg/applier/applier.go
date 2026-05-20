@@ -134,30 +134,29 @@ const selfContainerFile = "picolet.container"
 
 // categoryOrder is the canonical apply-phase ordering. Exposed via
 // CategoryOrder() so callers cannot mutate the package-level slice.
-var categoryOrder = []string{
-	"network",
-	"volume",
-	"secret",
-	"systemd",
-	"manifest",
-	"file",
-	"container",
-	"kube",
+var categoryOrder = []config.Category{
+	config.CategoryNetwork,
+	config.CategoryVolume,
+	config.CategorySecret,
+	config.CategorySystemd,
+	config.CategoryManifest,
+	config.CategoryFile,
+	config.CategoryContainer,
+	config.CategoryKube,
 }
 
 // CategoryOrder returns a copy of the canonical apply-phase ordering. Other
 // packages (e.g. pkg/dashboard) consume this so they group by the same
 // sequence the applier uses without being able to mutate it.
-func CategoryOrder() []string {
+func CategoryOrder() []config.Category {
 	return slices.Clone(categoryOrder)
 }
 
-var categoryRankMap = func() map[string]int {
-	m := make(map[string]int, len(categoryOrder)+1)
+var categoryRankMap = func() map[config.Category]int {
+	m := make(map[config.Category]int, len(categoryOrder))
 	for i, c := range categoryOrder {
 		m[c] = i
 	}
-	m["unknown"] = len(categoryOrder)
 	return m
 }()
 
@@ -202,7 +201,7 @@ func WithHookReloader(reloader *HookReloader) Option {
 type applyPhaseResult struct {
 	ChangedUnits   map[string]struct{}
 	ChangedSecrets map[string]struct{}
-	ChangedRels    map[string]map[string]struct{} // category → relpath set
+	ChangedRels    map[config.Category]map[string]struct{} // category -> relpath set
 	NeedsReload    bool
 }
 
@@ -238,10 +237,10 @@ func (a *Applier) ApplyWithPending(ctx context.Context, cs *reconciler.Changeset
 	return result, a.restartUnits(ctx, phase.ChangedUnits, phase.NeedsReload, result)
 }
 
-func categoryRank(category string) int {
+func categoryRank(category config.Category) int {
 	rank, ok := categoryRankMap[category]
 	if !ok {
-		return categoryRankMap["unknown"]
+		return len(categoryOrder)
 	}
 	return rank
 }
@@ -251,7 +250,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 	p := &applyPhaseResult{
 		ChangedUnits:   make(map[string]struct{}),
 		ChangedSecrets: make(map[string]struct{}),
-		ChangedRels:    make(map[string]map[string]struct{}),
+		ChangedRels:    make(map[config.Category]map[string]struct{}),
 	}
 	for _, change := range sorted {
 		if change.Action == reconciler.ActionNoop {
@@ -281,24 +280,18 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			return nil, fmt.Errorf("applying %s (%s): %w", change.DestPath, change.Action, err)
 		}
 		result.Applied++
-		if change.Category == "secret" {
+		if change.Category == config.CategorySecret {
 			if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
 				p.ChangedSecrets[reconciler.SecretNameFromPath(change.DestPath)] = struct{}{}
 			}
 			continue
 		}
-		if (change.Category == "manifest" || change.Category == "file") && change.RelPath != "" {
-			if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
-				// Lazy inner-map init: only insert when there is a rel to record, so the
-				// len(changedRels) == 0 check in runHooksWithPending stays a reliable guard.
-				if p.ChangedRels[change.Category] == nil {
-					p.ChangedRels[change.Category] = make(map[string]struct{})
-				}
-				p.ChangedRels[change.Category][change.RelPath] = struct{}{}
-			}
+		if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
+			recordChangedRel(p.ChangedRels, change.Category, change.RelPath)
 		}
-		// All non-secret file changes (including deletes) require a daemon-reload.
-		p.NeedsReload = true
+		// Data files are consumed by application hooks or future restarts; they
+		// are not systemd unit definitions and do not require daemon-reload.
+		p.NeedsReload = p.NeedsReload || change.Category != config.CategoryFile
 		if change.Action == reconciler.ActionDelete {
 			// Deleted units must NOT be restarted — the unit no longer exists after
 			// daemon-reload. StopUnit above already terminated the running service.
@@ -314,15 +307,31 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 	return p, nil
 }
 
+func recordChangedRel(changedRels map[config.Category]map[string]struct{}, category config.Category, relPath string) {
+	if !categoryUsesRelPath(category) || relPath == "" {
+		return
+	}
+	// Lazy inner-map init: only insert when there is a rel to record, so the
+	// len(changedRels) == 0 check in runHooksWithPending stays a reliable guard.
+	if changedRels[category] == nil {
+		changedRels[category] = make(map[string]struct{})
+	}
+	changedRels[category][relPath] = struct{}{}
+}
+
+func categoryUsesRelPath(category config.Category) bool {
+	return category == config.CategoryManifest || category == config.CategoryFile
+}
+
 // unitNameForDelete returns the systemd unit name to stop before a file is removed.
 // Quadlet categories use the pre-computed ServiceName from state.
 // Systemd category: the filename IS the unit name (no parse needed).
-// Secrets and manifests don't have associated units.
+// Secrets and data files don't have associated units.
 func unitNameForDelete(change reconciler.Change) string {
 	switch change.Category {
-	case "container", "network", "volume", "kube":
+	case config.CategoryContainer, config.CategoryNetwork, config.CategoryVolume, config.CategoryKube:
 		return change.ServiceName // from state.ServiceNames; "" if unknown
-	case "systemd":
+	case config.CategorySystemd:
 		return filepath.Base(change.DestPath) // e.g. "foo.service"
 	default:
 		return ""
@@ -391,7 +400,7 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]stru
 func (a *Applier) runHooksWithPending(
 	ctx context.Context,
 	changedSecrets map[string]struct{},
-	changedRels map[string]map[string]struct{},
+	changedRels map[config.Category]map[string]struct{},
 	restartScheduled map[string]struct{},
 	pendingNames []string,
 	result *ApplyResult,
@@ -533,19 +542,19 @@ func hookExecutionKey(hook config.Hook) string {
 	}
 }
 
-func hookMatchesChange(hook config.Hook, changedSecrets map[string]struct{}, changedRels map[string]map[string]struct{}) bool {
+func hookMatchesChange(hook config.Hook, changedSecrets map[string]struct{}, changedRels map[config.Category]map[string]struct{}) bool {
 	for _, secret := range hook.Secrets {
 		if _, ok := changedSecrets[secret]; ok {
 			return true
 		}
 	}
 	for _, manifest := range hook.Manifests {
-		if _, ok := changedRels["manifest"][manifest]; ok {
+		if _, ok := changedRels[config.CategoryManifest][manifest]; ok {
 			return true
 		}
 	}
 	for _, file := range hook.Files {
-		if _, ok := changedRels["file"][file]; ok {
+		if _, ok := changedRels[config.CategoryFile][file]; ok {
 			return true
 		}
 	}
@@ -553,7 +562,7 @@ func hookMatchesChange(hook config.Hook, changedSecrets map[string]struct{}, cha
 }
 
 func (a *Applier) applyCreateOrUpdate(ctx context.Context, change reconciler.Change) error {
-	if change.Category == "secret" {
+	if change.Category == config.CategorySecret {
 		name := reconciler.SecretNameFromPath(change.DestPath)
 		replace := change.Action == reconciler.ActionUpdate
 		return a.podman.SecretCreate(ctx, name, []byte(change.NewContent), replace)
@@ -568,7 +577,7 @@ func (a *Applier) applyCreateOrUpdate(ctx context.Context, change reconciler.Cha
 }
 
 func (a *Applier) applyDelete(ctx context.Context, change reconciler.Change) error {
-	if change.Category == "secret" {
+	if change.Category == config.CategorySecret {
 		name := reconciler.SecretNameFromPath(change.DestPath)
 		return a.podman.SecretRemove(ctx, name)
 	}

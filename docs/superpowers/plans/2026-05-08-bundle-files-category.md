@@ -1597,9 +1597,9 @@ If you've been making fixup commits, optionally squash via interactive workflow.
 
 ---
 
-## Reporting Deliverables (for the iuk-gitops follow-up)
+## Reporting Deliverables (for the downstream fleet follow-up)
 
-Once this plan is merged and a picolet release is cut, hand the following to the iuk-gitops migration:
+Once this plan is merged and a picolet release is cut, hand the following to the downstream fleet migration:
 
 - Category name: `file`
 - Bundle subdir: `files/`

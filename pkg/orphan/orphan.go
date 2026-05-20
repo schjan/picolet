@@ -57,18 +57,23 @@ func (s *Scanner) Scan(ctx context.Context, managedFiles map[string]state.Manage
 	if err != nil {
 		return result, err
 	}
-	r3, err := s.scanMarkedDir(s.systemdDir, managedFiles)
+	r3, err := s.scanOwnedDir(filepath.Join(s.dataDir, "files"), managedFiles)
 	result.FilesRemoved += r3
 	if err != nil {
 		return result, err
 	}
-	r4, err := s.scanSecrets(ctx, managedFiles)
-	result.SecretsRemoved += r4
+	r4, err := s.scanMarkedDir(s.systemdDir, managedFiles)
+	result.FilesRemoved += r4
+	if err != nil {
+		return result, err
+	}
+	r5, err := s.scanSecrets(ctx, managedFiles)
+	result.SecretsRemoved += r5
 	return result, err
 }
 
 // scanOwnedDir removes any file in a picolet-owned directory that is absent from managedFiles.
-// Uses WalkDir so nested manifest subdirectories are covered.
+// Uses WalkDir so nested data subdirectories are covered.
 func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]state.ManagedFile) (int, error) {
 	var removed int
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {

@@ -898,7 +898,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 
 	for _, change := range changeset.Changes {
 		if change.Action != reconciler.ActionNoop {
-			metrics.FilesAppliedTotal.WithLabelValues(string(change.Action), change.Category).Inc()
+			metrics.FilesAppliedTotal.WithLabelValues(string(change.Action), change.Category.String()).Inc()
 		}
 		// Remove status for units leaving management. The metrics collector
 		// reads from the status store, so a single delete is sufficient.
@@ -1039,7 +1039,8 @@ func markAppliedWithMetrics(st *state.State, headSHA string) {
 // so a concurrent Prometheus scrape never sees zero or partial values.
 func setFilesManagedMetric(counts map[string]float64) {
 	for _, cat := range reconciler.Categories() {
-		metrics.FilesManagedTotal.WithLabelValues(cat).Set(counts[cat])
+		category := cat.String()
+		metrics.FilesManagedTotal.WithLabelValues(category).Set(counts[category])
 	}
 }
 
@@ -1089,7 +1090,7 @@ func unitStatusesFromHealth(statuses map[string]applier.UnitStatus) map[string]s
 func countCategoriesFromState(managed map[string]state.ManagedFile) map[string]float64 {
 	counts := make(map[string]float64, len(reconciler.Categories()))
 	for _, mf := range managed {
-		counts[mf.Category]++
+		counts[mf.Category.String()]++
 	}
 	return counts
 }

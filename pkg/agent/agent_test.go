@@ -1607,8 +1607,9 @@ func TestSetFilesManagedMetric(t *testing.T) {
 	setFilesManagedMetric(counts)
 
 	for _, cat := range reconciler.Categories() {
-		got := testutil.ToFloat64(metrics.FilesManagedTotal.WithLabelValues(cat))
-		assert.InDelta(t, counts[cat], got, 0.001, "category %s", cat)
+		category := cat.String()
+		got := testutil.ToFloat64(metrics.FilesManagedTotal.WithLabelValues(category))
+		assert.InDelta(t, counts[category], got, 0.001, "category %s", category)
 	}
 }
 

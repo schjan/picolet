@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
 )
@@ -22,7 +23,7 @@ const (
 // Change represents a single file change.
 type Change struct {
 	DestPath    string
-	Category    string
+	Category    config.Category
 	Action      Action
 	NewContent  string // empty for delete
 	OldHash     string // from state, empty for create
@@ -119,9 +120,18 @@ func SecretNameFromPath(destPath string) string {
 	return destPath
 }
 
-var categories = []string{"container", "network", "volume", "kube", "systemd", "manifest", "file", "secret"}
+var categories = []config.Category{
+	config.CategoryContainer,
+	config.CategoryNetwork,
+	config.CategoryVolume,
+	config.CategoryKube,
+	config.CategorySystemd,
+	config.CategoryManifest,
+	config.CategoryFile,
+	config.CategorySecret,
+}
 
 // Categories returns the fixed set of known file categories used for metric labels.
-func Categories() []string {
+func Categories() []config.Category {
 	return categories
 }

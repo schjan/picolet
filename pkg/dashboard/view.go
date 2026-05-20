@@ -173,7 +173,8 @@ func statusFromActiveState(s string) Status {
 func groupByCategory(files map[string]state.ManagedFile, services map[string]string) []CategoryGroup {
 	buckets := map[string][]UnitRow{}
 	for path, mf := range files {
-		buckets[mf.Category] = append(buckets[mf.Category], UnitRow{
+		category := mf.Category.String()
+		buckets[category] = append(buckets[category], UnitRow{
 			Path:      path,
 			Basename:  filepath.Base(path),
 			HashShort: shortHash(mf.Hash),
@@ -182,10 +183,11 @@ func groupByCategory(files map[string]state.ManagedFile, services map[string]str
 	}
 	var out []CategoryGroup
 	for _, cat := range applier.CategoryOrder() {
-		if rows, ok := buckets[cat]; ok {
+		category := cat.String()
+		if rows, ok := buckets[category]; ok {
 			slices.SortFunc(rows, func(a, b UnitRow) int { return cmp.Compare(a.Basename, b.Basename) })
-			out = append(out, CategoryGroup{Category: cat, Rows: rows})
-			delete(buckets, cat)
+			out = append(out, CategoryGroup{Category: category, Rows: rows})
+			delete(buckets, category)
 		}
 	}
 	if len(buckets) > 0 {

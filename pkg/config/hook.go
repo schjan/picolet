@@ -20,8 +20,8 @@ const (
 
 const DefaultMaxRetries = 10
 
-// Hook describes a runtime action to run after one or more Podman secrets
-// or manifest files change.
+// Hook describes a runtime action to run after one or more Podman secrets,
+// manifests, or opaque files change.
 type Hook struct {
 	Name       string   `yaml:"name"`
 	Secrets    []string `yaml:"secrets"`

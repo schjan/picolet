@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/schjan/picolet/internal/atomicfile"
+	"github.com/schjan/picolet/pkg/config"
 )
 
 // ErrCorrupt is returned when the state file exists but cannot be decoded.
@@ -17,8 +18,8 @@ var ErrCorrupt = errors.New("state file corrupt")
 
 // ManagedFile tracks a picolet-owned file's content hash and category.
 type ManagedFile struct {
-	Hash     string `json:"hash"`
-	Category string `json:"category"`
+	Hash     string          `json:"hash"`
+	Category config.Category `json:"category"`
 }
 
 // State represents the persisted reconciliation state.

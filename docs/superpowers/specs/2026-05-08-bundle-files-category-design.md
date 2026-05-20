@@ -204,9 +204,9 @@ Picolet's table-driven coverage is the regression net. The internal genericizati
 
 `task test` and `task lint` must be green at the end.
 
-## Migration (iuk-gitops)
+## Migration (known downstream fleet repo)
 
-The only known consumer is `~/src/drk-darmstadt-iuk/iuk-gitops`, with three services using `manifests/` for non-K8s YAML (vmalert rules, vmalert-vlogs rules, victoriametrics scrape config).
+The only known downstream consumer has three services using `manifests/` for non-K8s YAML (vmalert rules, vmalert-vlogs rules, victoriametrics scrape config).
 
 **Repo-side migration (one atomic PR):**
 
@@ -224,16 +224,16 @@ The only known consumer is `~/src/drk-darmstadt-iuk/iuk-gitops`, with three serv
 - The applier removes them on the next reconcile tick.
 - New `/var/lib/picolet/files/<x>` paths are written via `ActionCreate`.
 
-No manual `rm` on hosts. No state migration script. No changes to `pkg/orphan` (orphan detection only governs the quadlet directory; dataDir cleanup is state-driven).
+No manual `rm` on hosts. No state migration script. `pkg/orphan` still only removes state-less leftovers at startup; normal dataDir cleanup is state-driven.
 
 **Cross-cut ordering:**
 
 1. Land this picolet PR; cut a release.
-2. Land the iuk migration PR; CI runs `picolet validate` against the new binary and gates the merge — catches missed renames.
+2. Land the downstream fleet migration PR; CI runs `picolet validate` against the new binary and gates the merge — catches missed renames.
 3. Roll the new picolet binary out to hosts via the existing deploy channel.
 4. Each host migrates its on-disk state automatically on the next reconcile.
 
-Between steps 1 and 2 (new picolet binary, old iuk repo) `picolet validate` hard-fails on each non-K8s YAML in `manifests/` with `missing 'kind' field`. This is the desired forcing function — no half-migrated state can land.
+Between steps 1 and 2 (new picolet binary, old downstream repo) `picolet validate` hard-fails on each non-K8s YAML in `manifests/` with `missing 'kind' field`. This is the desired forcing function — no half-migrated state can land.
 
 ## Out of scope
 
@@ -242,7 +242,7 @@ Between steps 1 and 2 (new picolet binary, old iuk repo) `picolet validate` hard
 - **K8s ConfigMap-driven container reload.** Still broken (Podman behavior, not picolet), still not picolet's responsibility. Hooks for K8s manifest changes remain wired so this can be revisited later without further design work.
 - **Reusing `files/` for additional categories** (e.g., a future `scripts/` for executable mounts). Genericization (A–E) leaves room; not designing it now.
 
-## Reporting deliverables (for the iuk follow-up PR)
+## Reporting deliverables (for the downstream follow-up PR)
 
 - Category name: `file`
 - Bundle subdir: `files/`

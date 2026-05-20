@@ -45,7 +45,7 @@ func TestExpandServiceBundlesHappyPath(t *testing.T) {
 			SrcPath:     "services/web/manifests/app/deployment.yml.tmpl",
 			LogicalPath: "manifests/app/deployment.yml.tmpl",
 			Category:    "manifest",
-			RelPath:     "app/deployment.yml.tmpl",
+			RelPath:     "app/deployment.yml",
 		},
 	}, expanded.NestedRefs)
 }

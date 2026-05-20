@@ -8,23 +8,25 @@ import (
 	"path"
 	"slices"
 	"strings"
+
+	"github.com/schjan/picolet/pkg/config"
 )
 
 type bundleSubdir struct {
 	Subdir       string
-	Category     string
+	Category     config.Category
 	AllowNesting bool
 }
 
 var bundleSubdirs = []bundleSubdir{
-	{Subdir: "containers", Category: "container", AllowNesting: false},
-	{Subdir: "volumes", Category: "volume", AllowNesting: false},
-	{Subdir: "networks", Category: "network", AllowNesting: false},
-	{Subdir: "kube", Category: "kube", AllowNesting: false},
-	{Subdir: "systemd", Category: "systemd", AllowNesting: false},
-	{Subdir: "secrets", Category: "secret", AllowNesting: false},
-	{Subdir: "manifests", Category: "manifest", AllowNesting: true},
-	{Subdir: "files", Category: "file", AllowNesting: true},
+	{Subdir: "containers", Category: config.CategoryContainer, AllowNesting: false},
+	{Subdir: "volumes", Category: config.CategoryVolume, AllowNesting: false},
+	{Subdir: "networks", Category: config.CategoryNetwork, AllowNesting: false},
+	{Subdir: "kube", Category: config.CategoryKube, AllowNesting: false},
+	{Subdir: "systemd", Category: config.CategorySystemd, AllowNesting: false},
+	{Subdir: "secrets", Category: config.CategorySecret, AllowNesting: false},
+	{Subdir: "manifests", Category: config.CategoryManifest, AllowNesting: true},
+	{Subdir: "files", Category: config.CategoryFile, AllowNesting: true},
 }
 
 var bundleSubdirsByName = func() map[string]bundleSubdir {
@@ -38,8 +40,8 @@ var bundleSubdirsByName = func() map[string]bundleSubdir {
 type bundleFileRef struct {
 	SrcPath     string
 	LogicalPath string
-	Category    string // "manifest" or "file"
-	RelPath     string // LogicalPath with the category subdir prefix stripped if present, otherwise unchanged
+	Category    config.Category
+	RelPath     string // deployed logical path with the bundle subdir prefix stripped if present
 }
 
 type hookRef struct {
@@ -237,19 +239,19 @@ func (b *expandedBundles) append(other *expandedBundles) {
 	b.Hooks = append(b.Hooks, other.Hooks...)
 }
 
-func (b *expandedBundles) addPath(category, srcPath string) error {
+func (b *expandedBundles) addPath(category config.Category, srcPath string) error {
 	switch category {
-	case "network":
+	case config.CategoryNetwork:
 		b.Networks = append(b.Networks, srcPath)
-	case "systemd":
+	case config.CategorySystemd:
 		b.Systemd = append(b.Systemd, srcPath)
-	case "volume":
+	case config.CategoryVolume:
 		b.Volumes = append(b.Volumes, srcPath)
-	case "container":
+	case config.CategoryContainer:
 		b.Containers = append(b.Containers, srcPath)
-	case "kube":
+	case config.CategoryKube:
 		b.Kube = append(b.Kube, srcPath)
-	case "secret":
+	case config.CategorySecret:
 		b.Secrets = append(b.Secrets, srcPath)
 	default:
 		return fmt.Errorf("resolver: unknown bundle category %q", category)
@@ -286,13 +288,13 @@ func (b *expandedBundles) readNestedSubdir(fsys fs.FS, root, service string, sub
 			SrcPath:     walkPath,
 			LogicalPath: logical,
 			Category:    subdir.Category,
-			RelPath:     stripCategoryPrefix(logical, subdir.Subdir),
+			RelPath:     stripSubdirPrefix(deployedLogicalPath(logical), subdir.Subdir),
 		})
 		return nil
 	})
 }
 
-func (b *expandedBundles) readFlatSubdir(fsys fs.FS, root, category string) error {
+func (b *expandedBundles) readFlatSubdir(fsys fs.FS, root string, category config.Category) error {
 	entries, err := fs.ReadDir(fsys, root)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", root, err)
@@ -320,12 +322,12 @@ func stripServicePrefix(filePath, service string) string {
 	return strings.TrimPrefix(filePath, prefix)
 }
 
-// stripCategoryPrefix strips the leading "<category>/" segment from a logical
-// path (e.g. "manifests/app/foo.yml" -> "app/foo.yml" for category "manifests").
-// Logical paths from legacy top-level assignments may not start with the category
-// dir; in that case the input is returned unchanged.
-func stripCategoryPrefix(logical, categorySubdir string) string {
-	if rel, ok := strings.CutPrefix(logical, categorySubdir+"/"); ok {
+// stripSubdirPrefix strips the leading bundle subdir segment from a logical
+// path (e.g. "manifests/app/foo.yml" -> "app/foo.yml" for subdir "manifests").
+// Legacy top-level assignment paths may not start with the subdir; in that case
+// the input is returned unchanged.
+func stripSubdirPrefix(logical, subdir string) string {
+	if rel, ok := strings.CutPrefix(logical, subdir+"/"); ok {
 		return rel
 	}
 	return logical
