@@ -543,6 +543,10 @@ type ResolveParams struct {
 	QuadletDir string
 	SystemdDir string
 	DataDir    string
+
+	// HostDataDir is the host-visible data path emitted by the filePath/
+	// manifestPath template helpers. Empty falls back to the internal data dir.
+	HostDataDir string
 }
 
 // LoadAndResolve loads fleet config from repoPath and resolves the desired state for the given host.
@@ -590,6 +594,7 @@ func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.Re
 		QuadletDir:     params.QuadletDir,
 		SystemdDir:     params.SystemdDir,
 		DataDir:        params.DataDir,
+		HostDataDir:    params.HostDataDir,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating resolver: %w", err)
@@ -616,9 +621,10 @@ func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, err
 		PPSecretReader: a.ppReader,
 		// Override fields are passed raw; resolver.New applies the
 		// ResolveDirs fallback for any field left empty.
-		QuadletDir: a.quadletDirOverride,
-		SystemdDir: a.systemdDirOverride,
-		DataDir:    a.dataDirOverride,
+		QuadletDir:  a.quadletDirOverride,
+		SystemdDir:  a.systemdDirOverride,
+		DataDir:     a.dataDirOverride,
+		HostDataDir: a.cfg.HostDataDir,
 	})
 }
 

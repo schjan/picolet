@@ -69,6 +69,13 @@ type Config struct {
 	QuadletDir string
 	SystemdDir string
 	DataDir    string
+
+	// HostDataDir is the path the filePath/manifestPath template helpers
+	// emit. It does NOT change where picolet writes files (that stays DataDir).
+	// Empty falls back to DataDir, so native deployments are unaffected; set it
+	// when picolet runs containerized and the host sees the data dir at a
+	// different path than picolet does.
+	HostDataDir string
 }
 
 // Resolver renders templates and resolves the desired state for hosts.
@@ -81,6 +88,7 @@ type Resolver struct {
 	quadletDir     string
 	systemdDir     string
 	dataDir        string
+	hostDataDir    string
 	rootless       bool
 }
 
@@ -104,6 +112,10 @@ func New(rc Config) (*Resolver, error) {
 	if rc.DataDir != "" {
 		dataDir = rc.DataDir
 	}
+	hostDataDir := dataDir
+	if rc.HostDataDir != "" {
+		hostDataDir = rc.HostDataDir
+	}
 	return &Resolver{
 		fsys:           rc.FS,
 		cfg:            rc.Config,
@@ -113,6 +125,7 @@ func New(rc Config) (*Resolver, error) {
 		quadletDir:     quadletDir,
 		systemdDir:     systemdDir,
 		dataDir:        dataDir,
+		hostDataDir:    hostDataDir,
 		rootless:       rc.Rootless,
 	}, nil
 }
@@ -149,7 +162,10 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 		OpProvider(r.opSecretReader),
 		PPProvider(r.ppSecretReader),
 	}
-	registry, caches, err := BuildRegistry(ctx, r.fsys, r.secretReader, providers, r.dataDir)
+	// hostDataDir (not dataDir) drives filePath/manifestPath: those helpers emit
+	// path strings baked into rendered quadlets, which the host's podman must
+	// resolve. dataDir remains the write path (dataDestPath).
+	registry, caches, err := BuildRegistry(ctx, r.fsys, r.secretReader, providers, r.hostDataDir)
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}

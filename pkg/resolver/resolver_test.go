@@ -307,6 +307,96 @@ func TestNewConfigDirOverrides(t *testing.T) {
 	_ = sawSystemd
 }
 
+// newHostDataDirFleetFS builds a minimal fleet whose container template uses the
+// filePath helper, plus a files/ bundle entry, for host_data_dir coverage.
+func newHostDataDirFleetFS() fstest.MapFS {
+	return fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base:
+  containers:
+    - quadlets/app.container.tmpl
+  files:
+    - files/app.conf
+pi_types: {}
+features: {}
+`)},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: test-host
+pi_type: server
+features: []
+`)},
+		"quadlets/app.container.tmpl": &fstest.MapFile{Data: []byte(`[Container]
+ContainerName=app
+Image=app:latest
+Volume={{ filePath "app.conf" }}:/etc/app.conf:ro
+`)},
+		"files/app.conf": &fstest.MapFile{Data: []byte("key = value\n")},
+	}
+}
+
+// TestResolveHostHostDataDirAffectsFilePathHelperOnly verifies that HostDataDir
+// changes the path emitted by the filePath template helper without changing the
+// DestPath where picolet writes the bundled file.
+func TestResolveHostHostDataDirAffectsFilePathHelperOnly(t *testing.T) {
+	t.Parallel()
+	fsys := newHostDataDirFleetFS()
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+
+	r, err := New(Config{
+		FS:          fsys,
+		Config:      cfg,
+		DataDir:     "/internal",
+		HostDataDir: "/host",
+	})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
+	require.NoError(t, err)
+
+	var container, file *ResolvedFile
+	for i := range resolved.Files {
+		switch resolved.Files[i].Category {
+		case config.CategoryContainer:
+			container = &resolved.Files[i]
+		case config.CategoryFile:
+			file = &resolved.Files[i]
+		}
+	}
+	require.NotNil(t, container, "fixture must produce a container file")
+	require.NotNil(t, file, "fixture must produce a file-category file")
+
+	// filePath helper emits the host-visible path.
+	assert.Contains(t, container.Content, "Volume=/host/files/app.conf:/etc/app.conf:ro")
+	// The bundled file is still written to picolet's internal data dir.
+	assert.Equal(t, "/internal/files/app.conf", file.DestPath)
+}
+
+// TestResolveHostHostDataDirDefaultsToDataDir verifies that an unset HostDataDir
+// leaves filePath emitting the internal data dir (backward compatibility).
+func TestResolveHostHostDataDirDefaultsToDataDir(t *testing.T) {
+	t.Parallel()
+	fsys := newHostDataDirFleetFS()
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+
+	r, err := New(Config{FS: fsys, Config: cfg, DataDir: "/internal"})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "test-host")
+	require.NoError(t, err)
+
+	var container *ResolvedFile
+	for i := range resolved.Files {
+		if resolved.Files[i].Category == config.CategoryContainer {
+			container = &resolved.Files[i]
+		}
+	}
+	require.NotNil(t, container)
+	assert.Contains(t, container.Content, "Volume=/internal/files/app.conf:/etc/app.conf:ro")
+}
+
 //nolint:funlen // fixture setup is clearer inline for equivalence coverage
 func TestResolveHostBundleEquivalentToExplicit(t *testing.T) {
 	t.Parallel()

@@ -68,8 +68,9 @@ type Config struct {
 	SystemdUser          *bool              `yaml:"systemd_user"`
 	PodmanSocket         string             `yaml:"podman_socket"`
 	WebhookSecretPath    string             `yaml:"webhook_secret_path"`
-	RepoSubDir           string             `yaml:"repo_sub_dir"` // optional subdirectory within the repo to use as fleet root (monorepo support)
-	DataDir              string             `yaml:"data_dir"`     // optional override for repo, state, and lock files
+	RepoSubDir           string             `yaml:"repo_sub_dir"`  // optional subdirectory within the repo to use as fleet root (monorepo support)
+	DataDir              string             `yaml:"data_dir"`      // optional override for picolet's own runtime dir (repo clone, state, lock files)
+	HostDataDir          string             `yaml:"host_data_dir"` // host-visible path emitted by filePath/manifestPath helpers when picolet runs containerized; does not change where files are written; unrelated to data_dir; defaults to the internal data dir
 	MQTT                 *MQTTConfig        `yaml:"mqtt"`
 	OnePassword          *OnePasswordConfig `yaml:"onepassword"`
 	ProtonPass           *ProtonPassConfig  `yaml:"protonpass"`

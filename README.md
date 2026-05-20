@@ -107,6 +107,37 @@ chmod 600 ~/.config/picolet/config.yml ~/.config/picolet/secrets/git_token
 bash deploy/bootstrap/bootstrap-rootless.sh
 ```
 
+#### Containerized picolet & `host_data_dir`
+
+The `rootless` flag describes picolet's **internal** assumptions — the path layout
+it uses (`/etc` + `/var/lib` vs `~/.config` + `~/.local/share`) and, by default,
+which systemd instance it talks to (`systemd_user`). It does **not** describe the
+host deployment model.
+
+picolet itself usually runs as a container. When its volume mounts are
+*asymmetric* — the host sees a directory at a different path than picolet does,
+e.g. `Volume=%h/.local/share/picolet:/var/lib/picolet` — picolet writes files
+correctly (the mount lands them) but the `filePath`/`manifestPath` template
+helpers would bake picolet's *internal* path into rendered quadlet `Volume=` lines,
+which the **host's** podman cannot resolve.
+
+Set `host_data_dir` to the host-visible path so those helpers emit
+host-resolvable strings:
+
+```yaml
+# config.yml — picolet runs containerized, host data dir mounted at a different path
+host_data_dir: /home/pi/.local/share/picolet
+```
+
+`host_data_dir` only changes the path string templates emit; it does not change
+where picolet writes files (that stays the internal data dir, distinct from the
+unrelated `data_dir` option which overrides picolet's own repo/state/lock dir).
+The first reconcile after setting it re-renders affected quadlets, causing a
+one-time restart of the units that reference `filePath`/`manifestPath` paths.
+
+> `picolet resolve` / `picolet validate` (run without `--config`) cannot read
+> `host_data_dir` and will preview picolet's internal paths.
+
 ### 3. What Happens Next
 
 1. Picolet starts and clones your fleet repo
@@ -314,8 +345,8 @@ Available data: `.Host` (hostname, pi_type, features), `.Images`, `.Ports`, `.Fl
 | `readSecretFile(path)` | Read secret (placeholder in CI mode) |
 | `readOpSecret(ref)` | Resolve a 1Password reference, e.g. `op://vault/item/field` |
 | `readProtonPassSecret(ref)` | Resolve a Proton Pass reference, e.g. `pass://share/item/field` |
-| `manifestPath(relPath)` | Return the absolute deployed path for a manifest file (handles rootless/rootful automatically). `relPath` is relative to the service's `manifests/` dir |
-| `filePath(relPath)` | Return the absolute deployed path for a file (handles rootless/rootful automatically). `relPath` is relative to the service's `files/` dir |
+| `manifestPath(relPath)` | Return the absolute deployed path for a manifest file (handles rootless/rootful, and `host_data_dir` for containerized picolet). `relPath` is relative to the service's `manifests/` dir |
+| `filePath(relPath)` | Return the absolute deployed path for a file (handles rootless/rootful, and `host_data_dir` for containerized picolet). `relPath` is relative to the service's `files/` dir |
 | `has(item, slice)` | Sprig: check if a value is present in a list |
 
 Use this when runtime expects one file but you want many repo fragments. Example:

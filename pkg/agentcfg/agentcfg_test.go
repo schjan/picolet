@@ -121,12 +121,13 @@ rootless: true
 			},
 		},
 		{
-			name: "repo_sub_dir and data_dir parsed",
+			name: "repo_sub_dir, data_dir and host_data_dir parsed",
 			content: `
 hostname: rpi5-1
 repo_url: https://github.com/example/fleet.git
 repo_sub_dir: fleet/config
 data_dir: /tmp/picolet-data
+host_data_dir: /home/pi/.local/share/picolet
 `,
 			want: Config{ //nolint:gosec // test fixture, not real credentials
 				Hostname:     "rpi5-1",
@@ -138,6 +139,7 @@ data_dir: /tmp/picolet-data
 				PodmanSocket: "/run/podman/podman.sock",
 				RepoSubDir:   "fleet/config",
 				DataDir:      "/tmp/picolet-data",
+				HostDataDir:  "/home/pi/.local/share/picolet",
 				SystemdUser:  new(false),
 			},
 		},
