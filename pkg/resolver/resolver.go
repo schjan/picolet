@@ -205,7 +205,7 @@ func (r *Resolver) runTemplateRefCollection(ctx context.Context, registry *templ
 	if len(caches) == 0 {
 		return nil
 	}
-	r.collectTemplateRefs(registry, tmplData, expanded.FileSet, expanded.ManifestRefs, expanded.HookRefs)
+	r.collectTemplateRefs(registry, tmplData, expanded.FileSet, expanded.BundleFileRefs, expanded.HookRefs)
 	return caches.ResolveAll(ctx)
 }
 
