@@ -203,6 +203,54 @@ func TestApplySelfRestart(t *testing.T) {
 	assert.Contains(t, result.RestartedUnits, "picolet.service")
 }
 
+func TestApplyPopulatesFailedRestartUnits(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys.EXPECT().RestartUnit(mock.Anything, "app.service").Return(errors.New(`job result "failed"`))
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	a := applier.New(sys, pod, fw, false, nil)
+
+	cs := &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "/etc/containers/systemd/app.container", Category: "container", Action: reconciler.ActionUpdate, NewContent: "[Container]\nImage=app\n", ServiceName: "app.service"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	}
+
+	result, err := a.Apply(context.Background(), cs)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"app.service"}, result.FailedRestartUnits)
+	assert.Empty(t, result.RestartedUnits)
+	require.Len(t, result.Errors, 1)
+}
+
+func TestApplyFailedRestartUnitsExcludesPicoletService(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	// picolet.service self-restart fires asynchronously after Apply() returns.
+	sys.EXPECT().RestartUnit(mock.Anything, "picolet.service").Return(nil).Maybe()
+	sys.EXPECT().RestartUnit(mock.Anything, "app.service").Return(errors.New("boom"))
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	a := applier.New(sys, pod, fw, false, nil)
+
+	cs := &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "/etc/containers/systemd/picolet.container", Category: "container", Action: reconciler.ActionUpdate, NewContent: "[Container]\nImage=picolet\n", ServiceName: "picolet.service"},
+			{DestPath: "/etc/containers/systemd/app.container", Category: "container", Action: reconciler.ActionUpdate, NewContent: "[Container]\nImage=app\n", ServiceName: "app.service"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 2},
+	}
+
+	result, err := a.Apply(context.Background(), cs)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"app.service"}, result.FailedRestartUnits)
+	assert.NotContains(t, result.FailedRestartUnits, "picolet.service")
+}
+
 func TestApplySecretReplace(t *testing.T) {
 	t.Parallel()
 	sys := appliermocks.NewMockSystemdManager(t)

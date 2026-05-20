@@ -324,6 +324,18 @@ and emits an `apply incomplete` warning in the agent log; the hook is dropped
 from the pending list once it succeeds, falls back to a restart, or exhausts
 its `max_retries` budget.
 
+Picolet applies the same `retry_pending` treatment to **failed unit restarts**
+(independent of hooks). When a managed unit's post-apply restart fails, picolet
+records it in `state.json` under `pending_units` — with the originating git SHA,
+a consecutive-attempt count, and timestamps — reports the reconciliation as
+`retry_pending` rather than a clean success (the SHA is recorded but
+`picolet_last_successful_reconciliation_timestamp` is not advanced), and keeps
+retrying the unit on every tick via health enforcement, subject to a 5-minute
+per-unit cooldown. The `pending_units` record and its cooldown survive an agent
+restart, and each pending unit is exposed as the `picolet_unit_restart_pending`
+gauge. A unit clears from `pending_units` once it is observed healthy or is
+removed from the fleet.
+
 For services whose config is mounted through Podman secrets, verify that the
 running container sees replaced secret content on your target Podman version.
 If not, use `action: restart`.

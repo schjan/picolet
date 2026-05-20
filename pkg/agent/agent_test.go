@@ -341,6 +341,153 @@ func TestMergePendingHooksKeepsUnattemptedAndAddsFailures(t *testing.T) {
 	}
 }
 
+func TestMergePendingUnitsClearsConvergedAndAddsFailures(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	earlier := now.Add(-time.Hour)
+
+	tests := []struct {
+		name   string
+		old    map[string]state.PendingUnit
+		result *applier.ApplyResult
+		want   map[string]state.PendingUnit
+	}{
+		{
+			name:   "empty inputs return nil",
+			old:    nil,
+			result: &applier.ApplyResult{},
+			want:   nil,
+		},
+		{
+			name:   "restarted unit is cleared",
+			old:    map[string]state.PendingUnit{"foo.service": {SHA: "old", Attempts: 3, FirstFailedAt: earlier, LastAttemptAt: earlier}},
+			result: &applier.ApplyResult{RestartedUnits: []string{"foo.service"}},
+			want:   nil,
+		},
+		{
+			name:   "new failure added with attempt count 1",
+			old:    nil,
+			result: &applier.ApplyResult{FailedRestartUnits: []string{"foo.service"}},
+			want:   map[string]state.PendingUnit{"foo.service": {SHA: "head", Attempts: 1, FirstFailedAt: now, LastAttemptAt: now}},
+		},
+		{
+			name:   "repeated failure increments and preserves FirstFailedAt",
+			old:    map[string]state.PendingUnit{"foo.service": {SHA: "old", Attempts: 3, FirstFailedAt: earlier, LastAttemptAt: earlier}},
+			result: &applier.ApplyResult{FailedRestartUnits: []string{"foo.service"}},
+			want:   map[string]state.PendingUnit{"foo.service": {SHA: "head", Attempts: 4, FirstFailedAt: earlier, LastAttemptAt: now}},
+		},
+		{
+			name:   "unrelated pending unit carried forward unchanged",
+			old:    map[string]state.PendingUnit{"bar.service": {SHA: "old", Attempts: 1, FirstFailedAt: earlier, LastAttemptAt: earlier}},
+			result: &applier.ApplyResult{FailedRestartUnits: []string{"foo.service"}},
+			want: map[string]state.PendingUnit{
+				"bar.service": {SHA: "old", Attempts: 1, FirstFailedAt: earlier, LastAttemptAt: earlier},
+				"foo.service": {SHA: "head", Attempts: 1, FirstFailedAt: now, LastAttemptAt: now},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := mergePendingUnits(tt.old, tt.result, "head", now)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestApplyWithRollbackReturnsIncompleteOnFailedUnitRestart(t *testing.T) {
+	t.Parallel()
+	sys, pod, fw := newBareMocks(t)
+	fw.EXPECT().MkdirAll(mock.Anything).Return(nil)
+	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(nil)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys.EXPECT().RestartUnit(mock.Anything, "app.service").Return(assert.AnError)
+
+	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
+	result, err := a.applyWithRollback(t.Context(), "sha", &reconciler.Changeset{
+		Changes: []reconciler.Change{{
+			DestPath:    "/etc/containers/systemd/app.container",
+			Category:    "container",
+			Action:      reconciler.ActionUpdate,
+			NewContent:  "[Container]\nImage=app\n",
+			ServiceName: "app.service",
+		}},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	}, nil, nil)
+
+	// A failed unit restart yields ErrApplyIncomplete with a non-nil result;
+	// a rollback would instead return (nil, errRollbackPerformed).
+	require.ErrorIs(t, err, applier.ErrApplyIncomplete)
+	require.NotNil(t, result)
+	assert.Equal(t, []string{"app.service"}, result.FailedRestartUnits)
+}
+
+func TestReconcileOnceSavesPendingUnitsOnFailedRestart(t *testing.T) {
+	t.Parallel()
+	repoDir := t.TempDir()
+	writeTestFile(t, repoDir, "fleet.yml", "images: {}\nports: {}\n")
+	writeTestFile(t, repoDir, "assignments.yml", `base:
+  networks:
+    - quadlets/networks/internal.network
+`)
+	writeTestFile(t, repoDir, "hosts/test-host/host.yml", `hostname: test-host
+pi_type: server
+features: []
+`)
+	writeTestFile(t, repoDir, "quadlets/networks/internal.network", "[Network]\nInternal=true\n")
+
+	sys, pod, fw := newBareMocks(t)
+	fw.EXPECT().MkdirAll(mock.Anything).Return(nil)
+	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(nil)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(assert.AnError)
+
+	cfg := &agentcfg.Config{Hostname: "test-host", SecretsDir: t.TempDir()}
+	a := newTestAgent(t, cfg, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw), WithRepoPath(repoDir))
+
+	store := state.NewStore(filepath.Join(t.TempDir(), "state.json"))
+	st := state.NewState()
+	require.NoError(t, store.Save(st))
+
+	_, err := a.ReconcileOnce(t.Context(), "head-sha", st, store)
+	require.ErrorIs(t, err, applier.ErrApplyIncomplete)
+
+	loaded, err := store.Load()
+	require.NoError(t, err)
+	require.Len(t, loaded.PendingUnits, 1)
+	for unit, pu := range loaded.PendingUnits {
+		assert.Equal(t, 1, pu.Attempts, "unit %s", unit)
+		assert.Equal(t, "head-sha", pu.SHA, "unit %s", unit)
+		assert.False(t, pu.FirstFailedAt.IsZero(), "unit %s", unit)
+	}
+	assert.Equal(t, "head-sha", loaded.AppliedSHA, "SHA marked applied on the partial-apply path")
+	assert.NotEmpty(t, loaded.ManagedFiles, "applied file recorded so the next tick does not re-write it")
+}
+
+func TestFinalizeApplyPrunesPendingUnitsForDeletedUnit(t *testing.T) {
+	t.Parallel()
+	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"})
+	store := state.NewStore(filepath.Join(t.TempDir(), "state.json"))
+	st := state.NewState()
+	st.PendingUnits = map[string]state.PendingUnit{
+		"old.service": {SHA: "old", Attempts: 5, FirstFailedAt: time.Now(), LastAttemptAt: time.Now()},
+	}
+	changeset := &reconciler.Changeset{
+		Changes: []reconciler.Change{{
+			DestPath:    "/etc/containers/systemd/old.container",
+			Category:    "container",
+			Action:      reconciler.ActionDelete,
+			ServiceName: "old.service",
+		}},
+		Summary: map[reconciler.Action]int{reconciler.ActionDelete: 1},
+	}
+
+	_, err := a.finalizeApply("head-sha", st, store, changeset, &applier.ApplyResult{}, nil, refSecretsCounts{}, nil)
+	require.NoError(t, err)
+	assert.Empty(t, st.PendingUnits, "pending record for a unit removed from the fleet must be pruned")
+}
+
 func TestRetryPendingHooksDropsStaleNamesAndKeepsFailures(t *testing.T) {
 	t.Parallel()
 	sys, pod, fw := newBareMocks(t)
@@ -1324,6 +1471,119 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 
 	afterRetryLabel := testutil.ToFloat64(metrics.GitPollTotal.WithLabelValues("pending_hook_retry"))
 	assert.GreaterOrEqual(t, afterRetryLabel, beforeRetryLabel+1, "pending-hook retries must increment the pending_hook_retry label, not op_refresh")
+}
+
+// tickPendingUnitFixture clones the network-only test repo, pre-seeds state at
+// the current SHA (empty diff) with one pending unit, and returns the store plus
+// the pending unit's name.
+func tickPendingUnitFixture(t *testing.T, a *Agent, poller *gitpoll.Poller, repoDir, statePath, secretsDir string) (*state.Store, string) {
+	t.Helper()
+	ctx := t.Context()
+	initial, err := poller.Poll(ctx, "")
+	require.NoError(t, err)
+
+	files, err := LoadAndResolve(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
+	require.NoError(t, err)
+	store := state.NewStore(statePath)
+	st := state.NewState()
+	UpdateState(st, reconciler.Diff(files, st))
+	st.MarkApplied(initial.HeadSHA)
+
+	var unit string
+	for _, u := range st.ServiceNames {
+		unit = u
+	}
+	require.NotEmpty(t, unit, "fixture must produce at least one managed unit")
+	st.PendingUnits = map[string]state.PendingUnit{
+		unit: {SHA: initial.HeadSHA, Attempts: 5, FirstFailedAt: time.Now().Add(-time.Hour), LastAttemptAt: time.Now()},
+	}
+	require.NoError(t, store.Save(st))
+	return store, unit
+}
+
+// TestTickReportsRetryPendingWhenUnitsPending verifies that a tick with no git
+// change but a still-failing unit reports retry_pending — not a clean noop or
+// success — and does not advance failure tracking or the last-successful time.
+func TestTickReportsRetryPendingWhenUnitsPending(t *testing.T) {
+	t.Parallel()
+	bareDir := initTestRepo(t)
+	repoDir := filepath.Join(t.TempDir(), "clone")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	metrics.Register(nil)
+
+	sys, pod, fw := newBareMocks(t)
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
+	// Unit stays failed; the persisted cooldown (LastAttemptAt now) suppresses
+	// a restart, so RestartUnit must not be called.
+	sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
+		Return(applier.UnitStatus{ActiveState: "failed", SubState: "failed"}, nil).Maybe()
+
+	cfg := &agentcfg.Config{
+		Hostname: "test-host", RepoURL: bareDir, RepoBranch: "master",
+		PollInterval: time.Second, MetricsPort: 0, SecretsDir: t.TempDir(),
+	}
+	a := newTestAgent(t, cfg,
+		WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
+		WithRepoPath(repoDir), WithStatePath(statePath),
+	)
+
+	ctx := t.Context()
+	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
+	require.NoError(t, poller.Init(ctx))
+	store, _ := tickPendingUnitFixture(t, a, poller, repoDir, statePath, cfg.SecretsDir)
+
+	preTick, err := store.Load()
+	require.NoError(t, err)
+
+	before := testutil.ToFloat64(metrics.ReconciliationTotal.WithLabelValues("retry_pending"))
+	healthChecker := health.New(sys)
+	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
+
+	after := testutil.ToFloat64(metrics.ReconciliationTotal.WithLabelValues("retry_pending"))
+	assert.GreaterOrEqual(t, after, before+1, "a pending-unit tick must count as retry_pending")
+
+	loaded, err := store.Load()
+	require.NoError(t, err)
+	assert.Len(t, loaded.PendingUnits, 1, "the still-failing unit stays pending")
+	assert.Equal(t, 0, loaded.FailedCount, "retry_pending must not arm the failed-SHA gate")
+	assert.True(t, loaded.LastSuccessfulReconciliationAt.Equal(preTick.LastSuccessfulReconciliationAt),
+		"last-successful time must not advance while a unit is failing")
+}
+
+// TestTickClearsPendingUnitWhenHealthy verifies that a tick whose health-enforce
+// observes a previously-pending unit as healthy clears the pending record.
+func TestTickClearsPendingUnitWhenHealthy(t *testing.T) {
+	t.Parallel()
+	bareDir := initTestRepo(t)
+	repoDir := filepath.Join(t.TempDir(), "clone")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	metrics.Register(nil)
+
+	sys, pod, fw := newBareMocks(t)
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
+	sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
+		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
+
+	cfg := &agentcfg.Config{
+		Hostname: "test-host", RepoURL: bareDir, RepoBranch: "master",
+		PollInterval: time.Second, MetricsPort: 0, SecretsDir: t.TempDir(),
+	}
+	a := newTestAgent(t, cfg,
+		WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
+		WithRepoPath(repoDir), WithStatePath(statePath),
+	)
+
+	ctx := t.Context()
+	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
+	require.NoError(t, poller.Init(ctx))
+	store, _ := tickPendingUnitFixture(t, a, poller, repoDir, statePath, cfg.SecretsDir)
+
+	healthChecker := health.New(sys)
+	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
+
+	loaded, err := store.Load()
+	require.NoError(t, err)
+	assert.Empty(t, loaded.PendingUnits, "a healthy unit must clear its pending record and the change must be persisted")
 }
 
 // TestTickDropsStalePendingHookNameOnRetry exercises the retryPendingHooks path

@@ -22,6 +22,15 @@ type ManagedFile struct {
 	Category config.Category `json:"category"`
 }
 
+// PendingUnit records a managed systemd unit whose last restart attempt failed.
+// Persisted so the failure (and its retry cooldown) survives an agent restart.
+type PendingUnit struct {
+	SHA           string    `json:"sha"`             // git SHA in effect when this failure was last recorded
+	Attempts      int       `json:"attempts"`        // consecutive failed restart attempts
+	FirstFailedAt time.Time `json:"first_failed_at"` // when the unit first failed to restart
+	LastAttemptAt time.Time `json:"last_attempt_at"` // most recent restart attempt; backs the retry cooldown
+}
+
 // State represents the persisted reconciliation state.
 type State struct {
 	AppliedSHA   string                 `json:"applied_sha"`
@@ -40,6 +49,13 @@ type State struct {
 	// abandon a promised retry.
 	// Renamed from pending_secret_hooks (unreleased feature, no migration needed).
 	PendingHooks map[string]int `json:"pending_hooks,omitempty"`
+
+	// PendingUnits tracks managed systemd units whose last restart attempt
+	// failed and that must keep being retried. Persisted so a restart does not
+	// erase the failure record, the retry cooldown, or the attempt count.
+	// Additive omitempty field: a state file written before this feature
+	// decodes with PendingUnits nil, which is safe (len(nil) == 0).
+	PendingUnits map[string]PendingUnit `json:"pending_units,omitempty"`
 }
 
 // NewState returns a zero State with initialized maps, suitable for first-run or testing.

@@ -214,6 +214,7 @@ func Register(store *status.Store) {
 			SecretLastSyncTimestamp,
 			SecretCredentialExpiresAt,
 			HookTotal,
+			unitRestartPending,
 			NewUnitHealthCollector(store),
 			NewUnitDependencyCollector(store),
 			NewHostInfoCollector(store),
@@ -278,4 +279,44 @@ func RecordAppliedSHA(sha string) {
 // RecordFailedSHA records a reconciliation failure for the given consecutive count.
 func RecordFailedSHA(consecutiveCount int) {
 	FailedSHAConsecutiveCount.Set(float64(consecutiveCount))
+}
+
+// unitRestartPendingCollector implements prometheus.Collector for per-unit
+// restart-pending state. On each scrape it emits one gauge per pending unit
+// (value = consecutive failed restart attempts). Only currently-pending units
+// are emitted, so stale label series cannot accumulate.
+type unitRestartPendingCollector struct {
+	desc    *prometheus.Desc
+	mu      sync.RWMutex
+	pending map[string]int
+}
+
+var unitRestartPending = &unitRestartPendingCollector{
+	desc: prometheus.NewDesc(
+		"picolet_unit_restart_pending",
+		"Managed units whose last restart attempt failed (value = consecutive failed attempts).",
+		[]string{"unit"}, nil,
+	),
+}
+
+func (c *unitRestartPendingCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.desc
+}
+
+func (c *unitRestartPendingCollector) Collect(ch chan<- prometheus.Metric) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for unit, attempts := range c.pending {
+		ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, float64(attempts), unit)
+	}
+}
+
+// SetUnitRestartPending replaces the set of units with a pending restart
+// failure. The map is unit name → consecutive failed attempts; an empty or nil
+// map clears the metric. Seeded from persisted state each tick so the metric
+// survives an agent restart.
+func SetUnitRestartPending(pending map[string]int) {
+	unitRestartPending.mu.Lock()
+	unitRestartPending.pending = pending
+	unitRestartPending.mu.Unlock()
 }

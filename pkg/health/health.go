@@ -44,8 +44,10 @@ func New(systemd applier.SystemdManager) *Checker {
 	}
 }
 
-// Enforce checks all managed units and restarts any that are failed,
-// subject to a per-unit restart cooldown.
+// Enforce checks all managed units and restarts any that are failed, subject to
+// a per-unit restart cooldown. It also maintains st.PendingUnits: units observed
+// healthy are cleared, units whose restart fails are recorded, and records for
+// units no longer managed are pruned. The caller persists st after Enforce.
 func (c *Checker) Enforce(ctx context.Context, st *state.State) (*CheckResult, error) {
 	result := &CheckResult{Statuses: make(map[string]applier.UnitStatus)}
 
@@ -61,15 +63,31 @@ func (c *Checker) Enforce(ctx context.Context, st *state.State) (*CheckResult, e
 			delete(c.lastRestart, unit)
 		}
 	}
-
-	for unit := range units {
-		c.enforceUnit(ctx, unit, result)
+	// Restore the restart cooldown across an agent restart (a fresh Checker has
+	// an empty lastRestart map) and prune pending records for units that left
+	// the fleet — health-enforce, unlike the apply path, has no other signal
+	// that a unit was removed.
+	for unit, pu := range st.PendingUnits {
+		if !units[unit] {
+			delete(st.PendingUnits, unit)
+			continue
+		}
+		if pu.LastAttemptAt.After(c.lastRestart[unit]) {
+			c.lastRestart[unit] = pu.LastAttemptAt
+		}
 	}
 
+	for unit := range units {
+		c.enforceUnit(ctx, unit, st, result)
+	}
+
+	if len(st.PendingUnits) == 0 {
+		st.PendingUnits = nil
+	}
 	return result, nil
 }
 
-func (c *Checker) enforceUnit(ctx context.Context, unit string, result *CheckResult) {
+func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State, result *CheckResult) {
 	status, err := c.systemd.GetUnitStatus(ctx, unit)
 	if err != nil {
 		slog.Warn("health check failed", "unit", unit, "error", err)
@@ -83,6 +101,8 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, result *CheckRes
 		// Covers: running daemons (sub_state=running), successful oneshots
 		// (sub_state=exited), socket-activated units (sub_state=waiting).
 		result.Healthy = append(result.Healthy, unit)
+		// Unit converged — clear any pending restart-failure record.
+		delete(st.PendingUnits, unit)
 	case "inactive", "deactivating", "reloading", "maintenance":
 		// Expected for timer-activated services between runs, completed oneshots,
 		// or units in condition-check failure. Do not restart.
@@ -91,11 +111,11 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, result *CheckRes
 		// "failed" and any unexpected state — restart conservatively.
 		slog.Warn("unit unhealthy", "unit", unit, "active_state", status.ActiveState, "sub_state", status.SubState)
 		result.Unhealthy = append(result.Unhealthy, unit)
-		c.maybeRestart(ctx, unit, result)
+		c.maybeRestart(ctx, unit, st, result)
 	}
 }
 
-func (c *Checker) maybeRestart(ctx context.Context, unit string, result *CheckResult) {
+func (c *Checker) maybeRestart(ctx context.Context, unit string, st *state.State, result *CheckResult) {
 	if last, ok := c.lastRestart[unit]; ok {
 		elapsed := time.Since(last)
 		if elapsed < restartCooldown {
@@ -104,11 +124,33 @@ func (c *Checker) maybeRestart(ctx context.Context, unit string, result *CheckRe
 			return
 		}
 	}
+	// Record the attempt before the call so a failed restart also starts a
+	// cooldown — a permanently-broken unit must not be hammered every tick.
+	now := time.Now()
+	c.lastRestart[unit] = now
 	if err := c.systemd.RestartUnit(ctx, unit); err != nil {
 		slog.Error("restart failed", "unit", unit, "error", err)
 		result.Errors = append(result.Errors, err)
+		recordPendingUnit(st, unit, now)
 		return
 	}
-	c.lastRestart[unit] = time.Now()
 	result.Restarted = append(result.Restarted, unit)
+}
+
+// recordPendingUnit adds or increments a unit's pending restart-failure record.
+// Timestamps are truncated to whole seconds so maps.Equal change-detection by
+// the agent tick is stable across the persist/reload cycle.
+func recordPendingUnit(st *state.State, unit string, now time.Time) {
+	if st.PendingUnits == nil {
+		st.PendingUnits = make(map[string]state.PendingUnit)
+	}
+	now = now.Truncate(time.Second)
+	pu := st.PendingUnits[unit]
+	if pu.FirstFailedAt.IsZero() {
+		pu.FirstFailedAt = now
+	}
+	pu.SHA = st.AppliedSHA
+	pu.Attempts++
+	pu.LastAttemptAt = now
+	st.PendingUnits[unit] = pu
 }
