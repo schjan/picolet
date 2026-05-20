@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"path/filepath"
@@ -10,7 +10,9 @@ import (
 	"github.com/schjan/picolet/pkg/agentcfg"
 )
 
-func TestDataDirAndLockPathFromConfig(t *testing.T) {
+// Cannot use t.Parallel(): t.Setenv() mutates a process-global, so the test
+// (and its subtests) must remain serial.
+func TestDataDirAndLockPathFromConfig(t *testing.T) { //nolint:paralleltest // see comment above
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
