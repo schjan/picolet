@@ -3,6 +3,7 @@ package reconciler
 import (
 	"crypto/sha256"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/schjan/picolet/pkg/config"
@@ -133,5 +134,5 @@ var categories = []config.Category{
 
 // Categories returns the fixed set of known file categories used for metric labels.
 func Categories() []config.Category {
-	return categories
+	return slices.Clone(categories)
 }

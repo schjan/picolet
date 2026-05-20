@@ -289,9 +289,10 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
 			recordChangedRel(p.ChangedRels, change.Category, change.RelPath)
 		}
-		// Data files are consumed by application hooks or future restarts; they
-		// are not systemd unit definitions and do not require daemon-reload.
-		p.NeedsReload = p.NeedsReload || change.Category != config.CategoryFile
+		// Manifests and data files are consumed by application hooks or future
+		// restarts; they are not systemd unit definitions and do not require
+		// daemon-reload.
+		p.NeedsReload = p.NeedsReload || (change.Category != config.CategoryFile && change.Category != config.CategoryManifest)
 		if change.Action == reconciler.ActionDelete {
 			// Deleted units must NOT be restarted — the unit no longer exists after
 			// daemon-reload. StopUnit above already terminated the running service.

@@ -985,7 +985,6 @@ func TestApplyManifestTriggeredHookFires(t *testing.T) {
 		return http.StatusOK
 	})
 	sys := appliermocks.NewMockSystemdManager(t)
-	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 	sys.EXPECT().GetUnitStatus(mock.Anything, "vm.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
 	pod := appliermocks.NewMockPodmanClient(t)
 	fw := newMemFileWriter()
@@ -1135,7 +1134,6 @@ func TestApplyRelPathDeleteDoesNotFireHooks(t *testing.T) {
 				URL:       "http://example.test/reload",
 				OnFailure: config.HookOnFailureKeepRunning,
 			},
-			wantReload: true,
 		},
 		{
 			name:     "file",
