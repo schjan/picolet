@@ -177,11 +177,10 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 		return nil, err
 	}
 
-	// Two-phase secret resolution for templates: collect refs by rendering
-	// once with placeholders, then batch-resolve, then render for real. Each
-	// provider has its own cache; rendering twice is cheap relative to the
-	// network/exec round-trips we save.
-	if err := r.runTemplateRefCollection(ctx, registry, tmplData, expanded, caches); err != nil {
+	// First render pass: render quadlets with placeholder data to collect
+	// secret refs (op://, pass://) for batch resolution and to derive the
+	// host's systemd unit names into tmplData.Host.SystemdUnits.
+	if _, err := r.prepareTemplateData(ctx, registry, tmplData, expanded, caches); err != nil {
 		return nil, err
 	}
 
@@ -208,15 +207,67 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 	}, nil
 }
 
-// runTemplateRefCollection executes the collect pass for any configured
-// providers and resolves each provider's cache. Pulled out of ResolveHost to
-// keep ResolveHost under the cyclop limit.
-func (r *Resolver) runTemplateRefCollection(ctx context.Context, registry *template.Template, tmplData *TemplateData, expanded *expandedResult, caches ProviderCaches) error {
-	if len(caches) == 0 {
-		return nil
+// preparedData is the output of the first render pass.
+//
+// Some template data only becomes knowable AFTER quadlet templates render:
+//   - Secret refs (op://, pass://) — providers batch better when picolet knows
+//     all refs upfront, so we collect them first and resolve in bulk.
+//   - Systemd unit names — a quadlet's unit name is derived from its rendered
+//     content via Podman's parser, so .Host.SystemdUnits can only be populated
+//     AFTER every quadlet has been rendered at least once.
+//
+// The first pass renders every .tmpl with placeholder data (nil/empty for the
+// not-yet-discovered fields). Quadlet renders are parsed to harvest unit names;
+// other renders are kept only for their secret-collection side effect. The
+// second (final) pass renders for real with fully populated TemplateData.
+// Render errors in the first pass are non-fatal; the final pass surfaces real
+// template errors with proper diagnostics.
+//
+// Cost: quadlet templates render twice in the first pass (once for unit
+// discovery, once for secret collection) and once more in the final pass. All
+// renders are in-memory; cost is negligible vs. git fetches and secret-provider
+// round-trips.
+type preparedData struct {
+	SystemdUnits []string // sorted, unique; e.g. "node-exporter.service"
+}
+
+// prepareTemplateData runs the first render pass: it derives the host's systemd
+// unit names, collects secret refs for any configured providers, and resolves
+// each provider's cache. It populates tmplData.Host.SystemdUnits as a side
+// effect and also returns the result so the pass is testable in isolation.
+func (r *Resolver) prepareTemplateData(ctx context.Context, registry *template.Template, tmplData *TemplateData, expanded *expandedResult, caches ProviderCaches) (*preparedData, error) {
+	units := r.collectSystemdUnits(registry, tmplData, expanded.FileSet)
+	if len(caches) > 0 {
+		r.collectTemplateRefs(registry, tmplData, expanded.FileSet, expanded.BundleFileRefs, expanded.HookRefs)
+		if err := caches.ResolveAll(ctx); err != nil {
+			return nil, err
+		}
 	}
-	r.collectTemplateRefs(registry, tmplData, expanded.FileSet, expanded.BundleFileRefs, expanded.HookRefs)
-	return caches.ResolveAll(ctx)
+	tmplData.Host.SystemdUnits = units
+	return &preparedData{SystemdUnits: units}, nil
+}
+
+// collectSystemdUnits derives the sorted, unique list of systemd unit names
+// picolet manages on the host. Quadlet units (.container/.kube/.network/.volume)
+// are rendered and parsed via Podman's GetUnitServiceName, which honors
+// ServiceName= overrides; raw CategorySystemd files contribute their filename
+// with any .tmpl suffix stripped. Render and parse errors are swallowed here —
+// the final pass and the validator surface them with proper diagnostics.
+func (r *Resolver) collectSystemdUnits(registry *template.Template, tmplData *TemplateData, fileSet *config.ResolvedFileSet) []string {
+	var units []string
+	for _, g := range quadletCategoryPaths(fileSet) {
+		for _, srcPath := range g.Paths {
+			f, err := r.resolveFile(registry, tmplData, srcPath, g.Category, r.quadletDestPath(srcPath), true)
+			if err != nil || f.ServiceName == "" {
+				continue
+			}
+			units = append(units, f.ServiceName)
+		}
+	}
+	for _, srcPath := range fileSet.Systemd {
+		units = append(units, destFilename(srcPath))
+	}
+	return sortedUnique(units)
 }
 
 // ResolveAll resolves all hosts and returns the results.
@@ -304,6 +355,23 @@ func newLegacyBundleFileRef(srcPath string, category config.Category) bundleFile
 	}
 }
 
+// categoryPaths pairs a quadlet category with its host source paths.
+type categoryPaths struct {
+	Category config.Category
+	Paths    []string
+}
+
+// quadletCategoryPaths groups a host's quadlet sources by category, in apply
+// order. Single source of truth for buildFileSkeletons and collectSystemdUnits.
+func quadletCategoryPaths(fileSet *config.ResolvedFileSet) []categoryPaths {
+	return []categoryPaths{
+		{config.CategoryNetwork, fileSet.Networks},
+		{config.CategoryVolume, fileSet.Volumes},
+		{config.CategoryContainer, fileSet.Containers},
+		{config.CategoryKube, fileSet.Kube},
+	}
+}
+
 // buildFileSkeletons returns SrcPath/Category/DestPath tuples for every file
 // the host will deploy. It does not render templates, read files, or call the
 // 1Password SDK, so it's safe (and cheap) to run before expensive operations.
@@ -312,19 +380,10 @@ func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, bundleFil
 		len(fileSet.Containers) + len(fileSet.Kube) + len(bundleFileRefs) + len(fileSet.Secrets)
 	skeletons := make([]ResolvedFile, 0, total)
 
-	quadletCats := []struct {
-		category config.Category
-		paths    []string
-	}{
-		{config.CategoryNetwork, fileSet.Networks},
-		{config.CategoryVolume, fileSet.Volumes},
-		{config.CategoryContainer, fileSet.Containers},
-		{config.CategoryKube, fileSet.Kube},
-	}
-	for _, g := range quadletCats {
-		for _, srcPath := range g.paths {
+	for _, g := range quadletCategoryPaths(fileSet) {
+		for _, srcPath := range g.Paths {
 			skeletons = append(skeletons, ResolvedFile{
-				SrcPath: srcPath, Category: g.category, DestPath: r.quadletDestPath(srcPath),
+				SrcPath: srcPath, Category: g.Category, DestPath: r.quadletDestPath(srcPath),
 			})
 		}
 	}
