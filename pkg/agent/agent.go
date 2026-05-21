@@ -368,8 +368,14 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return fmt.Errorf("loading state: %w", err)
 	}
 
+	// Snapshot PendingUnits so a health-enforce mutation can be persisted even
+	// on tick paths (noop, paused) that would otherwise not save state.
+	pendingUnitsBefore := maps.Clone(st.PendingUnits)
+
 	// Publish MQTT status at the end of every tick (success, failure, noop, or paused).
 	defer func() { a.publishMQTTStatus(ctx, st, time.Now()) }()
+	// Refresh the per-unit restart-pending metric from the final state at tick end.
+	defer func() { metrics.SetUnitRestartPending(pendingUnitAttempts(st.PendingUnits)) }()
 
 	// Seed managed-files metrics from state on every tick
 	metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
@@ -402,6 +408,23 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		a.updateHealthFailures(hr)
 	}
 
+	// Persist any PendingUnits change health-enforce made (clear on convergence,
+	// increment on a failed retry, prune removed units). Done here — before the
+	// pause check and the noop fast-path — because those paths return without
+	// otherwise saving state, which would lose the attempt count and cooldown.
+	//
+	// This maps.Equal compares PendingUnit values, time.Time fields included. It
+	// is reliable only because every write site — mergePendingUnits and
+	// health.recordPendingUnit — truncates timestamps to whole seconds, which
+	// strips the monotonic reading so a value survives a persist/reload round
+	// trip unchanged. A future write site that skips that truncation would
+	// silently break this change detection.
+	if !maps.Equal(st.PendingUnits, pendingUnitsBefore) {
+		if saveErr := store.Save(st); saveErr != nil {
+			slog.Error("saving state after health enforcement", "error", saveErr)
+		}
+	}
+
 	// 1b. Pause check — health ran, skip reconciliation when paused via MQTT
 	if a.paused.Load() {
 		slog.Debug("reconciliation paused via MQTT")
@@ -420,7 +443,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return fmt.Errorf("polling git: %w", err)
 	}
 
-	if !pollResult.Changed && !a.opRefreshDue() && !a.ppRefreshDue() && len(st.PendingHooks) == 0 {
+	if !pollResult.Changed && !a.opRefreshDue() && !a.ppRefreshDue() && len(st.PendingHooks) == 0 && len(st.PendingUnits) == 0 {
 		metrics.GitPollTotal.WithLabelValues("noop").Inc()
 		slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
@@ -439,6 +462,21 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		st.LastSuccessfulReconciliationAt = now
 		metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
 		a.statusStore.SetVerifiedAt(now)
+		return nil
+	}
+
+	// Pending-unit retry tick: nothing in git changed and no hook/secret retry
+	// is due, but units are still failing to restart. Health-enforce already
+	// retried them this tick (and persisted any change above). Report
+	// retry_pending — NOT a clean noop — so the SHA is not treated as fully
+	// converged and LastSuccessfulReconciliationAt is not advanced. Units are
+	// retried by health-enforce, so no ReconcileOnce is needed here.
+	if !pollResult.Changed && !a.opRefreshDue() && !a.ppRefreshDue() && len(st.PendingHooks) == 0 {
+		metrics.GitPollTotal.WithLabelValues("pending_unit_retry").Inc()
+		metrics.ReconciliationTotal.WithLabelValues("retry_pending").Inc()
+		slog.Warn("apply incomplete, units still failing to restart",
+			"sha", pollResult.HeadSHA, "pending_units", slices.Sorted(maps.Keys(st.PendingUnits)))
+		a.recordEvent("retry_pending", st.AppliedSHA, "units still failing to restart")
 		return nil
 	}
 
@@ -543,6 +581,10 @@ type ResolveParams struct {
 	QuadletDir string
 	SystemdDir string
 	DataDir    string
+
+	// HostDataDir is the host-visible data path emitted by the filePath/
+	// manifestPath template helpers. Empty falls back to the internal data dir.
+	HostDataDir string
 }
 
 // LoadAndResolve loads fleet config from repoPath and resolves the desired state for the given host.
@@ -590,6 +632,7 @@ func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.Re
 		QuadletDir:     params.QuadletDir,
 		SystemdDir:     params.SystemdDir,
 		DataDir:        params.DataDir,
+		HostDataDir:    params.HostDataDir,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating resolver: %w", err)
@@ -616,9 +659,10 @@ func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, err
 		PPSecretReader: a.ppReader,
 		// Override fields are passed raw; resolver.New applies the
 		// ResolveDirs fallback for any field left empty.
-		QuadletDir: a.quadletDirOverride,
-		SystemdDir: a.systemdDirOverride,
-		DataDir:    a.dataDirOverride,
+		QuadletDir:  a.quadletDirOverride,
+		SystemdDir:  a.systemdDirOverride,
+		DataDir:     a.dataDirOverride,
+		HostDataDir: a.cfg.HostDataDir,
 	})
 }
 
@@ -681,7 +725,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset, resolved.Hooks, pendingHookNames(st.PendingHooks))
 	recordHookMetrics(applyResult)
 	if errors.Is(err, applier.ErrApplyIncomplete) {
-		a.savePartialStateOnHookFailure(headSHA, st, store, changeset, applyResult, deps, resolved.Hooks)
+		a.savePartialState(headSHA, st, store, changeset, applyResult, deps, resolved.Hooks)
 		return nil, err
 	}
 	if err != nil {
@@ -701,6 +745,9 @@ func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Stor
 	markAppliedWithMetrics(st, headSHA)
 	a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
 	UpdateState(st, changeset)
+	// Reconcile pending-unit records: clear units that restarted cleanly, seed
+	// any that failed, then prune records for units removed from the fleet.
+	st.PendingUnits = prunePendingUnits(mergePendingUnits(st.PendingUnits, applyResult, headSHA, time.Now()), st.ServiceNames)
 
 	if err := store.Save(st); err != nil {
 		return nil, fmt.Errorf("saving state: %w", err)
@@ -755,19 +802,24 @@ func (a *Agent) reconcileNoChanges(headSHA string, files []resolver.ResolvedFile
 	return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: counts.Op, PPSecretsCount: counts.PP}, nil
 }
 
-// savePartialStateOnHookFailure persists state after a successful apply that
-// only failed at the keep_running hook stage. Files and secrets are recorded
-// (so the next tick does not re-write them), the SHA is marked applied (so
-// gitpoll stops reporting "Changed" on every retry tick — which would otherwise
-// produce duplicate deployment reports for the same SHA), and the pending hook
-// list is saved so retry survives an agent restart.
-func (a *Agent) savePartialStateOnHookFailure(headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, hooks []config.Hook) {
+// savePartialState persists state after a file apply that succeeded but did not
+// fully converge — a keep_running hook failed, or a unit restart failed. Files
+// and secrets are recorded (so the next tick does not re-write them), the SHA is
+// marked applied (so gitpoll stops reporting "Changed" on every retry tick —
+// which would otherwise produce duplicate deployment reports for the same SHA),
+// and the pending-hook and pending-unit records are saved so the retries survive
+// an agent restart.
+func (a *Agent) savePartialState(headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, hooks []config.Hook) {
 	UpdateState(st, changeset)
 	st.PendingHooks = enforceRetryBudget(mergePendingHooks(st.PendingHooks, applyResult), hooks)
-	markAppliedWithMetrics(st, headSHA)
-	a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
+	// Prune against the just-rebuilt ServiceNames so a unit removed from the
+	// fleet drops its pending record (health-enforce cannot see removals).
+	st.PendingUnits = prunePendingUnits(mergePendingUnits(st.PendingUnits, applyResult, headSHA, time.Now()), st.ServiceNames)
+	// Record the SHA without advancing the last-successful timestamp: the apply
+	// is incomplete, so staleness alerts must keep firing until it converges.
+	markAppliedIncompleteWithMetrics(st, headSHA)
 	if saveErr := store.Save(st); saveErr != nil {
-		slog.Error("saving partial state after hook failure", "error", saveErr)
+		slog.Error("saving partial state after incomplete apply", "error", saveErr)
 	}
 	a.statusStore.SetDependencies(deps)
 }
@@ -803,6 +855,74 @@ func mergePendingHooks(old map[string]int, result *applier.ApplyResult) map[stri
 		return nil
 	}
 	return merged
+}
+
+// mergePendingUnits computes the new PendingUnits map from the previous map and
+// an apply result: units that restarted cleanly are dropped (converged), units
+// whose restart failed are added or have their attempt count incremented, and
+// every other entry is carried forward unchanged. headSHA records the SHA in
+// effect for any failure recorded this call. Timestamps are truncated to whole
+// seconds so maps.Equal change-detection is stable. Returns nil (not an empty
+// map) when empty so omitempty omits the field.
+func mergePendingUnits(old map[string]state.PendingUnit, result *applier.ApplyResult, headSHA string, now time.Time) map[string]state.PendingUnit {
+	if len(old) == 0 && len(result.FailedRestartUnits) == 0 {
+		return nil
+	}
+	now = now.Truncate(time.Second)
+	merged := make(map[string]state.PendingUnit, len(old)+len(result.FailedRestartUnits))
+	maps.Copy(merged, old)
+	for _, unit := range result.RestartedUnits {
+		delete(merged, unit)
+	}
+	for _, unit := range result.FailedRestartUnits {
+		pu := merged[unit]
+		if pu.FirstFailedAt.IsZero() {
+			pu.FirstFailedAt = now
+		}
+		pu.SHA = headSHA
+		pu.Attempts++
+		pu.LastAttemptAt = now
+		merged[unit] = pu
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
+
+// prunePendingUnits drops pending-unit records whose unit is no longer managed
+// (not present in serviceNames). Mutates and returns pending; returns nil when
+// the result is empty so omitempty omits the field.
+func prunePendingUnits(pending map[string]state.PendingUnit, serviceNames map[string]string) map[string]state.PendingUnit {
+	if len(pending) == 0 {
+		return nil
+	}
+	managed := make(map[string]struct{}, len(serviceNames))
+	for _, unit := range serviceNames {
+		managed[unit] = struct{}{}
+	}
+	for unit := range pending {
+		if _, ok := managed[unit]; !ok {
+			delete(pending, unit)
+		}
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	return pending
+}
+
+// pendingUnitAttempts projects PendingUnits to a unit→attempt-count map for the
+// picolet_unit_restart_pending metric.
+func pendingUnitAttempts(pending map[string]state.PendingUnit) map[string]int {
+	if len(pending) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(pending))
+	for unit, pu := range pending {
+		out[unit] = pu.Attempts
+	}
+	return out
 }
 
 // retryPendingHooks runs pending secret hooks on a tick where the diff is
@@ -918,10 +1038,13 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 			a.statusStore.DeleteUnit(change.ServiceName)
 		}
 	}
-	if len(result.RetryableErrors) > 0 {
+	if incompleteErr := applyIncompleteError(result, changesetUnitNames(changeset)); incompleteErr != nil {
 		logNonRetryableApplyErrors(result)
 		// tick() logs the user-facing "apply incomplete" message with sha + duration.
-		return result, fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(result.RetryableErrors...))
+		// Failed restarts of managed units are recorded in state.PendingUnits and
+		// retried by health-enforce; they make the apply incomplete but do not roll
+		// back (the files on disk are correct — only runtime convergence is pending).
+		return result, incompleteErr
 	}
 
 	slog.Info("apply complete",
@@ -931,6 +1054,50 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	)
 
 	return result, nil
+}
+
+// changesetUnitNames returns the set of systemd service names the changeset
+// manages. It mirrors the ServiceNames map UpdateState rebuilds, so the
+// managed-unit check in applyIncompleteError agrees with prunePendingUnits on
+// which units count as managed (and are therefore retryable by health-enforce).
+func changesetUnitNames(changeset *reconciler.Changeset) map[string]struct{} {
+	names := make(map[string]struct{})
+	for _, change := range changeset.Changes {
+		if change.Action != reconciler.ActionDelete && change.ServiceName != "" {
+			names[change.ServiceName] = struct{}{}
+		}
+	}
+	return names
+}
+
+// applyIncompleteError returns an ErrApplyIncomplete-wrapped error when the
+// apply did not fully converge — keep_running hooks failed, or a restart of a
+// picolet-managed unit failed — and nil otherwise. Only managed units (those
+// in the changeset's ServiceNames) gate this: health-enforce retries them via
+// state.PendingUnits, so an incomplete apply has a convergence path. A failed
+// restart of a hook-only unit — one not managed as a quadlet, e.g. a host
+// service whose config picolet writes via the file category — has no retry
+// path, so it stays a logged non-retryable error (result.Errors) rather than
+// wedging the apply incomplete forever. Failed managed restarts are surfaced as
+// a single joined error; per-unit detail lives in state.PendingUnits.
+func applyIncompleteError(result *applier.ApplyResult, managed map[string]struct{}) error {
+	failedManaged := make([]string, 0, len(result.FailedRestartUnits))
+	for _, unit := range result.FailedRestartUnits {
+		if _, ok := managed[unit]; ok {
+			failedManaged = append(failedManaged, unit)
+		}
+	}
+	if len(result.RetryableErrors) == 0 && len(failedManaged) == 0 {
+		return nil
+	}
+	incompleteErrs := slices.Clone(result.RetryableErrors)
+	if len(failedManaged) > 0 {
+		// FailedRestartUnits comes from a map iteration in restartUnits; sort so
+		// the error string (logged and recorded as an event) is stable.
+		slices.Sort(failedManaged)
+		incompleteErrs = append(incompleteErrs, fmt.Errorf("units failed to restart: %v", failedManaged))
+	}
+	return fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(incompleteErrs...))
 }
 
 func logNonRetryableApplyErrors(result *applier.ApplyResult) {
@@ -973,10 +1140,19 @@ func UpdateState(st *state.State, changeset *reconciler.Changeset) {
 	}
 }
 
-// markAppliedWithMetrics records a successful SHA application in both state and metrics.
+// markAppliedWithMetrics records a fully successful SHA application in both
+// state and metrics.
 func markAppliedWithMetrics(st *state.State, headSHA string) {
 	st.MarkApplied(headSHA)
 	metrics.RecordAppliedSHA(headSHA)
+}
+
+// markAppliedIncompleteWithMetrics records a SHA whose apply did not fully
+// converge. The SHA is recorded so gitpoll stops reporting "Changed", but the
+// last-successful timestamp (state and metric) is not advanced.
+func markAppliedIncompleteWithMetrics(st *state.State, headSHA string) {
+	st.MarkAppliedIncomplete(headSHA)
+	metrics.RecordAppliedSHAIncomplete(headSHA)
 }
 
 // scanOrphans detects and removes files/secrets placed by a previous picolet run

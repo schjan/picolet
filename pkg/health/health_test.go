@@ -228,6 +228,147 @@ func TestEnforcePrunesRemovedUnitCooldowns(t *testing.T) {
 	assert.NotContains(t, c.lastRestart, "removed.service")
 }
 
+func TestEnforceAddsPendingUnitOnRestartFailure(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{ActiveState: "failed", SubState: "failed"}, nil)
+	sys.EXPECT().RestartUnit(mock.Anything, "foo.service").Return(assert.AnError)
+
+	c := New(sys)
+	st := &state.State{
+		AppliedSHA: "sha-abc",
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
+		},
+	}
+
+	result, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.Len(t, result.Errors, 1)
+	require.Contains(t, st.PendingUnits, "foo.service")
+	pu := st.PendingUnits["foo.service"]
+	assert.Equal(t, 1, pu.Attempts)
+	assert.Equal(t, "sha-abc", pu.SHA)
+	assert.False(t, pu.FirstFailedAt.IsZero())
+	assert.False(t, pu.LastAttemptAt.IsZero())
+}
+
+func TestEnforceClearsPendingUnitWhenHealthy(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+
+	c := New(sys)
+	st := &state.State{
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
+		},
+		PendingUnits: map[string]state.PendingUnit{
+			"foo.service": {SHA: "sha-abc", Attempts: 12, FirstFailedAt: time.Now(), LastAttemptAt: time.Now()},
+		},
+	}
+
+	_, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.Empty(t, st.PendingUnits, "a healthy unit must clear its pending record")
+}
+
+func TestEnforceClearsPendingUnitWhenInactive(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{ActiveState: "inactive", SubState: "dead"}, nil)
+
+	c := New(sys)
+	st := &state.State{
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
+		},
+		PendingUnits: map[string]state.PendingUnit{
+			"foo.service": {SHA: "sha-abc", Attempts: 9, FirstFailedAt: time.Now(), LastAttemptAt: time.Now()},
+		},
+	}
+
+	_, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.Empty(t, st.PendingUnits, "an inactive unit is no longer retried, so its pending record must clear")
+}
+
+func TestEnforcePersistentCooldownAcrossNewChecker(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{ActiveState: "failed", SubState: "failed"}, nil)
+	// No RestartUnit expectation: the persisted cooldown must suppress the restart.
+
+	// A fresh Checker simulates a picolet process restart — its in-memory
+	// lastRestart map is empty.
+	c := New(sys)
+	st := &state.State{
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
+		},
+		PendingUnits: map[string]state.PendingUnit{
+			"foo.service": {SHA: "sha-abc", Attempts: 3, FirstFailedAt: time.Now().Add(-time.Hour), LastAttemptAt: time.Now()},
+		},
+	}
+
+	result, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"foo.service"}, result.Skipped)
+	assert.Empty(t, result.Restarted)
+}
+
+func TestEnforcePrunesPendingUnitsForRemovedUnits(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+
+	c := New(sys)
+	st := &state.State{
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
+		},
+		PendingUnits: map[string]state.PendingUnit{
+			"removed.service": {SHA: "sha-abc", Attempts: 5, FirstFailedAt: time.Now(), LastAttemptAt: time.Now()},
+		},
+	}
+
+	_, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.NotContains(t, st.PendingUnits, "removed.service", "record for an unmanaged unit must be pruned")
+}
+
+func TestEnforceIncrementsPendingUnitAttempts(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{ActiveState: "failed", SubState: "failed"}, nil).Times(2)
+	sys.EXPECT().RestartUnit(mock.Anything, "foo.service").Return(assert.AnError).Times(2)
+
+	c := New(sys)
+	st := &state.State{
+		AppliedSHA: "sha-abc",
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/foo.container": "foo.service",
+		},
+	}
+
+	_, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	firstFailed := st.PendingUnits["foo.service"].FirstFailedAt
+
+	// Age both the in-memory and persisted cooldowns past restartCooldown so the
+	// second Enforce attempts another restart.
+	old := time.Now().Add(-restartCooldown - time.Minute)
+	c.lastRestart["foo.service"] = old
+	pu := st.PendingUnits["foo.service"]
+	pu.LastAttemptAt = old
+	st.PendingUnits["foo.service"] = pu
+
+	_, err = c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.Equal(t, 2, st.PendingUnits["foo.service"].Attempts)
+	assert.True(t, st.PendingUnits["foo.service"].FirstFailedAt.Equal(firstFailed), "FirstFailedAt must be preserved across attempts")
+}
+
 func TestAllFailed(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

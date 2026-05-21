@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/schjan/picolet/pkg/config"
 )
 
 func renderRegistryTemplate(tb testing.TB, fsys fstest.MapFS, name string, data any) (string, error) {
@@ -236,6 +238,20 @@ func TestFilePathValidatesInputs(t *testing.T) {
 			assert.Equal(t, tt.want, out)
 		})
 	}
+}
+
+func TestBundleFilePathFuncUsesHostDataDir(t *testing.T) {
+	t.Parallel()
+
+	manifestFn := bundleFilePathFunc("manifestPath", "/host/share/picolet", config.CategoryManifest)
+	got, err := manifestFn("config/scrape.yml")
+	require.NoError(t, err)
+	assert.Equal(t, "/host/share/picolet/manifests/config/scrape.yml", got)
+
+	fileFn := bundleFilePathFunc("filePath", "/host/share/picolet", config.CategoryFile)
+	got, err = fileFn("nginx/app.conf")
+	require.NoError(t, err)
+	assert.Equal(t, "/host/share/picolet/files/nginx/app.conf", got)
 }
 
 func TestBuildRegistrySkipsGitDirectory(t *testing.T) {

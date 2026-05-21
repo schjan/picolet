@@ -105,6 +105,11 @@ type ApplyResult struct {
 	NeedsSelfRestart bool
 	RestartedUnits   []string
 
+	// FailedRestartUnits names units whose post-apply RestartUnit call failed.
+	// The agent records these in state.PendingUnits and treats the apply as
+	// incomplete (retry_pending) so the SHA is not reported as a clean success.
+	FailedRestartUnits []string
+
 	// PendingHookNames holds names of keep_running hooks that errored and should
 	// retry on the next tick. Populated only when RetryableErrors is non-empty.
 	PendingHookNames []string
@@ -360,6 +365,7 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]stru
 		slog.Info("restarting unit", "unit", unit)
 		if err := a.systemd.RestartUnit(ctx, unit); err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("restarting %s: %w", unit, err))
+			result.FailedRestartUnits = append(result.FailedRestartUnits, unit)
 		} else {
 			result.RestartedUnits = append(result.RestartedUnits, unit)
 		}
