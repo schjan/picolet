@@ -412,6 +412,13 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	// increment on a failed retry, prune removed units). Done here — before the
 	// pause check and the noop fast-path — because those paths return without
 	// otherwise saving state, which would lose the attempt count and cooldown.
+	//
+	// This maps.Equal compares PendingUnit values, time.Time fields included. It
+	// is reliable only because every write site — mergePendingUnits and
+	// health.recordPendingUnit — truncates timestamps to whole seconds, which
+	// strips the monotonic reading so a value survives a persist/reload round
+	// trip unchanged. A future write site that skips that truncation would
+	// silently break this change detection.
 	if !maps.Equal(st.PendingUnits, pendingUnitsBefore) {
 		if saveErr := store.Save(st); saveErr != nil {
 			slog.Error("saving state after health enforcement", "error", saveErr)
