@@ -384,7 +384,7 @@ Keep fragments unindented (`- name: ...`) and let the template handle indentatio
 
 Some template data only becomes knowable after `.tmpl` files render, so picolet renders in two passes:
 
-- **First pass** — every quadlet renders with placeholder data. This collects secret references (`op://`, `pass://`) so each provider can batch-resolve them, and derives `.Host.SystemdUnits` by parsing each rendered quadlet with Podman's unit-name resolver. First-pass render errors are non-fatal.
+- **First pass** — picolet renders templates with placeholder data. Executing every `.tmpl` file collects secret references (`op://`, `pass://`) so each provider can batch-resolve them; quadlet renders are additionally parsed with Podman's unit-name resolver to derive `.Host.SystemdUnits`. First-pass render errors are non-fatal.
 - **Final pass** — every template renders again with fully populated data (resolved secrets and `.Host.SystemdUnits`); this pass is the source of truth for diagnostics.
 
 A template consuming `.Host.SystemdUnits` sees it empty during the first pass, so iterate it with `range` rather than indexing — and a template whose own filename or `ServiceName=` depends on `.Host.SystemdUnits` cannot be resolved. See the `preparedData` doc comment in `pkg/resolver/resolver.go` for the full rationale.

@@ -223,10 +223,10 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 // Render errors in the first pass are non-fatal; the final pass surfaces real
 // template errors with proper diagnostics.
 //
-// Cost: quadlet templates render twice in the first pass (once for unit
-// discovery, once for secret collection) and once more in the final pass. All
-// renders are in-memory; cost is negligible vs. git fetches and secret-provider
-// round-trips.
+// Cost: quadlet templates render once in the first pass for unit discovery,
+// plus a second first-pass render for secret collection when secret providers
+// are configured, and once more in the final pass. All renders are in-memory;
+// cost is negligible vs. git fetches and secret-provider round-trips.
 type preparedData struct {
 	SystemdUnits []string // sorted, unique; e.g. "node-exporter.service"
 }

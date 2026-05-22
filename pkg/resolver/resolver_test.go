@@ -210,6 +210,10 @@ func TestTemplateDataServices(t *testing.T) {
 	want := cfg.Assignments.Resolve(cfg.Hosts["h1"]).Services
 	assert.Equal(t, want, data.Host.Services)
 	assert.Equal(t, []string{"base-svc", "feat-svc", "server-svc"}, data.Host.Services)
+
+	// .Fleet.Hosts entries carry host identity only; Services stays empty there.
+	require.Len(t, data.Fleet.Hosts, 1)
+	assert.Empty(t, data.Fleet.Hosts[0].Services)
 }
 
 // systemdUnitsFS builds a minimal single-host ("h1") fleet. assignments is the
@@ -240,10 +244,11 @@ func prepareUnits(t *testing.T, fsys fs.FS) []string {
 	require.NoError(t, err)
 	expanded, err := r.expandAndValidate(cfg.Assignments.Resolve(cfg.Hosts["h1"]))
 	require.NoError(t, err)
-	prepared, err := r.prepareTemplateData(t.Context(), registry, tmplData, expanded, caches)
+	// prepareTemplateData populates tmplData.Host.SystemdUnits as a side effect;
+	// that is the field the final render pass reads, so assert on it directly.
+	_, err = r.prepareTemplateData(t.Context(), registry, tmplData, expanded, caches)
 	require.NoError(t, err)
-	assert.Equal(t, prepared.SystemdUnits, tmplData.Host.SystemdUnits)
-	return prepared.SystemdUnits
+	return tmplData.Host.SystemdUnits
 }
 
 func TestTemplateDataSystemdUnits_QuadletDerived(t *testing.T) {
