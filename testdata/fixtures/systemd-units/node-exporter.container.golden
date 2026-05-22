@@ -1,0 +1,10 @@
+[Unit]
+Description=Prometheus Node Exporter
+
+[Container]
+Image=prom/node-exporter:v1.8
+ContainerName=node-exporter
+Exec=--collector.systemd.unit-include=^(health.timer|internal-network|node-exporter|web)$
+
+[Install]
+WantedBy=default.target

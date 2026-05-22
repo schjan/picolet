@@ -229,6 +229,64 @@ func TestIntegrationAggregatedSecretFragmentChangeTriggersUpdate(t *testing.T) {
 	assert.Equal(t, 1, csV2.Summary[reconciler.ActionUpdate], "changed aggregated secret should produce update")
 }
 
+func newSystemdUnitsFleetFS() fstest.MapFS {
+	return fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte("images:\n  node_exporter: \"prom/node-exporter:v1.8\"\n  web: \"nginx:1.27\"\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`base:
+  networks:
+    - quadlets/internal.network
+  systemd:
+    - systemd/health.timer
+  containers:
+    - quadlets/web.container
+    - quadlets/node-exporter.container.tmpl
+pi_types: {}
+features: {}
+`)},
+		"hosts/mon-host/host.yml":   &fstest.MapFile{Data: []byte("hostname: mon-host\nexternal_hostname: mon-host.ts.net\npi_type: node\nfeatures: []\n")},
+		"quadlets/internal.network": &fstest.MapFile{Data: []byte("[Network]\nInternal=true\n")},
+		"quadlets/web.container":    &fstest.MapFile{Data: []byte("[Container]\nImage=nginx:1.27\nContainerName=web\n\n[Install]\nWantedBy=default.target\n")},
+		"systemd/health.timer":      &fstest.MapFile{Data: []byte("[Timer]\nOnCalendar=daily\n\n[Install]\nWantedBy=timers.target\n")},
+		"quadlets/node-exporter.container.tmpl": &fstest.MapFile{Data: []byte(`[Unit]
+Description=Prometheus Node Exporter
+
+[Container]
+Image={{ index .Images "node_exporter" }}
+ContainerName=node-exporter
+Exec=--collector.systemd.unit-include=^({{ range $i, $u := .Host.SystemdUnits }}{{ if $i }}|{{ end }}{{ trimSuffix ".service" $u }}{{ end }})$
+
+[Install]
+WantedBy=default.target
+`)},
+	}
+}
+
+// TestIntegrationSystemdUnitsTemplate exercises a node-exporter-style template
+// that builds its unit-include regex from .Host.SystemdUnits — including the
+// node-exporter unit itself (self-reference).
+func TestIntegrationSystemdUnitsTemplate(t *testing.T) {
+	t.Parallel()
+	fsys := newSystemdUnitsFleetFS()
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := resolver.New(resolver.Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "mon-host")
+	require.NoError(t, err)
+	require.NoError(t, validator.ValidateFiles(resolved.Files, false))
+
+	exporter := filesByDest(resolved.Files)["/etc/containers/systemd/picolet/node-exporter.container"]
+	require.NotEmpty(t, exporter.Content, "node-exporter.container should be resolved")
+	// .Host.SystemdUnits covers the container, network, raw-systemd and the
+	// node-exporter unit itself, sorted and deduplicated.
+	assert.Contains(t, exporter.Content,
+		"unit-include=^(health.timer|internal-network|node-exporter|web)$")
+
+	g := goldie.New(t, goldie.WithFixtureDir("testdata/fixtures"))
+	g.Assert(t, "systemd-units/node-exporter.container", []byte(exporter.Content))
+}
+
 func TestIntegrationAggregatedSecretMalformedFragmentFailsValidation(t *testing.T) {
 	t.Parallel()
 

@@ -168,6 +168,7 @@ func TestTemplateDataFields(t *testing.T) {
 				PiType:           "monitoring_server",
 			},
 		},
+		Assignments: &config.Assignments{},
 	}
 
 	t.Run("server host", func(t *testing.T) {
@@ -187,6 +188,221 @@ func TestTemplateDataFields(t *testing.T) {
 		assert.Equal(t, "monitoring_server", data.Host.PiType)
 		assert.Equal(t, "gateway.ts.net", data.Host.ExternalHostname)
 	})
+}
+
+func TestTemplateDataServices(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Fleet: &config.FleetConfig{},
+		Hosts: map[string]*config.HostConfig{
+			"h1": {Hostname: "h1", PiType: "server", Features: []string{"feat-a"}},
+		},
+		Assignments: &config.Assignments{
+			Base:     config.AssignmentGroup{Services: []string{"base-svc"}},
+			PiTypes:  map[string]config.AssignmentGroup{"server": {Services: []string{"server-svc"}}},
+			Features: map[string]config.AssignmentGroup{"feat-a": {Services: []string{"feat-svc"}}},
+		},
+	}
+
+	data, err := NewTemplateData(cfg, "h1")
+	require.NoError(t, err)
+
+	want := cfg.Assignments.Resolve(cfg.Hosts["h1"]).Services
+	assert.Equal(t, want, data.Host.Services)
+	assert.Equal(t, []string{"base-svc", "feat-svc", "server-svc"}, data.Host.Services)
+
+	// .Fleet.Hosts entries carry host identity only; Services stays empty there.
+	require.Len(t, data.Fleet.Hosts, 1)
+	assert.Empty(t, data.Fleet.Hosts[0].Services)
+}
+
+// systemdUnitsFS builds a minimal single-host ("h1") fleet. assignments is the
+// body of assignments.yml; extra maps source paths to file content.
+func systemdUnitsFS(assignments string, extra map[string]string) fstest.MapFS {
+	fsys := fstest.MapFS{
+		"fleet.yml":         &fstest.MapFile{Data: []byte("images:\n  app: \"img:v1\"\nports:\n  http: 8080\n")},
+		"assignments.yml":   &fstest.MapFile{Data: []byte(assignments)},
+		"hosts/h1/host.yml": &fstest.MapFile{Data: []byte("hostname: h1\nexternal_hostname: h1.ts.net\npi_type: server\nfeatures: []\n")},
+	}
+	for path, content := range extra {
+		fsys[path] = &fstest.MapFile{Data: []byte(content)}
+	}
+	return fsys
+}
+
+// prepareUnits runs the resolver's first render pass for host "h1" and returns
+// the derived .Host.SystemdUnits.
+func prepareUnits(t *testing.T, fsys fs.FS) []string {
+	t.Helper()
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+	tmplData, err := NewTemplateData(cfg, "h1")
+	require.NoError(t, err)
+	registry, caches, err := BuildRegistry(t.Context(), fsys, nil, nil, r.hostDataDir)
+	require.NoError(t, err)
+	expanded, err := r.expandAndValidate(cfg.Assignments.Resolve(cfg.Hosts["h1"]))
+	require.NoError(t, err)
+	// prepareTemplateData populates tmplData.Host.SystemdUnits as a side effect;
+	// that is the field the final render pass reads, so assert on it directly.
+	_, err = r.prepareTemplateData(t.Context(), registry, tmplData, expanded, caches)
+	require.NoError(t, err)
+	return tmplData.Host.SystemdUnits
+}
+
+func TestTemplateDataSystemdUnits_QuadletDerived(t *testing.T) {
+	t.Parallel()
+	fsys := systemdUnitsFS(`base:
+  containers:
+    - quadlets/app.container
+  kube:
+    - quadlets/stack.kube
+  networks:
+    - quadlets/net.network
+  volumes:
+    - quadlets/data.volume
+pi_types: {}
+features: {}
+`, map[string]string{
+		"quadlets/app.container": "[Container]\nImage=img:v1\n",
+		"quadlets/stack.kube":    "[Kube]\nYaml=stack.yml\n",
+		"quadlets/net.network":   "[Network]\nInternal=true\n",
+		"quadlets/data.volume":   "[Volume]\nDriver=local\n",
+	})
+	assert.Equal(t,
+		[]string{"app.service", "data-volume.service", "net-network.service", "stack.service"},
+		prepareUnits(t, fsys))
+}
+
+func TestTemplateDataSystemdUnits_ServiceNameOverride(t *testing.T) {
+	t.Parallel()
+	fsys := systemdUnitsFS(`base:
+  containers:
+    - quadlets/app.container
+pi_types: {}
+features: {}
+`, map[string]string{
+		"quadlets/app.container": "[Container]\nServiceName=custom-name\nImage=img:v1\n",
+	})
+	assert.Equal(t, []string{"custom-name.service"}, prepareUnits(t, fsys))
+}
+
+func TestTemplateDataSystemdUnits_RawSystemd(t *testing.T) {
+	t.Parallel()
+	fsys := systemdUnitsFS(`base:
+  systemd:
+    - systemd/foo.socket
+    - systemd/bar.timer.tmpl
+pi_types: {}
+features: {}
+`, map[string]string{
+		"systemd/foo.socket":     "[Socket]\nListenStream=80\n",
+		"systemd/bar.timer.tmpl": "[Timer]\nOnCalendar={{ \"daily\" }}\n",
+	})
+	assert.Equal(t, []string{"bar.timer", "foo.socket"}, prepareUnits(t, fsys))
+}
+
+func TestTemplateDataSystemdUnits_SortedAndUnique(t *testing.T) {
+	t.Parallel()
+	fsys := systemdUnitsFS(`base:
+  containers:
+    - quadlets/z.container
+    - quadlets/a.container
+    - quadlets/m.container
+pi_types: {}
+features: {}
+`, map[string]string{
+		"quadlets/z.container": "[Container]\nServiceName=dup\nImage=img:v1\n",
+		"quadlets/a.container": "[Container]\nServiceName=dup\nImage=img:v1\n",
+		"quadlets/m.container": "[Container]\nImage=img:v1\n",
+	})
+	assert.Equal(t, []string{"dup.service", "m.service"}, prepareUnits(t, fsys))
+}
+
+func TestTemplateDataSystemdUnits_NonTemplateQuadlet(t *testing.T) {
+	t.Parallel()
+	fsys := systemdUnitsFS(`base:
+  containers:
+    - quadlets/static.container
+pi_types: {}
+features: {}
+`, map[string]string{
+		"quadlets/static.container": "[Container]\nImage=img:v1\n",
+	})
+	assert.Equal(t, []string{"static.service"}, prepareUnits(t, fsys))
+}
+
+func TestTemplateDataSystemdUnits_PlaceholderMode(t *testing.T) {
+	t.Parallel()
+	fsys := systemdUnitsFS(`base:
+  containers:
+    - quadlets/app.container.tmpl
+pi_types: {}
+features: {}
+`, map[string]string{
+		"quadlets/app.container.tmpl": "[Container]\nImage=img:v1\nLabel=secret={{ readSecretFile \"missing\" }}\n",
+	})
+	// No secret reader configured: readSecretFile yields a placeholder, the
+	// quadlet still parses, and the unit name is collected.
+	assert.Equal(t, []string{"app.service"}, prepareUnits(t, fsys))
+}
+
+func TestTemplateDataSystemdUnits_PassOneErrorsTolerated(t *testing.T) {
+	t.Parallel()
+	fsys := systemdUnitsFS(`base:
+  containers:
+    - quadlets/bad.container.tmpl
+    - quadlets/good.container
+pi_types: {}
+features: {}
+`, map[string]string{
+		// index on the empty first-pass slice errors; the render is discarded.
+		"quadlets/bad.container.tmpl": "[Container]\nImage=img:v1\nLabel=first={{ index .Host.SystemdUnits 0 }}\n",
+		"quadlets/good.container":     "[Container]\nImage=img:v1\n",
+	})
+	// bad.container errors in pass 1 so its own unit is missing, but resolution
+	// does not fail and other units are still collected.
+	assert.Equal(t, []string{"good.service"}, prepareUnits(t, fsys))
+}
+
+func TestTemplateDataSystemdUnits_EmptyHost(t *testing.T) {
+	t.Parallel()
+	fsys := systemdUnitsFS("base: {}\npi_types: {}\nfeatures: {}\n", nil)
+	assert.Empty(t, prepareUnits(t, fsys))
+}
+
+func TestTemplateDataSystemdUnits_SelfReferencing(t *testing.T) {
+	t.Parallel()
+	fsys := systemdUnitsFS(`base:
+  containers:
+    - quadlets/node-exporter.container.tmpl
+    - quadlets/other.container
+pi_types: {}
+features: {}
+`, map[string]string{
+		"quadlets/node-exporter.container.tmpl": "[Container]\nImage=img:v1\nContainerName=node-exporter\n" +
+			"Label=units={{ .Host.SystemdUnits | join \",\" }}\n",
+		"quadlets/other.container": "[Container]\nImage=img:v1\n",
+	})
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveHost(t.Context(), "h1")
+	require.NoError(t, err)
+
+	var exporter ResolvedFile
+	for _, f := range resolved.Files {
+		if strings.HasSuffix(f.DestPath, "node-exporter.container") {
+			exporter = f
+		}
+	}
+	// The self-referencing template sees the full unit list in the final pass,
+	// including its own derived unit name.
+	assert.Contains(t, exporter.Content, "node-exporter.service")
+	assert.Contains(t, exporter.Content, "other.service")
 }
 
 func TestRenderTemplateRecursion(t *testing.T) {

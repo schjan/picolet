@@ -344,7 +344,16 @@ If not, use `action: restart`.
 
 Files ending in `.tmpl` are rendered with Go `text/template` (`missingkey=error`) plus Sprig's hermetic text helpers. Static files are deployed as-is.
 
-Available data: `.Host` (hostname, pi_type, features), `.Images`, `.Ports`, `.Fleet` (all hosts + config).
+The template data root exposes `.Images`, `.Ports`, `.Fleet` (all hosts + full config), and `.Host`:
+
+| Field | Contents |
+|-------|----------|
+| `.Host.Hostname` | The host's name |
+| `.Host.ExternalHostname` | The host's external hostname |
+| `.Host.PiType` | The host's `pi_type` |
+| `.Host.Features` | The host's enabled features |
+| `.Host.Services` | Resolved service-bundle names for this host (sorted, deduplicated) |
+| `.Host.SystemdUnits` | Systemd unit names picolet manages on this host — quadlet-derived (`.container`/`.kube`/`.network`/`.volume`) plus raw systemd files, sorted and deduplicated. See [Two-pass rendering](#two-pass-rendering) |
 
 | Function | Purpose |
 |----------|---------|
@@ -370,6 +379,15 @@ groups:{{ concatFiles "rules/vmalert/*.yml" | nindent 2 }}
 Keep fragments unindented (`- name: ...`) and let the template handle indentation with `nindent`.
 
 `concatFiles` is intentionally raw-only (it does not auto-render matched `.tmpl` files). If you need rendered fragments, use `glob`, iterate, and call `renderTemplate` explicitly in your template.
+
+### Two-pass rendering
+
+Some template data only becomes knowable after `.tmpl` files render, so picolet renders in two passes:
+
+- **First pass** — picolet renders templates with placeholder data. Executing every `.tmpl` file collects secret references (`op://`, `pass://`) so each provider can batch-resolve them; quadlet renders are additionally parsed with Podman's unit-name resolver to derive `.Host.SystemdUnits`. First-pass render errors are non-fatal.
+- **Final pass** — every template renders again with fully populated data (resolved secrets and `.Host.SystemdUnits`); this pass is the source of truth for diagnostics.
+
+A template consuming `.Host.SystemdUnits` sees it empty during the first pass, so iterate it with `range` rather than indexing — and a template whose own filename or `ServiceName=` depends on `.Host.SystemdUnits` cannot be resolved. See the `preparedData` doc comment in `pkg/resolver/resolver.go` for the full rationale.
 
 ### Validation
 

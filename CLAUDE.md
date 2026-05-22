@@ -90,7 +90,7 @@ Files ending in `.tmpl` are rendered with Go `text/template` (`missingkey=error`
 
 Custom functions: `readFile`, `renderTemplate`, `indent`, `readSecretFile`, `has` (slices.Contains for feature checks).
 
-Template data root: `.Host` (hostname, pi_type, features), `.Fleet` (full config + all hosts), `.Images`, `.Ports`.
+Template data root: `.Host` (hostname, pi_type, features, services, systemd_units), `.Fleet` (full config + all hosts), `.Images`, `.Ports`. `.Host.SystemdUnits` is populated by a first render pass — see `prepareTemplateData` in `pkg/resolver/resolver.go`.
 
 ### Error Patterns
 
