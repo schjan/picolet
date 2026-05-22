@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	gogithub "github.com/google/go-github/v87/github"
+	gogithub "github.com/google/go-github/v88/github"
 )
 
 const maxDescriptionLen = 140
