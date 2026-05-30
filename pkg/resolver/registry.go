@@ -69,6 +69,7 @@ type ProviderTemplate struct {
 	IsRef              func(string) bool
 	PlaceholderEmpty   string
 	PlaceholderPending string
+	Strict             bool
 }
 
 // OpProvider returns the standard 1Password provider template.
@@ -150,10 +151,16 @@ func (c *RefCache) Resolve(ctx context.Context) error {
 //
 // Two-phase resolution: callers must run a collect pass, call cache.Resolve,
 // then run the real render pass.
+func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string) (*template.Template, ProviderCaches, error) {
+	return BuildRegistryFiltered(ctx, fsys, secretReader, providers, dataDir, nil)
+}
+
+// BuildRegistryFiltered is BuildRegistry with an optional source-path predicate.
+// A nil include function includes every template.
 //
 //nolint:cyclop,funlen // funcmap registration is inherently branchy
-func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string) (*template.Template, ProviderCaches, error) {
-	sources, err := loadTemplateSources(fsys)
+func BuildRegistryFiltered(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string, include func(string) bool) (*template.Template, ProviderCaches, error) {
+	sources, err := loadTemplateSources(fsys, include)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -247,7 +254,7 @@ func sortedCacheKeys(c ProviderCaches) []ProviderKey {
 	return keys
 }
 
-func loadTemplateSources(fsys fs.FS) (map[string]string, error) {
+func loadTemplateSources(fsys fs.FS, include func(string) bool) (map[string]string, error) {
 	sources := make(map[string]string)
 	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -256,7 +263,7 @@ func loadTemplateSources(fsys fs.FS) (map[string]string, error) {
 		if d.IsDir() && d.Name() == ".git" {
 			return fs.SkipDir
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".tmpl") {
+		if d.IsDir() || !strings.HasSuffix(path, ".tmpl") || (include != nil && !include(path)) {
 			return nil
 		}
 		data, err := fs.ReadFile(fsys, path)
@@ -279,6 +286,9 @@ func loadTemplateSources(fsys fs.FS) (map[string]string, error) {
 func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p ProviderTemplate, cache *RefCache) {
 	funcMap[p.FuncName] = func(ref string) (string, error) {
 		if cache == nil {
+			if p.Strict {
+				return "", fmt.Errorf("%s: bootstrap does not resolve provider secrets at template time; use a YAML-value reference and let picolet resolve it at runtime", p.FuncName)
+			}
 			return p.PlaceholderEmpty, nil
 		}
 		if !p.IsRef(ref) {

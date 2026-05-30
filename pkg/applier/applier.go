@@ -42,6 +42,9 @@ type SystemdManager interface {
 	StartUnit(ctx context.Context, name string) error
 	StopUnit(ctx context.Context, name string) error
 	RestartUnit(ctx context.Context, name string) error
+	EnableUnit(ctx context.Context, name string) error
+	DisableUnit(ctx context.Context, name string) error
+	UnitState(ctx context.Context, name string) (string, error)
 	GetUnitStatus(ctx context.Context, name string) (UnitStatus, error)
 }
 
@@ -215,6 +218,25 @@ func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyRe
 	return a.ApplyWithPending(ctx, cs, nil)
 }
 
+// ApplyWithoutRestarts applies writes/deletes and daemon-reload, preserving
+// pre-delete stops, but skips post-apply hooks and unit restarts.
+func (a *Applier) ApplyWithoutRestarts(ctx context.Context, cs *reconciler.Changeset) (*ApplyResult, error) {
+	result := &ApplyResult{}
+	sorted := slices.Clone(cs.Changes)
+	slices.SortFunc(sorted, func(x, y reconciler.Change) int {
+		return cmp.Compare(categoryRank(x.Category), categoryRank(y.Category))
+	})
+
+	phase, err := a.applyPhase(ctx, sorted, result)
+	if err != nil {
+		return result, err
+	}
+	if a.dryRun {
+		return result, nil
+	}
+	return result, a.reloadIfNeeded(ctx, phase.NeedsReload)
+}
+
 // ApplyWithPending applies the changeset and additionally retries any pending
 // hook names whose triggers are not in the changeset. Pending hooks share the
 // per-tick dedup map with changeset-driven hooks, so a pending hook whose
@@ -352,11 +374,8 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]stru
 	if len(changedUnits) == 0 && !needsReload {
 		return nil
 	}
-	if needsReload {
-		slog.Info("running systemd daemon-reload")
-		if err := a.systemd.DaemonReload(ctx); err != nil {
-			return fmt.Errorf("daemon-reload: %w", err)
-		}
+	if err := a.reloadIfNeeded(ctx, needsReload); err != nil {
+		return err
 	}
 	for unit := range changedUnits {
 		if unit == "picolet.service" {
@@ -386,6 +405,17 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]stru
 				slog.Debug("self-restart D-Bus result (may be interrupted by shutdown)", "error", err)
 			}
 		}()
+	}
+	return nil
+}
+
+func (a *Applier) reloadIfNeeded(ctx context.Context, needsReload bool) error {
+	if !needsReload {
+		return nil
+	}
+	slog.Info("running systemd daemon-reload")
+	if err := a.systemd.DaemonReload(ctx); err != nil {
+		return fmt.Errorf("daemon-reload: %w", err)
 	}
 	return nil
 }

@@ -5,3 +5,4 @@ ports:
   # Documents host port for firewall rules and Prometheus scrape config.
   # Network=host means no actual port publishing is needed.
   picolet_metrics: 9417
+  picolet_system_metrics: 9418

@@ -4,14 +4,14 @@ pi_types:
   # Production: rootful Podman, system-level systemd
   worker:
     services:
-      - picolet
+      - picolet-system
   controller:
     services:
-      - picolet
+      - picolet-system
 
   # Dev/test: rootless Podman, user-level systemd
   test:
-    containers:
-      - quadlets/rootless/picolet.container.tmpl
+    services:
+      - picolet
 
 features: {}

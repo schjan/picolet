@@ -85,9 +85,18 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
+	cfg, err := Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("parsing config %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// Parse parses agent config bytes, applies defaults, and validates the result.
+func Parse(data []byte) (*Config, error) {
 	var cfg Config
 	if err := yaml.Load(data, &cfg, yaml.WithKnownFields()); err != nil {
-		return nil, fmt.Errorf("parsing config %s: %w", path, err)
+		return nil, err
 	}
 	cfg.setDefaults()
 	if err := cfg.Validate(); err != nil {
@@ -123,7 +132,13 @@ func (c *Config) setDefaults() {
 		c.ProtonPass.RefreshInterval = 6 * time.Hour
 	}
 	if c.SystemdUser == nil {
-		c.SystemdUser = new(c.Rootless)
+		detected := detectSystemdUserFunc()
+		c.SystemdUser = &detected
+	}
+	if c.HostDataDir == "" {
+		if detected := detectHostDataDirFunc(c.effectiveDataDir()); detected != "" {
+			c.HostDataDir = detected
+		}
 	}
 }
 
@@ -131,9 +146,22 @@ func (c *Config) setDefaults() {
 // Defaults to Rootless when systemd_user is not set explicitly in config.
 func (c *Config) UseSystemdUser() bool {
 	if c.SystemdUser == nil {
-		return c.Rootless
+		return detectSystemdUserFunc()
 	}
 	return *c.SystemdUser
+}
+
+func (c *Config) effectiveDataDir() string {
+	if c.DataDir != "" {
+		return c.DataDir
+	}
+	if c.Rootless {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, ".local", "share", "picolet")
+		}
+	}
+	return "/var/lib/picolet"
 }
 
 // Validate checks that required fields are set. setDefaults is invoked

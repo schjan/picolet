@@ -51,6 +51,19 @@ func (c *Config) SortedHostnames() []string {
 	return slices.Sorted(maps.Keys(c.Hosts))
 }
 
+// FindHost returns a host by directory key or by the hostname declared in host.yml.
+func (c *Config) FindHost(name string) (*HostConfig, bool) {
+	if host, ok := c.Hosts[name]; ok {
+		return host, true
+	}
+	for _, host := range c.Hosts {
+		if host.Hostname == name {
+			return host, true
+		}
+	}
+	return nil, false
+}
+
 func loadHosts(fsys fs.FS) (map[string]*HostConfig, error) {
 	hosts := make(map[string]*HostConfig)
 	entries, err := fs.ReadDir(fsys, "hosts")

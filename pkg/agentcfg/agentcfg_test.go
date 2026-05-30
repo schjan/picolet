@@ -10,9 +10,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-//nolint:funlen // table-driven test
+//nolint:funlen,tparallel // table-driven test mutates package-level detection hooks
 func TestLoad(t *testing.T) {
-	t.Parallel()
+	oldDetectSystemdUser := detectSystemdUserFunc
+	oldDetectHostDataDir := detectHostDataDirFunc
+	detectSystemdUserFunc = func() bool { return false }
+	detectHostDataDirFunc = func(string) string { return "" }
+	t.Cleanup(func() {
+		detectSystemdUserFunc = oldDetectSystemdUser
+		detectHostDataDirFunc = oldDetectHostDataDir
+	})
 	tests := []struct {
 		name    string
 		content string
@@ -102,7 +109,7 @@ systemd_user: false
 			},
 		},
 		{
-			name: "systemd_user defaults to rootless when unset",
+			name: "systemd_user auto-detects when unset",
 			content: `
 hostname: rpi5-1
 repo_url: https://github.com/example/fleet.git
@@ -117,7 +124,7 @@ rootless: true
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
 				Rootless:     true,
-				SystemdUser:  new(true),
+				SystemdUser:  new(false),
 			},
 		},
 		{
@@ -694,4 +701,16 @@ func TestValidateAppliesDefaultsForZeroRefreshInterval(t *testing.T) {
 	require.NoError(t, cfg.Validate())
 	assert.Equal(t, 6*time.Hour, cfg.OnePassword.RefreshInterval)
 	assert.Equal(t, 6*time.Hour, cfg.ProtonPass.RefreshInterval)
+}
+
+func TestParseMountinfoLineUnescapesPaths(t *testing.T) {
+	t.Parallel()
+	entry, err := parseMountinfoLine(`36 25 0:32 /home/picolet/.local/share/picolet /var/lib/picolet rw,relatime - ext4 /dev/root rw`)
+	require.NoError(t, err)
+	assert.Equal(t, "/home/picolet/.local/share/picolet", entry.root)
+	assert.Equal(t, "/var/lib/picolet", entry.mountPoint)
+
+	entry, err = parseMountinfoLine(`36 25 0:32 /home/user/My\040Data /var/lib/picolet rw,relatime - ext4 /dev/root rw`)
+	require.NoError(t, err)
+	assert.Equal(t, "/home/user/My Data", entry.root)
 }

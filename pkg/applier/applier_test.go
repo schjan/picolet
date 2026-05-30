@@ -140,6 +140,31 @@ func TestApplyDelete(t *testing.T) {
 	assert.Equal(t, []string{containerPath}, fw.removed)
 }
 
+func TestApplyWithoutRestartsPreservesDeleteStopsAndSkipsRestarts(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().StopUnit(mock.Anything, "old.service").Return(nil)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	a := applier.New(sys, pod, fw, false, nil)
+
+	cs := &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "/etc/containers/systemd/old.container", Category: "container", Action: reconciler.ActionDelete, ServiceName: "old.service"},
+			{DestPath: "/etc/containers/systemd/new.container", Category: "container", Action: reconciler.ActionCreate, NewContent: "[Container]\nImage=new\n", ServiceName: "new.service"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionDelete: 1, reconciler.ActionCreate: 1},
+	}
+
+	result, err := a.ApplyWithoutRestarts(context.Background(), cs)
+	require.NoError(t, err)
+	assert.Equal(t, 2, result.Applied)
+	assert.Empty(t, result.RestartedUnits)
+	assert.Contains(t, fw.written, "/etc/containers/systemd/new.container")
+	assert.Equal(t, []string{"/etc/containers/systemd/old.container"}, fw.removed)
+}
+
 func TestApplyDeleteSecret(t *testing.T) {
 	t.Parallel()
 	var reloads atomic.Int32

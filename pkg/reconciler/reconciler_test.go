@@ -164,6 +164,36 @@ func TestDiffServiceNamePropagated(t *testing.T) {
 	assert.Equal(t, "app.service", cs.Changes[0].ServiceName)
 }
 
+func TestMergeChangesetPreservesUntouchedState(t *testing.T) {
+	t.Parallel()
+	st := &state.State{
+		AppliedSHA: "abc123",
+		ManagedFiles: map[string]state.ManagedFile{
+			"/old":       {Hash: "sha256:old", Category: config.CategoryContainer},
+			"/untouched": {Hash: "sha256:keep", Category: config.CategoryFile},
+		},
+		ServiceNames: map[string]string{
+			"/old":       "old.service",
+			"/untouched": "keep.service",
+		},
+	}
+	cs := &Changeset{Changes: []Change{
+		{DestPath: "/old", Action: ActionUpdate, Category: config.CategoryContainer, NewHash: "sha256:new", ServiceName: "new.service"},
+		{DestPath: "/gone", Action: ActionDelete},
+		{DestPath: "/plain", Action: ActionCreate, Category: config.CategoryFile, NewHash: "sha256:plain"},
+	}}
+
+	MergeChangeset(st, cs)
+
+	assert.Equal(t, "abc123", st.AppliedSHA)
+	assert.Equal(t, state.ManagedFile{Hash: "sha256:new", Category: config.CategoryContainer}, st.ManagedFiles["/old"])
+	assert.Equal(t, state.ManagedFile{Hash: "sha256:keep", Category: config.CategoryFile}, st.ManagedFiles["/untouched"])
+	assert.Equal(t, state.ManagedFile{Hash: "sha256:plain", Category: config.CategoryFile}, st.ManagedFiles["/plain"])
+	assert.Equal(t, "new.service", st.ServiceNames["/old"])
+	assert.Equal(t, "keep.service", st.ServiceNames["/untouched"])
+	assert.NotContains(t, st.ServiceNames, "/plain")
+}
+
 func TestCategoriesIncludesFile(t *testing.T) {
 	t.Parallel()
 	assert.Contains(t, Categories(), config.CategoryFile)

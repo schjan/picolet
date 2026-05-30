@@ -61,6 +61,7 @@ type Config struct {
 	OpSecretReader SecretRefReader
 	PPSecretReader SecretRefReader
 	Rootless       bool
+	Strict         bool
 
 	// QuadletDir, SystemdDir, and DataDir override the defaults computed by
 	// ResolveDirs. Empty fields fall back to the default for the given
@@ -90,6 +91,7 @@ type Resolver struct {
 	dataDir        string
 	hostDataDir    string
 	rootless       bool
+	strict         bool
 }
 
 // Rootless reports whether the resolver is configured for rootless mode.
@@ -127,6 +129,7 @@ func New(rc Config) (*Resolver, error) {
 		dataDir:        dataDir,
 		hostDataDir:    hostDataDir,
 		rootless:       rc.Rootless,
+		strict:         rc.Strict,
 	}, nil
 }
 
@@ -148,31 +151,58 @@ func ResolveDirs(rootless bool) (quadletDir, systemdDir, dataDir string, err err
 
 // ResolveHost computes the complete desired state for a given hostname.
 func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedHost, error) {
-	host, ok := r.cfg.Hosts[hostname]
+	host, ok := r.cfg.FindHost(hostname)
 	if !ok {
 		return nil, &HostNotFoundError{Hostname: hostname}
 	}
+	return r.resolveHostFileSet(ctx, hostname, host, r.cfg.Assignments.Resolve(host), nil)
+}
 
+// ResolveServicesForHost resolves only the listed service bundles for a host.
+// Host assignment metadata remains the same as a full host resolve, but only
+// files and hooks from the requested service bundles are rendered.
+func (r *Resolver) ResolveServicesForHost(ctx context.Context, hostname string, services []string) (*ResolvedHost, error) {
+	host, ok := r.cfg.FindHost(hostname)
+	if !ok {
+		return nil, &HostNotFoundError{Hostname: hostname}
+	}
+	full := r.cfg.Assignments.Resolve(host)
+	available := sortedUnique(full.Services)
+	requested := sortedUnique(services)
+	var missing []string
+	for _, service := range requested {
+		if !slices.Contains(available, service) {
+			missing = append(missing, service)
+		}
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("service(s) not assigned to host %s: %s (available: %s)",
+			hostname, strings.Join(missing, ", "), strings.Join(available, ", "))
+	}
+	return r.resolveHostFileSet(ctx, hostname, host, &config.ResolvedFileSet{Services: requested}, serviceTemplatePrefixes(requested))
+}
+
+func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host *config.HostConfig, fileSet *config.ResolvedFileSet, templatePrefixes []string) (*ResolvedHost, error) {
 	tmplData, err := NewTemplateData(r.cfg, hostname)
 	if err != nil {
 		return nil, err
 	}
 
 	providers := []ProviderTemplate{
-		OpProvider(r.opSecretReader),
-		PPProvider(r.ppSecretReader),
+		r.provider(OpProvider(r.opSecretReader)),
+		r.provider(PPProvider(r.ppSecretReader)),
 	}
 	// hostDataDir (not dataDir) drives filePath/manifestPath: those helpers emit
 	// path strings baked into rendered quadlets, which the host's podman must
 	// resolve. dataDir remains the write path (dataDestPath).
-	registry, caches, err := BuildRegistry(ctx, r.fsys, r.secretReader, providers, r.hostDataDir)
+	registry, caches, err := BuildRegistryFiltered(ctx, r.fsys, r.secretReader, providers, r.hostDataDir, prefixFilter(templatePrefixes))
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}
 
 	// Fail fast on destination collisions before paying for template rendering
 	// or remote secret-provider calls. DestPath is knowable from the file layout alone.
-	expanded, err := r.expandAndValidate(r.cfg.Assignments.Resolve(host))
+	expanded, err := r.expandAndValidate(fileSet)
 	if err != nil {
 		return nil, err
 	}
@@ -205,6 +235,30 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 		Files:    files,
 		Hooks:    hooks,
 	}, nil
+}
+
+func (r *Resolver) provider(p ProviderTemplate) ProviderTemplate {
+	p.Strict = r.strict
+	return p
+}
+
+func serviceTemplatePrefixes(services []string) []string {
+	prefixes := make([]string, 0, len(services))
+	for _, service := range services {
+		prefixes = append(prefixes, path.Join("services", service)+"/")
+	}
+	return prefixes
+}
+
+func prefixFilter(prefixes []string) func(string) bool {
+	if len(prefixes) == 0 {
+		return nil
+	}
+	return func(path string) bool {
+		return slices.ContainsFunc(prefixes, func(prefix string) bool {
+			return strings.HasPrefix(path, prefix)
+		})
+	}
 }
 
 // preparedData is the output of the first render pass.
@@ -807,6 +861,9 @@ func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, re
 		return nil
 	}
 	if reader == nil {
+		if r.strict {
+			return fmt.Errorf("%s direct secrets are not resolved during bootstrap: %s", name, strings.Join(refs, ", "))
+		}
 		slog.Warn("skipping secrets (provider not configured)", "provider", name, "count", len(refs))
 		return nil
 	}

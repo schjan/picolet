@@ -1,0 +1,36 @@
+[Unit]
+Description=Picolet GitOps Agent (system)
+Documentation=https://github.com/schjan/picolet
+After=network-online.target podman.socket
+Wants=network-online.target podman.socket
+
+[Container]
+Image={{ index .Images "picolet" }}
+ContainerName=picolet-system
+
+Secret=picolet_system_config,target=/etc/picolet/config.yml
+Volume=/etc/picolet/secrets:/etc/picolet/secrets:ro
+Volume=/var/lib/picolet-system:/var/lib/picolet
+Volume=/etc/containers/systemd:/etc/containers/systemd
+Volume=/etc/systemd/system:/etc/systemd/system
+Volume=/run/podman/podman.sock:/run/podman/podman.sock:ro
+Volume=/run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
+Network=host
+Environment=PICOLET_CONFIG=/etc/picolet/config.yml
+PodmanArgs=--security-opt apparmor=unconfined
+
+StopTimeout=30
+HealthCmd=CMD /picolet healthcheck
+HealthInterval=30s
+HealthRetries=3
+HealthStartPeriod=90s
+HealthTimeout=5s
+HealthOnFailure=restart
+
+[Service]
+Restart=always
+TimeoutStartSec=90
+TimeoutStopSec=40
+
+[Install]
+WantedBy=multi-user.target
