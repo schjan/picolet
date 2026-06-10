@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.26.3-trixie AS builder
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.26.4-trixie AS builder
 
 WORKDIR /app
 
