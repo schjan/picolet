@@ -17,7 +17,10 @@ const (
 )
 
 type resolveConfig struct {
-	RepoDir    string
+	RepoDir string
+	// Config is the already-loaded fleet config for RepoDir; loaded from
+	// RepoDir when nil.
+	Config     *config.Config
 	Hostname   string
 	Service    string
 	Rootless   bool
@@ -38,9 +41,13 @@ func resolveBootstrapHost(ctx context.Context, cfg resolveConfig) (*resolver.Res
 	}
 
 	repoFS := os.DirFS(cfg.RepoDir)
-	fleetCfg, err := config.LoadAll(repoFS)
-	if err != nil {
-		return nil, fmt.Errorf("loading config: %w", err)
+	fleetCfg := cfg.Config
+	if fleetCfg == nil {
+		var err error
+		fleetCfg, err = config.LoadAll(repoFS)
+		if err != nil {
+			return nil, fmt.Errorf("loading config: %w", err)
+		}
 	}
 	r, err := resolver.New(resolver.Config{
 		FS:           repoFS,
@@ -64,12 +71,18 @@ func secretReader(secretsDir string, mode fileReaderMode) resolver.SecretReader 
 	if mode == fileReaderPlaceholder {
 		return func(string) (string, error) { return "<secret>", nil }
 	}
+	// The Root is opened lazily on first use and reused across all secret
+	// reads of the resolve pass; it stays open for the remainder of the
+	// (short-lived) bootstrap process.
+	var root *os.Root
 	return func(path string) (string, error) {
-		root, err := os.OpenRoot(secretsDir)
-		if err != nil {
-			return "", fmt.Errorf("opening secrets dir: %w", err)
+		if root == nil {
+			r, err := os.OpenRoot(secretsDir)
+			if err != nil {
+				return "", fmt.Errorf("opening secrets dir: %w", err)
+			}
+			root = r
 		}
-		defer root.Close()
 		data, err := root.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("reading secret %q: %w", path, err)

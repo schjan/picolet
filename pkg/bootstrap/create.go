@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"text/template"
 
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/config"
@@ -26,33 +27,58 @@ type CreateConfig struct {
 	Stderr        io.Writer
 }
 
-func Create(ctx context.Context, cfg CreateConfig) error { //nolint:cyclop // sequential validation, resolve, render, optional ssh.
+func Create(ctx context.Context, cfg CreateConfig) error {
 	cfg = normalizeCreateConfig(cfg)
 	if !cfg.SkipGitChecks {
 		if err := checkGitClean(ctx, cfg.FleetDir, cfg.Stderr); err != nil {
 			return err
 		}
 	}
-	repoFS := os.DirFS(cfg.FleetDir)
-	fleetCfg, err := config.LoadAll(repoFS)
+	data, err := buildCreateScriptData(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return err
+	}
+	if cfg.SSH != "" {
+		remote, err := renderCreateOutput("remote", data)
+		if err != nil {
+			return err
+		}
+		return runSSHCreate(ctx, cfg, remote)
+	}
+	variant := "plan"
+	if cfg.Script {
+		variant = "script"
+	}
+	out, err := renderCreateOutput(variant, data)
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(cfg.Stdout, out)
+	return err
+}
+
+// buildCreateScriptData resolves the host's picolet bundle (with placeholder
+// secrets) and derives everything the rendered script needs from it.
+func buildCreateScriptData(ctx context.Context, cfg CreateConfig) (createScriptData, error) {
+	fleetCfg, err := config.LoadAll(os.DirFS(cfg.FleetDir))
+	if err != nil {
+		return createScriptData{}, fmt.Errorf("loading config: %w", err)
 	}
 	host, ok := fleetCfg.FindHost(cfg.Hostname)
 	if !ok {
-		return fmt.Errorf("host not found: %s", cfg.Hostname)
+		return createScriptData{}, fmt.Errorf("host not found: %s", cfg.Hostname)
 	}
 	service := cfg.Service
 	if service == "" {
 		service, err = detectPicoletService(fleetCfg, host)
 		if err != nil {
-			return err
+			return createScriptData{}, err
 		}
 	}
-	rootless := service == "picolet"
 
 	resolved, err := resolveBootstrapHost(ctx, resolveConfig{
 		RepoDir:    cfg.FleetDir,
+		Config:     fleetCfg,
 		Hostname:   cfg.Hostname,
 		Service:    service,
 		Rootless:   false,
@@ -61,32 +87,26 @@ func Create(ctx context.Context, cfg CreateConfig) error { //nolint:cyclop // se
 		FileMode:   fileReaderPlaceholder,
 	})
 	if err != nil {
-		return err
+		return createScriptData{}, err
 	}
-	configFile, err := configSecret(resolved.Files)
+	configFile, err := configSecret(resolved.Files, service+".service")
 	if err != nil {
-		return err
+		return createScriptData{}, err
 	}
 	agentCfg, err := agentcfg.Parse([]byte(configFile.Content))
 	if err != nil {
-		return fmt.Errorf("parsing rendered picolet config: %w", err)
+		return createScriptData{}, fmt.Errorf("parsing rendered picolet config: %w", err)
 	}
 
-	script := renderCreateScript(createScriptData{
+	return createScriptData{
 		Hostname:   cfg.Hostname,
 		FleetDir:   cfg.FleetDir,
 		TargetPath: cfg.TargetPath,
 		Service:    service,
 		Image:      fleetCfg.Fleet.Images["picolet"],
-		Rootless:   rootless,
-		Script:     cfg.Script,
+		Rootless:   service == "picolet",
 		Secrets:    secretChecklist(agentCfg),
-	})
-	if cfg.SSH != "" {
-		return runSSHCreate(ctx, cfg, script)
-	}
-	_, err = io.WriteString(cfg.Stdout, script)
-	return err
+	}, nil
 }
 
 func normalizeCreateConfig(cfg CreateConfig) CreateConfig {
@@ -130,75 +150,90 @@ type createScriptData struct {
 	Service    string
 	Image      string
 	Rootless   bool
-	Script     bool
 	Secrets    []string
 }
 
-func renderCreateScript(data createScriptData) string {
-	var b strings.Builder
-	if data.Script {
-		fmt.Fprintf(&b, "set -euo pipefail\n")
-	} else {
-		fmt.Fprintf(&b, "# Bootstrap plan for %s (%s)\n", data.Hostname, modeLabel(data.Rootless))
-		fmt.Fprintf(&b, "# Fleet repo: %s\n", data.FleetDir)
-		fmt.Fprintf(&b, "# Picolet image: %s\n", data.Image)
-		fmt.Fprintf(&b, "# Service: %s\n\n", data.Service)
-		fmt.Fprintf(&b, "# Step 1 - Transfer the fleet repo to the target:\n")
-	}
-	fmt.Fprintf(&b, "rsync -a --delete %s/ %s:%s/\n\n", shellQuote(data.FleetDir), data.Hostname, shellQuote(data.TargetPath))
-	if !data.Script {
-		fmt.Fprintf(&b, "# Step 2 - Place host-managed secrets on the target:\n")
-	}
-	for _, secret := range data.Secrets {
-		if data.Script {
-			continue
-		}
-		fmt.Fprintf(&b, "#   %s\n", secret)
-	}
-	if !data.Script {
-		fmt.Fprintf(&b, "\n# Step 3 - Run bootstrap on the target:\n")
-	}
-	writePodmanCommand(&b, data)
-	if !data.Script {
-		fmt.Fprintf(&b, "\n# Watch:\n%sjournalctl %s-fu %s.service\n", sudoPrefix(data.Rootless), userFlag(data.Rootless), data.Service)
-	}
-	return b.String()
-}
+// createTemplates renders the three output variants of `bootstrap create`:
+// "plan" (annotated, for humans), "script" (bare runnable script), and
+// "remote" (piped to `ssh ... bash -s` after rsync ran locally — it must
+// contain nothing but the podman command, and in particular no follow-mode
+// journalctl that would keep the remote shell alive forever).
+const createTemplates = `
+{{- define "rsync" -}}
+rsync -a --delete {{q .FleetDir}}/ {{.Hostname}}:{{q .TargetPath}}/
+{{- end -}}
 
-func writePodmanCommand(b *strings.Builder, data createScriptData) {
-	if !data.Rootless {
-		fmt.Fprintf(b, "sudo podman run --rm \\\n")
-		fmt.Fprintf(b, "  -v %s:/repo:ro \\\n", shellQuote(data.TargetPath))
-		fmt.Fprintf(b, "  -v /etc/picolet:/etc/picolet \\\n")
-		fmt.Fprintf(b, "  -v /var/lib/picolet-system:/var/lib/picolet \\\n")
-		fmt.Fprintf(b, "  -v /etc/containers/systemd:/etc/containers/systemd \\\n")
-		fmt.Fprintf(b, "  -v /etc/systemd/system:/etc/systemd/system \\\n")
-		fmt.Fprintf(b, "  -v /run/dbus/system_bus_socket:/run/dbus/system_bus_socket \\\n")
-		fmt.Fprintf(b, "  -v /run/podman/podman.sock:/run/podman/podman.sock \\\n")
-		fmt.Fprintf(b, "  --security-opt apparmor=unconfined \\\n")
-		fmt.Fprintf(b, "  --network host \\\n")
-	} else {
-		fmt.Fprintf(b, "podman run --rm \\\n")
-		fmt.Fprintf(b, "  -v %s:/repo:ro \\\n", shellQuote(data.TargetPath))
-		fmt.Fprintf(b, "  -v $HOME/.config/picolet:/etc/picolet \\\n")
-		fmt.Fprintf(b, "  -v $HOME/.local/share/picolet:/var/lib/picolet \\\n")
-		fmt.Fprintf(b, "  -v $HOME/.config/containers/systemd:/etc/containers/systemd \\\n")
-		fmt.Fprintf(b, "  -v $HOME/.config/systemd/user:/etc/systemd/system \\\n")
-		fmt.Fprintf(b, "  -v $XDG_RUNTIME_DIR/systemd:$XDG_RUNTIME_DIR/systemd \\\n")
-		fmt.Fprintf(b, "  -v $XDG_RUNTIME_DIR/podman/podman.sock:/run/podman/podman.sock \\\n")
-		fmt.Fprintf(b, "  -e XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR \\\n")
-		fmt.Fprintf(b, "  --network host \\\n")
+{{- define "podman" -}}
+{{if .Rootless}}podman run --rm \
+  -v {{q .TargetPath}}:/repo:ro \
+  -v $HOME/.config/picolet:/etc/picolet \
+  -v $HOME/.local/share/picolet:/var/lib/picolet \
+  -v $HOME/.config/containers/systemd:/etc/containers/systemd \
+  -v $HOME/.config/systemd/user:/etc/systemd/system \
+  -v $XDG_RUNTIME_DIR/systemd:$XDG_RUNTIME_DIR/systemd \
+  -v $XDG_RUNTIME_DIR/podman/podman.sock:/run/podman/podman.sock \
+  -e XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR \
+{{- else}}sudo podman run --rm \
+  -v {{q .TargetPath}}:/repo:ro \
+  -v /etc/picolet:/etc/picolet \
+  -v /var/lib/picolet-system:/var/lib/picolet \
+  -v /etc/containers/systemd:/etc/containers/systemd \
+  -v /etc/systemd/system:/etc/systemd/system \
+  -v /run/dbus/system_bus_socket:/run/dbus/system_bus_socket \
+  -v /run/podman/podman.sock:/run/podman/podman.sock \
+  --security-opt apparmor=unconfined \
+{{- end}}
+  --network host \
+  {{q .Image}} bootstrap \
+    --hostname={{q .Hostname}} \
+    --repo-dir=/repo \
+    --service={{q .Service}} \
+    --systemd={{if .Rootless}}user{{else}}system{{end}}
+{{- end -}}
+
+{{- define "plan" -}}
+# Bootstrap plan for {{.Hostname}} ({{if .Rootless}}rootless{{else}}rootful{{end}})
+# Fleet repo: {{.FleetDir}}
+# Picolet image: {{.Image}}
+# Service: {{.Service}}
+
+# Step 1 - Transfer the fleet repo to the target:
+{{template "rsync" .}}
+
+# Step 2 - Place host-managed secrets on the target:
+{{- range .Secrets}}
+#   {{.}}
+{{- end}}
+
+# Step 3 - Run bootstrap on the target:
+{{template "podman" .}}
+
+# Watch:
+#   {{if not .Rootless}}sudo {{end}}journalctl {{if .Rootless}}--user {{end}}-fu {{.Service}}.service
+{{end -}}
+
+{{- define "script" -}}
+set -euo pipefail
+{{template "rsync" .}}
+{{template "podman" .}}
+{{end -}}
+
+{{- define "remote" -}}
+set -euo pipefail
+{{template "podman" .}}
+{{end -}}
+`
+
+var createTemplate = template.Must(
+	template.New("create").Funcs(template.FuncMap{"q": shellQuote}).Parse(createTemplates),
+)
+
+func renderCreateOutput(variant string, data createScriptData) (string, error) {
+	var b strings.Builder
+	if err := createTemplate.ExecuteTemplate(&b, variant, data); err != nil {
+		return "", fmt.Errorf("rendering bootstrap %s: %w", variant, err)
 	}
-	fmt.Fprintf(b, "  %s bootstrap \\\n", shellQuote(data.Image))
-	fmt.Fprintf(b, "    --hostname=%s \\\n", shellQuote(data.Hostname))
-	fmt.Fprintf(b, "    --repo-dir=/repo \\\n")
-	fmt.Fprintf(b, "    --service=%s", shellQuote(data.Service))
-	if data.Rootless {
-		fmt.Fprintf(b, " \\\n    --systemd=user")
-	} else {
-		fmt.Fprintf(b, " \\\n    --systemd=system")
-	}
-	fmt.Fprintf(b, "\n")
+	return b.String(), nil
 }
 
 func secretChecklist(cfg *agentcfg.Config) []string {
@@ -218,24 +253,15 @@ func secretChecklist(cfg *agentcfg.Config) []string {
 	return out
 }
 
-func runSSHCreate(ctx context.Context, cfg CreateConfig, script string) error {
+func runSSHCreate(ctx context.Context, cfg CreateConfig, remoteScript string) error {
 	if err := runCmd(ctx, cfg.Stderr, "rsync", "-a", "--delete", withSlash(cfg.FleetDir), cfg.SSH+":"+withSlash(cfg.TargetPath)); err != nil {
 		return err
 	}
 	cmd := exec.CommandContext(ctx, "ssh", cfg.SSH, "bash", "-s") //nolint:gosec // --ssh intentionally delegates to the operator's SSH target.
-	cmd.Stdin = strings.NewReader(remoteBootstrapScript(script))
+	cmd.Stdin = strings.NewReader(remoteScript)
 	cmd.Stdout = cfg.Stdout
 	cmd.Stderr = cfg.Stderr
 	return cmd.Run()
-}
-
-func remoteBootstrapScript(script string) string {
-	for _, marker := range []string{"sudo podman run", "podman run"} {
-		if i := strings.Index(script, marker); i >= 0 {
-			return "set -euo pipefail\n" + script[i:]
-		}
-	}
-	return "set -euo pipefail\n" + script
 }
 
 func checkGitClean(ctx context.Context, dir string, stderr io.Writer) error {
@@ -292,27 +318,6 @@ func runCmd(ctx context.Context, stderr io.Writer, name string, args ...string) 
 
 func withSlash(s string) string {
 	return strings.TrimRight(s, "/") + "/"
-}
-
-func modeLabel(rootless bool) string {
-	if rootless {
-		return "rootless"
-	}
-	return "rootful"
-}
-
-func sudoPrefix(rootless bool) string {
-	if rootless {
-		return ""
-	}
-	return "sudo "
-}
-
-func userFlag(rootless bool) string {
-	if rootless {
-		return "--user "
-	}
-	return ""
 }
 
 func shellQuote(s string) string {

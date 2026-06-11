@@ -12,6 +12,7 @@ require (
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/go-github/v88 v88.0.0
+	github.com/moby/sys/mountinfo v0.7.2
 	github.com/mochi-mqtt/server/v2 v2.7.9
 	github.com/prometheus/client_golang v1.23.2
 	github.com/sebdah/goldie/v2 v2.8.0
@@ -121,7 +122,6 @@ require (
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/sys/capability v0.4.0 // indirect
-	github.com/moby/sys/mountinfo v0.7.2 // indirect
 	github.com/moby/sys/user v0.4.0 // indirect
 	github.com/moby/sys/userns v0.1.0 // indirect
 	github.com/moby/term v0.5.2 // indirect

@@ -662,7 +662,7 @@ func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, err
 		QuadletDir:  a.quadletDirOverride,
 		SystemdDir:  a.systemdDirOverride,
 		DataDir:     a.dataDirOverride,
-		HostDataDir: a.cfg.HostDataDir,
+		HostDataDir: a.cfg.EffectiveHostDataDir(),
 	})
 }
 

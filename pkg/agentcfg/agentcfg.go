@@ -131,24 +131,29 @@ func (c *Config) setDefaults() {
 	if c.ProtonPass != nil && c.ProtonPass.RefreshInterval == 0 {
 		c.ProtonPass.RefreshInterval = 6 * time.Hour
 	}
-	if c.SystemdUser == nil {
-		detected := detectSystemdUserFunc()
-		c.SystemdUser = &detected
-	}
-	if c.HostDataDir == "" {
-		if detected := detectHostDataDirFunc(c.effectiveDataDir()); detected != "" {
-			c.HostDataDir = detected
-		}
-	}
 }
 
-// UseSystemdUser reports whether the agent should connect to the user systemd instance.
-// Defaults to Rootless when systemd_user is not set explicitly in config.
+// UseSystemdUser reports whether the agent should connect to the user systemd
+// instance. Auto-detected from the runtime environment (euid, presence of the
+// system D-Bus socket) when systemd_user is not set explicitly in config.
+// Detection runs lazily here — not during Parse — so parsing a config never
+// inspects the local environment.
 func (c *Config) UseSystemdUser() bool {
 	if c.SystemdUser == nil {
 		return detectSystemdUserFunc()
 	}
 	return *c.SystemdUser
+}
+
+// EffectiveHostDataDir returns host_data_dir, falling back to detecting the
+// host-side source of the data-dir bind mount when picolet runs containerized.
+// Detection runs lazily here — not during Parse — so parsing a config never
+// inspects the local environment.
+func (c *Config) EffectiveHostDataDir() string {
+	if c.HostDataDir != "" {
+		return c.HostDataDir
+	}
+	return detectHostDataDirFunc(c.effectiveDataDir())
 }
 
 func (c *Config) effectiveDataDir() string {

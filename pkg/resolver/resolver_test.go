@@ -1867,7 +1867,7 @@ features: {}
 	require.NoError(t, err)
 
 	_, err = r.ResolveServicesForHost(t.Context(), "node-1", []string{"picolet"})
-	require.ErrorContains(t, err, "bootstrap does not resolve provider secrets")
+	require.ErrorContains(t, err, "provider not configured in strict mode")
 }
 
 //nolint:funlen // table-driven test subtests

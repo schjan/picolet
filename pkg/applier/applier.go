@@ -9,6 +9,7 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/schjan/picolet/pkg/config"
@@ -42,9 +43,6 @@ type SystemdManager interface {
 	StartUnit(ctx context.Context, name string) error
 	StopUnit(ctx context.Context, name string) error
 	RestartUnit(ctx context.Context, name string) error
-	EnableUnit(ctx context.Context, name string) error
-	DisableUnit(ctx context.Context, name string) error
-	UnitState(ctx context.Context, name string) (string, error)
 	GetUnitStatus(ctx context.Context, name string) (UnitStatus, error)
 }
 
@@ -108,6 +106,12 @@ type ApplyResult struct {
 	NeedsSelfRestart bool
 	RestartedUnits   []string
 
+	// DeferredSelfStops names self units whose quadlet file was deleted in this
+	// changeset. Their stop is deferred to a detached goroutine in restartUnits
+	// (after successor units are started) so the agent is not killed mid-apply;
+	// ApplyWithoutRestarts leaves them entirely to the caller.
+	DeferredSelfStops []string
+
 	// FailedRestartUnits names units whose post-apply RestartUnit call failed.
 	// The agent records these in state.PendingUnits and treats the apply as
 	// incomplete (retry_pending) so the SHA is not reported as a clean success.
@@ -136,9 +140,12 @@ type ApplyResult struct {
 // Option configures an Applier.
 type Option func(*Applier)
 
-// selfContainerFile is the quadlet filename for picolet's own container unit.
-// Its presence in a create/update changeset triggers a self-restart via picolet.service.
-const selfContainerFile = "picolet.container"
+// defaultSelfUnits are the conventional units a picolet agent runs under when
+// deployed from its own fleet bundle: "picolet" under the user systemd
+// instance, "picolet-system" under the system instance. Stopping or restarting
+// one of them synchronously would kill the agent mid-apply, before state is
+// saved, so those operations are deferred (see restartUnits).
+var defaultSelfUnits = []string{"picolet.service", "picolet-system.service"}
 
 // categoryOrder is the canonical apply-phase ordering.
 var categoryOrder = []config.Category{
@@ -168,22 +175,24 @@ var categoryRankMap = func() map[config.Category]int {
 
 // Applier applies a changeset to the system.
 type Applier struct {
-	systemd  SystemdManager
-	podman   PodmanClient
-	writer   FileWriter
-	dryRun   bool
-	hooks    []config.Hook
-	reloader *HookReloader
+	systemd   SystemdManager
+	podman    PodmanClient
+	writer    FileWriter
+	dryRun    bool
+	hooks     []config.Hook
+	reloader  *HookReloader
+	selfUnits map[string]struct{}
 }
 
 // New creates a new Applier. Hooks may be nil if no change-triggered actions are needed.
 func New(systemd SystemdManager, podman PodmanClient, writer FileWriter, dryRun bool, hooks []config.Hook, opts ...Option) *Applier {
 	a := &Applier{
-		systemd: systemd,
-		podman:  podman,
-		writer:  writer,
-		dryRun:  dryRun,
-		hooks:   hooks,
+		systemd:   systemd,
+		podman:    podman,
+		writer:    writer,
+		dryRun:    dryRun,
+		hooks:     hooks,
+		selfUnits: unitSet(defaultSelfUnits),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -203,6 +212,38 @@ func WithHookReloader(reloader *HookReloader) Option {
 	}
 }
 
+// WithSelfUnits overrides the unit names treated as the agent's own. Pass no
+// names to disable self-detection — appropriate for processes that run outside
+// any managed unit (bootstrap, teardown) and handle agent stops explicitly.
+func WithSelfUnits(units ...string) Option {
+	return func(a *Applier) {
+		a.selfUnits = unitSet(units)
+	}
+}
+
+func unitSet(units []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(units))
+	for _, unit := range units {
+		set[unit] = struct{}{}
+	}
+	return set
+}
+
+func (a *Applier) isSelfUnit(name string) bool {
+	_, ok := a.selfUnits[name]
+	return ok
+}
+
+// isSelfContainer reports whether destPath is the quadlet container file of a
+// self unit (e.g. picolet.container -> picolet.service).
+func (a *Applier) isSelfContainer(destPath string) bool {
+	unit, ok := strings.CutSuffix(filepath.Base(destPath), ".container")
+	if !ok {
+		return false
+	}
+	return a.isSelfUnit(unit + ".service")
+}
+
 // applyPhaseResult holds the categorized change sets produced by applyPhase.
 type applyPhaseResult struct {
 	ChangedUnits   map[string]struct{}
@@ -219,15 +260,12 @@ func (a *Applier) Apply(ctx context.Context, cs *reconciler.Changeset) (*ApplyRe
 }
 
 // ApplyWithoutRestarts applies writes/deletes and daemon-reload, preserving
-// pre-delete stops, but skips post-apply hooks and unit restarts.
+// pre-delete stops, but skips post-apply hooks and unit restarts. Deferred
+// self stops are left entirely to the caller (combine with WithSelfUnits()
+// when synchronous pre-delete stops are wanted for agent-named units too).
 func (a *Applier) ApplyWithoutRestarts(ctx context.Context, cs *reconciler.Changeset) (*ApplyResult, error) {
 	result := &ApplyResult{}
-	sorted := slices.Clone(cs.Changes)
-	slices.SortFunc(sorted, func(x, y reconciler.Change) int {
-		return cmp.Compare(categoryRank(x.Category), categoryRank(y.Category))
-	})
-
-	phase, err := a.applyPhase(ctx, sorted, result)
+	phase, err := a.applyPhase(ctx, sortedByCategory(cs.Changes), result)
 	if err != nil {
 		return result, err
 	}
@@ -235,6 +273,15 @@ func (a *Applier) ApplyWithoutRestarts(ctx context.Context, cs *reconciler.Chang
 		return result, nil
 	}
 	return result, a.reloadIfNeeded(ctx, phase.NeedsReload)
+}
+
+// sortedByCategory orders changes by the canonical apply-phase category order.
+func sortedByCategory(changes []reconciler.Change) []reconciler.Change {
+	sorted := slices.Clone(changes)
+	slices.SortFunc(sorted, func(x, y reconciler.Change) int {
+		return cmp.Compare(categoryRank(x.Category), categoryRank(y.Category))
+	})
+	return sorted
 }
 
 // ApplyWithPending applies the changeset and additionally retries any pending
@@ -245,12 +292,7 @@ func (a *Applier) ApplyWithoutRestarts(ctx context.Context, cs *reconciler.Chang
 // from config) are marked attempted so mergePendingHooks drops them.
 func (a *Applier) ApplyWithPending(ctx context.Context, cs *reconciler.Changeset, pendingNames []string) (*ApplyResult, error) {
 	result := &ApplyResult{}
-	sorted := slices.Clone(cs.Changes)
-	slices.SortFunc(sorted, func(x, y reconciler.Change) int {
-		return cmp.Compare(categoryRank(x.Category), categoryRank(y.Category))
-	})
-
-	phase, err := a.applyPhase(ctx, sorted, result)
+	phase, err := a.applyPhase(ctx, sortedByCategory(cs.Changes), result)
 	if err != nil {
 		return result, err
 	}
@@ -294,9 +336,13 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		// For non-secret deletes: stop the unit before removing the file so that
 		// systemd terminates the managed container cleanly. daemon-reload alone does
 		// not stop running services — it only removes the unit definition.
+		// A self unit must not be stopped here: that would kill the agent
+		// mid-apply, before successor units start and state is saved.
 		if change.Action == reconciler.ActionDelete && change.Category != config.CategorySecret {
 			if unitName := unitNameForDelete(change); unitName != "" {
-				if stopErr := a.systemd.StopUnit(ctx, unitName); stopErr != nil {
+				if a.isSelfUnit(unitName) {
+					result.DeferredSelfStops = append(result.DeferredSelfStops, unitName)
+				} else if stopErr := a.systemd.StopUnit(ctx, unitName); stopErr != nil {
 					slog.Warn("stopping unit before file removal", "unit", unitName, "error", stopErr)
 				}
 			}
@@ -325,7 +371,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		if change.ServiceName != "" {
 			p.ChangedUnits[change.ServiceName] = struct{}{}
 		}
-		if filepath.Base(change.DestPath) == selfContainerFile {
+		if a.isSelfContainer(change.DestPath) {
 			result.NeedsSelfRestart = true
 		}
 	}
@@ -371,14 +417,16 @@ func (a *Applier) applyChange(ctx context.Context, change reconciler.Change) err
 }
 
 func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]struct{}, needsReload bool, result *ApplyResult) error {
-	if len(changedUnits) == 0 && !needsReload {
+	if len(changedUnits) == 0 && !needsReload && len(result.DeferredSelfStops) == 0 {
 		return nil
 	}
 	if err := a.reloadIfNeeded(ctx, needsReload); err != nil {
 		return err
 	}
-	for unit := range changedUnits {
-		if unit == "picolet.service" {
+	var selfRestarts []string
+	for _, unit := range slices.Sorted(maps.Keys(changedUnits)) {
+		if a.isSelfUnit(unit) {
+			selfRestarts = append(selfRestarts, unit)
 			continue
 		}
 		slog.Info("restarting unit", "unit", unit)
@@ -389,24 +437,41 @@ func (a *Applier) restartUnits(ctx context.Context, changedUnits map[string]stru
 			result.RestartedUnits = append(result.RestartedUnits, unit)
 		}
 	}
-	if _, ok := changedUnits["picolet.service"]; ok {
-		slog.Info("restarting picolet (self-update), state will be saved before shutdown")
-		result.RestartedUnits = append(result.RestartedUnits, "picolet.service")
-		// Fire-and-forget: detached context so Apply() returns promptly, allowing
-		// applyWithRollback() to remove the lock and reconcile() to call store.Save()
-		// before SIGTERM arrives from systemd's stop sequence.
-		// 60s timeout covers StopTimeout=30 + Podman cleanup overhead.
-		//nolint:contextcheck,gosec // intentional detached context for self-restart
-		go func() {
-			restartCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			if err := a.systemd.RestartUnit(restartCtx, "picolet.service"); err != nil {
-				// Expected: process is killed mid-D-Bus call during shutdown.
-				slog.Debug("self-restart D-Bus result (may be interrupted by shutdown)", "error", err)
-			}
-		}()
-	}
+	a.scheduleSelfUnitOps(selfRestarts, result) //nolint:contextcheck // self ops intentionally detach from the apply context
 	return nil
+}
+
+// scheduleSelfUnitOps fires the deferred restarts/stops of the agent's own
+// units after all other units were handled synchronously.
+func (a *Applier) scheduleSelfUnitOps(selfRestarts []string, result *ApplyResult) {
+	for _, unit := range selfRestarts {
+		slog.Info("restarting picolet (self-update), state will be saved before shutdown", "unit", unit)
+		result.RestartedUnits = append(result.RestartedUnits, unit)
+		a.deferredSelfUnitOp(unit, a.systemd.RestartUnit)
+	}
+	for _, unit := range result.DeferredSelfStops {
+		if slices.Contains(selfRestarts, unit) {
+			continue // restart already scheduled; a stop would defeat it
+		}
+		slog.Info("stopping picolet (own unit deleted), state will be saved before shutdown", "unit", unit)
+		a.deferredSelfUnitOp(unit, a.systemd.StopUnit)
+	}
+}
+
+// deferredSelfUnitOp runs a stop/restart of one of the agent's own units in a
+// detached goroutine. Fire-and-forget: Apply() returns promptly, allowing the
+// caller to remove the lock and call store.Save() before SIGTERM arrives from
+// systemd's stop sequence. 60s timeout covers StopTimeout=30 + Podman cleanup.
+// The context is intentionally detached from the apply context.
+func (a *Applier) deferredSelfUnitOp(unit string, op func(context.Context, string) error) {
+	go func() {
+		opCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if err := op(opCtx, unit); err != nil {
+			// Expected: process is killed mid-D-Bus call during shutdown.
+			slog.Debug("deferred self unit operation result (may be interrupted by shutdown)", "unit", unit, "error", err)
+		}
+	}()
 }
 
 func (a *Applier) reloadIfNeeded(ctx context.Context, needsReload bool) error {

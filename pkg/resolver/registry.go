@@ -152,14 +152,14 @@ func (c *RefCache) Resolve(ctx context.Context) error {
 // Two-phase resolution: callers must run a collect pass, call cache.Resolve,
 // then run the real render pass.
 func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string) (*template.Template, ProviderCaches, error) {
-	return BuildRegistryFiltered(ctx, fsys, secretReader, providers, dataDir, nil)
+	return buildRegistry(ctx, fsys, secretReader, providers, dataDir, nil)
 }
 
-// BuildRegistryFiltered is BuildRegistry with an optional source-path predicate.
+// buildRegistry is BuildRegistry with an optional source-path predicate.
 // A nil include function includes every template.
 //
 //nolint:cyclop,funlen // funcmap registration is inherently branchy
-func BuildRegistryFiltered(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string, include func(string) bool) (*template.Template, ProviderCaches, error) {
+func buildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string, include func(string) bool) (*template.Template, ProviderCaches, error) {
 	sources, err := loadTemplateSources(fsys, include)
 	if err != nil {
 		return nil, nil, err
@@ -287,7 +287,7 @@ func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p Provi
 	funcMap[p.FuncName] = func(ref string) (string, error) {
 		if cache == nil {
 			if p.Strict {
-				return "", fmt.Errorf("%s: bootstrap does not resolve provider secrets at template time; use a YAML-value reference and let picolet resolve it at runtime", p.FuncName)
+				return "", fmt.Errorf("%s: provider not configured in strict mode; use a YAML-value reference and let the agent resolve it at runtime", p.FuncName)
 			}
 			return p.PlaceholderEmpty, nil
 		}

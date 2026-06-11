@@ -29,6 +29,12 @@ HealthOnFailure=restart
 
 [Service]
 Restart=always
+# 10s between restarts and no start-rate limit: a crash-looping agent (bad
+# config secret, corrupt state) must keep retrying — with the 100ms default it
+# burns StartLimitBurst in under a second and the unit fails permanently,
+# leaving the host without its GitOps agent.
+RestartSec=10
+StartLimitIntervalSec=0
 TimeoutStartSec=90
 TimeoutStopSec=40
 

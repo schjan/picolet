@@ -18,14 +18,14 @@ func WaitForHealth(ctx context.Context, port int, healthPath string, timeout tim
 	var lastErr error
 	for time.Now().Before(deadline) {
 		remaining := time.Until(deadline)
-		probeCtx, cancel := context.WithTimeout(ctx, minDuration(maxHealthProbeTimeout, remaining))
+		probeCtx, cancel := context.WithTimeout(ctx, min(maxHealthProbeTimeout, remaining))
 		err := probeOnce(probeCtx, port, healthPath)
 		cancel()
 		if err == nil {
 			return nil
 		}
 		lastErr = err
-		sleep := minDuration(2*time.Second, time.Until(deadline))
+		sleep := min(2*time.Second, time.Until(deadline))
 		if sleep <= 0 {
 			break
 		}
@@ -56,11 +56,4 @@ func probeOnce(ctx context.Context, port int, healthPath string) error {
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 	return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-}
-
-func minDuration(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
 }

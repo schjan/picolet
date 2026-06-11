@@ -219,7 +219,7 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 		Rootless:       cfg.Rootless,
 		OpSecretReader: opReader,
 		PPSecretReader: ppReader,
-		HostDataDir:    cfg.HostDataDir,
+		HostDataDir:    cfg.EffectiveHostDataDir(),
 	})
 	if err != nil {
 		return nil, nil, false, err
@@ -496,7 +496,7 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		Rootless:       cfg.Rootless,
 		OpSecretReader: opReader,
 		PPSecretReader: ppReader,
-		HostDataDir:    cfg.HostDataDir,
+		HostDataDir:    cfg.EffectiveHostDataDir(),
 	})
 	if err != nil {
 		return err

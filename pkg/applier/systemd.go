@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -206,40 +205,6 @@ func (m *DBusSystemdManager) RestartUnit(ctx context.Context, name string) error
 		}
 		return waitJobDone(ctx, ch, "restarting", name)
 	})
-}
-
-func (m *DBusSystemdManager) EnableUnit(ctx context.Context, name string) error {
-	return m.withReconnect(ctx, func(c *dbus.Conn) error {
-		_, _, err := c.EnableUnitFilesContext(ctx, []string{name}, false, true)
-		if err != nil {
-			return fmt.Errorf("enabling %s: %w", name, err)
-		}
-		return nil
-	})
-}
-
-func (m *DBusSystemdManager) DisableUnit(ctx context.Context, name string) error {
-	return m.withReconnect(ctx, func(c *dbus.Conn) error {
-		_, err := c.DisableUnitFilesContext(ctx, []string{name}, false)
-		if err != nil {
-			return fmt.Errorf("disabling %s: %w", name, err)
-		}
-		return nil
-	})
-}
-
-func (m *DBusSystemdManager) UnitState(ctx context.Context, name string) (string, error) {
-	status, err := m.GetUnitStatus(ctx, name)
-	if err != nil {
-		if strings.Contains(err.Error(), "NoSuchUnit") || strings.Contains(err.Error(), "not loaded") {
-			return "inactive", nil
-		}
-		return "", err
-	}
-	if status.ActiveState == "" {
-		return "inactive", nil
-	}
-	return status.ActiveState, nil
 }
 
 // waitJobDone waits for a systemd job to complete with "done".

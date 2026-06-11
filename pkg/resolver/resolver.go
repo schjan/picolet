@@ -195,7 +195,7 @@ func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host
 	// hostDataDir (not dataDir) drives filePath/manifestPath: those helpers emit
 	// path strings baked into rendered quadlets, which the host's podman must
 	// resolve. dataDir remains the write path (dataDestPath).
-	registry, caches, err := BuildRegistryFiltered(ctx, r.fsys, r.secretReader, providers, r.hostDataDir, prefixFilter(templatePrefixes))
+	registry, caches, err := buildRegistry(ctx, r.fsys, r.secretReader, providers, r.hostDataDir, prefixFilter(templatePrefixes))
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}
@@ -862,7 +862,7 @@ func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, re
 	}
 	if reader == nil {
 		if r.strict {
-			return fmt.Errorf("%s direct secrets are not resolved during bootstrap: %s", name, strings.Join(refs, ", "))
+			return fmt.Errorf("%s provider not configured; cannot resolve direct secrets in strict mode: %s", name, strings.Join(refs, ", "))
 		}
 		slog.Warn("skipping secrets (provider not configured)", "provider", name, "count", len(refs))
 		return nil
