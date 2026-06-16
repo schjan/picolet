@@ -17,7 +17,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/sebdah/goldie/v2 v2.8.0
 	github.com/stretchr/testify v1.11.1
-	github.com/urfave/cli/v3 v3.9.1
+	github.com/urfave/cli/v3 v3.10.0
 	go.yaml.in/yaml/v4 v4.0.0-rc.5
 	golang.org/x/sys v0.46.0
 	k8s.io/api v0.36.1
