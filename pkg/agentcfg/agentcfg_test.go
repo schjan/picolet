@@ -42,7 +42,6 @@ webhook_secret_path: /etc/picolet/webhook-secret
 				SecretsDir:        "/run/secrets",
 				PodmanSocket:      "/run/podman/podman.sock",
 				WebhookSecretPath: "/etc/picolet/webhook-secret",
-				SystemdUser:       new(false),
 			},
 		},
 		{
@@ -59,7 +58,6 @@ repo_url: https://github.com/example/fleet.git
 				MetricsPort:  9417,
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
-				SystemdUser:  new(false),
 			},
 		},
 		{
@@ -102,7 +100,7 @@ systemd_user: false
 			},
 		},
 		{
-			name: "systemd_user defaults to rootless when unset",
+			name: "systemd_user stays unset for lazy detection",
 			content: `
 hostname: rpi5-1
 repo_url: https://github.com/example/fleet.git
@@ -117,7 +115,6 @@ rootless: true
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
 				Rootless:     true,
-				SystemdUser:  new(true),
 			},
 		},
 		{
@@ -140,7 +137,6 @@ host_data_dir: /home/pi/.local/share/picolet
 				RepoSubDir:   "fleet/config",
 				DataDir:      "/tmp/picolet-data",
 				HostDataDir:  "/home/pi/.local/share/picolet",
-				SystemdUser:  new(false),
 			},
 		},
 		{
@@ -184,7 +180,6 @@ github_private_key_path: /etc/picolet/secrets/github-app.pem
 				GitHubAppID:          12345,
 				GitHubInstallationID: 67890,
 				GitHubPrivateKeyPath: "/etc/picolet/secrets/github-app.pem",
-				SystemdUser:          new(false),
 			},
 		},
 		{
@@ -259,7 +254,6 @@ onepassword:
 				MetricsPort:  9417,
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
-				SystemdUser:  new(false),
 				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture, not real credentials
 					TokenPath:             "/etc/picolet/op-token",
 					RefreshInterval:       6 * time.Hour,
@@ -308,7 +302,6 @@ onepassword:
 				MetricsPort:  9417,
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
-				SystemdUser:  new(false),
 				OnePassword:  &OnePasswordConfig{TokenPath: "/etc/picolet/op-token", RefreshInterval: 6 * time.Hour}, //nolint:gosec // test fixture
 			},
 		},
@@ -355,7 +348,6 @@ onepassword:
 				MetricsPort:  9417,
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
-				SystemdUser:  new(false),
 				OnePassword:  &OnePasswordConfig{TokenPath: "/etc/picolet/op-token", RefreshInterval: time.Hour}, //nolint:gosec // test fixture
 			},
 		},
@@ -369,7 +361,6 @@ onepassword:
 				MetricsPort:  9417,
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
-				SystemdUser:  new(false),
 			},
 		},
 		{
@@ -387,7 +378,6 @@ onepassword:
 				MetricsPort:  9417,
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
-				SystemdUser:  new(false),
 				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture
 					TokenPath:       "/etc/picolet/op-token",
 					RefreshInterval: 6 * time.Hour,
@@ -431,7 +421,6 @@ onepassword:
 				MetricsPort:  9417,
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
-				SystemdUser:  new(false),
 				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture
 					TokenPath:       "/etc/picolet/op-token",
 					RefreshInterval: 6 * time.Hour,
@@ -452,7 +441,6 @@ protonpass: {}
 				MetricsPort:  9417,
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
-				SystemdUser:  new(false),
 				ProtonPass: &ProtonPassConfig{
 					RefreshInterval: 6 * time.Hour,
 				},
@@ -545,7 +533,6 @@ protonpass:
 				MetricsPort:  9417,
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
-				SystemdUser:  new(false),
 				ProtonPass: &ProtonPassConfig{
 					PATPath:               "/etc/picolet/pp-pat",
 					RefreshInterval:       6 * time.Hour,
@@ -571,7 +558,6 @@ protonpass:
 				MetricsPort:  9417,
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
-				SystemdUser:  new(false),
 				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture
 					TokenPath:       "/etc/picolet/op-token",
 					RefreshInterval: 6 * time.Hour,
@@ -600,7 +586,6 @@ protonpass:
 				MetricsPort:  9417,
 				SecretsDir:   "/etc/picolet/secrets",
 				PodmanSocket: "/run/podman/podman.sock",
-				SystemdUser:  new(false),
 				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture
 					TokenPath:       "/etc/picolet/op-token",
 					TokenExpiresAt:  time.Date(2026, 12, 31, 23, 59, 59, 0, time.UTC),
@@ -694,4 +679,31 @@ func TestValidateAppliesDefaultsForZeroRefreshInterval(t *testing.T) {
 	require.NoError(t, cfg.Validate())
 	assert.Equal(t, 6*time.Hour, cfg.OnePassword.RefreshInterval)
 	assert.Equal(t, 6*time.Hour, cfg.ProtonPass.RefreshInterval)
+}
+
+// Mutates the package-level detection hooks, so it must not run in parallel
+// with other tests.
+//
+//nolint:paralleltest // see above
+func TestLazyDetectionAccessors(t *testing.T) {
+	oldDetectSystemdUser := detectSystemdUserFunc
+	oldDetectHostDataDir := detectHostDataDirFunc
+	t.Cleanup(func() {
+		detectSystemdUserFunc = oldDetectSystemdUser
+		detectHostDataDirFunc = oldDetectHostDataDir
+	})
+	detectSystemdUserFunc = func() bool { return true }
+	detectHostDataDirFunc = func(dataDir string) string {
+		assert.Equal(t, "/var/lib/picolet", dataDir)
+		return "/home/pi/.local/share/picolet"
+	}
+
+	cfg := &Config{}
+	assert.True(t, cfg.UseSystemdUser())
+	assert.Equal(t, "/home/pi/.local/share/picolet", cfg.EffectiveHostDataDir())
+
+	// Explicit config wins over detection.
+	cfg = &Config{SystemdUser: new(false), HostDataDir: "/srv/picolet"}
+	assert.False(t, cfg.UseSystemdUser())
+	assert.Equal(t, "/srv/picolet", cfg.EffectiveHostDataDir())
 }

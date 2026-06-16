@@ -44,7 +44,7 @@ type FleetTemplateData struct {
 
 // NewTemplateData builds template data for a specific host.
 func NewTemplateData(cfg *config.Config, hostname string) (*TemplateData, error) {
-	host, ok := cfg.Hosts[hostname]
+	host, ok := cfg.FindHost(hostname)
 	if !ok {
 		return nil, &HostNotFoundError{Hostname: hostname}
 	}

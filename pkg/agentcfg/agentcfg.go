@@ -85,9 +85,18 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
+	cfg, err := Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("parsing config %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// Parse parses agent config bytes, applies defaults, and validates the result.
+func Parse(data []byte) (*Config, error) {
 	var cfg Config
 	if err := yaml.Load(data, &cfg, yaml.WithKnownFields()); err != nil {
-		return nil, fmt.Errorf("parsing config %s: %w", path, err)
+		return nil, err
 	}
 	cfg.setDefaults()
 	if err := cfg.Validate(); err != nil {
@@ -122,18 +131,42 @@ func (c *Config) setDefaults() {
 	if c.ProtonPass != nil && c.ProtonPass.RefreshInterval == 0 {
 		c.ProtonPass.RefreshInterval = 6 * time.Hour
 	}
-	if c.SystemdUser == nil {
-		c.SystemdUser = new(c.Rootless)
-	}
 }
 
-// UseSystemdUser reports whether the agent should connect to the user systemd instance.
-// Defaults to Rootless when systemd_user is not set explicitly in config.
+// UseSystemdUser reports whether the agent should connect to the user systemd
+// instance. Auto-detected from the runtime environment (euid, presence of the
+// system D-Bus socket) when systemd_user is not set explicitly in config.
+// Detection runs lazily here — not during Parse — so parsing a config never
+// inspects the local environment.
 func (c *Config) UseSystemdUser() bool {
 	if c.SystemdUser == nil {
-		return c.Rootless
+		return detectSystemdUserFunc()
 	}
 	return *c.SystemdUser
+}
+
+// EffectiveHostDataDir returns host_data_dir, falling back to detecting the
+// host-side source of the data-dir bind mount when picolet runs containerized.
+// Detection runs lazily here — not during Parse — so parsing a config never
+// inspects the local environment.
+func (c *Config) EffectiveHostDataDir() string {
+	if c.HostDataDir != "" {
+		return c.HostDataDir
+	}
+	return detectHostDataDirFunc(c.effectiveDataDir())
+}
+
+func (c *Config) effectiveDataDir() string {
+	if c.DataDir != "" {
+		return c.DataDir
+	}
+	if c.Rootless {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, ".local", "share", "picolet")
+		}
+	}
+	return "/var/lib/picolet"
 }
 
 // Validate checks that required fields are set. setDefaults is invoked

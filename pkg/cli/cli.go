@@ -51,6 +51,7 @@ func newApp() *cli.Command {
 			dryRunCmd(),
 			applyCmd(),
 			downCmd(),
+			bootstrapCmd(),
 		},
 	}
 }

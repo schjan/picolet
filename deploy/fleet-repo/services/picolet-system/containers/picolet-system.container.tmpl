@@ -1,23 +1,23 @@
 [Unit]
-Description=Picolet GitOps Agent
+Description=Picolet GitOps Agent (system)
 Documentation=https://github.com/schjan/picolet
 After=network-online.target podman.socket
 Wants=network-online.target podman.socket
 
 [Container]
 Image={{ index .Images "picolet" }}
-ContainerName=picolet
+ContainerName=picolet-system
 
-Secret=picolet_config,target=/etc/picolet/config.yml
-Volume=%h/.config/picolet/secrets:/etc/picolet/secrets:ro
-Volume=%h/.local/share/picolet:/var/lib/picolet
-Volume=%h/.config/containers/systemd:/etc/containers/systemd
-Volume=%h/.config/systemd/user:/etc/systemd/system
-Volume=%t/systemd:%t/systemd
-Environment=XDG_RUNTIME_DIR=%t
-Volume=%t/podman/podman.sock:/run/podman/podman.sock:ro
+Secret=picolet_system_config,target=/etc/picolet/config.yml
+Volume=/etc/picolet/secrets:/etc/picolet/secrets:ro
+Volume=/var/lib/picolet-system:/var/lib/picolet
+Volume=/etc/containers/systemd:/etc/containers/systemd
+Volume=/etc/systemd/system:/etc/systemd/system
+Volume=/run/podman/podman.sock:/run/podman/podman.sock:ro
+Volume=/run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
 Network=host
 Environment=PICOLET_CONFIG=/etc/picolet/config.yml
+PodmanArgs=--security-opt apparmor=unconfined
 
 StopTimeout=30
 HealthCmd=CMD /picolet healthcheck
@@ -39,4 +39,4 @@ TimeoutStartSec=90
 TimeoutStopSec=40
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

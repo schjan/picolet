@@ -140,6 +140,31 @@ func TestApplyDelete(t *testing.T) {
 	assert.Equal(t, []string{containerPath}, fw.removed)
 }
 
+func TestApplyWithoutRestartsPreservesDeleteStopsAndSkipsRestarts(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().StopUnit(mock.Anything, "old.service").Return(nil)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	a := applier.New(sys, pod, fw, false, nil)
+
+	cs := &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "/etc/containers/systemd/old.container", Category: "container", Action: reconciler.ActionDelete, ServiceName: "old.service"},
+			{DestPath: "/etc/containers/systemd/new.container", Category: "container", Action: reconciler.ActionCreate, NewContent: "[Container]\nImage=new\n", ServiceName: "new.service"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionDelete: 1, reconciler.ActionCreate: 1},
+	}
+
+	result, err := a.ApplyWithoutRestarts(context.Background(), cs)
+	require.NoError(t, err)
+	assert.Equal(t, 2, result.Applied)
+	assert.Empty(t, result.RestartedUnits)
+	assert.Contains(t, fw.written, "/etc/containers/systemd/new.container")
+	assert.Equal(t, []string{"/etc/containers/systemd/old.container"}, fw.removed)
+}
+
 func TestApplyDeleteSecret(t *testing.T) {
 	t.Parallel()
 	var reloads atomic.Int32
@@ -201,6 +226,79 @@ func TestApplySelfRestart(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.NeedsSelfRestart)
 	assert.Contains(t, result.RestartedUnits, "picolet.service")
+}
+
+// TestApplyAgentRenameMigration covers the picolet -> picolet-system bundle
+// rename: the agent's own unit is deleted and a successor created in the same
+// changeset. The old unit must NOT be stopped synchronously in the delete
+// phase (that would kill the agent before the successor exists); both the
+// successor restart and the self stop are deferred goroutines.
+func TestApplyAgentRenameMigration(t *testing.T) {
+	t.Parallel()
+	fw := newMemFileWriter()
+	stopped := make(chan struct{})
+	started := make(chan struct{})
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys.EXPECT().StopUnit(mock.Anything, "picolet.service").RunAndReturn(func(context.Context, string) error {
+		// The deferred stop must come after the successor's quadlet is written.
+		assert.Contains(t, fw.written, "/etc/containers/systemd/picolet-system.container")
+		close(stopped)
+		return nil
+	})
+	sys.EXPECT().RestartUnit(mock.Anything, "picolet-system.service").RunAndReturn(func(context.Context, string) error {
+		close(started)
+		return nil
+	})
+	pod := appliermocks.NewMockPodmanClient(t)
+	a := applier.New(sys, pod, fw, false, nil)
+
+	cs := &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "/etc/containers/systemd/picolet.container", Category: "container", Action: reconciler.ActionDelete, ServiceName: "picolet.service"},
+			{DestPath: "/etc/containers/systemd/picolet-system.container", Category: "container", Action: reconciler.ActionCreate, NewContent: "[Container]\nImage=picolet\n", ServiceName: "picolet-system.service"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionDelete: 1, reconciler.ActionCreate: 1},
+	}
+
+	result, err := a.Apply(context.Background(), cs)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"picolet.service"}, result.DeferredSelfStops)
+	assert.Contains(t, result.RestartedUnits, "picolet-system.service")
+	assert.Equal(t, []string{"/etc/containers/systemd/picolet.container"}, fw.removed)
+
+	for _, ch := range []chan struct{}{started, stopped} {
+		select {
+		case <-ch:
+		case <-time.After(2 * time.Second):
+			t.Fatal("deferred self stop/restart did not run")
+		}
+	}
+}
+
+// TestApplyWithSelfUnitsDisabledStopsSynchronously covers the bootstrap and
+// teardown configuration: with no self units, deletes of agent-named units are
+// stopped synchronously like any other unit.
+func TestApplyWithSelfUnitsDisabledStopsSynchronously(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().StopUnit(mock.Anything, "picolet.service").Return(nil)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	a := applier.New(sys, pod, fw, false, nil, applier.WithSelfUnits())
+
+	cs := &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{DestPath: "/etc/containers/systemd/picolet.container", Category: "container", Action: reconciler.ActionDelete, ServiceName: "picolet.service"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionDelete: 1},
+	}
+
+	result, err := a.ApplyWithoutRestarts(context.Background(), cs)
+	require.NoError(t, err)
+	assert.Empty(t, result.DeferredSelfStops)
+	assert.Equal(t, []string{"/etc/containers/systemd/picolet.container"}, fw.removed)
 }
 
 func TestApplyPopulatesFailedRestartUnits(t *testing.T) {

@@ -108,6 +108,32 @@ func (cs *Changeset) addChange(c Change) {
 	cs.Summary[c.Action]++
 }
 
+// MergeChangeset overlays applied changes onto an existing state without
+// removing entries for paths the changeset did not touch. Unlike agent.UpdateState,
+// this is suitable for partial applies such as bootstrap's picolet-only seed.
+func MergeChangeset(st *state.State, changeset *Changeset) {
+	if st.ManagedFiles == nil {
+		st.ManagedFiles = make(map[string]state.ManagedFile)
+	}
+	if st.ServiceNames == nil {
+		st.ServiceNames = make(map[string]string)
+	}
+	for _, change := range changeset.Changes {
+		switch change.Action {
+		case ActionDelete:
+			delete(st.ManagedFiles, change.DestPath)
+			delete(st.ServiceNames, change.DestPath)
+		case ActionCreate, ActionUpdate:
+			st.ManagedFiles[change.DestPath] = state.ManagedFile{Hash: change.NewHash, Category: change.Category}
+			if change.ServiceName != "" {
+				st.ServiceNames[change.DestPath] = change.ServiceName
+			} else {
+				delete(st.ServiceNames, change.DestPath)
+			}
+		}
+	}
+}
+
 func hash(content string) string {
 	h := sha256.Sum256([]byte(content))
 	return fmt.Sprintf("sha256:%x", h)

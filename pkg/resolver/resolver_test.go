@@ -1820,6 +1820,56 @@ func TestSecretPathTraversal(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestResolveServicesForHostRendersOnlyRequestedService(t *testing.T) {
+	t.Parallel()
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte(`images: {picolet: "picolet:test"}`)},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base: {}
+pi_types:
+  node:
+    services: [picolet, unrelated]
+features: {}
+`)},
+		"hosts/node-1/host.yml":                              &fstest.MapFile{Data: []byte("hostname: node-1\npi_type: node\n")},
+		"services/picolet/containers/picolet.container.tmpl": &fstest.MapFile{Data: []byte("[Container]\nImage={{ index .Images \"picolet\" }}\n")},
+		"services/unrelated/secrets/bad.tmpl":                &fstest.MapFile{Data: []byte(`{{`)},
+	}
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg, Strict: true})
+	require.NoError(t, err)
+
+	resolved, err := r.ResolveServicesForHost(t.Context(), "node-1", []string{"picolet"})
+	require.NoError(t, err)
+
+	require.Len(t, resolved.Files, 1)
+	assert.Equal(t, "services/picolet/containers/picolet.container.tmpl", resolved.Files[0].SrcPath)
+}
+
+func TestResolveServicesForHostStrictProviderErrorsInRequestedService(t *testing.T) {
+	t.Parallel()
+	fsys := fstest.MapFS{
+		"fleet.yml": &fstest.MapFile{Data: []byte(`images: {picolet: "picolet:test"}`)},
+		"assignments.yml": &fstest.MapFile{Data: []byte(`
+base: {}
+pi_types:
+  node:
+    services: [picolet]
+features: {}
+`)},
+		"hosts/node-1/host.yml":                            &fstest.MapFile{Data: []byte("hostname: node-1\npi_type: node\n")},
+		"services/picolet/secrets/picolet_config.yml.tmpl": &fstest.MapFile{Data: []byte(`token: {{ readOpSecret "op://vault/item/field" }}`)},
+	}
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := New(Config{FS: fsys, Config: cfg, Strict: true})
+	require.NoError(t, err)
+
+	_, err = r.ResolveServicesForHost(t.Context(), "node-1", []string{"picolet"})
+	require.ErrorContains(t, err, "provider not configured in strict mode")
+}
+
 //nolint:funlen // table-driven test subtests
 func TestReadOpSecret(t *testing.T) {
 	t.Parallel()
