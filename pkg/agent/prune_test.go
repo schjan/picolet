@@ -64,7 +64,16 @@ func TestTickInvokesPruneOnNoopTick(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	require.NoError(t, a.tick(ctx, poller, store, hc))
-	assert.False(t, a.statusStore.Snapshot().Prune.LastRunAt.IsZero(), "prune should have run during the noop tick")
+	prune := a.statusStore.Snapshot().Prune
+	assert.False(t, prune.LastRunAt.IsZero(), "prune should have run during the noop tick")
+	assert.Equal(t, 1, prune.ImagesRemoved)
+
+	// A subsequent tick must NOT re-run the seed block (ImagePrune is .Once()) and
+	// must not clobber the prune counts recorded above.
+	require.NoError(t, a.tick(ctx, poller, store, hc))
+	prune = a.statusStore.Snapshot().Prune
+	assert.Equal(t, 1, prune.ImagesRemoved, "later ticks must not drop the recorded prune counts")
+	assert.Equal(t, uint64(10), prune.ReclaimedBytes)
 }
 
 // TestTickSkipsPruneWhenPaused verifies a paused agent does not prune (the step
@@ -148,39 +157,35 @@ func TestMaybePruneImagesRunsWhenDue(t *testing.T) {
 	assert.Empty(t, prune.Error)
 }
 
-func TestMaybePruneImagesSkipsWhenNotDue(t *testing.T) {
+// TestMaybePruneImagesSkips covers every path that must NOT prune. Each case
+// omits the ImagePrune expectation, so the mock fails the test if prune runs.
+func TestMaybePruneImagesSkips(t *testing.T) {
 	t.Parallel()
-	// No ImagePrune expectation: the mock fails the test if it is called.
-	_, pod, _ := newBareMocks(t)
-
-	cfg := &agentcfg.Config{Hostname: "host", PruneInterval: 7 * 24 * time.Hour}
-	a := newTestAgent(t, cfg, WithPodman(pod))
-	st, store := newPruneState(t)
-	st.LastPrunedAt = time.Now() // just pruned
-
-	a.maybePruneImages(t.Context(), st, store)
-}
-
-func TestMaybePruneImagesSkipsWhenDisabled(t *testing.T) {
-	t.Parallel()
-	_, pod, _ := newBareMocks(t)
-
-	cfg := &agentcfg.Config{Hostname: "host", PruneImages: new(false), PruneInterval: 7 * 24 * time.Hour}
-	a := newTestAgent(t, cfg, WithPodman(pod))
-	st, store := newPruneState(t)
-
-	a.maybePruneImages(t.Context(), st, store)
-}
-
-func TestMaybePruneImagesSkipsInDryRun(t *testing.T) {
-	t.Parallel()
-	_, pod, _ := newBareMocks(t)
-
-	cfg := &agentcfg.Config{Hostname: "host", PruneInterval: 7 * 24 * time.Hour}
-	a := newTestAgent(t, cfg, WithPodman(pod), WithDryRun(true))
-	st, store := newPruneState(t)
-
-	a.maybePruneImages(t.Context(), st, store)
+	week := 7 * 24 * time.Hour
+	tests := []struct {
+		name string
+		cfg  *agentcfg.Config
+		opts []Option
+		prep func(*state.State)
+	}{
+		{"not due", &agentcfg.Config{Hostname: "host", PruneInterval: week}, nil, func(st *state.State) { st.LastPrunedAt = time.Now() }},
+		{"disabled", &agentcfg.Config{Hostname: "host", PruneImages: new(false), PruneInterval: week}, nil, nil},
+		{"dry run", &agentcfg.Config{Hostname: "host", PruneInterval: week}, []Option{WithDryRun(true)}, nil},
+		{"zero interval", &agentcfg.Config{Hostname: "host", PruneInterval: 0}, nil, nil},
+		{"negative interval", &agentcfg.Config{Hostname: "host", PruneInterval: -time.Hour}, nil, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, pod, _ := newBareMocks(t)
+			a := newTestAgent(t, tc.cfg, append(tc.opts, WithPodman(pod))...)
+			st, store := newPruneState(t)
+			if tc.prep != nil {
+				tc.prep(st)
+			}
+			a.maybePruneImages(t.Context(), st, store)
+		})
+	}
 }
 
 func TestMaybePruneImagesFailureKeepsLastPrunedAtAndBacksOff(t *testing.T) {
@@ -224,26 +229,31 @@ func TestMaybePruneImagesFailurePreservesLastSuccess(t *testing.T) {
 
 	a.maybePruneImages(t.Context(), st, store)
 
-	prune := a.statusStore.Snapshot().Prune
+	prune := a.statusStore.Prune()
 	assert.Equal(t, lastSuccess, prune.LastRunAt, "failure must preserve last-success timestamp")
 	assert.Equal(t, 5, prune.ImagesRemoved, "failure must preserve last-success counts")
 	assert.Equal(t, assert.AnError.Error(), prune.Error)
 }
 
-// TestMaybePruneImagesSkipsWhenIntervalNonPositive guards the regression that caused
-// a test hang: a Config built without setDefaults has PruneInterval == 0, which must
-// be treated as "off" rather than "always due".
-func TestMaybePruneImagesSkipsWhenIntervalNonPositive(t *testing.T) {
+// TestMaybePruneImagesPartialFailureCreditsRemovals verifies that when prune
+// removes some images but reports an error for others, the removals are still
+// reflected in the status snapshot and LastPrunedAt is not advanced (so the
+// prune retries).
+func TestMaybePruneImagesPartialFailureCreditsRemovals(t *testing.T) {
 	t.Parallel()
-	for _, interval := range []time.Duration{0, -time.Hour} {
-		t.Run(interval.String(), func(t *testing.T) {
-			t.Parallel()
-			// No ImagePrune expectation: the mock fails if prune runs.
-			_, pod, _ := newBareMocks(t)
-			cfg := &agentcfg.Config{Hostname: "host", PruneInterval: interval}
-			a := newTestAgent(t, cfg, WithPodman(pod))
-			st, store := newPruneState(t)
-			a.maybePruneImages(t.Context(), st, store)
-		})
-	}
+	_, pod, _ := newBareMocks(t)
+	pod.EXPECT().ImagePrune(mock.Anything, true).
+		Return(applier.PruneResult{ImagesRemoved: 2, ReclaimedBytes: 100}, assert.AnError).Once()
+
+	cfg := &agentcfg.Config{Hostname: "host", PruneInterval: 7 * 24 * time.Hour}
+	a := newTestAgent(t, cfg, WithPodman(pod))
+	st, store := newPruneState(t)
+
+	a.maybePruneImages(t.Context(), st, store)
+
+	assert.True(t, st.LastPrunedAt.IsZero(), "partial failure must not advance LastPrunedAt")
+	prune := a.statusStore.Prune()
+	assert.Equal(t, 2, prune.ImagesRemoved, "partial removals should be credited to the snapshot")
+	assert.Equal(t, uint64(100), prune.ReclaimedBytes)
+	assert.Equal(t, assert.AnError.Error(), prune.Error)
 }

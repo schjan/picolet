@@ -179,9 +179,9 @@ func (s *Store) SetOrphanScan(scan OrphanScan) {
 	s.snapshot.OrphanScan = scan
 }
 
-// SetPrune records the latest successful image-prune result. It clears any prior
-// error (the prune just succeeded) but preserves nothing else — a success fully
-// describes current prune state.
+// SetPrune replaces the recorded image-prune status. Any merge policy (e.g.
+// preserving the last-success timestamp across a failed attempt) is owned by the
+// caller, mirroring how SetOrphanScan is used.
 func (s *Store) SetPrune(prune PruneStatus) {
 	if s == nil {
 		return
@@ -191,18 +191,16 @@ func (s *Store) SetPrune(prune PruneStatus) {
 	s.snapshot.Prune = prune
 }
 
-// SetPruneError records a failed prune attempt without clobbering the
-// last-successful fields (LastRunAt/ImagesRemoved/ReclaimedBytes). This keeps the
-// picolet_last_image_prune_timestamp metric reporting the last *success*, so a
-// failing prune never makes "age since last prune" look healthy.
-func (s *Store) SetPruneError(msg string) {
+// Prune returns the current image-prune status. It is a cheap value copy (no
+// map/slice cloning), suitable for the metrics scrape path and for a caller that
+// needs to merge a new result with the existing one.
+func (s *Store) Prune() PruneStatus {
 	if s == nil {
-		return
+		return PruneStatus{}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.snapshot.Prune.LastErrorAt = time.Now()
-	s.snapshot.Prune.Error = msg
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snapshot.Prune
 }
 
 // SetVerifiedAt records the last successful verification time.

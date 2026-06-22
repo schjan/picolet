@@ -47,9 +47,10 @@ picolet_last_image_prune_timestamp 1.7e+09
 func TestLastImagePruneCollector_FailureDoesNotEmit(t *testing.T) {
 	t.Parallel()
 	store, reg := newPruneRegistry(t)
-	// A failed attempt records an error but must not create the "last successful
-	// prune" series, otherwise a failing prune would look healthy.
-	store.SetPruneError("podman socket unavailable")
+	// A failed attempt records an error (LastErrorAt/Error) but leaves LastRunAt
+	// zero, so it must not create the "last successful prune" series — otherwise a
+	// failing prune would look healthy.
+	store.SetPrune(status.PruneStatus{LastErrorAt: time.Now(), Error: "podman socket unavailable"})
 
 	count, err := testutil.GatherAndCount(reg)
 	require.NoError(t, err)

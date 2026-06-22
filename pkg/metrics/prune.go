@@ -37,7 +37,7 @@ func (c *LastImagePruneCollector) Collect(ch chan<- prometheus.Metric) {
 	if c.store == nil {
 		return
 	}
-	last := c.store.Snapshot().Prune.LastRunAt
+	last := c.store.Prune().LastRunAt
 	if last.IsZero() {
 		return
 	}
