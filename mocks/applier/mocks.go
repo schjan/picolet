@@ -95,7 +95,7 @@ type MockSystemdManager_DaemonReload_Call struct {
 
 // DaemonReload is a helper method to define mock.On call
 //   - ctx context.Context
-func (_e *MockSystemdManager_Expecter) DaemonReload(ctx interface{}) *MockSystemdManager_DaemonReload_Call {
+func (_e *MockSystemdManager_Expecter) DaemonReload(ctx any) *MockSystemdManager_DaemonReload_Call {
 	return &MockSystemdManager_DaemonReload_Call{Call: _e.mock.On("DaemonReload", ctx)}
 }
 
@@ -118,6 +118,120 @@ func (_c *MockSystemdManager_DaemonReload_Call) Return(err error) *MockSystemdMa
 }
 
 func (_c *MockSystemdManager_DaemonReload_Call) RunAndReturn(run func(ctx context.Context) error) *MockSystemdManager_DaemonReload_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// DisableUnit provides a mock function for the type MockSystemdManager
+func (_mock *MockSystemdManager) DisableUnit(ctx context.Context, name string) error {
+	ret := _mock.Called(ctx, name)
+
+	if len(ret) == 0 {
+		panic("no return value specified for DisableUnit")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) error); ok {
+		r0 = returnFunc(ctx, name)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockSystemdManager_DisableUnit_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'DisableUnit'
+type MockSystemdManager_DisableUnit_Call struct {
+	*mock.Call
+}
+
+// DisableUnit is a helper method to define mock.On call
+//   - ctx context.Context
+//   - name string
+func (_e *MockSystemdManager_Expecter) DisableUnit(ctx any, name any) *MockSystemdManager_DisableUnit_Call {
+	return &MockSystemdManager_DisableUnit_Call{Call: _e.mock.On("DisableUnit", ctx, name)}
+}
+
+func (_c *MockSystemdManager_DisableUnit_Call) Run(run func(ctx context.Context, name string)) *MockSystemdManager_DisableUnit_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockSystemdManager_DisableUnit_Call) Return(err error) *MockSystemdManager_DisableUnit_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockSystemdManager_DisableUnit_Call) RunAndReturn(run func(ctx context.Context, name string) error) *MockSystemdManager_DisableUnit_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// EnableUnit provides a mock function for the type MockSystemdManager
+func (_mock *MockSystemdManager) EnableUnit(ctx context.Context, name string) error {
+	ret := _mock.Called(ctx, name)
+
+	if len(ret) == 0 {
+		panic("no return value specified for EnableUnit")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) error); ok {
+		r0 = returnFunc(ctx, name)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockSystemdManager_EnableUnit_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'EnableUnit'
+type MockSystemdManager_EnableUnit_Call struct {
+	*mock.Call
+}
+
+// EnableUnit is a helper method to define mock.On call
+//   - ctx context.Context
+//   - name string
+func (_e *MockSystemdManager_Expecter) EnableUnit(ctx any, name any) *MockSystemdManager_EnableUnit_Call {
+	return &MockSystemdManager_EnableUnit_Call{Call: _e.mock.On("EnableUnit", ctx, name)}
+}
+
+func (_c *MockSystemdManager_EnableUnit_Call) Run(run func(ctx context.Context, name string)) *MockSystemdManager_EnableUnit_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockSystemdManager_EnableUnit_Call) Return(err error) *MockSystemdManager_EnableUnit_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockSystemdManager_EnableUnit_Call) RunAndReturn(run func(ctx context.Context, name string) error) *MockSystemdManager_EnableUnit_Call {
 	_c.Call.Return(run)
 	return _c
 }
@@ -156,7 +270,7 @@ type MockSystemdManager_GetUnitStatus_Call struct {
 // GetUnitStatus is a helper method to define mock.On call
 //   - ctx context.Context
 //   - name string
-func (_e *MockSystemdManager_Expecter) GetUnitStatus(ctx interface{}, name interface{}) *MockSystemdManager_GetUnitStatus_Call {
+func (_e *MockSystemdManager_Expecter) GetUnitStatus(ctx any, name any) *MockSystemdManager_GetUnitStatus_Call {
 	return &MockSystemdManager_GetUnitStatus_Call{Call: _e.mock.On("GetUnitStatus", ctx, name)}
 }
 
@@ -213,7 +327,7 @@ type MockSystemdManager_RestartUnit_Call struct {
 // RestartUnit is a helper method to define mock.On call
 //   - ctx context.Context
 //   - name string
-func (_e *MockSystemdManager_Expecter) RestartUnit(ctx interface{}, name interface{}) *MockSystemdManager_RestartUnit_Call {
+func (_e *MockSystemdManager_Expecter) RestartUnit(ctx any, name any) *MockSystemdManager_RestartUnit_Call {
 	return &MockSystemdManager_RestartUnit_Call{Call: _e.mock.On("RestartUnit", ctx, name)}
 }
 
@@ -270,7 +384,7 @@ type MockSystemdManager_StartUnit_Call struct {
 // StartUnit is a helper method to define mock.On call
 //   - ctx context.Context
 //   - name string
-func (_e *MockSystemdManager_Expecter) StartUnit(ctx interface{}, name interface{}) *MockSystemdManager_StartUnit_Call {
+func (_e *MockSystemdManager_Expecter) StartUnit(ctx any, name any) *MockSystemdManager_StartUnit_Call {
 	return &MockSystemdManager_StartUnit_Call{Call: _e.mock.On("StartUnit", ctx, name)}
 }
 
@@ -327,7 +441,7 @@ type MockSystemdManager_StopUnit_Call struct {
 // StopUnit is a helper method to define mock.On call
 //   - ctx context.Context
 //   - name string
-func (_e *MockSystemdManager_Expecter) StopUnit(ctx interface{}, name interface{}) *MockSystemdManager_StopUnit_Call {
+func (_e *MockSystemdManager_Expecter) StopUnit(ctx any, name any) *MockSystemdManager_StopUnit_Call {
 	return &MockSystemdManager_StopUnit_Call{Call: _e.mock.On("StopUnit", ctx, name)}
 }
 
@@ -412,7 +526,7 @@ type MockPodmanClient_ContainerKill_Call struct {
 //   - ctx context.Context
 //   - nameOrID string
 //   - signal string
-func (_e *MockPodmanClient_Expecter) ContainerKill(ctx interface{}, nameOrID interface{}, signal interface{}) *MockPodmanClient_ContainerKill_Call {
+func (_e *MockPodmanClient_Expecter) ContainerKill(ctx any, nameOrID any, signal any) *MockPodmanClient_ContainerKill_Call {
 	return &MockPodmanClient_ContainerKill_Call{Call: _e.mock.On("ContainerKill", ctx, nameOrID, signal)}
 }
 
@@ -475,7 +589,7 @@ type MockPodmanClient_ContainerRemove_Call struct {
 //   - ctx context.Context
 //   - nameOrID string
 //   - force bool
-func (_e *MockPodmanClient_Expecter) ContainerRemove(ctx interface{}, nameOrID interface{}, force interface{}) *MockPodmanClient_ContainerRemove_Call {
+func (_e *MockPodmanClient_Expecter) ContainerRemove(ctx any, nameOrID any, force any) *MockPodmanClient_ContainerRemove_Call {
 	return &MockPodmanClient_ContainerRemove_Call{Call: _e.mock.On("ContainerRemove", ctx, nameOrID, force)}
 }
 
@@ -546,7 +660,7 @@ type MockPodmanClient_GetPodState_Call struct {
 // GetPodState is a helper method to define mock.On call
 //   - ctx context.Context
 //   - pod string
-func (_e *MockPodmanClient_Expecter) GetPodState(ctx interface{}, pod interface{}) *MockPodmanClient_GetPodState_Call {
+func (_e *MockPodmanClient_Expecter) GetPodState(ctx any, pod any) *MockPodmanClient_GetPodState_Call {
 	return &MockPodmanClient_GetPodState_Call{Call: _e.mock.On("GetPodState", ctx, pod)}
 }
 
@@ -613,7 +727,7 @@ type MockPodmanClient_ListManagedSecrets_Call struct {
 
 // ListManagedSecrets is a helper method to define mock.On call
 //   - ctx context.Context
-func (_e *MockPodmanClient_Expecter) ListManagedSecrets(ctx interface{}) *MockPodmanClient_ListManagedSecrets_Call {
+func (_e *MockPodmanClient_Expecter) ListManagedSecrets(ctx any) *MockPodmanClient_ListManagedSecrets_Call {
 	return &MockPodmanClient_ListManagedSecrets_Call{Call: _e.mock.On("ListManagedSecrets", ctx)}
 }
 
@@ -674,7 +788,7 @@ type MockPodmanClient_RunHealthcheck_Call struct {
 // RunHealthcheck is a helper method to define mock.On call
 //   - ctx context.Context
 //   - container string
-func (_e *MockPodmanClient_Expecter) RunHealthcheck(ctx interface{}, container interface{}) *MockPodmanClient_RunHealthcheck_Call {
+func (_e *MockPodmanClient_Expecter) RunHealthcheck(ctx any, container any) *MockPodmanClient_RunHealthcheck_Call {
 	return &MockPodmanClient_RunHealthcheck_Call{Call: _e.mock.On("RunHealthcheck", ctx, container)}
 }
 
@@ -733,7 +847,7 @@ type MockPodmanClient_SecretCreate_Call struct {
 //   - name string
 //   - data []byte
 //   - replace bool
-func (_e *MockPodmanClient_Expecter) SecretCreate(ctx interface{}, name interface{}, data interface{}, replace interface{}) *MockPodmanClient_SecretCreate_Call {
+func (_e *MockPodmanClient_Expecter) SecretCreate(ctx any, name any, data any, replace any) *MockPodmanClient_SecretCreate_Call {
 	return &MockPodmanClient_SecretCreate_Call{Call: _e.mock.On("SecretCreate", ctx, name, data, replace)}
 }
 
@@ -809,7 +923,7 @@ type MockPodmanClient_SecretExists_Call struct {
 // SecretExists is a helper method to define mock.On call
 //   - ctx context.Context
 //   - name string
-func (_e *MockPodmanClient_Expecter) SecretExists(ctx interface{}, name interface{}) *MockPodmanClient_SecretExists_Call {
+func (_e *MockPodmanClient_Expecter) SecretExists(ctx any, name any) *MockPodmanClient_SecretExists_Call {
 	return &MockPodmanClient_SecretExists_Call{Call: _e.mock.On("SecretExists", ctx, name)}
 }
 
@@ -866,7 +980,7 @@ type MockPodmanClient_SecretRemove_Call struct {
 // SecretRemove is a helper method to define mock.On call
 //   - ctx context.Context
 //   - name string
-func (_e *MockPodmanClient_Expecter) SecretRemove(ctx interface{}, name interface{}) *MockPodmanClient_SecretRemove_Call {
+func (_e *MockPodmanClient_Expecter) SecretRemove(ctx any, name any) *MockPodmanClient_SecretRemove_Call {
 	return &MockPodmanClient_SecretRemove_Call{Call: _e.mock.On("SecretRemove", ctx, name)}
 }
 
@@ -949,7 +1063,7 @@ type MockFileWriter_MkdirAll_Call struct {
 
 // MkdirAll is a helper method to define mock.On call
 //   - path string
-func (_e *MockFileWriter_Expecter) MkdirAll(path interface{}) *MockFileWriter_MkdirAll_Call {
+func (_e *MockFileWriter_Expecter) MkdirAll(path any) *MockFileWriter_MkdirAll_Call {
 	return &MockFileWriter_MkdirAll_Call{Call: _e.mock.On("MkdirAll", path)}
 }
 
@@ -1000,7 +1114,7 @@ type MockFileWriter_Remove_Call struct {
 
 // Remove is a helper method to define mock.On call
 //   - path string
-func (_e *MockFileWriter_Expecter) Remove(path interface{}) *MockFileWriter_Remove_Call {
+func (_e *MockFileWriter_Expecter) Remove(path any) *MockFileWriter_Remove_Call {
 	return &MockFileWriter_Remove_Call{Call: _e.mock.On("Remove", path)}
 }
 
@@ -1052,7 +1166,7 @@ type MockFileWriter_WriteFile_Call struct {
 // WriteFile is a helper method to define mock.On call
 //   - path string
 //   - content []byte
-func (_e *MockFileWriter_Expecter) WriteFile(path interface{}, content interface{}) *MockFileWriter_WriteFile_Call {
+func (_e *MockFileWriter_Expecter) WriteFile(path any, content any) *MockFileWriter_WriteFile_Call {
 	return &MockFileWriter_WriteFile_Call{Call: _e.mock.On("WriteFile", path, content)}
 }
 

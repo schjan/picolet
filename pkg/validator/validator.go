@@ -159,7 +159,29 @@ func validateSystemdUnit(path, content string) error {
 	if !strings.Contains(content, "[") {
 		return fmt.Errorf("%s: no section headers found in systemd unit", path)
 	}
+	// Light timer check: a [Timer] section must declare at least one On*= trigger,
+	// otherwise systemd refuses to start the timer. Parse via the INI parser so the
+	// check is robust against comments and value-position "[Timer]" strings.
+	unit := parser.NewUnitFile()
+	unit.Filename = filepath.Base(path)
+	if err := unit.Parse(content); err != nil {
+		return fmt.Errorf("%s: invalid systemd unit syntax: %w", path, err)
+	}
+	if unit.HasGroup("Timer") && !timerHasTrigger(unit) {
+		return fmt.Errorf("%s: [Timer] section requires an On*= trigger (e.g. OnCalendar=, OnBootSec=, OnUnitActiveSec=)", path)
+	}
 	return nil
+}
+
+// timerHasTrigger reports whether a [Timer] section declares at least one
+// monotonic/realtime trigger key (OnCalendar, OnBootSec, OnUnitActiveSec, ...).
+func timerHasTrigger(unit *parser.UnitFile) bool {
+	for _, key := range unit.ListKeys("Timer") {
+		if strings.HasPrefix(key, "On") {
+			return true
+		}
+	}
+	return false
 }
 
 func dependenciesFromSystemd(f resolver.ResolvedFile) status.UnitDependencies {

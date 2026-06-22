@@ -42,6 +42,80 @@ func TestEnforceAllHealthy(t *testing.T) {
 	assert.Len(t, result.Statuses, 2)
 }
 
+func TestEnforcePassiveTimerWaitingNotRestarted(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	// A timer at rest: active (waiting). Healthy; never restarted.
+	sys.EXPECT().GetUnitStatus(mock.Anything, "backup.timer").
+		Return(applier.UnitStatus{ActiveState: "active", SubState: "waiting", UnitFileState: "enabled"}, nil)
+	// RestartUnit must NOT be called.
+
+	c := New(sys)
+	st := &state.State{
+		ManagedFiles: map[string]state.ManagedFile{
+			"/etc/systemd/system/backup.timer": {Hash: "sha256:abc", Category: "systemd"},
+		},
+		ServiceNames: map[string]string{
+			"/etc/systemd/system/backup.timer": "backup.timer",
+		},
+	}
+
+	result, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"backup.timer"}, result.Healthy)
+	assert.Empty(t, result.Unhealthy)
+	assert.Empty(t, result.Restarted)
+}
+
+func TestEnforcePassiveTimerFailedNotRestarted(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	// Even a failed timer is reported, not restarted — restart semantics for
+	// timers are odd, and health-enforce must not churn them.
+	sys.EXPECT().GetUnitStatus(mock.Anything, "backup.timer").
+		Return(applier.UnitStatus{ActiveState: "failed", SubState: "dead"}, nil)
+	// RestartUnit must NOT be called.
+
+	c := New(sys)
+	st := &state.State{
+		ManagedFiles: map[string]state.ManagedFile{
+			"/etc/systemd/system/backup.timer": {Hash: "sha256:abc", Category: "systemd"},
+		},
+		ServiceNames: map[string]string{
+			"/etc/systemd/system/backup.timer": "backup.timer",
+		},
+	}
+
+	result, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.Contains(t, result.Inactive, "backup.timer")
+	assert.Empty(t, result.Unhealthy)
+	assert.Empty(t, result.Restarted)
+}
+
+// A genuinely-failed managed service (not a passive unit) is still restarted.
+func TestEnforceFailedServiceStillRestarted(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").
+		Return(applier.UnitStatus{ActiveState: "failed", SubState: "failed"}, nil)
+	sys.EXPECT().RestartUnit(mock.Anything, "app.service").Return(nil)
+
+	c := New(sys)
+	st := &state.State{
+		ManagedFiles: map[string]state.ManagedFile{
+			"/etc/containers/systemd/app.container": {Hash: "sha256:abc", Category: "container"},
+		},
+		ServiceNames: map[string]string{
+			"/etc/containers/systemd/app.container": "app.service",
+		},
+	}
+
+	result, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"app.service"}, result.Restarted)
+}
+
 func TestEnforceRestartsUnhealthy(t *testing.T) {
 	t.Parallel()
 	sys := appliermocks.NewMockSystemdManager(t)

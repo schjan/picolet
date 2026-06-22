@@ -355,6 +355,53 @@ func TestValidateSystemdUnit(t *testing.T) {
 	require.Error(t, validateSystemdUnit("test.socket", noSection))
 }
 
+func TestValidateSystemdUnitTimer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		content string
+		wantErr bool
+	}{
+		{
+			name:    "valid OnCalendar timer",
+			content: "[Timer]\nOnCalendar=daily\n\n[Install]\nWantedBy=timers.target\n",
+		},
+		{
+			name:    "valid OnUnitActiveSec timer",
+			content: "[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1h\n",
+		},
+		{
+			name:    "timer without On* trigger fails",
+			content: "[Timer]\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n",
+			wantErr: true,
+		},
+		{
+			name:    "empty timer section fails",
+			content: "[Timer]\n",
+			wantErr: true,
+		},
+		{
+			// A [Timer] string appearing only in a value must not satisfy the check.
+			name:    "timer mentioned in value is not a section",
+			content: "[Service]\nEnvironment=NOTE=[Timer]OnCalendar=x\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateSystemdUnit("test.timer", tt.content)
+			if tt.wantErr {
+				require.Error(t, err)
+				require.ErrorContains(t, err, "On*=")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestValidateFilesRejectsUnknownCategory(t *testing.T) {
 	t.Parallel()
 	err := ValidateFiles([]resolver.ResolvedFile{{

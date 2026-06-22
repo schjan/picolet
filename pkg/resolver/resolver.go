@@ -641,7 +641,8 @@ func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateDa
 	filename := destFilename(srcPath)
 	var parsedUnit *parser.UnitFile
 	var serviceName string
-	if quadlet {
+	switch {
+	case quadlet:
 		unit := parser.NewUnitFile()
 		unit.Filename = filename
 		if err := unit.Parse(content); err == nil {
@@ -649,6 +650,11 @@ func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateDa
 			serviceName = unitServiceName(unit)
 		}
 		// Parse errors are silent here — validator catches them with proper error messages
+	case category == config.CategorySystemd:
+		// Raw systemd units are not parsed; the unit name is the filename. Populate
+		// it so the unit is tracked in state.ServiceNames — driving health checks,
+		// the status store, and the dashboard, just like quadlet-derived units.
+		serviceName = filename
 	}
 
 	return &ResolvedFile{

@@ -3,6 +3,8 @@ base:
     - quadlets/networks/internal.network
   systemd:
     - systemd/custom.socket
+    - systemd/maintenance.timer
+    - systemd/maintenance.service
 pi_types:
   controller:
     containers:

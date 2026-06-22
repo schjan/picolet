@@ -52,7 +52,7 @@ type MockMQTTClient_Close_Call struct {
 
 // Close is a helper method to define mock.On call
 //   - ctx context.Context
-func (_e *MockMQTTClient_Expecter) Close(ctx interface{}) *MockMQTTClient_Close_Call {
+func (_e *MockMQTTClient_Expecter) Close(ctx any) *MockMQTTClient_Close_Call {
 	return &MockMQTTClient_Close_Call{Call: _e.mock.On("Close", ctx)}
 }
 
@@ -104,7 +104,7 @@ type MockMQTTClient_PublishStatus_Call struct {
 // PublishStatus is a helper method to define mock.On call
 //   - ctx context.Context
 //   - status mqtt.Status
-func (_e *MockMQTTClient_Expecter) PublishStatus(ctx interface{}, status interface{}) *MockMQTTClient_PublishStatus_Call {
+func (_e *MockMQTTClient_Expecter) PublishStatus(ctx any, status any) *MockMQTTClient_PublishStatus_Call {
 	return &MockMQTTClient_PublishStatus_Call{Call: _e.mock.On("PublishStatus", ctx, status)}
 }
 
@@ -162,7 +162,7 @@ type MockMQTTClient_Start_Call struct {
 //   - ctx context.Context
 //   - pauseFlag *atomic.Bool
 //   - triggerFn func()
-func (_e *MockMQTTClient_Expecter) Start(ctx interface{}, pauseFlag interface{}, triggerFn interface{}) *MockMQTTClient_Start_Call {
+func (_e *MockMQTTClient_Expecter) Start(ctx any, pauseFlag any, triggerFn any) *MockMQTTClient_Start_Call {
 	return &MockMQTTClient_Start_Call{Call: _e.mock.On("Start", ctx, pauseFlag, triggerFn)}
 }
 
@@ -260,7 +260,7 @@ type MockDeploymentReporter_CreateDeployment_Call struct {
 // CreateDeployment is a helper method to define mock.On call
 //   - ctx context.Context
 //   - sha string
-func (_e *MockDeploymentReporter_Expecter) CreateDeployment(ctx interface{}, sha interface{}) *MockDeploymentReporter_CreateDeployment_Call {
+func (_e *MockDeploymentReporter_Expecter) CreateDeployment(ctx any, sha any) *MockDeploymentReporter_CreateDeployment_Call {
 	return &MockDeploymentReporter_CreateDeployment_Call{Call: _e.mock.On("CreateDeployment", ctx, sha)}
 }
 
@@ -318,7 +318,7 @@ type MockDeploymentReporter_ReportError_Call struct {
 //   - ctx context.Context
 //   - deploymentID int64
 //   - err error
-func (_e *MockDeploymentReporter_Expecter) ReportError(ctx interface{}, deploymentID interface{}, err interface{}) *MockDeploymentReporter_ReportError_Call {
+func (_e *MockDeploymentReporter_Expecter) ReportError(ctx any, deploymentID any, err any) *MockDeploymentReporter_ReportError_Call {
 	return &MockDeploymentReporter_ReportError_Call{Call: _e.mock.On("ReportError", ctx, deploymentID, err)}
 }
 
@@ -381,7 +381,7 @@ type MockDeploymentReporter_ReportFailure_Call struct {
 //   - ctx context.Context
 //   - deploymentID int64
 //   - err error
-func (_e *MockDeploymentReporter_Expecter) ReportFailure(ctx interface{}, deploymentID interface{}, err interface{}) *MockDeploymentReporter_ReportFailure_Call {
+func (_e *MockDeploymentReporter_Expecter) ReportFailure(ctx any, deploymentID any, err any) *MockDeploymentReporter_ReportFailure_Call {
 	return &MockDeploymentReporter_ReportFailure_Call{Call: _e.mock.On("ReportFailure", ctx, deploymentID, err)}
 }
 
@@ -443,7 +443,7 @@ type MockDeploymentReporter_ReportInProgress_Call struct {
 // ReportInProgress is a helper method to define mock.On call
 //   - ctx context.Context
 //   - deploymentID int64
-func (_e *MockDeploymentReporter_Expecter) ReportInProgress(ctx interface{}, deploymentID interface{}) *MockDeploymentReporter_ReportInProgress_Call {
+func (_e *MockDeploymentReporter_Expecter) ReportInProgress(ctx any, deploymentID any) *MockDeploymentReporter_ReportInProgress_Call {
 	return &MockDeploymentReporter_ReportInProgress_Call{Call: _e.mock.On("ReportInProgress", ctx, deploymentID)}
 }
 
@@ -500,7 +500,7 @@ type MockDeploymentReporter_ReportSuccess_Call struct {
 // ReportSuccess is a helper method to define mock.On call
 //   - ctx context.Context
 //   - deploymentID int64
-func (_e *MockDeploymentReporter_Expecter) ReportSuccess(ctx interface{}, deploymentID interface{}) *MockDeploymentReporter_ReportSuccess_Call {
+func (_e *MockDeploymentReporter_Expecter) ReportSuccess(ctx any, deploymentID any) *MockDeploymentReporter_ReportSuccess_Call {
 	return &MockDeploymentReporter_ReportSuccess_Call{Call: _e.mock.On("ReportSuccess", ctx, deploymentID)}
 }
 
