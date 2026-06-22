@@ -377,6 +377,13 @@ func TestValidateSystemdUnitTimer(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			// A typo'd trigger key must not satisfy the check — systemd would
+			// silently never schedule it.
+			name:    "timer with typo'd trigger key fails",
+			content: "[Timer]\nOnCalender=daily\n\n[Install]\nWantedBy=timers.target\n",
+			wantErr: true,
+		},
+		{
 			name:    "empty timer section fails",
 			content: "[Timer]\n",
 			wantErr: true,

@@ -173,11 +173,25 @@ func validateSystemdUnit(path, content string) error {
 	return nil
 }
 
-// timerHasTrigger reports whether a [Timer] section declares at least one
-// monotonic/realtime trigger key (OnCalendar, OnBootSec, OnUnitActiveSec, ...).
+// timerTriggerKeys are the systemd [Timer] keys that schedule an elapse. A timer
+// must declare at least one or systemd refuses to start it. See systemd.timer(5).
+var timerTriggerKeys = map[string]struct{}{
+	"OnActiveSec":       {},
+	"OnBootSec":         {},
+	"OnStartupSec":      {},
+	"OnUnitActiveSec":   {},
+	"OnUnitInactiveSec": {},
+	"OnCalendar":        {},
+	"OnClockChange":     {},
+	"OnTimezoneChange":  {},
+}
+
+// timerHasTrigger reports whether a [Timer] section declares at least one known
+// trigger key. Matching against the known set (rather than an "On" prefix) rejects
+// typos like OnCalender= that systemd would silently fail to schedule.
 func timerHasTrigger(unit *parser.UnitFile) bool {
 	for _, key := range unit.ListKeys("Timer") {
-		if strings.HasPrefix(key, "On") {
+		if _, ok := timerTriggerKeys[key]; ok {
 			return true
 		}
 	}

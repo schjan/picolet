@@ -500,18 +500,20 @@ func (a *Applier) stopUnitForDelete(ctx context.Context, change reconciler.Chang
 	if unitName == "" {
 		return
 	}
+	// Raw systemd units may carry an [Install] enable symlink (e.g. into
+	// timers.target.wants) that orphan cleanup does not track. Disable while the
+	// file is still on disk, before applyChange removes it. This runs even for a
+	// self unit — disabling only removes the boot symlink, it does not stop the
+	// running process, so it is safe before the deferred stop.
+	if change.Category == config.CategorySystemd {
+		a.runSystemdOp(ctx, unitName, SystemdOpDisable, result)
+	}
 	if a.isSelfUnit(unitName) {
 		result.DeferredSelfStops = append(result.DeferredSelfStops, unitName)
 		return
 	}
 	if stopErr := a.systemd.StopUnit(ctx, unitName); stopErr != nil {
 		slog.Warn("stopping unit before file removal", "unit", unitName, "error", stopErr)
-	}
-	// Raw systemd units may carry an [Install] enable symlink (e.g. into
-	// timers.target.wants) that orphan cleanup does not track. Disable while the
-	// file is still on disk, before applyChange removes it.
-	if change.Category == config.CategorySystemd {
-		a.runSystemdOp(ctx, unitName, SystemdOpDisable, result)
 	}
 }
 
@@ -601,8 +603,14 @@ func (a *Applier) systemdOpFunc(op string) func(context.Context, string) error {
 		return a.systemd.DisableUnit
 	case SystemdOpStart:
 		return a.systemd.StartUnit
-	default: // SystemdOpRestart
+	case SystemdOpRestart:
 		return a.systemd.RestartUnit
+	default:
+		// Unreachable for the SystemdOp* constants; fail fast rather than silently
+		// restarting if a future op is added without wiring it here.
+		return func(context.Context, string) error {
+			return fmt.Errorf("unknown systemd operation %q", op)
+		}
 	}
 }
 
