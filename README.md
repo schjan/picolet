@@ -183,11 +183,13 @@ picolet's own image pulls and can never delete an image mid-deployment.
 Configured in `/etc/picolet/config.yml` (defaults shown):
 
 ```yaml
-prune_images: true       # set false to disable
-prune_interval: "168h"   # weekly; minimum 1m
+prune_images: true       # set false to disable pruning
+prune_interval: "168h"   # weekly; an explicit value must be >= 1m
 ```
 
-Defaults: **enabled, weekly**. Observability:
+Defaults: **enabled, weekly**. To disable pruning, set `prune_images: false` —
+an unset or `0s` `prune_interval` falls back to the weekly default rather than
+disabling it. Observability:
 
 ```bash
 journalctl -u picolet | grep "image prune"
