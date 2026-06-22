@@ -886,6 +886,7 @@ func e2eAssignments(e2eContainers []string, withSecret bool) string {
     - quadlets/networks/internal.network
   systemd:
     - systemd/custom.socket
+    - systemd/custom.service
     - systemd/maintenance.timer
     - systemd/maintenance.service
 pi_types:
