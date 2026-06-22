@@ -3,29 +3,11 @@ package health
 import (
 	"context"
 	"log/slog"
-	"path/filepath"
 	"time"
 
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/state"
 )
-
-// passiveUnitExts are systemd activator unit types with no running process
-// (timers, sockets, targets, paths). They sit in active (waiting) at rest and
-// have no meaningful "restart to recover" semantics, so health-enforce reports
-// their state but never restarts them.
-var passiveUnitExts = map[string]struct{}{
-	".timer":  {},
-	".socket": {},
-	".target": {},
-	".path":   {},
-}
-
-// isPassiveUnit reports whether a unit name is a passive activator unit.
-func isPassiveUnit(unit string) bool {
-	_, ok := passiveUnitExts[filepath.Ext(unit)]
-	return ok
-}
 
 const restartCooldown = 5 * time.Minute
 
@@ -117,7 +99,7 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State,
 	// Passive activator units (.timer/.socket/.target/.path) are never restarted:
 	// a timer at rest is active (waiting), and an enabled-but-inactive timer is
 	// expected between runs. Report status, clear any stale pending record, return.
-	if isPassiveUnit(unit) {
+	if applier.IsPassiveUnit(unit) {
 		if status.ActiveState == "active" || status.ActiveState == "activating" {
 			result.Healthy = append(result.Healthy, unit)
 		} else {

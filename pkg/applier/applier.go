@@ -279,20 +279,23 @@ func (a *Applier) isSelfContainer(destPath string) bool {
 	return a.isSelfUnit(unit + ".service")
 }
 
+// systemdActivation is one post-reload operation on a raw systemd unit.
+type systemdActivation struct {
+	unit string
+	op   string // SystemdOp* (enable/start/restart)
+}
+
 // applyPhaseResult holds the categorized change sets produced by applyPhase.
 type applyPhaseResult struct {
 	ChangedUnits   map[string]struct{}
 	ChangedSecrets map[string]struct{}
 	ChangedRels    map[config.Category]map[string]struct{} // category -> relpath set
-	// Raw systemd (CategorySystemd) activation sets, kept distinct from the
-	// quadlet ChangedUnits restart path: EnableUnits get systemctl-enable;
-	// StartUnits get started (passive-unit creates); RestartSystemdUnits get
-	// restarted (passive-unit updates + raw .service create/update). Applied
-	// after daemon-reload, before the quadlet restarts.
-	EnableUnits         map[string]struct{}
-	StartUnits          map[string]struct{}
-	RestartSystemdUnits map[string]struct{}
-	NeedsReload         bool
+	// SystemdActivations are enable/start/restart operations for raw
+	// (CategorySystemd) units, kept off the quadlet ChangedUnits restart path and
+	// applied in order after daemon-reload, before the quadlet restarts. A unit's
+	// enable is appended before its start/restart so the symlink exists first.
+	SystemdActivations []systemdActivation
+	NeedsReload        bool
 }
 
 // Apply applies the changeset in phased order. Equivalent to ApplyWithPending
@@ -358,12 +361,9 @@ func categoryRank(category config.Category) int {
 //nolint:cyclop // multiple early-continues are clearer than restructuring
 func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (*applyPhaseResult, error) {
 	p := &applyPhaseResult{
-		ChangedUnits:        make(map[string]struct{}),
-		ChangedSecrets:      make(map[string]struct{}),
-		ChangedRels:         make(map[config.Category]map[string]struct{}),
-		EnableUnits:         make(map[string]struct{}),
-		StartUnits:          make(map[string]struct{}),
-		RestartSystemdUnits: make(map[string]struct{}),
+		ChangedUnits:   make(map[string]struct{}),
+		ChangedSecrets: make(map[string]struct{}),
+		ChangedRels:    make(map[config.Category]map[string]struct{}),
 	}
 	for _, change := range sorted {
 		if change.Action == reconciler.ActionNoop {
@@ -418,15 +418,26 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 	return p, nil
 }
 
-// systemdPassiveExts are passive activator unit types: they have no running
+// passiveUnitExts are passive activator unit types: they have no running
 // process, so on create they are started and on update restarted (to reload a
 // changed schedule/config). Other raw systemd units (.service, .mount) are
 // treated as services.
-var systemdPassiveExts = map[string]struct{}{
+// passiveUnitExts are passive activator unit types: they have no running process,
+// so on create they are started and on update restarted (to reload a changed
+// schedule/config). Other raw systemd units (.service, .mount) are services.
+var passiveUnitExts = map[string]struct{}{
 	".timer":  {},
 	".socket": {},
 	".target": {},
 	".path":   {},
+}
+
+// IsPassiveUnit reports whether a systemd unit name is a passive activator unit
+// (.timer/.socket/.target/.path). Shared by the applier (activation choice) and
+// health (which never restarts passive units).
+func IsPassiveUnit(unitName string) bool {
+	_, ok := passiveUnitExts[filepath.Ext(unitName)]
+	return ok
 }
 
 // classifySystemdActivation records the enable/start/restart operations for a raw
@@ -436,25 +447,23 @@ var systemdPassiveExts = map[string]struct{}{
 func (a *Applier) classifySystemdActivation(change reconciler.Change, p *applyPhaseResult) {
 	unit := filepath.Base(change.DestPath)
 	hasInstall := systemdUnitHasInstall(unit, change.NewContent)
-	if _, passive := systemdPassiveExts[filepath.Ext(unit)]; passive {
-		if hasInstall {
-			p.EnableUnits[unit] = struct{}{}
-		}
-		// Start on create; restart on update so a changed OnCalendar/schedule is reloaded
-		// (StartUnit on an already-active timer would keep the old schedule).
-		if change.Action == reconciler.ActionUpdate {
-			p.RestartSystemdUnits[unit] = struct{}{}
-		} else {
-			p.StartUnits[unit] = struct{}{}
-		}
-		return
-	}
-	// Raw .service (and other non-passive units): only act when it declares an
-	// [Install] section — a long-running daemon managed directly. A oneshot with no
-	// [Install] is left to be triggered by its timer (write + daemon-reload only).
 	if hasInstall {
-		p.EnableUnits[unit] = struct{}{}
-		p.RestartSystemdUnits[unit] = struct{}{}
+		p.SystemdActivations = append(p.SystemdActivations, systemdActivation{unit, SystemdOpEnable})
+	}
+	switch {
+	case IsPassiveUnit(unit):
+		// Start on create; restart on update so a changed OnCalendar/schedule is
+		// reloaded (StartUnit on an already-active timer keeps the old schedule).
+		op := SystemdOpStart
+		if change.Action == reconciler.ActionUpdate {
+			op = SystemdOpRestart
+		}
+		p.SystemdActivations = append(p.SystemdActivations, systemdActivation{unit, op})
+	case hasInstall:
+		// Raw .service (and other non-passive units): a long-running daemon managed
+		// directly. A oneshot with no [Install] is left for its timer to trigger
+		// (write + daemon-reload only).
+		p.SystemdActivations = append(p.SystemdActivations, systemdActivation{unit, SystemdOpRestart})
 	}
 }
 
@@ -470,19 +479,6 @@ func systemdUnitHasInstall(unitName, content string) bool {
 		return false
 	}
 	return unit.HasGroup("Install")
-}
-
-// disableSystemdUnit removes a raw systemd unit's enable symlinks on delete.
-// Best-effort: a failure is logged and recorded but never fails the apply.
-func (a *Applier) disableSystemdUnit(ctx context.Context, unit string, result *ApplyResult) {
-	slog.Info("disabling unit", "unit", unit)
-	if err := a.systemd.DisableUnit(ctx, unit); err != nil {
-		slog.Warn("disabling unit failed", "unit", unit, "error", err)
-		result.Errors = append(result.Errors, fmt.Errorf("disabling %s: %w", unit, err))
-		result.SystemdUnitOps = append(result.SystemdUnitOps, SystemdUnitOp{Unit: unit, Operation: SystemdOpDisable, Result: SystemdOpResultError})
-		return
-	}
-	result.SystemdUnitOps = append(result.SystemdUnitOps, SystemdUnitOp{Unit: unit, Operation: SystemdOpDisable, Result: SystemdOpResultSuccess})
 }
 
 func recordChangedRel(changedRels map[config.Category]map[string]struct{}, category config.Category, relPath string) {
@@ -518,7 +514,7 @@ func (a *Applier) stopUnitForDelete(ctx context.Context, change reconciler.Chang
 	// timers.target.wants) that orphan cleanup does not track. Disable while the
 	// file is still on disk, before applyChange removes it.
 	if change.Category == config.CategorySystemd {
-		a.disableSystemdUnit(ctx, unitName, result)
+		a.runSystemdOp(ctx, unitName, SystemdOpDisable, result)
 	}
 }
 
@@ -550,7 +546,7 @@ func (a *Applier) applyChange(ctx context.Context, change reconciler.Change) err
 
 func (a *Applier) restartUnits(ctx context.Context, phase *applyPhaseResult, result *ApplyResult) error {
 	if len(phase.ChangedUnits) == 0 && !phase.NeedsReload && len(result.DeferredSelfStops) == 0 &&
-		len(phase.EnableUnits) == 0 && len(phase.StartUnits) == 0 && len(phase.RestartSystemdUnits) == 0 {
+		len(phase.SystemdActivations) == 0 {
 		return nil
 	}
 	// Reload first: enable/start must see the new unit files in systemd's namespace.
@@ -576,32 +572,41 @@ func (a *Applier) restartUnits(ctx context.Context, phase *applyPhaseResult, res
 	return nil
 }
 
-// activateSystemdUnits enables, starts, and restarts raw systemd units after the
-// daemon-reload. Each operation is best-effort: failures are logged, appended to
-// result.Errors, and recorded for metrics, but do not gate apply completeness —
-// health-enforce converges genuinely-failed services on a later tick.
+// activateSystemdUnits runs the enable/start/restart operations for raw systemd
+// units after the daemon-reload, in the order they were recorded. Each operation
+// is best-effort: failures are logged, appended to result.Errors, and recorded
+// for metrics, but do not gate apply completeness — health-enforce converges
+// genuinely-failed services on a later tick.
 func (a *Applier) activateSystemdUnits(ctx context.Context, phase *applyPhaseResult, result *ApplyResult) {
-	for _, unit := range slices.Sorted(maps.Keys(phase.EnableUnits)) {
-		a.runSystemdOp(ctx, unit, SystemdOpEnable, a.systemd.EnableUnit, result)
-	}
-	for _, unit := range slices.Sorted(maps.Keys(phase.StartUnits)) {
-		a.runSystemdOp(ctx, unit, SystemdOpStart, a.systemd.StartUnit, result)
-	}
-	for _, unit := range slices.Sorted(maps.Keys(phase.RestartSystemdUnits)) {
-		a.runSystemdOp(ctx, unit, SystemdOpRestart, a.systemd.RestartUnit, result)
+	for _, act := range phase.SystemdActivations {
+		a.runSystemdOp(ctx, act.unit, act.op, result)
 	}
 }
 
 // runSystemdOp invokes one systemd operation on a raw unit and records its outcome.
-func (a *Applier) runSystemdOp(ctx context.Context, unit, op string, fn func(context.Context, string) error, result *ApplyResult) {
+func (a *Applier) runSystemdOp(ctx context.Context, unit, op string, result *ApplyResult) {
 	slog.Info("systemd unit operation", "unit", unit, "operation", op)
-	if err := fn(ctx, unit); err != nil {
+	if err := a.systemdOpFunc(op)(ctx, unit); err != nil {
 		slog.Warn("systemd unit operation failed", "unit", unit, "operation", op, "error", err)
 		result.Errors = append(result.Errors, fmt.Errorf("%s %s: %w", op, unit, err))
 		result.SystemdUnitOps = append(result.SystemdUnitOps, SystemdUnitOp{Unit: unit, Operation: op, Result: SystemdOpResultError})
 		return
 	}
 	result.SystemdUnitOps = append(result.SystemdUnitOps, SystemdUnitOp{Unit: unit, Operation: op, Result: SystemdOpResultSuccess})
+}
+
+// systemdOpFunc maps a SystemdOp* constant to the SystemdManager method that runs it.
+func (a *Applier) systemdOpFunc(op string) func(context.Context, string) error {
+	switch op {
+	case SystemdOpEnable:
+		return a.systemd.EnableUnit
+	case SystemdOpDisable:
+		return a.systemd.DisableUnit
+	case SystemdOpStart:
+		return a.systemd.StartUnit
+	default: // SystemdOpRestart
+		return a.systemd.RestartUnit
+	}
 }
 
 // scheduleSelfUnitOps fires the deferred restarts/stops of the agent's own
