@@ -422,9 +422,6 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 // process, so on create they are started and on update restarted (to reload a
 // changed schedule/config). Other raw systemd units (.service, .mount) are
 // treated as services.
-// passiveUnitExts are passive activator unit types: they have no running process,
-// so on create they are started and on update restarted (to reload a changed
-// schedule/config). Other raw systemd units (.service, .mount) are services.
 var passiveUnitExts = map[string]struct{}{
 	".timer":  {},
 	".socket": {},

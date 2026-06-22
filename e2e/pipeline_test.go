@@ -127,9 +127,15 @@ func TestE2EPipeline(t *testing.T) {
 				_ = os.Remove(destPath)
 			}
 		}
-		// Daemon-reload to clean up generated units and remove the container
+		// Disable any enabled raw systemd units so their *.target.wants symlinks
+		// never leak (the file removal above does not remove enable symlinks).
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
+		for _, unit := range []string{"maintenance.timer", "custom.socket"} {
+			_ = systemd.StopUnit(cleanupCtx, unit)
+			_ = systemd.DisableUnit(cleanupCtx, unit)
+		}
+		// Daemon-reload to clean up generated units and remove the container
 		_ = systemd.DaemonReload(cleanupCtx)
 		_ = podman.ContainerRemove(cleanupCtx, "picolet-e2e-test", true)
 		_ = podman.ContainerRemove(cleanupCtx, "systemd-extra", true)
@@ -213,17 +219,11 @@ func TestE2EPipeline(t *testing.T) {
 		assert.Nil(t, result.ApplyResult, "no apply should have run")
 	})
 
+	// The committed base.systemd deploys maintenance.timer (with [Install]) and a
+	// oneshot maintenance.service (no [Install]). The units stay deployed through
+	// the sequential flow; the remove_all sub-test below asserts they are disabled
+	// and removed on delete.
 	t.Run("maintenance_timer", func(t *testing.T) {
-		// The committed base.systemd deploys maintenance.timer (with [Install]) and
-		// a oneshot maintenance.service (no [Install]). Best-effort disable on the
-		// way out so an enabled symlink never leaks across CI runs.
-		t.Cleanup(func() {
-			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			_ = systemd.StopUnit(cctx, "maintenance.timer")
-			_ = systemd.DisableUnit(cctx, "maintenance.timer")
-		})
-
 		t.Run("timer_enabled_and_waiting", func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
@@ -260,43 +260,6 @@ func TestE2EPipeline(t *testing.T) {
 				status, err := systemd.GetUnitStatus(ctx, "maintenance.service")
 				return err == nil && status.ActiveState == "inactive" && status.SubState == "dead"
 			}, 10*time.Second, 250*time.Millisecond, "oneshot /bin/true should complete and go inactive")
-		})
-
-		t.Run("removal_disables_and_deletes", func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
-			defer cancel()
-
-			assignPath := filepath.Join(fleetDir, "assignments.yml")
-			orig, err := os.ReadFile(assignPath)
-			require.NoError(t, err)
-			// Drop only the two maintenance entries; keep everything else intact.
-			withoutMaint := strings.ReplaceAll(string(orig),
-				"    - systemd/maintenance.timer\n    - systemd/maintenance.service\n", "")
-			require.NotEqual(t, string(orig), withoutMaint, "fixture should contain the maintenance entries")
-			require.NoError(t, os.WriteFile(assignPath, []byte(withoutMaint), 0o644))
-			t.Cleanup(func() { _ = os.WriteFile(assignPath, orig, 0o644) }) // restore for downstream sub-tests
-
-			st, err := store.Load()
-			require.NoError(t, err)
-			result, err := a.ReconcileOnce(ctx, "remove-timer-sha", st, store)
-			require.NoError(t, err)
-			require.NotNil(t, result.ApplyResult)
-			assert.Empty(t, result.ApplyResult.Errors)
-
-			assert.NoFileExists(t, filepath.Join(systemdDir, "maintenance.timer"))
-			assert.NoFileExists(t, filepath.Join(systemdDir, "maintenance.service"))
-
-			status, err := systemd.GetUnitStatus(ctx, "maintenance.timer")
-			// After disable + reload the unit is unknown or no longer enabled.
-			if err == nil {
-				assert.NotEqual(t, "enabled", status.UnitFileState, "timer should be disabled after removal")
-			}
-
-			// Re-deploy so subsequent sequential sub-tests see the baseline fleet again.
-			st, err = store.Load()
-			require.NoError(t, err)
-			_, err = a.ReconcileOnce(ctx, "restore-timer-sha", st, store)
-			require.NoError(t, err)
 		})
 	})
 
@@ -830,6 +793,20 @@ WantedBy=default.target
 
 		t.Run("socket_removed", func(t *testing.T) {
 			assert.NoFileExists(t, filepath.Join(systemdDir, "custom.socket"))
+		})
+
+		t.Run("maintenance_timer_disabled_and_removed", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+
+			assert.NoFileExists(t, filepath.Join(systemdDir, "maintenance.timer"))
+			assert.NoFileExists(t, filepath.Join(systemdDir, "maintenance.service"))
+
+			// The delete path stops + disables the timer before removing the file;
+			// after daemon-reload the unit is unknown or at least no longer enabled.
+			if status, err := systemd.GetUnitStatus(ctx, "maintenance.timer"); err == nil {
+				assert.NotEqual(t, "enabled", status.UnitFileState, "timer should be disabled after removal")
+			}
 		})
 
 		t.Run("container_removed", func(t *testing.T) {
