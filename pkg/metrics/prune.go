@@ -7,9 +7,11 @@ import (
 )
 
 // LastImagePruneCollector emits picolet_last_image_prune_timestamp from the
-// injected *status.Store. The series is omitted until the first prune has run
-// (LastRunAt is zero), so "age since last prune" queries are never poisoned by
-// the Unix epoch and absent() distinguishes "never pruned" from "overdue".
+// injected *status.Store. The series is omitted until a successful prune time is
+// known — either from a prune in this process or seeded from persisted state on
+// restart (a zero LastRunAt emits nothing) — so "age since last prune" queries
+// are never poisoned by the Unix epoch and absent() distinguishes "never pruned"
+// from "overdue".
 type LastImagePruneCollector struct {
 	store *status.Store
 	desc  *prometheus.Desc

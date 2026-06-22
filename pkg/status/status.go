@@ -45,10 +45,14 @@ type OrphanScan struct {
 	Error          string
 }
 
-// PruneStatus captures the most recent image-prune outcome. LastRunAt is the
-// last *successful* prune (a zero value means none has succeeded in this
-// process's view, and no series is emitted for it). LastErrorAt/Error record the
-// most recent failed attempt without disturbing the last-success fields.
+// PruneStatus captures the most recent image-prune outcome.
+//   - LastRunAt is the last *successful* (fully clean) prune; a zero value means
+//     none is known in this process's view and no last-prune-timestamp series is
+//     emitted.
+//   - ImagesRemoved/ReclaimedBytes report what the most recent attempt reclaimed.
+//     They are also populated on a partial failure, so they are not necessarily
+//     tied to LastRunAt.
+//   - LastErrorAt/Error record the most recent failed attempt.
 type PruneStatus struct {
 	LastRunAt      time.Time
 	ImagesRemoved  int

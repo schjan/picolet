@@ -184,7 +184,7 @@ Configured in `/etc/picolet/config.yml` (defaults shown):
 
 ```yaml
 prune_images: true       # set false to disable pruning
-prune_interval: "168h"   # weekly; an explicit value must be >= 1m
+prune_interval: "168h"   # weekly; a non-zero value below 1m is rejected
 ```
 
 Defaults: **enabled, weekly**. To disable pruning, set `prune_images: false` —
