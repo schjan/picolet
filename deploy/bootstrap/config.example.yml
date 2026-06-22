@@ -28,6 +28,14 @@ rootless: false
 # Default: /run/podman/podman.sock (correct for both modes — volume mounts handle it)
 # podman_socket: "/run/podman/podman.sock"
 
+# Node maintenance: periodically remove unused container images (equivalent to
+# `podman image prune -a`). Runs inside the reconcile loop, so it never races an
+# image pull. Removes only images not used by any container — never volumes,
+# networks, or in-use images.
+# Default: enabled, weekly.
+# prune_images: true
+# prune_interval: "168h"
+
 # GitHub authentication (for private repos):
 # Create a PAT with Contents: Read-only scope:
 #   Rootful:  echo "ghp_..." > /etc/picolet/secrets/git_token && chmod 600 ...

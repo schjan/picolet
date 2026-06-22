@@ -77,6 +77,8 @@ type Config struct {
 	GitHubAppID          int64              `yaml:"github_app_id"`
 	GitHubInstallationID int64              `yaml:"github_installation_id"`
 	GitHubPrivateKeyPath string             `yaml:"github_private_key_path"`
+	PruneImages          *bool              `yaml:"prune_images"`   // remove unused container images on a schedule; nil => enabled
+	PruneInterval        time.Duration      `yaml:"prune_interval"` // how often to prune unused images (default 168h / weekly)
 }
 
 // Load reads and parses the agent config from disk.
@@ -131,6 +133,15 @@ func (c *Config) setDefaults() {
 	if c.ProtonPass != nil && c.ProtonPass.RefreshInterval == 0 {
 		c.ProtonPass.RefreshInterval = 6 * time.Hour
 	}
+	if c.PruneInterval == 0 {
+		c.PruneInterval = 7 * 24 * time.Hour
+	}
+}
+
+// PruneImagesEnabled reports whether scheduled image pruning is enabled.
+// Defaults to true when prune_images is not set explicitly in config.
+func (c *Config) PruneImagesEnabled() bool {
+	return c.PruneImages == nil || *c.PruneImages
 }
 
 // UseSystemdUser reports whether the agent should connect to the user systemd
@@ -190,6 +201,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MQTT != nil && c.MQTT.PasswordPath != "" && c.MQTT.Username == "" {
 		return errors.New("mqtt.username is required when mqtt.password_path is set")
+	}
+	if c.PruneImagesEnabled() && c.PruneInterval < time.Minute {
+		return errors.New("prune_interval must be at least 1m")
 	}
 	if c.OnePassword != nil {
 		if err := c.validateOnePassword(); err != nil {

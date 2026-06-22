@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bootstrap.sh — one-time rootful setup. Run as root.
-# Prerequisite: /etc/picolet/config.yml must exist (see config.yml.example).
+# Prerequisite: /etc/picolet/config.yml must exist (see config.example.yml).
 set -euo pipefail
 
 PICOLET_IMAGE="${PICOLET_IMAGE:-ghcr.io/schjan/picolet:v0.1.0}"

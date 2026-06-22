@@ -45,6 +45,15 @@ type OrphanScan struct {
 	Error          string
 }
 
+// PruneStatus captures the most recent image-prune outcome. A zero LastRunAt
+// means no prune has run in this process's view (no series is emitted for it).
+type PruneStatus struct {
+	LastRunAt      time.Time
+	ImagesRemoved  int
+	ReclaimedBytes uint64
+	Error          string
+}
+
 // ReconcileEvent is a compact in-memory event rendered by the dashboard.
 type ReconcileEvent struct {
 	At      time.Time
@@ -59,6 +68,7 @@ type Snapshot struct {
 	Dependencies map[string]UnitDependencies
 	Host         HostMetadata
 	OrphanScan   OrphanScan
+	Prune        PruneStatus
 	Events       []ReconcileEvent
 	VerifiedAt   time.Time
 	// Bootstrapped is true once the agent has completed at least one
@@ -166,6 +176,16 @@ func (s *Store) SetOrphanScan(scan OrphanScan) {
 	s.snapshot.OrphanScan = scan
 }
 
+// SetPrune records the latest image-prune result.
+func (s *Store) SetPrune(prune PruneStatus) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshot.Prune = prune
+}
+
 // SetVerifiedAt records the last successful verification time.
 func (s *Store) SetVerifiedAt(t time.Time) {
 	if s == nil {
@@ -199,6 +219,7 @@ func cloneSnapshot(in Snapshot) Snapshot {
 		Dependencies: cloneDependenciesMap(in.Dependencies),
 		Host:         cloneHost(in.Host),
 		OrphanScan:   in.OrphanScan,
+		Prune:        in.Prune,
 		Events:       slices.Clone(in.Events),
 		VerifiedAt:   in.VerifiedAt,
 		Bootstrapped: in.Bootstrapped,

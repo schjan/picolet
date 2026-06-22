@@ -3,6 +3,7 @@ package applier
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -10,8 +11,10 @@ import (
 	"github.com/containers/podman/v5/libpod/define"
 	"github.com/containers/podman/v5/pkg/bindings"
 	"github.com/containers/podman/v5/pkg/bindings/containers"
+	"github.com/containers/podman/v5/pkg/bindings/images"
 	"github.com/containers/podman/v5/pkg/bindings/pods"
 	"github.com/containers/podman/v5/pkg/bindings/secrets"
+	"github.com/containers/podman/v5/pkg/domain/entities/reports"
 )
 
 // secretLabelKey and secretLabelValue are the Podman label applied to all picolet-managed secrets.
@@ -132,4 +135,36 @@ func (c *SocketPodmanClient) GetPodState(_ context.Context, pod string) (string,
 		return "", fmt.Errorf("inspecting pod %s: %w", pod, err)
 	}
 	return report.State, nil
+}
+
+//nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
+func (c *SocketPodmanClient) ImagePrune(_ context.Context, all bool) (PruneResult, error) {
+	reps, err := images.Prune(c.connCtx, new(images.PruneOptions).WithAll(all))
+	if err != nil {
+		return PruneResult{}, fmt.Errorf("pruning images: %w", err)
+	}
+	return aggregatePrune(reps)
+}
+
+// aggregatePrune folds per-image prune reports into a single result. It is kept
+// pure (no socket) so the aggregation logic is table-testable. Per-image errors
+// are joined and returned alongside a usable result for the images that did
+// succeed.
+func aggregatePrune(reps []*reports.PruneReport) (PruneResult, error) {
+	var (
+		res  PruneResult
+		errs []error
+	)
+	for _, r := range reps {
+		if r == nil {
+			continue
+		}
+		if r.Err != nil {
+			errs = append(errs, fmt.Errorf("image %s: %w", r.Id, r.Err))
+			continue
+		}
+		res.ImagesRemoved++
+		res.ReclaimedBytes += r.Size
+	}
+	return res, errors.Join(errs...)
 }

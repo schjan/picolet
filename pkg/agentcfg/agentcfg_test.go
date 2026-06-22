@@ -42,6 +42,7 @@ webhook_secret_path: /etc/picolet/webhook-secret
 				SecretsDir:        "/run/secrets",
 				PodmanSocket:      "/run/podman/podman.sock",
 				WebhookSecretPath: "/etc/picolet/webhook-secret",
+				PruneInterval:     7 * 24 * time.Hour,
 			},
 		},
 		{
@@ -51,13 +52,14 @@ hostname: rpi5-1
 repo_url: https://github.com/example/fleet.git
 `,
 			want: Config{ //nolint:gosec // test fixture, not real credentials
-				Hostname:     "rpi5-1",
-				RepoURL:      "https://github.com/example/fleet.git",
-				RepoBranch:   "main",
-				PollInterval: 5 * time.Minute,
-				MetricsPort:  9417,
-				SecretsDir:   "/etc/picolet/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
+				Hostname:      "rpi5-1",
+				RepoURL:       "https://github.com/example/fleet.git",
+				RepoBranch:    "main",
+				PollInterval:  5 * time.Minute,
+				MetricsPort:   9417,
+				SecretsDir:    "/etc/picolet/secrets",
+				PodmanSocket:  "/run/podman/podman.sock",
+				PruneInterval: 7 * 24 * time.Hour,
 			},
 		},
 		{
@@ -69,14 +71,15 @@ rootless: false
 systemd_user: true
 `,
 			want: Config{ //nolint:gosec // test fixture, not real credentials
-				Hostname:     "rpi5-1",
-				RepoURL:      "https://github.com/example/fleet.git",
-				RepoBranch:   "main",
-				PollInterval: 5 * time.Minute,
-				MetricsPort:  9417,
-				SecretsDir:   "/etc/picolet/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
-				SystemdUser:  new(true),
+				Hostname:      "rpi5-1",
+				RepoURL:       "https://github.com/example/fleet.git",
+				RepoBranch:    "main",
+				PollInterval:  5 * time.Minute,
+				MetricsPort:   9417,
+				SecretsDir:    "/etc/picolet/secrets",
+				PodmanSocket:  "/run/podman/podman.sock",
+				PruneInterval: 7 * 24 * time.Hour,
+				SystemdUser:   new(true),
 			},
 		},
 		{
@@ -88,15 +91,16 @@ rootless: true
 systemd_user: false
 `,
 			want: Config{ //nolint:gosec // test fixture, not real credentials
-				Hostname:     "rpi5-1",
-				RepoURL:      "https://github.com/example/fleet.git",
-				RepoBranch:   "main",
-				PollInterval: 5 * time.Minute,
-				MetricsPort:  9417,
-				SecretsDir:   "/etc/picolet/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
-				Rootless:     true,
-				SystemdUser:  new(false),
+				Hostname:      "rpi5-1",
+				RepoURL:       "https://github.com/example/fleet.git",
+				RepoBranch:    "main",
+				PollInterval:  5 * time.Minute,
+				MetricsPort:   9417,
+				SecretsDir:    "/etc/picolet/secrets",
+				PodmanSocket:  "/run/podman/podman.sock",
+				PruneInterval: 7 * 24 * time.Hour,
+				Rootless:      true,
+				SystemdUser:   new(false),
 			},
 		},
 		{
@@ -107,14 +111,15 @@ repo_url: https://github.com/example/fleet.git
 rootless: true
 `,
 			want: Config{ //nolint:gosec // test fixture, not real credentials
-				Hostname:     "rpi5-1",
-				RepoURL:      "https://github.com/example/fleet.git",
-				RepoBranch:   "main",
-				PollInterval: 5 * time.Minute,
-				MetricsPort:  9417,
-				SecretsDir:   "/etc/picolet/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
-				Rootless:     true,
+				Hostname:      "rpi5-1",
+				RepoURL:       "https://github.com/example/fleet.git",
+				RepoBranch:    "main",
+				PollInterval:  5 * time.Minute,
+				MetricsPort:   9417,
+				SecretsDir:    "/etc/picolet/secrets",
+				PodmanSocket:  "/run/podman/podman.sock",
+				PruneInterval: 7 * 24 * time.Hour,
+				Rootless:      true,
 			},
 		},
 		{
@@ -127,16 +132,17 @@ data_dir: /tmp/picolet-data
 host_data_dir: /home/pi/.local/share/picolet
 `,
 			want: Config{ //nolint:gosec // test fixture, not real credentials
-				Hostname:     "rpi5-1",
-				RepoURL:      "https://github.com/example/fleet.git",
-				RepoBranch:   "main",
-				PollInterval: 5 * time.Minute,
-				MetricsPort:  9417,
-				SecretsDir:   "/etc/picolet/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
-				RepoSubDir:   "fleet/config",
-				DataDir:      "/tmp/picolet-data",
-				HostDataDir:  "/home/pi/.local/share/picolet",
+				Hostname:      "rpi5-1",
+				RepoURL:       "https://github.com/example/fleet.git",
+				RepoBranch:    "main",
+				PollInterval:  5 * time.Minute,
+				MetricsPort:   9417,
+				SecretsDir:    "/etc/picolet/secrets",
+				PodmanSocket:  "/run/podman/podman.sock",
+				PruneInterval: 7 * 24 * time.Hour,
+				RepoSubDir:    "fleet/config",
+				DataDir:       "/tmp/picolet-data",
+				HostDataDir:   "/home/pi/.local/share/picolet",
 			},
 		},
 		{
@@ -180,6 +186,7 @@ github_private_key_path: /etc/picolet/secrets/github-app.pem
 				GitHubAppID:          12345,
 				GitHubInstallationID: 67890,
 				GitHubPrivateKeyPath: "/etc/picolet/secrets/github-app.pem",
+				PruneInterval:        7 * 24 * time.Hour,
 			},
 		},
 		{
@@ -248,12 +255,13 @@ onepassword:
   github_private_key_ref: "op://vault/app/private_key"
 `,
 			want: Config{ //nolint:gosec // test fixture, not real credentials
-				Hostname:     "rpi5-1",
-				RepoBranch:   "main",
-				PollInterval: 5 * time.Minute,
-				MetricsPort:  9417,
-				SecretsDir:   "/etc/picolet/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
+				Hostname:      "rpi5-1",
+				RepoBranch:    "main",
+				PollInterval:  5 * time.Minute,
+				MetricsPort:   9417,
+				SecretsDir:    "/etc/picolet/secrets",
+				PodmanSocket:  "/run/podman/podman.sock",
+				PruneInterval: 7 * 24 * time.Hour,
 				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture, not real credentials
 					TokenPath:             "/etc/picolet/op-token",
 					RefreshInterval:       6 * time.Hour,
@@ -296,13 +304,14 @@ onepassword:
   token_path: /etc/picolet/op-token
 `,
 			want: Config{ //nolint:gosec // test fixture, not real credentials
-				Hostname:     "rpi5-1",
-				RepoBranch:   "main",
-				PollInterval: 5 * time.Minute,
-				MetricsPort:  9417,
-				SecretsDir:   "/etc/picolet/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
-				OnePassword:  &OnePasswordConfig{TokenPath: "/etc/picolet/op-token", RefreshInterval: 6 * time.Hour}, //nolint:gosec // test fixture
+				Hostname:      "rpi5-1",
+				RepoBranch:    "main",
+				PollInterval:  5 * time.Minute,
+				MetricsPort:   9417,
+				SecretsDir:    "/etc/picolet/secrets",
+				PodmanSocket:  "/run/podman/podman.sock",
+				PruneInterval: 7 * 24 * time.Hour,
+				OnePassword:   &OnePasswordConfig{TokenPath: "/etc/picolet/op-token", RefreshInterval: 6 * time.Hour}, //nolint:gosec // test fixture
 			},
 		},
 		{
@@ -342,25 +351,27 @@ onepassword:
   refresh_interval: 1h
 `,
 			want: Config{ //nolint:gosec // test fixture, not real credentials
-				Hostname:     "rpi5-1",
-				RepoBranch:   "main",
-				PollInterval: 5 * time.Minute,
-				MetricsPort:  9417,
-				SecretsDir:   "/etc/picolet/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
-				OnePassword:  &OnePasswordConfig{TokenPath: "/etc/picolet/op-token", RefreshInterval: time.Hour}, //nolint:gosec // test fixture
+				Hostname:      "rpi5-1",
+				RepoBranch:    "main",
+				PollInterval:  5 * time.Minute,
+				MetricsPort:   9417,
+				SecretsDir:    "/etc/picolet/secrets",
+				PodmanSocket:  "/run/podman/podman.sock",
+				PruneInterval: 7 * 24 * time.Hour,
+				OnePassword:   &OnePasswordConfig{TokenPath: "/etc/picolet/op-token", RefreshInterval: time.Hour}, //nolint:gosec // test fixture
 			},
 		},
 		{
 			name:    "minimal config without repo_url",
 			content: "hostname: rpi5-1\n",
 			want: Config{ //nolint:gosec // test fixture, not real credentials
-				Hostname:     "rpi5-1",
-				RepoBranch:   "main",
-				PollInterval: 5 * time.Minute,
-				MetricsPort:  9417,
-				SecretsDir:   "/etc/picolet/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
+				Hostname:      "rpi5-1",
+				RepoBranch:    "main",
+				PollInterval:  5 * time.Minute,
+				MetricsPort:   9417,
+				SecretsDir:    "/etc/picolet/secrets",
+				PodmanSocket:  "/run/podman/podman.sock",
+				PruneInterval: 7 * 24 * time.Hour,
 			},
 		},
 		{
@@ -372,12 +383,13 @@ onepassword:
   git_token_ref: "op://vault/item/token"
 `,
 			want: Config{ //nolint:gosec // test fixture, not real credentials
-				Hostname:     "rpi5-1",
-				RepoBranch:   "main",
-				PollInterval: 5 * time.Minute,
-				MetricsPort:  9417,
-				SecretsDir:   "/etc/picolet/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
+				Hostname:      "rpi5-1",
+				RepoBranch:    "main",
+				PollInterval:  5 * time.Minute,
+				MetricsPort:   9417,
+				SecretsDir:    "/etc/picolet/secrets",
+				PodmanSocket:  "/run/podman/podman.sock",
+				PruneInterval: 7 * 24 * time.Hour,
 				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture
 					TokenPath:       "/etc/picolet/op-token",
 					RefreshInterval: 6 * time.Hour,
@@ -415,12 +427,13 @@ onepassword:
   git_token_ref: "op://vault/item/credential"
 `,
 			want: Config{ //nolint:gosec // test fixture, not real credentials
-				Hostname:     "rpi5-1",
-				RepoBranch:   "main",
-				PollInterval: 5 * time.Minute,
-				MetricsPort:  9417,
-				SecretsDir:   "/etc/picolet/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
+				Hostname:      "rpi5-1",
+				RepoBranch:    "main",
+				PollInterval:  5 * time.Minute,
+				MetricsPort:   9417,
+				SecretsDir:    "/etc/picolet/secrets",
+				PodmanSocket:  "/run/podman/podman.sock",
+				PruneInterval: 7 * 24 * time.Hour,
 				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture
 					TokenPath:       "/etc/picolet/op-token",
 					RefreshInterval: 6 * time.Hour,
@@ -435,12 +448,13 @@ hostname: rpi5-1
 protonpass: {}
 `,
 			want: Config{ //nolint:gosec // test fixture, not real credentials
-				Hostname:     "rpi5-1",
-				RepoBranch:   "main",
-				PollInterval: 5 * time.Minute,
-				MetricsPort:  9417,
-				SecretsDir:   "/etc/picolet/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
+				Hostname:      "rpi5-1",
+				RepoBranch:    "main",
+				PollInterval:  5 * time.Minute,
+				MetricsPort:   9417,
+				SecretsDir:    "/etc/picolet/secrets",
+				PodmanSocket:  "/run/podman/podman.sock",
+				PruneInterval: 7 * 24 * time.Hour,
 				ProtonPass: &ProtonPassConfig{
 					RefreshInterval: 6 * time.Hour,
 				},
@@ -527,12 +541,13 @@ protonpass:
   github_private_key_ref: "pass://share/item/key"
 `,
 			want: Config{ //nolint:gosec // test fixture
-				Hostname:     "rpi5-1",
-				RepoBranch:   "main",
-				PollInterval: 5 * time.Minute,
-				MetricsPort:  9417,
-				SecretsDir:   "/etc/picolet/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
+				Hostname:      "rpi5-1",
+				RepoBranch:    "main",
+				PollInterval:  5 * time.Minute,
+				MetricsPort:   9417,
+				SecretsDir:    "/etc/picolet/secrets",
+				PodmanSocket:  "/run/podman/podman.sock",
+				PruneInterval: 7 * 24 * time.Hour,
 				ProtonPass: &ProtonPassConfig{
 					PATPath:               "/etc/picolet/pp-pat",
 					RefreshInterval:       6 * time.Hour,
@@ -552,12 +567,13 @@ protonpass:
   pat_path: /etc/picolet/pp-pat
 `,
 			want: Config{ //nolint:gosec // test fixture
-				Hostname:     "rpi5-1",
-				RepoBranch:   "main",
-				PollInterval: 5 * time.Minute,
-				MetricsPort:  9417,
-				SecretsDir:   "/etc/picolet/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
+				Hostname:      "rpi5-1",
+				RepoBranch:    "main",
+				PollInterval:  5 * time.Minute,
+				MetricsPort:   9417,
+				SecretsDir:    "/etc/picolet/secrets",
+				PodmanSocket:  "/run/podman/podman.sock",
+				PruneInterval: 7 * 24 * time.Hour,
 				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture
 					TokenPath:       "/etc/picolet/op-token",
 					RefreshInterval: 6 * time.Hour,
@@ -580,12 +596,13 @@ protonpass:
   pat_expires_at: 2026-09-15T00:00:00Z
 `,
 			want: Config{ //nolint:gosec // test fixture
-				Hostname:     "rpi5-1",
-				RepoBranch:   "main",
-				PollInterval: 5 * time.Minute,
-				MetricsPort:  9417,
-				SecretsDir:   "/etc/picolet/secrets",
-				PodmanSocket: "/run/podman/podman.sock",
+				Hostname:      "rpi5-1",
+				RepoBranch:    "main",
+				PollInterval:  5 * time.Minute,
+				MetricsPort:   9417,
+				SecretsDir:    "/etc/picolet/secrets",
+				PodmanSocket:  "/run/podman/podman.sock",
+				PruneInterval: 7 * 24 * time.Hour,
 				OnePassword: &OnePasswordConfig{ //nolint:gosec // test fixture
 					TokenPath:       "/etc/picolet/op-token",
 					TokenExpiresAt:  time.Date(2026, 12, 31, 23, 59, 59, 0, time.UTC),
@@ -617,6 +634,45 @@ protonpass:
 			assert.Equal(t, tt.want, *got)
 		})
 	}
+}
+
+func TestPruneConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("defaults to enabled weekly", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := Parse([]byte("hostname: rpi5-1\n"))
+		require.NoError(t, err)
+		assert.True(t, cfg.PruneImagesEnabled())
+		assert.Equal(t, 7*24*time.Hour, cfg.PruneInterval)
+	})
+
+	t.Run("explicit disable", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := Parse([]byte("hostname: rpi5-1\nprune_images: false\n"))
+		require.NoError(t, err)
+		assert.False(t, cfg.PruneImagesEnabled())
+	})
+
+	t.Run("custom interval", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := Parse([]byte("hostname: rpi5-1\nprune_interval: 24h\n"))
+		require.NoError(t, err)
+		assert.Equal(t, 24*time.Hour, cfg.PruneInterval)
+	})
+
+	t.Run("rejects sub-minute interval", func(t *testing.T) {
+		t.Parallel()
+		_, err := Parse([]byte("hostname: rpi5-1\nprune_interval: 30s\n"))
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "prune_interval must be at least 1m")
+	})
+
+	t.Run("sub-minute interval allowed when disabled", func(t *testing.T) {
+		t.Parallel()
+		_, err := Parse([]byte("hostname: rpi5-1\nprune_images: false\nprune_interval: 30s\n"))
+		require.NoError(t, err)
+	})
 }
 
 func TestLoadRejectsUnknownFields(t *testing.T) {

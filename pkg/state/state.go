@@ -43,6 +43,11 @@ type State struct {
 
 	LastSuccessfulReconciliationAt time.Time `json:"last_successful_reconciliation_at,omitzero"`
 
+	// LastPrunedAt records the last time unused images were pruned. Drives the
+	// prune-interval gate and survives restarts so a node does not re-prune on
+	// every boot. omitzero (not omitempty — time.Time is never "empty").
+	LastPrunedAt time.Time `json:"last_pruned_at,omitzero"`
+
 	// PendingHooks tracks hooks that errored under on_failure: keep_running
 	// and must retry on the next reconciliation tick. The map value is the number
 	// of consecutive failed attempts. Persisted so a restart does not silently
