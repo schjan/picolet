@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -9,10 +10,110 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	appliermocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
+	"github.com/schjan/picolet/pkg/gitpoll"
+	"github.com/schjan/picolet/pkg/health"
+	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/state"
+	"github.com/schjan/picolet/pkg/status"
 )
+
+// newPruneTickAgent wires an agent against a minimal real git repo (via
+// initTestRepo) and a noop-poised state, so tests can exercise the prune step
+// through the real tick() path. Returns the agent, poller, store and the
+// health checker ready for a.tick(...).
+func newPruneTickAgent(t *testing.T, cfg *agentcfg.Config, opts ...Option) (*Agent, *gitpoll.Poller, *state.Store, *health.Checker) {
+	t.Helper()
+	metrics.Register(nil)
+	bareDir := initTestRepo(t)
+	repoDir := filepath.Join(t.TempDir(), "clone")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+
+	cfg.RepoURL = bareDir
+	cfg.RepoBranch = "master"
+	sys, _, fw := newBareMocks(t)
+	opts = append(opts, WithSystemd(sys), WithFileWriter(fw), WithRepoPath(repoDir), WithStatePath(statePath))
+	a := newTestAgent(t, cfg, opts...)
+
+	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
+	require.NoError(t, poller.Init(t.Context()))
+	initial, err := poller.Poll(t.Context(), "")
+	require.NoError(t, err)
+
+	store := state.NewStore(statePath)
+	st := state.NewState()
+	st.MarkApplied(initial.HeadSHA) // SHA unchanged => noop tick
+	require.NoError(t, store.Save(st))
+
+	return a, poller, store, health.New(sys)
+}
+
+// TestTickInvokesPruneOnNoopTick verifies the prune step actually runs through
+// the real tick() path on the common no-change tick (placement, not just helper).
+func TestTickInvokesPruneOnNoopTick(t *testing.T) {
+	t.Parallel()
+	pod := newMockPodmanForPruneTick(t)
+	pod.EXPECT().ImagePrune(mock.Anything, true).
+		Return(applier.PruneResult{ImagesRemoved: 1, ReclaimedBytes: 10}, nil).Once()
+
+	cfg := &agentcfg.Config{Hostname: "test-host", PollInterval: time.Second, SecretsDir: t.TempDir(), PruneInterval: time.Hour}
+	a, poller, store, hc := newPruneTickAgent(t, cfg, WithPodman(pod))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, a.tick(ctx, poller, store, hc))
+	assert.False(t, a.statusStore.Snapshot().Prune.LastRunAt.IsZero(), "prune should have run during the noop tick")
+}
+
+// TestTickSkipsPruneWhenPaused verifies a paused agent does not prune (the step
+// is placed after the pause-check early return).
+func TestTickSkipsPruneWhenPaused(t *testing.T) {
+	t.Parallel()
+	// No ImagePrune expectation: the mock fails the test if prune runs.
+	pod := newMockPodmanForPruneTick(t)
+
+	cfg := &agentcfg.Config{Hostname: "test-host", PollInterval: time.Second, SecretsDir: t.TempDir(), PruneInterval: time.Hour}
+	a, poller, store, hc := newPruneTickAgent(t, cfg, WithPodman(pod))
+	a.paused.Store(true)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, a.tick(ctx, poller, store, hc))
+}
+
+// TestTickSeedsPruneStatusFromState verifies the last-prune timestamp survives a
+// restart: a non-zero persisted LastPrunedAt seeds the status store on the first
+// tick (prune disabled here so the seed is the only thing that can set it).
+func TestTickSeedsPruneStatusFromState(t *testing.T) {
+	t.Parallel()
+	pod := newMockPodmanForPruneTick(t) // disabled prune => never called
+
+	cfg := &agentcfg.Config{Hostname: "test-host", PollInterval: time.Second, SecretsDir: t.TempDir(), PruneImages: new(false), PruneInterval: time.Hour}
+	a, poller, store, hc := newPruneTickAgent(t, cfg, WithPodman(pod))
+
+	persisted := time.Now().Add(-3 * 24 * time.Hour).Truncate(time.Second)
+	st, err := store.Load()
+	require.NoError(t, err)
+	st.LastPrunedAt = persisted
+	require.NoError(t, store.Save(st))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, a.tick(ctx, poller, store, hc))
+	got := a.statusStore.Snapshot().Prune.LastRunAt
+	assert.True(t, persisted.Equal(got), "status store should be seeded from persisted LastPrunedAt: want %s, got %s", persisted, got)
+}
+
+func newMockPodmanForPruneTick(t *testing.T) *appliermocks.MockPodmanClient {
+	t.Helper()
+	pod := appliermocks.NewMockPodmanClient(t)
+	// A noop tick may consult managed secrets via the status snapshot refresh;
+	// allow it without requiring it.
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
+	return pod
+}
 
 // newPruneState returns a fresh state.Store backed by a temp file, plus a loaded
 // state, so prune tests can assert persisted LastPrunedAt.
@@ -96,8 +197,53 @@ func TestMaybePruneImagesFailureKeepsLastPrunedAtAndBacksOff(t *testing.T) {
 
 	a.maybePruneImages(t.Context(), st, store)
 	assert.True(t, st.LastPrunedAt.IsZero(), "LastPrunedAt must not advance on failure")
-	assert.Equal(t, assert.AnError.Error(), a.statusStore.Snapshot().Prune.Error)
+	prune := a.statusStore.Snapshot().Prune
+	assert.Equal(t, assert.AnError.Error(), prune.Error)
+	assert.False(t, prune.LastErrorAt.IsZero(), "LastErrorAt should record the failed attempt")
+	assert.True(t, prune.LastRunAt.IsZero(), "a failure must not set the last-success timestamp")
 
 	// Second call is gated by the failure cooldown — ImagePrune must NOT run again.
 	a.maybePruneImages(t.Context(), st, store)
+}
+
+// TestMaybePruneImagesFailurePreservesLastSuccess verifies a failed attempt records
+// the error without clobbering the last-success fields the metric reads.
+func TestMaybePruneImagesFailurePreservesLastSuccess(t *testing.T) {
+	t.Parallel()
+	_, pod, _ := newBareMocks(t)
+	pod.EXPECT().ImagePrune(mock.Anything, true).
+		Return(applier.PruneResult{}, assert.AnError).Once()
+
+	cfg := &agentcfg.Config{Hostname: "host", PruneInterval: 7 * 24 * time.Hour}
+	a := newTestAgent(t, cfg, WithPodman(pod))
+	st, store := newPruneState(t)
+
+	// Seed a prior successful prune in the status store.
+	lastSuccess := time.Now().Add(-8 * 24 * time.Hour).Truncate(time.Second)
+	a.statusStore.SetPrune(status.PruneStatus{LastRunAt: lastSuccess, ImagesRemoved: 5})
+
+	a.maybePruneImages(t.Context(), st, store)
+
+	prune := a.statusStore.Snapshot().Prune
+	assert.Equal(t, lastSuccess, prune.LastRunAt, "failure must preserve last-success timestamp")
+	assert.Equal(t, 5, prune.ImagesRemoved, "failure must preserve last-success counts")
+	assert.Equal(t, assert.AnError.Error(), prune.Error)
+}
+
+// TestMaybePruneImagesSkipsWhenIntervalNonPositive guards the regression that caused
+// a test hang: a Config built without setDefaults has PruneInterval == 0, which must
+// be treated as "off" rather than "always due".
+func TestMaybePruneImagesSkipsWhenIntervalNonPositive(t *testing.T) {
+	t.Parallel()
+	for _, interval := range []time.Duration{0, -time.Hour} {
+		t.Run(interval.String(), func(t *testing.T) {
+			t.Parallel()
+			// No ImagePrune expectation: the mock fails if prune runs.
+			_, pod, _ := newBareMocks(t)
+			cfg := &agentcfg.Config{Hostname: "host", PruneInterval: interval}
+			a := newTestAgent(t, cfg, WithPodman(pod))
+			st, store := newPruneState(t)
+			a.maybePruneImages(t.Context(), st, store)
+		})
+	}
 }

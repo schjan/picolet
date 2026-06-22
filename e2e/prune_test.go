@@ -53,11 +53,11 @@ func TestE2EImagePrune(t *testing.T) {
 	podman, err := applier.NewSocketPodmanClient(ctx, socketPath)
 	require.NoError(t, err)
 
-	res, err := podman.ImagePrune(ctx, true)
-	require.NoError(t, err)
 	// Never assert ReclaimedBytes > 0: other images may already be pruned, making
-	// the exact figure non-deterministic. Only that it is a sane value.
-	assert.GreaterOrEqual(t, res.ReclaimedBytes, uint64(0))
+	// the exact figure non-deterministic. The specific-ID assertions below are the
+	// deterministic checks.
+	_, err = podman.ImagePrune(ctx, true)
+	require.NoError(t, err)
 
 	assert.False(t, pruneImageExists(t, unusedID), "unused image should be removed by prune -a")
 	assert.True(t, pruneImageExists(t, keepID), "image referenced by a container must survive prune -a")

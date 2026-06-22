@@ -32,7 +32,8 @@ rootless: false
 # `podman image prune -a`). Runs inside the reconcile loop, so it never races an
 # image pull. Removes only images not used by any container — never volumes,
 # networks, or in-use images.
-# Default: enabled, weekly.
+# Default: enabled, weekly. Set prune_images: false to disable (an unset or "0s"
+# prune_interval falls back to the weekly default — it does not disable pruning).
 # prune_images: true
 # prune_interval: "168h"
 

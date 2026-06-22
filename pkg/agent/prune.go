@@ -40,10 +40,12 @@ func (a *Agent) maybePruneImages(ctx context.Context, st *state.State, store *st
 	res, err := a.podman.ImagePrune(ctx, true)
 	if err != nil {
 		// Leave LastPrunedAt unadvanced so the prune is retried; the cooldown
-		// above bounds the retry cadence.
+		// above bounds the retry cadence. Record the error without touching the
+		// last-success fields, so the last-prune-timestamp metric is not made to
+		// look healthy by a failed attempt.
 		slog.Error("image prune failed", "error", err)
 		metrics.ImagePruneTotal.WithLabelValues("error").Inc()
-		a.statusStore.SetPrune(status.PruneStatus{LastRunAt: time.Now(), Error: err.Error()})
+		a.statusStore.SetPruneError(err.Error())
 		return
 	}
 

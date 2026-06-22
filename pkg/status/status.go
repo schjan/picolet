@@ -45,12 +45,15 @@ type OrphanScan struct {
 	Error          string
 }
 
-// PruneStatus captures the most recent image-prune outcome. A zero LastRunAt
-// means no prune has run in this process's view (no series is emitted for it).
+// PruneStatus captures the most recent image-prune outcome. LastRunAt is the
+// last *successful* prune (a zero value means none has succeeded in this
+// process's view, and no series is emitted for it). LastErrorAt/Error record the
+// most recent failed attempt without disturbing the last-success fields.
 type PruneStatus struct {
 	LastRunAt      time.Time
 	ImagesRemoved  int
 	ReclaimedBytes uint64
+	LastErrorAt    time.Time
 	Error          string
 }
 
@@ -176,7 +179,9 @@ func (s *Store) SetOrphanScan(scan OrphanScan) {
 	s.snapshot.OrphanScan = scan
 }
 
-// SetPrune records the latest image-prune result.
+// SetPrune records the latest successful image-prune result. It clears any prior
+// error (the prune just succeeded) but preserves nothing else — a success fully
+// describes current prune state.
 func (s *Store) SetPrune(prune PruneStatus) {
 	if s == nil {
 		return
@@ -184,6 +189,20 @@ func (s *Store) SetPrune(prune PruneStatus) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.snapshot.Prune = prune
+}
+
+// SetPruneError records a failed prune attempt without clobbering the
+// last-successful fields (LastRunAt/ImagesRemoved/ReclaimedBytes). This keeps the
+// picolet_last_image_prune_timestamp metric reporting the last *success*, so a
+// failing prune never makes "age since last prune" look healthy.
+func (s *Store) SetPruneError(msg string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshot.Prune.LastErrorAt = time.Now()
+	s.snapshot.Prune.Error = msg
 }
 
 // SetVerifiedAt records the last successful verification time.
