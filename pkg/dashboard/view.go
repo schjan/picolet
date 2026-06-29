@@ -268,8 +268,8 @@ func resolveRowStatus(row *UnitRow, category string, statuses map[string]status.
 		row.Status = mutedStatus
 		return
 	}
-	// Write the derived name back so the template's "unit" column shows it
-	// for raw systemd files where the resolver does not populate ServiceName.
+	// Write the derived name back so the template's "unit" column always shows a
+	// unit name (defensive: covers any managed file whose ServiceName is unset).
 	row.Service = unit
 	st, ok := statuses[unit]
 	if !ok {

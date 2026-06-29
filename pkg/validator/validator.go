@@ -159,7 +159,43 @@ func validateSystemdUnit(path, content string) error {
 	if !strings.Contains(content, "[") {
 		return fmt.Errorf("%s: no section headers found in systemd unit", path)
 	}
+	// Light timer check: a [Timer] section must declare at least one On*= trigger,
+	// otherwise systemd refuses to start the timer. Parse via the INI parser so the
+	// check is robust against comments and value-position "[Timer]" strings.
+	unit := parser.NewUnitFile()
+	unit.Filename = filepath.Base(path)
+	if err := unit.Parse(content); err != nil {
+		return fmt.Errorf("%s: invalid systemd unit syntax: %w", path, err)
+	}
+	if unit.HasGroup("Timer") && !timerHasTrigger(unit) {
+		return fmt.Errorf("%s: [Timer] section requires an On*= trigger (e.g. OnCalendar=, OnBootSec=, OnUnitActiveSec=)", path)
+	}
 	return nil
+}
+
+// timerTriggerKeys are the systemd [Timer] keys that schedule an elapse. A timer
+// must declare at least one or systemd refuses to start it. See systemd.timer(5).
+var timerTriggerKeys = map[string]struct{}{
+	"OnActiveSec":       {},
+	"OnBootSec":         {},
+	"OnStartupSec":      {},
+	"OnUnitActiveSec":   {},
+	"OnUnitInactiveSec": {},
+	"OnCalendar":        {},
+	"OnClockChange":     {},
+	"OnTimezoneChange":  {},
+}
+
+// timerHasTrigger reports whether a [Timer] section declares at least one known
+// trigger key. Matching against the known set (rather than an "On" prefix) rejects
+// typos like OnCalender= that systemd would silently fail to schedule.
+func timerHasTrigger(unit *parser.UnitFile) bool {
+	for _, key := range unit.ListKeys("Timer") {
+		if _, ok := timerTriggerKeys[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func dependenciesFromSystemd(f resolver.ResolvedFile) status.UnitDependencies {

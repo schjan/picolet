@@ -181,6 +181,16 @@ var (
 		[]string{"name", "action", "result"},
 	)
 
+	// SystemdUnitOperationsTotal counts enable/disable/start/restart operations on
+	// raw systemd units (timers/sockets/services) by operation and result.
+	SystemdUnitOperationsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "picolet_systemd_unit_operations_total",
+			Help: "Total enable/disable/start/restart operations on raw systemd units by operation and result.",
+		},
+		[]string{"operation", "result"},
+	)
+
 	ImagePruneTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "picolet_image_prune_total",
@@ -236,6 +246,7 @@ func Register(store *status.Store) {
 			SecretLastSyncTimestamp,
 			SecretCredentialExpiresAt,
 			HookTotal,
+			SystemdUnitOperationsTotal,
 			ImagePruneTotal,
 			ImagesPrunedTotal,
 			ImagePruneReclaimedBytesTotal,

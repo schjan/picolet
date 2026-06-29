@@ -227,7 +227,7 @@ Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a co
 | `manifests/<app>/` | `.yml` (Kubernetes resources only) | `/var/lib/picolet/manifests/<app>/` |
 | `files/<app>/` | any | `/var/lib/picolet/files/<app>/` |
 | `secrets/` | `.yml` | Podman secrets |
-| `systemd/` | `.socket` | `/etc/systemd/system/` |
+| `systemd/` | `.service` `.timer` `.socket` `.target` `.path` | `/etc/systemd/system/` (rootful) or `~/.config/systemd/user/` (rootless) |
 
 ### Service Bundles
 
@@ -293,6 +293,72 @@ move the files without renaming them, and replace the per-category lists in
 legacy paths and a `services:` bundle resolves to the same on-disk destination,
 so Picolet fails the reconciliation with a destination collision. Remove the
 legacy paths in the same commit that introduces `services: [<name>]`.
+
+### Raw systemd units (timers, sockets, services)
+
+Files under `systemd/` are hand-written systemd units deployed verbatim (templated
+if they end in `.tmpl`). The unit name is the filename with any `.tmpl` stripped, so
+`systemd/maintenance.timer` becomes the unit `maintenance.timer`. Picolet prepends a
+`# Managed by picolet` marker, then on apply:
+
+- runs `daemon-reload`,
+- **enables** any unit that declares an `[Install]` section (linking its
+  `*.target.wants` symlink so it survives reboots),
+- **starts** passive activator units (`.timer`/`.socket`/`.target`/`.path`) — and
+  **restarts** them on a content change so a new schedule takes effect,
+- **enables + restarts** a raw `.service` that declares `[Install]` (a long-running
+  daemon managed directly),
+- leaves a oneshot `.service` with **no `[Install]`** merely present (it is fired by
+  its timer, not started by Picolet).
+
+On removal Picolet stops and **disables** the unit (removing the enable symlink) and
+deletes the file. Deployed units appear in `/status` and the dashboard and are
+health-monitored; passive units (`.timer`/`.socket`/`.target`/`.path`) report their
+state but are never auto-restarted by the health loop. Enable/disable/start/restart
+outcomes are exported as `picolet_systemd_unit_operations_total{operation,result}`.
+
+#### Example: a `podman image prune -a` maintenance timer
+
+`systemd/maintenance.timer`:
+
+```ini
+[Unit]
+Description=Daily podman image prune
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+`systemd/maintenance.service` (oneshot, no `[Install]` — triggered by the timer):
+
+```ini
+[Unit]
+Description=Prune unused podman images
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/podman image prune -af
+```
+
+`assignments.yml`:
+
+```yaml
+base:
+  systemd:
+    - systemd/maintenance.timer
+    - systemd/maintenance.service
+```
+
+> **Prune ↔ reconcile race.** A standalone prune timer can fire while Picolet is
+> pulling new images mid-reconcile, deleting layers it is about to use. Mitigate with
+> `RandomizedDelaySec=` and/or an `After=` ordering against picolet's unit. For
+> guaranteed serialization, prefer the in-process prune (run by the agent between
+> reconcile ticks) over a standalone timer.
 
 ### Hooks
 

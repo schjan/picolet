@@ -67,7 +67,7 @@ func Diff(
 				Category:    mf.Category,
 				Action:      ActionDelete,
 				OldHash:     mf.Hash,
-				ServiceName: currentState.ServiceNames[destPath], // "" for non-quadlets
+				ServiceName: currentState.ServiceNames[destPath], // set for quadlets and raw systemd units; "" otherwise
 			})
 		}
 	}

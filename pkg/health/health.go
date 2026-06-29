@@ -96,6 +96,19 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State,
 	}
 	result.Statuses[unit] = status
 
+	// Passive activator units (.timer/.socket/.target/.path) are never restarted:
+	// a timer at rest is active (waiting), and an enabled-but-inactive timer is
+	// expected between runs. Report status, clear any stale pending record, return.
+	if applier.IsPassiveUnit(unit) {
+		if status.ActiveState == "active" || status.ActiveState == "activating" {
+			result.Healthy = append(result.Healthy, unit)
+		} else {
+			result.Inactive = append(result.Inactive, unit)
+		}
+		delete(st.PendingUnits, unit)
+		return
+	}
+
 	switch status.ActiveState {
 	case "active", "activating":
 		// Covers: running daemons (sub_state=running), successful oneshots

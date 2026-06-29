@@ -135,4 +135,7 @@ func recordHookMetrics(result *applier.ApplyResult) {
 	for _, o := range result.HookOutcomes {
 		metrics.HookTotal.WithLabelValues(o.Name, o.Action, o.Result).Inc()
 	}
+	for _, o := range result.SystemdUnitOps {
+		metrics.SystemdUnitOperationsTotal.WithLabelValues(o.Operation, o.Result).Inc()
+	}
 }

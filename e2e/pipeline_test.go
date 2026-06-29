@@ -127,9 +127,15 @@ func TestE2EPipeline(t *testing.T) {
 				_ = os.Remove(destPath)
 			}
 		}
-		// Daemon-reload to clean up generated units and remove the container
+		// Disable any enabled raw systemd units so their *.target.wants symlinks
+		// never leak (the file removal above does not remove enable symlinks).
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
+		for _, unit := range []string{"maintenance.timer", "custom.socket"} {
+			_ = systemd.StopUnit(cleanupCtx, unit)
+			_ = systemd.DisableUnit(cleanupCtx, unit)
+		}
+		// Daemon-reload to clean up generated units and remove the container
 		_ = systemd.DaemonReload(cleanupCtx)
 		_ = podman.ContainerRemove(cleanupCtx, "picolet-e2e-test", true)
 		_ = podman.ContainerRemove(cleanupCtx, "systemd-extra", true)
@@ -211,6 +217,50 @@ func TestE2EPipeline(t *testing.T) {
 		require.NoError(t, err, "idempotent ReconcileOnce should succeed")
 		assert.False(t, result.HasChanges, "second reconcile with same state should be a no-op")
 		assert.Nil(t, result.ApplyResult, "no apply should have run")
+	})
+
+	// The committed base.systemd deploys maintenance.timer (with [Install]) and a
+	// oneshot maintenance.service (no [Install]). The units stay deployed through
+	// the sequential flow; the remove_all sub-test below asserts they are disabled
+	// and removed on delete.
+	t.Run("maintenance_timer", func(t *testing.T) {
+		t.Run("timer_enabled_and_waiting", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+
+			_, err := os.Stat(filepath.Join(systemdDir, "maintenance.timer"))
+			require.NoError(t, err, "maintenance.timer should be written")
+
+			status, err := systemd.GetUnitStatus(ctx, "maintenance.timer")
+			require.NoError(t, err)
+			assert.Equal(t, "enabled", status.UnitFileState, "timer should be enabled")
+			assert.Equal(t, "active", status.ActiveState, "timer should be active")
+			assert.Equal(t, "waiting", status.SubState, "timer should be waiting for next trigger")
+		})
+
+		t.Run("oneshot_present_but_not_enabled", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+
+			_, err := os.Stat(filepath.Join(systemdDir, "maintenance.service"))
+			require.NoError(t, err, "maintenance.service should be written")
+
+			status, err := systemd.GetUnitStatus(ctx, "maintenance.service")
+			require.NoError(t, err)
+			assert.NotEqual(t, "enabled", status.UnitFileState,
+				"oneshot with no [Install] must not be enabled (expected static/disabled)")
+		})
+
+		t.Run("manual_trigger_runs_oneshot", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+
+			require.NoError(t, systemd.StartUnit(ctx, "maintenance.service"))
+			require.Eventually(t, func() bool {
+				status, err := systemd.GetUnitStatus(ctx, "maintenance.service")
+				return err == nil && status.ActiveState == "inactive" && status.SubState == "dead"
+			}, 10*time.Second, 250*time.Millisecond, "oneshot /bin/true should complete and go inactive")
+		})
 	})
 
 	t.Run("orphan_scan", func(t *testing.T) {
@@ -745,6 +795,20 @@ WantedBy=default.target
 			assert.NoFileExists(t, filepath.Join(systemdDir, "custom.socket"))
 		})
 
+		t.Run("maintenance_timer_disabled_and_removed", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+
+			assert.NoFileExists(t, filepath.Join(systemdDir, "maintenance.timer"))
+			assert.NoFileExists(t, filepath.Join(systemdDir, "maintenance.service"))
+
+			// The delete path stops + disables the timer before removing the file;
+			// after daemon-reload the unit is unknown or at least no longer enabled.
+			if status, err := systemd.GetUnitStatus(ctx, "maintenance.timer"); err == nil {
+				assert.NotEqual(t, "enabled", status.UnitFileState, "timer should be disabled after removal")
+			}
+		})
+
 		t.Run("container_removed", func(t *testing.T) {
 			assert.NoFileExists(t, filepath.Join(quadletDir, "extra.container"))
 		})
@@ -822,6 +886,9 @@ func e2eAssignments(e2eContainers []string, withSecret bool) string {
     - quadlets/networks/internal.network
   systemd:
     - systemd/custom.socket
+    - systemd/custom.service
+    - systemd/maintenance.timer
+    - systemd/maintenance.service
 pi_types:
   controller:
     containers:

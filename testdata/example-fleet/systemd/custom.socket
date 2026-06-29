@@ -1,5 +1,5 @@
 [Socket]
-ListenStream=8080
+ListenStream=%t/picolet-e2e-custom.sock
 
 [Install]
 WantedBy=sockets.target

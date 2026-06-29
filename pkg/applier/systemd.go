@@ -207,6 +207,30 @@ func (m *DBusSystemdManager) RestartUnit(ctx context.Context, name string) error
 	})
 }
 
+// EnableUnit links the unit's [Install] symlinks. It is synchronous (no systemd
+// job is queued), so unlike Start/Restart there is no job channel to wait on.
+// Callers run DaemonReload before this so the manager already knows the unit file.
+func (m *DBusSystemdManager) EnableUnit(ctx context.Context, name string) error {
+	return m.withReconnect(ctx, func(c *dbus.Conn) error {
+		if _, _, err := c.EnableUnitFilesContext(ctx, []string{name}, false, true); err != nil {
+			return fmt.Errorf("enabling %s: %w", name, err)
+		}
+		return nil
+	})
+}
+
+// DisableUnit removes the unit's [Install] symlinks. Like EnableUnit it is
+// synchronous. Disabling a unit with no symlinks returns an empty change set,
+// not an error.
+func (m *DBusSystemdManager) DisableUnit(ctx context.Context, name string) error {
+	return m.withReconnect(ctx, func(c *dbus.Conn) error {
+		if _, err := c.DisableUnitFilesContext(ctx, []string{name}, false); err != nil {
+			return fmt.Errorf("disabling %s: %w", name, err)
+		}
+		return nil
+	})
+}
+
 // waitJobDone waits for a systemd job to complete with "done".
 func waitJobDone(ctx context.Context, ch <-chan string, verb, unit string) error {
 	return waitJobResult(ctx, ch, verb, unit, systemdJobDone)
@@ -249,8 +273,9 @@ func (m *DBusSystemdManager) GetUnitStatus(ctx context.Context, name string) (Un
 			return fmt.Errorf("ActiveState not a string for %s", name)
 		}
 		status = UnitStatus{
-			ActiveState: activeState,
-			SubState:    stringProp(props, "SubState"),
+			ActiveState:   activeState,
+			SubState:      stringProp(props, "SubState"),
+			UnitFileState: stringProp(props, "UnitFileState"),
 		}
 		return nil
 	})
