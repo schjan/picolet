@@ -692,6 +692,72 @@ func (_c *MockPodmanClient_GetPodState_Call) RunAndReturn(run func(ctx context.C
 	return _c
 }
 
+// ImagePrune provides a mock function for the type MockPodmanClient
+func (_mock *MockPodmanClient) ImagePrune(ctx context.Context, all bool) (applier.PruneResult, error) {
+	ret := _mock.Called(ctx, all)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ImagePrune")
+	}
+
+	var r0 applier.PruneResult
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, bool) (applier.PruneResult, error)); ok {
+		return returnFunc(ctx, all)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, bool) applier.PruneResult); ok {
+		r0 = returnFunc(ctx, all)
+	} else {
+		r0 = ret.Get(0).(applier.PruneResult)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, bool) error); ok {
+		r1 = returnFunc(ctx, all)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockPodmanClient_ImagePrune_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ImagePrune'
+type MockPodmanClient_ImagePrune_Call struct {
+	*mock.Call
+}
+
+// ImagePrune is a helper method to define mock.On call
+//   - ctx context.Context
+//   - all bool
+func (_e *MockPodmanClient_Expecter) ImagePrune(ctx any, all any) *MockPodmanClient_ImagePrune_Call {
+	return &MockPodmanClient_ImagePrune_Call{Call: _e.mock.On("ImagePrune", ctx, all)}
+}
+
+func (_c *MockPodmanClient_ImagePrune_Call) Run(run func(ctx context.Context, all bool)) *MockPodmanClient_ImagePrune_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 bool
+		if args[1] != nil {
+			arg1 = args[1].(bool)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockPodmanClient_ImagePrune_Call) Return(pruneResult applier.PruneResult, err error) *MockPodmanClient_ImagePrune_Call {
+	_c.Call.Return(pruneResult, err)
+	return _c
+}
+
+func (_c *MockPodmanClient_ImagePrune_Call) RunAndReturn(run func(ctx context.Context, all bool) (applier.PruneResult, error)) *MockPodmanClient_ImagePrune_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // ListManagedSecrets provides a mock function for the type MockPodmanClient
 func (_mock *MockPodmanClient) ListManagedSecrets(ctx context.Context) ([]string, error) {
 	ret := _mock.Called(ctx)

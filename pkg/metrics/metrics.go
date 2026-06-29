@@ -189,6 +189,28 @@ var (
 			Help: "Total enable/disable/start/restart operations on raw systemd units by operation and result.",
 		},
 		[]string{"operation", "result"},
+  )
+
+	ImagePruneTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "picolet_image_prune_total",
+			Help: "Total scheduled image-prune runs by result.",
+		},
+		[]string{"result"},
+	)
+
+	ImagesPrunedTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "picolet_images_pruned_total",
+			Help: "Total number of unused images removed by scheduled pruning.",
+		},
+	)
+
+	ImagePruneReclaimedBytesTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "picolet_image_prune_reclaimed_bytes_total",
+			Help: "Total bytes reclaimed by scheduled image pruning.",
+		},
 	)
 )
 
@@ -225,10 +247,14 @@ func Register(store *status.Store) {
 			SecretCredentialExpiresAt,
 			HookTotal,
 			SystemdUnitOperationsTotal,
+			ImagePruneTotal,
+			ImagesPrunedTotal,
+			ImagePruneReclaimedBytesTotal,
 			unitRestartPending,
 			NewUnitHealthCollector(store),
 			NewUnitDependencyCollector(store),
 			NewHostInfoCollector(store),
+			NewLastImagePruneCollector(store),
 		)
 		BuildInfo.WithLabelValues(version.Version, version.GitSHA).Set(1)
 	})
