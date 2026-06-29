@@ -169,6 +169,41 @@ curl http://localhost:9417/metrics
 curl http://localhost:9417/health
 ```
 
+### 6. Node Maintenance (image pruning)
+
+Long-running nodes accumulate unused container images as picolet rolls out new
+image tags. To reclaim that space, the agent periodically removes **unused
+container images** — every image not referenced by any container (running or
+stopped), equivalent to `podman image prune -a`. It never touches volumes,
+networks, or images currently in use.
+
+The prune runs **inside the reconcile loop**, so it is strictly serialized with
+picolet's own image pulls and can never delete an image mid-deployment.
+
+Configured in `/etc/picolet/config.yml` (defaults shown):
+
+```yaml
+prune_images: true       # set false to disable pruning
+prune_interval: "168h"   # weekly; a non-zero value below 1m is rejected
+```
+
+Defaults: **enabled, weekly**. To disable pruning, set `prune_images: false` —
+an unset or `0s` `prune_interval` falls back to the weekly default rather than
+disabling it. Observability:
+
+```bash
+journalctl -u picolet | grep "image prune"
+curl -s http://localhost:9417/metrics | grep image_prune
+# picolet_image_prune_total{result="success"}, picolet_images_pruned_total,
+# picolet_image_prune_reclaimed_bytes_total, picolet_last_image_prune_timestamp
+```
+
+Notes:
+- On a **fresh node** (empty state) the first reconcile prunes immediately.
+- On a **mixed host**, `prune -a` also removes images that belong to non-picolet
+  workloads if no container references them. On a dedicated fleet host this is
+  the intended behavior.
+
 ## Fleet Repository Reference
 
 Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a complete example.

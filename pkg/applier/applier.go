@@ -55,6 +55,12 @@ type UnitStatus struct {
 	SubState    string // "running", "exited", "auto-restart", "dead", "waiting", ...
 }
 
+// PruneResult summarizes the outcome of an image-prune run.
+type PruneResult struct {
+	ImagesRemoved  int
+	ReclaimedBytes uint64
+}
+
 // PodmanClient interacts with the Podman API.
 type PodmanClient interface {
 	SecretExists(ctx context.Context, name string) (bool, error)
@@ -66,6 +72,10 @@ type PodmanClient interface {
 	RunHealthcheck(ctx context.Context, container string) (bool, error)
 	GetPodState(ctx context.Context, pod string) (string, error)
 	ContainerKill(ctx context.Context, nameOrID, signal string) error
+	// ImagePrune removes unused images. When all is true, every image not used by
+	// any container (running or stopped) is removed (podman image prune -a);
+	// otherwise only dangling images are removed.
+	ImagePrune(ctx context.Context, all bool) (PruneResult, error)
 }
 
 // FileWriter writes files atomically.

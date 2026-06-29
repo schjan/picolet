@@ -95,7 +95,7 @@ type MockSystemdManager_DaemonReload_Call struct {
 
 // DaemonReload is a helper method to define mock.On call
 //   - ctx context.Context
-func (_e *MockSystemdManager_Expecter) DaemonReload(ctx interface{}) *MockSystemdManager_DaemonReload_Call {
+func (_e *MockSystemdManager_Expecter) DaemonReload(ctx any) *MockSystemdManager_DaemonReload_Call {
 	return &MockSystemdManager_DaemonReload_Call{Call: _e.mock.On("DaemonReload", ctx)}
 }
 
@@ -156,7 +156,7 @@ type MockSystemdManager_GetUnitStatus_Call struct {
 // GetUnitStatus is a helper method to define mock.On call
 //   - ctx context.Context
 //   - name string
-func (_e *MockSystemdManager_Expecter) GetUnitStatus(ctx interface{}, name interface{}) *MockSystemdManager_GetUnitStatus_Call {
+func (_e *MockSystemdManager_Expecter) GetUnitStatus(ctx any, name any) *MockSystemdManager_GetUnitStatus_Call {
 	return &MockSystemdManager_GetUnitStatus_Call{Call: _e.mock.On("GetUnitStatus", ctx, name)}
 }
 
@@ -213,7 +213,7 @@ type MockSystemdManager_RestartUnit_Call struct {
 // RestartUnit is a helper method to define mock.On call
 //   - ctx context.Context
 //   - name string
-func (_e *MockSystemdManager_Expecter) RestartUnit(ctx interface{}, name interface{}) *MockSystemdManager_RestartUnit_Call {
+func (_e *MockSystemdManager_Expecter) RestartUnit(ctx any, name any) *MockSystemdManager_RestartUnit_Call {
 	return &MockSystemdManager_RestartUnit_Call{Call: _e.mock.On("RestartUnit", ctx, name)}
 }
 
@@ -270,7 +270,7 @@ type MockSystemdManager_StartUnit_Call struct {
 // StartUnit is a helper method to define mock.On call
 //   - ctx context.Context
 //   - name string
-func (_e *MockSystemdManager_Expecter) StartUnit(ctx interface{}, name interface{}) *MockSystemdManager_StartUnit_Call {
+func (_e *MockSystemdManager_Expecter) StartUnit(ctx any, name any) *MockSystemdManager_StartUnit_Call {
 	return &MockSystemdManager_StartUnit_Call{Call: _e.mock.On("StartUnit", ctx, name)}
 }
 
@@ -327,7 +327,7 @@ type MockSystemdManager_StopUnit_Call struct {
 // StopUnit is a helper method to define mock.On call
 //   - ctx context.Context
 //   - name string
-func (_e *MockSystemdManager_Expecter) StopUnit(ctx interface{}, name interface{}) *MockSystemdManager_StopUnit_Call {
+func (_e *MockSystemdManager_Expecter) StopUnit(ctx any, name any) *MockSystemdManager_StopUnit_Call {
 	return &MockSystemdManager_StopUnit_Call{Call: _e.mock.On("StopUnit", ctx, name)}
 }
 
@@ -412,7 +412,7 @@ type MockPodmanClient_ContainerKill_Call struct {
 //   - ctx context.Context
 //   - nameOrID string
 //   - signal string
-func (_e *MockPodmanClient_Expecter) ContainerKill(ctx interface{}, nameOrID interface{}, signal interface{}) *MockPodmanClient_ContainerKill_Call {
+func (_e *MockPodmanClient_Expecter) ContainerKill(ctx any, nameOrID any, signal any) *MockPodmanClient_ContainerKill_Call {
 	return &MockPodmanClient_ContainerKill_Call{Call: _e.mock.On("ContainerKill", ctx, nameOrID, signal)}
 }
 
@@ -475,7 +475,7 @@ type MockPodmanClient_ContainerRemove_Call struct {
 //   - ctx context.Context
 //   - nameOrID string
 //   - force bool
-func (_e *MockPodmanClient_Expecter) ContainerRemove(ctx interface{}, nameOrID interface{}, force interface{}) *MockPodmanClient_ContainerRemove_Call {
+func (_e *MockPodmanClient_Expecter) ContainerRemove(ctx any, nameOrID any, force any) *MockPodmanClient_ContainerRemove_Call {
 	return &MockPodmanClient_ContainerRemove_Call{Call: _e.mock.On("ContainerRemove", ctx, nameOrID, force)}
 }
 
@@ -546,7 +546,7 @@ type MockPodmanClient_GetPodState_Call struct {
 // GetPodState is a helper method to define mock.On call
 //   - ctx context.Context
 //   - pod string
-func (_e *MockPodmanClient_Expecter) GetPodState(ctx interface{}, pod interface{}) *MockPodmanClient_GetPodState_Call {
+func (_e *MockPodmanClient_Expecter) GetPodState(ctx any, pod any) *MockPodmanClient_GetPodState_Call {
 	return &MockPodmanClient_GetPodState_Call{Call: _e.mock.On("GetPodState", ctx, pod)}
 }
 
@@ -574,6 +574,72 @@ func (_c *MockPodmanClient_GetPodState_Call) Return(s string, err error) *MockPo
 }
 
 func (_c *MockPodmanClient_GetPodState_Call) RunAndReturn(run func(ctx context.Context, pod string) (string, error)) *MockPodmanClient_GetPodState_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// ImagePrune provides a mock function for the type MockPodmanClient
+func (_mock *MockPodmanClient) ImagePrune(ctx context.Context, all bool) (applier.PruneResult, error) {
+	ret := _mock.Called(ctx, all)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ImagePrune")
+	}
+
+	var r0 applier.PruneResult
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, bool) (applier.PruneResult, error)); ok {
+		return returnFunc(ctx, all)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, bool) applier.PruneResult); ok {
+		r0 = returnFunc(ctx, all)
+	} else {
+		r0 = ret.Get(0).(applier.PruneResult)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, bool) error); ok {
+		r1 = returnFunc(ctx, all)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockPodmanClient_ImagePrune_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ImagePrune'
+type MockPodmanClient_ImagePrune_Call struct {
+	*mock.Call
+}
+
+// ImagePrune is a helper method to define mock.On call
+//   - ctx context.Context
+//   - all bool
+func (_e *MockPodmanClient_Expecter) ImagePrune(ctx any, all any) *MockPodmanClient_ImagePrune_Call {
+	return &MockPodmanClient_ImagePrune_Call{Call: _e.mock.On("ImagePrune", ctx, all)}
+}
+
+func (_c *MockPodmanClient_ImagePrune_Call) Run(run func(ctx context.Context, all bool)) *MockPodmanClient_ImagePrune_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 bool
+		if args[1] != nil {
+			arg1 = args[1].(bool)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockPodmanClient_ImagePrune_Call) Return(pruneResult applier.PruneResult, err error) *MockPodmanClient_ImagePrune_Call {
+	_c.Call.Return(pruneResult, err)
+	return _c
+}
+
+func (_c *MockPodmanClient_ImagePrune_Call) RunAndReturn(run func(ctx context.Context, all bool) (applier.PruneResult, error)) *MockPodmanClient_ImagePrune_Call {
 	_c.Call.Return(run)
 	return _c
 }
@@ -613,7 +679,7 @@ type MockPodmanClient_ListManagedSecrets_Call struct {
 
 // ListManagedSecrets is a helper method to define mock.On call
 //   - ctx context.Context
-func (_e *MockPodmanClient_Expecter) ListManagedSecrets(ctx interface{}) *MockPodmanClient_ListManagedSecrets_Call {
+func (_e *MockPodmanClient_Expecter) ListManagedSecrets(ctx any) *MockPodmanClient_ListManagedSecrets_Call {
 	return &MockPodmanClient_ListManagedSecrets_Call{Call: _e.mock.On("ListManagedSecrets", ctx)}
 }
 
@@ -674,7 +740,7 @@ type MockPodmanClient_RunHealthcheck_Call struct {
 // RunHealthcheck is a helper method to define mock.On call
 //   - ctx context.Context
 //   - container string
-func (_e *MockPodmanClient_Expecter) RunHealthcheck(ctx interface{}, container interface{}) *MockPodmanClient_RunHealthcheck_Call {
+func (_e *MockPodmanClient_Expecter) RunHealthcheck(ctx any, container any) *MockPodmanClient_RunHealthcheck_Call {
 	return &MockPodmanClient_RunHealthcheck_Call{Call: _e.mock.On("RunHealthcheck", ctx, container)}
 }
 
@@ -733,7 +799,7 @@ type MockPodmanClient_SecretCreate_Call struct {
 //   - name string
 //   - data []byte
 //   - replace bool
-func (_e *MockPodmanClient_Expecter) SecretCreate(ctx interface{}, name interface{}, data interface{}, replace interface{}) *MockPodmanClient_SecretCreate_Call {
+func (_e *MockPodmanClient_Expecter) SecretCreate(ctx any, name any, data any, replace any) *MockPodmanClient_SecretCreate_Call {
 	return &MockPodmanClient_SecretCreate_Call{Call: _e.mock.On("SecretCreate", ctx, name, data, replace)}
 }
 
@@ -809,7 +875,7 @@ type MockPodmanClient_SecretExists_Call struct {
 // SecretExists is a helper method to define mock.On call
 //   - ctx context.Context
 //   - name string
-func (_e *MockPodmanClient_Expecter) SecretExists(ctx interface{}, name interface{}) *MockPodmanClient_SecretExists_Call {
+func (_e *MockPodmanClient_Expecter) SecretExists(ctx any, name any) *MockPodmanClient_SecretExists_Call {
 	return &MockPodmanClient_SecretExists_Call{Call: _e.mock.On("SecretExists", ctx, name)}
 }
 
@@ -866,7 +932,7 @@ type MockPodmanClient_SecretRemove_Call struct {
 // SecretRemove is a helper method to define mock.On call
 //   - ctx context.Context
 //   - name string
-func (_e *MockPodmanClient_Expecter) SecretRemove(ctx interface{}, name interface{}) *MockPodmanClient_SecretRemove_Call {
+func (_e *MockPodmanClient_Expecter) SecretRemove(ctx any, name any) *MockPodmanClient_SecretRemove_Call {
 	return &MockPodmanClient_SecretRemove_Call{Call: _e.mock.On("SecretRemove", ctx, name)}
 }
 
@@ -949,7 +1015,7 @@ type MockFileWriter_MkdirAll_Call struct {
 
 // MkdirAll is a helper method to define mock.On call
 //   - path string
-func (_e *MockFileWriter_Expecter) MkdirAll(path interface{}) *MockFileWriter_MkdirAll_Call {
+func (_e *MockFileWriter_Expecter) MkdirAll(path any) *MockFileWriter_MkdirAll_Call {
 	return &MockFileWriter_MkdirAll_Call{Call: _e.mock.On("MkdirAll", path)}
 }
 
@@ -1000,7 +1066,7 @@ type MockFileWriter_Remove_Call struct {
 
 // Remove is a helper method to define mock.On call
 //   - path string
-func (_e *MockFileWriter_Expecter) Remove(path interface{}) *MockFileWriter_Remove_Call {
+func (_e *MockFileWriter_Expecter) Remove(path any) *MockFileWriter_Remove_Call {
 	return &MockFileWriter_Remove_Call{Call: _e.mock.On("Remove", path)}
 }
 
@@ -1052,7 +1118,7 @@ type MockFileWriter_WriteFile_Call struct {
 // WriteFile is a helper method to define mock.On call
 //   - path string
 //   - content []byte
-func (_e *MockFileWriter_Expecter) WriteFile(path interface{}, content interface{}) *MockFileWriter_WriteFile_Call {
+func (_e *MockFileWriter_Expecter) WriteFile(path any, content any) *MockFileWriter_WriteFile_Call {
 	return &MockFileWriter_WriteFile_Call{Call: _e.mock.On("WriteFile", path, content)}
 }
 

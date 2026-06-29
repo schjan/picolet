@@ -180,6 +180,28 @@ var (
 		},
 		[]string{"name", "action", "result"},
 	)
+
+	ImagePruneTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "picolet_image_prune_total",
+			Help: "Total scheduled image-prune runs by result.",
+		},
+		[]string{"result"},
+	)
+
+	ImagesPrunedTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "picolet_images_pruned_total",
+			Help: "Total number of unused images removed by scheduled pruning.",
+		},
+	)
+
+	ImagePruneReclaimedBytesTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "picolet_image_prune_reclaimed_bytes_total",
+			Help: "Total bytes reclaimed by scheduled image pruning.",
+		},
+	)
 )
 
 var registerOnce sync.Once
@@ -214,10 +236,14 @@ func Register(store *status.Store) {
 			SecretLastSyncTimestamp,
 			SecretCredentialExpiresAt,
 			HookTotal,
+			ImagePruneTotal,
+			ImagesPrunedTotal,
+			ImagePruneReclaimedBytesTotal,
 			unitRestartPending,
 			NewUnitHealthCollector(store),
 			NewUnitDependencyCollector(store),
 			NewHostInfoCollector(store),
+			NewLastImagePruneCollector(store),
 		)
 		BuildInfo.WithLabelValues(version.Version, version.GitSHA).Set(1)
 	})

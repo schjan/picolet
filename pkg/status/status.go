@@ -45,6 +45,22 @@ type OrphanScan struct {
 	Error          string
 }
 
+// PruneStatus captures the most recent image-prune outcome.
+//   - LastRunAt is the last *successful* (fully clean) prune; a zero value means
+//     none is known in this process's view and no last-prune-timestamp series is
+//     emitted.
+//   - ImagesRemoved/ReclaimedBytes report what the most recent attempt reclaimed.
+//     They are also populated on a partial failure, so they are not necessarily
+//     tied to LastRunAt.
+//   - LastErrorAt/Error record the most recent failed attempt.
+type PruneStatus struct {
+	LastRunAt      time.Time
+	ImagesRemoved  int
+	ReclaimedBytes uint64
+	LastErrorAt    time.Time
+	Error          string
+}
+
 // ReconcileEvent is a compact in-memory event rendered by the dashboard.
 type ReconcileEvent struct {
 	At      time.Time
@@ -59,6 +75,7 @@ type Snapshot struct {
 	Dependencies map[string]UnitDependencies
 	Host         HostMetadata
 	OrphanScan   OrphanScan
+	Prune        PruneStatus
 	Events       []ReconcileEvent
 	VerifiedAt   time.Time
 	// Bootstrapped is true once the agent has completed at least one
@@ -166,6 +183,30 @@ func (s *Store) SetOrphanScan(scan OrphanScan) {
 	s.snapshot.OrphanScan = scan
 }
 
+// SetPrune replaces the recorded image-prune status. Any merge policy (e.g.
+// preserving the last-success timestamp across a failed attempt) is owned by the
+// caller, mirroring how SetOrphanScan is used.
+func (s *Store) SetPrune(prune PruneStatus) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshot.Prune = prune
+}
+
+// Prune returns the current image-prune status. It is a cheap value copy (no
+// map/slice cloning), suitable for the metrics scrape path and for a caller that
+// needs to merge a new result with the existing one.
+func (s *Store) Prune() PruneStatus {
+	if s == nil {
+		return PruneStatus{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snapshot.Prune
+}
+
 // SetVerifiedAt records the last successful verification time.
 func (s *Store) SetVerifiedAt(t time.Time) {
 	if s == nil {
@@ -199,6 +240,7 @@ func cloneSnapshot(in Snapshot) Snapshot {
 		Dependencies: cloneDependenciesMap(in.Dependencies),
 		Host:         cloneHost(in.Host),
 		OrphanScan:   in.OrphanScan,
+		Prune:        in.Prune,
 		Events:       slices.Clone(in.Events),
 		VerifiedAt:   in.VerifiedAt,
 		Bootstrapped: in.Bootstrapped,

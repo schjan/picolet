@@ -94,6 +94,10 @@ type Agent struct {
 	// Accessed only by the agent tick loop, which runs serially.
 	lastOPRefresh time.Time // zero = never refreshed; in-memory only (restart always re-fetches)
 	lastPPRefresh time.Time // zero = never refreshed; in-memory only (restart always re-fetches)
+	// lastPruneAttemptAt bounds image-prune retries after a failure (in-memory;
+	// tick-loop only). seededPrunedAt guards the one-time metric seed from state.
+	lastPruneAttemptAt time.Time
+	seededPrunedAt     atomic.Bool
 
 	webhookCh chan struct{}
 	// ready: written by Run() after first successful tick; read by /health handler (http.go).
@@ -391,6 +395,12 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		a.seededSuccessfulAt.Store(true)
 		metrics.LastSuccessfulReconciliation.Set(float64(st.LastSuccessfulReconciliationAt.Unix()))
 	}
+	// Seed the last-prune timestamp once from persisted state so the metric
+	// survives a restart (the status store is in-memory and starts empty).
+	if !a.seededPrunedAt.Load() && !st.LastPrunedAt.IsZero() {
+		a.seededPrunedAt.Store(true)
+		a.statusStore.SetPrune(status.PruneStatus{LastRunAt: st.LastPrunedAt})
+	}
 
 	// 1. Health enforcement (always — units must stay healthy even when paused)
 	hr, err := healthChecker.Enforce(ctx, st)
@@ -432,6 +442,12 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		a.recordEvent("paused", st.AppliedSHA, "reconciliation paused via MQTT")
 		return nil
 	}
+
+	// 1c. Maintenance: prune unused images when due. Placed inside tick() so it
+	// is strictly serialized against ReconcileOnce/apply (same goroutine); after
+	// the pause check so it respects an MQTT pause; before the noop/failed-SHA
+	// early returns so it still runs on the common no-change tick path.
+	a.maybePruneImages(ctx, st, store)
 
 	// 2. Git poll
 	pollResult, err := poller.Poll(ctx, st.AppliedSHA)
