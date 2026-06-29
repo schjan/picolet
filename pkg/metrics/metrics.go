@@ -189,7 +189,7 @@ var (
 			Help: "Total enable/disable/start/restart operations on raw systemd units by operation and result.",
 		},
 		[]string{"operation", "result"},
-  )
+	)
 
 	ImagePruneTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
