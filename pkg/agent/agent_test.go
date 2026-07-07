@@ -1472,7 +1472,7 @@ func TestTickDoesNotCreateDeploymentForUnchangedSHAOpRefresh(t *testing.T) {
 		WithStatePath(statePath),
 		WithDeploymentReporter(reporter),
 	)
-	a.opReader = resolver.OpSecretReader(func(_ context.Context, _ []string) (map[string]string, error) {
+	a.opReader = resolver.SecretRefReader(func(_ context.Context, _ []string) (map[string]string, error) {
 		return map[string]string{}, nil
 	})
 
