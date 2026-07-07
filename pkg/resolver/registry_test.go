@@ -2,9 +2,12 @@ package resolver
 
 import (
 	"bytes"
+	"context"
+	"io/fs"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"text/template"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,10 +15,16 @@ import (
 	"github.com/schjan/picolet/pkg/config"
 )
 
+// buildRegistryAll builds a registry with no source-path filter, the common
+// case in tests. Production always passes a predicate via resolveHostFileSet.
+func buildRegistryAll(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string) (*template.Template, providerCaches, error) {
+	return buildRegistry(ctx, fsys, secretReader, providers, dataDir, nil)
+}
+
 func renderRegistryTemplate(tb testing.TB, fsys fstest.MapFS, name string, data any) (string, error) {
 	tb.Helper()
 
-	registry, _, err := BuildRegistry(tb.Context(), fsys, nil, []ProviderTemplate{OpProvider(nil)}, "/var/lib/picolet")
+	registry, _, err := buildRegistryAll(tb.Context(), fsys, nil, []ProviderTemplate{OpProvider(nil)}, "/var/lib/picolet")
 	require.NoError(tb, err)
 
 	var buf bytes.Buffer
@@ -265,7 +274,7 @@ func TestBuildRegistrySkipsGitDirectory(t *testing.T) {
 		"nested/plain.txt":  &fstest.MapFile{Data: []byte("ignored")},
 	}
 
-	registry, _, err := BuildRegistry(t.Context(), fsys, nil, nil, "/var/lib/picolet") // nil providers OK
+	registry, _, err := buildRegistryAll(t.Context(), fsys, nil, nil, "/var/lib/picolet") // nil providers OK
 	require.NoError(t, err)
 	assert.NotNil(t, registry.Lookup("main.tmpl"))
 	assert.Nil(t, registry.Lookup(".git/invalid.tmpl"))
@@ -277,13 +286,13 @@ func TestBuildRegistryRejectsInvalidProviderKeys(t *testing.T) {
 		"main.tmpl": &fstest.MapFile{Data: []byte("ok")},
 	}
 
-	_, _, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{
+	_, _, err := buildRegistryAll(t.Context(), fsys, nil, []ProviderTemplate{
 		{FuncName: "readBrokenSecret"},
 	}, "/var/lib/picolet")
 	require.Error(t, err)
 	require.ErrorContains(t, err, "empty key")
 
-	_, _, err = BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{
+	_, _, err = buildRegistryAll(t.Context(), fsys, nil, []ProviderTemplate{
 		OpProvider(nil),
 		{
 			Key:              ProviderOnePassword,

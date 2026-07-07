@@ -240,7 +240,7 @@ func prepareUnits(t *testing.T, fsys fs.FS) []string {
 	require.NoError(t, err)
 	tmplData, err := NewTemplateData(cfg, "h1")
 	require.NoError(t, err)
-	registry, caches, err := BuildRegistry(t.Context(), fsys, nil, nil, r.hostDataDir)
+	registry, caches, err := buildRegistryAll(t.Context(), fsys, nil, nil, r.hostDataDir)
 	require.NoError(t, err)
 	expanded, err := r.expandAndValidate(cfg.Assignments.Resolve(cfg.Hosts["h1"]))
 	require.NoError(t, err)
@@ -412,7 +412,7 @@ func TestRenderTemplateRecursion(t *testing.T) {
 		"a.tmpl": &fstest.MapFile{Data: []byte(`{{renderTemplate "b.tmpl" .}}`)},
 		"b.tmpl": &fstest.MapFile{Data: []byte(`{{renderTemplate "a.tmpl" .}}`)},
 	}
-	registry, _, err := BuildRegistry(t.Context(), fsys, nil, nil, "/var/lib/picolet")
+	registry, _, err := buildRegistryAll(t.Context(), fsys, nil, nil, "/var/lib/picolet")
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
@@ -1890,7 +1890,7 @@ func TestReadOpSecret(t *testing.T) {
 			}
 			return results, nil
 		}
-		registry, caches, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
+		registry, caches, err := buildRegistryAll(t.Context(), fsys, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
 		require.NoError(t, err)
 		require.Len(t, caches, 1)
 		cache := caches[ProviderOnePassword]
@@ -1912,7 +1912,7 @@ func TestReadOpSecret(t *testing.T) {
 
 	t.Run("nil reader returns placeholder", func(t *testing.T) {
 		t.Parallel()
-		registry, caches, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{OpProvider(nil)}, "/var/lib/picolet")
+		registry, caches, err := buildRegistryAll(t.Context(), fsys, nil, []ProviderTemplate{OpProvider(nil)}, "/var/lib/picolet")
 		require.NoError(t, err)
 		assert.Empty(t, caches)
 		var buf bytes.Buffer
@@ -1925,7 +1925,7 @@ func TestReadOpSecret(t *testing.T) {
 		reader := func(_ context.Context, _ []string) (map[string]string, error) {
 			return nil, fmt.Errorf("1password error")
 		}
-		registry, caches, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
+		registry, caches, err := buildRegistryAll(t.Context(), fsys, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
 		require.NoError(t, err)
 		cache := caches[ProviderOnePassword]
 
@@ -1947,7 +1947,7 @@ func TestReadOpSecret(t *testing.T) {
 		reader := func(_ context.Context, _ []string) (map[string]string, error) {
 			return nil, fmt.Errorf("should-not-be-called")
 		}
-		registry, _, err := BuildRegistry(t.Context(), invalidFS, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
+		registry, _, err := buildRegistryAll(t.Context(), invalidFS, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
 		require.NoError(t, err)
 		var buf bytes.Buffer
 		err = registry.ExecuteTemplate(&buf, "bad.tmpl", nil)
@@ -1971,7 +1971,7 @@ func TestReadOpSecret(t *testing.T) {
 			}
 			return results, nil
 		}
-		registry, caches, err := BuildRegistry(t.Context(), multiFS, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
+		registry, caches, err := buildRegistryAll(t.Context(), multiFS, nil, []ProviderTemplate{OpProvider(reader)}, "/var/lib/picolet")
 		require.NoError(t, err)
 		cache := caches[ProviderOnePassword]
 
@@ -2015,7 +2015,7 @@ func TestReadProvidersCoexist(t *testing.T) {
 		return out, nil
 	}
 
-	registry, caches, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{
+	registry, caches, err := buildRegistryAll(t.Context(), fsys, nil, []ProviderTemplate{
 		OpProvider(opReader),
 		PPProvider(ppReader),
 	}, "/var/lib/picolet")

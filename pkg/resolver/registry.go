@@ -97,23 +97,23 @@ func PPProvider(reader SecretRefReader) ProviderTemplate {
 
 const placeholderSecret = "<secret>"
 
-// RefCache manages two-phase resolution of secret references for templates.
+// refCache manages two-phase resolution of secret references for templates.
 // Avoids N individual provider round-trips when templates use multiple
 // reader-function calls.
 //
 // Not goroutine-safe; template rendering must be serial (same constraint as renderTemplate).
-type RefCache struct {
+type refCache struct {
 	reader    SecretRefReader
 	collected []string
 	resolved  map[string]string // non-nil after Resolve(); doubles as phase indicator
 }
 
-// ProviderCaches stores per-provider caches by key so callers do not depend on
+// providerCaches stores per-provider caches by key so callers do not depend on
 // the provider slice order.
-type ProviderCaches map[ProviderKey]*RefCache
+type providerCaches map[ProviderKey]*refCache
 
 // ResolveAll resolves all configured provider caches in deterministic key order.
-func (c ProviderCaches) ResolveAll(ctx context.Context) error {
+func (c providerCaches) ResolveAll(ctx context.Context) error {
 	for _, key := range slices.Sorted(maps.Keys(c)) {
 		if err := c[key].Resolve(ctx); err != nil {
 			return err
@@ -124,7 +124,7 @@ func (c ProviderCaches) ResolveAll(ctx context.Context) error {
 
 // Resolve batch-resolves all collected refs. After this call, the cache returns
 // resolved values for any subsequent template execution.
-func (c *RefCache) Resolve(ctx context.Context) error {
+func (c *refCache) Resolve(ctx context.Context) error {
 	if len(c.collected) == 0 {
 		c.resolved = make(map[string]string)
 		return nil
@@ -139,24 +139,19 @@ func (c *RefCache) Resolve(ctx context.Context) error {
 	return nil
 }
 
-// BuildRegistry collects all .tmpl files from the filesystem and builds
-// a shared template registry with Sprig + picolet-specific functions.
+// buildRegistry collects the .tmpl files accepted by the optional source-path
+// predicate (nil includes every template) and builds a shared template registry
+// with Sprig + picolet-specific functions.
 //
-// For each ProviderTemplate with a non-nil Reader, a RefCache is created and
+// For each ProviderTemplate with a non-nil Reader, a refCache is created and
 // the corresponding template function is registered. The returned caches map
 // contains entries only for providers whose Reader is non-nil.
 //
 // Two-phase resolution: callers must run a collect pass, call cache.Resolve,
 // then run the real render pass.
-func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string) (*template.Template, ProviderCaches, error) {
-	return buildRegistry(ctx, fsys, secretReader, providers, dataDir, nil)
-}
-
-// buildRegistry is BuildRegistry with an optional source-path predicate.
-// A nil include function includes every template.
 //
 //nolint:cyclop,funlen // funcmap registration is inherently branchy
-func buildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string, include func(string) bool) (*template.Template, ProviderCaches, error) {
+func buildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string, include func(string) bool) (*template.Template, providerCaches, error) {
 	sources, err := loadTemplateSources(fsys, include)
 	if err != nil {
 		return nil, nil, err
@@ -165,10 +160,10 @@ func buildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, p
 		return nil, nil, err
 	}
 
-	caches := make(ProviderCaches)
+	caches := make(providerCaches)
 	for _, p := range providers {
 		if p.Reader != nil {
-			caches[p.Key] = &RefCache{reader: p.Reader}
+			caches[p.Key] = &refCache{reader: p.Reader}
 		}
 	}
 
@@ -274,7 +269,7 @@ func loadTemplateSources(fsys fs.FS, include func(string) bool) (map[string]stri
 // When the provider's Reader is nil (cache == nil), the function returns the
 // configured "empty" placeholder. Otherwise it participates in the two-phase
 // collect+resolve cycle.
-func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p ProviderTemplate, cache *RefCache) {
+func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p ProviderTemplate, cache *refCache) {
 	funcMap[p.FuncName] = func(ref string) (string, error) {
 		if cache == nil {
 			if p.Strict {

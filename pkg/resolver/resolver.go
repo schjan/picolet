@@ -289,7 +289,7 @@ type preparedData struct {
 // unit names, collects secret refs for any configured providers, and resolves
 // each provider's cache. It populates tmplData.Host.SystemdUnits as a side
 // effect and also returns the result so the pass is testable in isolation.
-func (r *Resolver) prepareTemplateData(ctx context.Context, registry *template.Template, tmplData *TemplateData, expanded *expandedResult, caches ProviderCaches) (*preparedData, error) {
+func (r *Resolver) prepareTemplateData(ctx context.Context, registry *template.Template, tmplData *TemplateData, expanded *expandedResult, caches providerCaches) (*preparedData, error) {
 	units := r.collectSystemdUnits(registry, tmplData, expanded.FileSet)
 	if len(caches) > 0 {
 		r.collectTemplateRefs(registry, tmplData, expanded.FileSet, expanded.BundleFileRefs, expanded.HookRefs)
@@ -533,7 +533,7 @@ func (r *Resolver) buildFiles(
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, *f)
+		files = append(files, f)
 	}
 
 	secretFiles, err := r.buildSecretFiles(registry, tmplData, fileSet.Secrets, opResolved)
@@ -570,7 +570,7 @@ func (r *Resolver) buildStandardFiles(
 			if err != nil {
 				return nil, err
 			}
-			files = append(files, *f)
+			files = append(files, f)
 		}
 	}
 	return files, nil
@@ -592,7 +592,7 @@ func (r *Resolver) buildSecretFiles(
 			if err != nil {
 				return nil, err
 			}
-			files = append(files, *f)
+			files = append(files, f)
 			continue
 		}
 
@@ -600,7 +600,7 @@ func (r *Resolver) buildSecretFiles(
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, *f)
+		files = append(files, f)
 	}
 	return files, nil
 }
@@ -622,10 +622,10 @@ func detectCollisions(files []ResolvedFile) error {
 	return errors.Join(errs...)
 }
 
-func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateData, srcPath string, category config.Category, destPath string, quadlet bool) (*ResolvedFile, error) {
+func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateData, srcPath string, category config.Category, destPath string, quadlet bool) (ResolvedFile, error) {
 	content, err := r.renderOrRead(registry, tmplData, srcPath)
 	if err != nil {
-		return nil, fmt.Errorf("resolving %s: %w", srcPath, err)
+		return ResolvedFile{}, fmt.Errorf("resolving %s: %w", srcPath, err)
 	}
 
 	if !quadlet && category == config.CategorySystemd {
@@ -651,7 +651,7 @@ func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateDa
 		serviceName = filename
 	}
 
-	return &ResolvedFile{
+	return ResolvedFile{
 		SrcPath:     srcPath,
 		DestPath:    destPath,
 		Content:     content,
@@ -733,13 +733,13 @@ func destFilename(srcPath string) string {
 	return strings.TrimSuffix(path.Base(srcPath), ".tmpl")
 }
 
-func (r *Resolver) resolveNestedRef(registry *template.Template, tmplData *TemplateData, ref bundleFileRef) (*ResolvedFile, error) {
+func (r *Resolver) resolveNestedRef(registry *template.Template, tmplData *TemplateData, ref bundleFileRef) (ResolvedFile, error) {
 	content, err := r.renderOrRead(registry, tmplData, ref.SrcPath)
 	if err != nil {
-		return nil, fmt.Errorf("resolving %s %s: %w", ref.Category, ref.SrcPath, err)
+		return ResolvedFile{}, fmt.Errorf("resolving %s %s: %w", ref.Category, ref.SrcPath, err)
 	}
 
-	return &ResolvedFile{
+	return ResolvedFile{
 		SrcPath:  ref.SrcPath,
 		DestPath: r.dataDestPath(ref.LogicalPath),
 		Content:  content,
@@ -798,18 +798,18 @@ func (r *Resolver) resolveHooksFile(registry *template.Template, tmplData *Templ
 	return file.Hooks, nil
 }
 
-func (r *Resolver) resolveSecret(registry *template.Template, tmplData *TemplateData, srcPath string) (*ResolvedFile, error) {
+func (r *Resolver) resolveSecret(registry *template.Template, tmplData *TemplateData, srcPath string) (ResolvedFile, error) {
 	filename := destFilename(srcPath)
 	content, err := r.secretContent(registry, tmplData, srcPath, filename)
 	if err != nil {
-		return nil, fmt.Errorf("resolving secret %s: %w", srcPath, err)
+		return ResolvedFile{}, fmt.Errorf("resolving secret %s: %w", srcPath, err)
 	}
 	destPath, err := r.secretDestPath(srcPath)
 	if err != nil {
-		return nil, fmt.Errorf("resolving secret %s: %w", srcPath, err)
+		return ResolvedFile{}, fmt.Errorf("resolving secret %s: %w", srcPath, err)
 	}
 
-	return &ResolvedFile{
+	return ResolvedFile{
 		SrcPath:  srcPath,
 		DestPath: destPath,
 		Content:  content,
@@ -878,7 +878,7 @@ func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, re
 
 // collectTemplateRefs executes all .tmpl files in collect mode to discover
 // reader-function calls (readOpSecret, readProtonPassSecret, …). Output is
-// discarded — only the side effect of populating each provider's RefCache matters.
+// discarded — only the side effect of populating each provider's refCache matters.
 func (r *Resolver) collectTemplateRefs(
 	registry *template.Template,
 	tmplData *TemplateData,
@@ -914,12 +914,12 @@ func (r *Resolver) collectTemplateRefs(
 
 // buildDirectSecretFile creates a ResolvedFile for a pre-resolved
 // provider-backed secret (op:// or pass://).
-func (r *Resolver) buildDirectSecretFile(ref, content string) (*ResolvedFile, error) {
+func (r *Resolver) buildDirectSecretFile(ref, content string) (ResolvedFile, error) {
 	destPath, err := r.secretDestPath(ref)
 	if err != nil {
-		return nil, err
+		return ResolvedFile{}, err
 	}
-	return &ResolvedFile{
+	return ResolvedFile{
 		SrcPath:  ref,
 		DestPath: destPath,
 		Content:  content,
