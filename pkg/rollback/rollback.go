@@ -5,11 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/reconciler"
 )
+
+// restoreTimeout bounds the detached rollback context in ApplyWithSnapshot.
+const restoreTimeout = 30 * time.Second
 
 // Snapshot stores the original content of files before an apply.
 type Snapshot struct {
@@ -56,6 +61,38 @@ func CreateSnapshot(cs *reconciler.Changeset, diskReader DiskReader) (*Snapshot,
 	}
 
 	return snap, nil
+}
+
+// ApplyWithSnapshot wraps an apply in the snapshot → apply → restore-on-fatal-
+// error skeleton shared by the agent's reconcile path and the CLI's one-shot
+// apply. pending is passed through to ApplyWithPending (nil for a plain apply).
+//
+// On a fatal apply error the snapshot is restored with a detached context —
+// context.WithoutCancel preserves parent values without inheriting
+// cancellation, so rollback can complete even during shutdown — and the apply
+// error is returned with rolledBack=true. All outcome bookkeeping beyond the
+// restore itself (metrics, error wrapping, incomplete-apply classification)
+// stays with the caller: the agent and the CLI diverge there deliberately.
+func ApplyWithSnapshot(ctx context.Context, app *applier.Applier, cs *reconciler.Changeset, pending []string, writer applier.FileWriter, systemd applier.SystemdManager) (result *applier.ApplyResult, rolledBack bool, err error) {
+	snap, err := CreateSnapshot(cs, os.ReadFile)
+	if err != nil {
+		return nil, false, fmt.Errorf("creating snapshot: %w", err)
+	}
+
+	result, err = app.ApplyWithPending(ctx, cs, pending)
+	if err == nil {
+		return result, false, nil
+	}
+
+	slog.Error("apply failed, rolling back", "error", err)
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restoreTimeout)
+	defer cancel()
+	if rbErr := Restore(rollbackCtx, snap, writer, systemd); rbErr != nil {
+		slog.Error("rollback failed", "error", rbErr)
+	} else {
+		slog.Warn("rollback complete")
+	}
+	return nil, true, err
 }
 
 // Restore reverts files to their snapshot state and runs daemon-reload.

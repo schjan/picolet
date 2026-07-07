@@ -944,27 +944,16 @@ func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.Resolv
 }
 
 func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset, hooks []config.Hook, pendingNames []string) (*applier.ApplyResult, error) {
-	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile)
-	if err != nil {
-		return nil, fmt.Errorf("creating snapshot: %w", err)
-	}
-
 	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, hooks)
-	result, err := app.ApplyWithPending(ctx, changeset, pendingNames)
+	result, rolledBack, err := rollback.ApplyWithSnapshot(ctx, app, changeset, pendingNames, a.writer, a.systemd)
 	if err != nil {
-		slog.Error("apply failed, rolling back", "error", err)
-		metrics.RollbackTotal.Inc()
-
-		// Use a detached context so rollback can complete even during shutdown.
-		// WithoutCancel preserves parent values (e.g. trace IDs) without inheriting cancellation.
-		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer rollbackCancel()
-
-		if rbErr := rollback.Restore(rollbackCtx, snap, a.writer, a.systemd); rbErr != nil {
-			slog.Error("rollback failed", "error", rbErr)
-		} else {
-			slog.Warn("rollback complete", "sha", headSHA)
+		if !rolledBack {
+			return nil, err // snapshot creation failed; nothing was applied
 		}
+		metrics.RollbackTotal.Inc()
+		slog.Warn("state rolled back after failed apply", "sha", headSHA)
+		// errRollbackPerformed is matched via errors.Is in
+		// shouldReportDeploymentError to pick the deployment error label.
 		return nil, fmt.Errorf("%w: apply: %w", errRollbackPerformed, err)
 	}
 

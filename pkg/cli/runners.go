@@ -420,16 +420,14 @@ func stateStoreFromConfig(cfg *agentcfg.Config) (*state.Store, error) {
 	return state.NewStore(filepath.Join(dataDir, "state.json")), nil
 }
 
-// applyWithRollback snapshots the current state, applies changes, and rolls back on fatal error.
+// applyWithRollback snapshots the current state, applies changes, and rolls
+// back on fatal error via the shared rollback.ApplyWithSnapshot skeleton.
 //
-// TODO: This helper duplicates pkg/agent.(*Agent).applyWithRollback with four observable
-// differences from the daemon path that should be evaluated together when either changes:
-//  1. Uses applier.Apply (no pending-hook tracking); the Agent uses ApplyWithPending.
-//  2. Hardcodes dryRun=false; the Agent threads it through.
-//  3. No statusStore.DeleteUnit on delete-action changes (no statusStore here).
-//  4. No metrics.RollbackTotal / metrics.FilesAppliedTotal instrumentation.
-//
-// Consolidating requires factoring out a shared core; tracked separately.
+// The one-shot CLI path deliberately diverges from the daemon's
+// agent.applyWithRollback in its bookkeeping: no pending-hook tracking, no
+// statusStore, no metrics, and incompleteness is gated on RetryableErrors only
+// (there is no health-enforce loop here to converge failed managed-unit
+// restarts).
 func applyWithRollback(
 	ctx context.Context,
 	changeset *reconciler.Changeset,
@@ -438,20 +436,9 @@ func applyWithRollback(
 	hooks []config.Hook,
 ) (*applier.ApplyResult, error) {
 	writer := applier.NewAtomicFileWriter()
-	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile)
-	if err != nil {
-		return nil, fmt.Errorf("creating snapshot: %w", err)
-	}
-
 	app := applier.New(systemd, podman, writer, false, hooks)
-	result, err := app.Apply(ctx, changeset)
+	result, _, err := rollback.ApplyWithSnapshot(ctx, app, changeset, nil, writer, systemd)
 	if err != nil {
-		slog.Error("apply failed, rolling back", "error", err)
-		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer cancel()
-		if rbErr := rollback.Restore(rollbackCtx, snap, writer, systemd); rbErr != nil {
-			slog.Error("rollback failed", "error", rbErr)
-		}
 		return nil, fmt.Errorf("apply failed: %w", err)
 	}
 	for _, e := range result.Errors {

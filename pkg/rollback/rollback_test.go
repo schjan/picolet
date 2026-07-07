@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	appliermocks "github.com/schjan/picolet/mocks/applier"
+	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/reconciler"
 )
 
@@ -121,4 +122,60 @@ func TestCreateSnapshotNilReaderReturnsError(t *testing.T) {
 	snap, err := CreateSnapshot(&reconciler.Changeset{}, nil)
 	require.ErrorContains(t, err, "disk reader is nil")
 	assert.Nil(t, snap)
+}
+
+// updateChangeset returns a changeset updating one on-disk file, created under
+// a temp dir so CreateSnapshot's os.ReadFile sees real prior content.
+func updateChangeset(t *testing.T, oldContent, newContent string) (*reconciler.Changeset, string) {
+	t.Helper()
+	dest := filepath.Join(t.TempDir(), "app.container")
+	require.NoError(t, os.WriteFile(dest, []byte(oldContent), 0o600))
+	return &reconciler.Changeset{
+		Changes: []reconciler.Change{{
+			DestPath:   dest,
+			Action:     reconciler.ActionUpdate,
+			Category:   "container",
+			NewContent: newContent,
+		}},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	}, dest
+}
+
+func TestApplyWithSnapshotSuccessDoesNotRestore(t *testing.T) {
+	t.Parallel()
+	cs, dest := updateChangeset(t, "old", "new")
+
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := appliermocks.NewMockFileWriter(t)
+	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
+	fw.EXPECT().WriteFile(dest, []byte("new")).Return(nil).Once()
+
+	app := applier.New(sys, pod, fw, false, nil)
+	result, rolledBack, err := ApplyWithSnapshot(context.Background(), app, cs, nil, fw, sys)
+	require.NoError(t, err)
+	assert.False(t, rolledBack)
+	require.NotNil(t, result)
+	assert.Equal(t, 1, result.Applied)
+}
+
+func TestApplyWithSnapshotRestoresOnFatalError(t *testing.T) {
+	t.Parallel()
+	cs, dest := updateChangeset(t, "old", "new")
+
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil) // restore's daemon-reload
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := appliermocks.NewMockFileWriter(t)
+	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
+	// The apply's write fails fatally; the restore then writes the snapshot back.
+	fw.EXPECT().WriteFile(dest, []byte("new")).Return(fmt.Errorf("disk full")).Once()
+	fw.EXPECT().WriteFile(dest, []byte("old")).Return(nil).Once()
+
+	app := applier.New(sys, pod, fw, false, nil)
+	result, rolledBack, err := ApplyWithSnapshot(context.Background(), app, cs, nil, fw, sys)
+	require.ErrorContains(t, err, "disk full")
+	assert.True(t, rolledBack)
+	assert.Nil(t, result)
 }
