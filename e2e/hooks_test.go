@@ -202,7 +202,7 @@ ports: {}
 		agent.WithSystemd(systemd),
 		agent.WithLockPath(lockPath),
 		agent.WithStatePath(statePath),
-		agent.WithQuadletDir(quadletDir),
+		agent.WithDirs(agent.Dirs{Quadlet: quadletDir}),
 	)
 	store := state.NewStore(statePath)
 
@@ -381,7 +381,7 @@ ports: {}
 		agent.WithSystemd(systemd),
 		agent.WithLockPath(lockPath),
 		agent.WithStatePath(statePath),
-		agent.WithQuadletDir(quadletDir),
+		agent.WithDirs(agent.Dirs{Quadlet: quadletDir}),
 	)
 	store := state.NewStore(statePath)
 

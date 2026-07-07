@@ -79,15 +79,12 @@ type Agent struct {
 	statePath string
 	lockPath  string
 
-	// quadletDirOverride, systemdDirOverride, and dataDirOverride are
-	// test-only injection points. Empty values fall back to
-	// resolver.ResolveDirs(cfg.Rootless). Production deployments leave
-	// them unset so destination paths follow the documented layout.
+	// dirOverrides is a test-only injection point. Empty fields fall back
+	// to resolver.ResolveDirs(cfg.Rootless). Production deployments leave
+	// it unset so destination paths follow the documented layout.
 	// loadAndResolve passes these straight to ResolveParams (resolver.New
 	// owns fallback); scanOrphans applies the same fallback inline.
-	quadletDirOverride string
-	systemdDirOverride string
-	dataDirOverride    string
+	dirOverrides Dirs
 
 	opReader resolver.SecretRefReader // nil when 1Password not configured; initialized in Run, consumed in secrets.go
 	ppReader resolver.SecretRefReader // nil when Proton Pass not configured; initialized in Run, consumed in secrets.go
@@ -160,37 +157,21 @@ func WithLockPath(path string) Option {
 	return func(a *Agent) { a.lockPath = path }
 }
 
-// WithQuadletDir overrides the quadlet destination directory. Test-only;
-// production agents leave this unset so paths come from resolver.ResolveDirs.
-// An empty path is ignored. When this option is set, callers that also
-// use systemd or manifest categories must set WithSystemdDir/WithDataDir
-// to keep loadAndResolve and scanOrphans pointed at consistent locations.
-func WithQuadletDir(path string) Option {
-	return func(a *Agent) {
-		if path != "" {
-			a.quadletDirOverride = path
-		}
-	}
+// Dirs overrides the destination directories normally computed by
+// resolver.ResolveDirs(cfg.Rootless). Test-only; production agents leave it
+// unset so paths follow the documented layout. Empty fields keep the default
+// for the given rootless mode — a caller overriding Quadlet while also using
+// systemd or manifest categories must set Systemd/Data too, so loadAndResolve
+// and scanOrphans stay pointed at consistent locations.
+type Dirs struct {
+	Quadlet string
+	Systemd string
+	Data    string
 }
 
-// WithSystemdDir overrides the systemd destination directory. Test-only.
-// An empty path is ignored. See WithQuadletDir for the consistency rule.
-func WithSystemdDir(path string) Option {
-	return func(a *Agent) {
-		if path != "" {
-			a.systemdDirOverride = path
-		}
-	}
-}
-
-// WithDataDir overrides the manifest data directory. Test-only.
-// An empty path is ignored. See WithQuadletDir for the consistency rule.
-func WithDataDir(path string) Option {
-	return func(a *Agent) {
-		if path != "" {
-			a.dataDirOverride = path
-		}
-	}
+// WithDirs overrides destination directories. Test-only; see Dirs.
+func WithDirs(d Dirs) Option {
+	return func(a *Agent) { a.dirOverrides = d }
 }
 
 // WithMQTT sets the MQTTClient for pause/trigger/status publishing.
@@ -740,9 +721,9 @@ func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, err
 		PPSecretReader: a.ppReader,
 		// Override fields are passed raw; resolver.New applies the
 		// ResolveDirs fallback for any field left empty.
-		QuadletDir:  a.quadletDirOverride,
-		SystemdDir:  a.systemdDirOverride,
-		DataDir:     a.dataDirOverride,
+		QuadletDir:  a.dirOverrides.Quadlet,
+		SystemdDir:  a.dirOverrides.Systemd,
+		DataDir:     a.dirOverrides.Data,
 		HostDataDir: a.cfg.EffectiveHostDataDir(),
 	})
 }
@@ -1102,9 +1083,9 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	// cmp.Or returns the first non-empty value: a test-only override when set,
 	// otherwise the production default from resolver.ResolveDirs. Keeps
 	// scanOrphans pointed at exactly the directories the resolver just wrote to.
-	quadletDir = cmp.Or(a.quadletDirOverride, quadletDir)
-	systemdDir = cmp.Or(a.systemdDirOverride, systemdDir)
-	dataDir = cmp.Or(a.dataDirOverride, dataDir)
+	quadletDir = cmp.Or(a.dirOverrides.Quadlet, quadletDir)
+	systemdDir = cmp.Or(a.dirOverrides.Systemd, systemdDir)
+	dataDir = cmp.Or(a.dirOverrides.Data, dataDir)
 	st, err := store.Load()
 	if err != nil {
 		slog.Warn("loading state for orphan scan failed", "error", err)

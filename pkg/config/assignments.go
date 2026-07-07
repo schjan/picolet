@@ -59,16 +59,29 @@ func (a *Assignments) Resolve(host *HostConfig) *ResolvedFileSet {
 	return result
 }
 
+// categorySlices returns pointers to the per-category path slices. Its order
+// must match AssignmentGroup.categorySlices — the two structs carry the same
+// nine fields and these two methods are the only code that walks them.
+func (r *ResolvedFileSet) categorySlices() []*[]string {
+	return []*[]string{
+		&r.Networks, &r.Systemd, &r.Volumes, &r.Containers, &r.Kube,
+		&r.Manifests, &r.Files, &r.Secrets, &r.Services,
+	}
+}
+
+// categorySlices returns the per-category path slices in the same order as
+// ResolvedFileSet.categorySlices.
+func (g AssignmentGroup) categorySlices() [][]string {
+	return [][]string{
+		g.Networks, g.Systemd, g.Volumes, g.Containers, g.Kube,
+		g.Manifests, g.Files, g.Secrets, g.Services,
+	}
+}
+
 func (r *ResolvedFileSet) deduplicate() {
-	r.Networks = sortedUnique(r.Networks)
-	r.Systemd = sortedUnique(r.Systemd)
-	r.Volumes = sortedUnique(r.Volumes)
-	r.Containers = sortedUnique(r.Containers)
-	r.Kube = sortedUnique(r.Kube)
-	r.Manifests = sortedUnique(r.Manifests)
-	r.Files = sortedUnique(r.Files)
-	r.Secrets = sortedUnique(r.Secrets)
-	r.Services = sortedUnique(r.Services)
+	for _, s := range r.categorySlices() {
+		*s = sortedUnique(*s)
+	}
 }
 
 // sortedUnique returns a sorted copy with duplicates removed.
@@ -77,13 +90,8 @@ func sortedUnique(s []string) []string {
 }
 
 func (r *ResolvedFileSet) merge(g AssignmentGroup) {
-	r.Networks = append(r.Networks, g.Networks...)
-	r.Systemd = append(r.Systemd, g.Systemd...)
-	r.Volumes = append(r.Volumes, g.Volumes...)
-	r.Containers = append(r.Containers, g.Containers...)
-	r.Kube = append(r.Kube, g.Kube...)
-	r.Manifests = append(r.Manifests, g.Manifests...)
-	r.Files = append(r.Files, g.Files...)
-	r.Secrets = append(r.Secrets, g.Secrets...)
-	r.Services = append(r.Services, g.Services...)
+	dst := r.categorySlices()
+	for i, src := range g.categorySlices() {
+		*dst[i] = append(*dst[i], src...)
+	}
 }
