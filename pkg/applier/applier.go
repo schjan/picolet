@@ -71,16 +71,14 @@ type PruneResult struct {
 	ReclaimedBytes uint64
 }
 
-// PodmanClient interacts with the Podman API.
+// PodmanClient interacts with the Podman API. It carries only the methods the
+// reconciliation pipeline uses; SocketPodmanClient has additional helpers
+// (SecretExists, ContainerRemove) consumed directly by the e2e suite.
 type PodmanClient interface {
-	SecretExists(ctx context.Context, name string) (bool, error)
 	SecretCreate(ctx context.Context, name string, data []byte, replace bool) error
 	SecretRemove(ctx context.Context, name string) error
 	// ListManagedSecrets returns the names of all Podman secrets labelled managed-by=picolet.
 	ListManagedSecrets(ctx context.Context) ([]string, error)
-	ContainerRemove(ctx context.Context, nameOrID string, force bool) error
-	RunHealthcheck(ctx context.Context, container string) (bool, error)
-	GetPodState(ctx context.Context, pod string) (string, error)
 	ContainerKill(ctx context.Context, nameOrID, signal string) error
 	// ImagePrune removes unused images. When all is true, every image not used by
 	// any container (running or stopped) is removed (podman image prune -a);

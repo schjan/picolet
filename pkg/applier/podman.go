@@ -8,11 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/containers/podman/v5/libpod/define"
 	"github.com/containers/podman/v5/pkg/bindings"
 	"github.com/containers/podman/v5/pkg/bindings/containers"
 	"github.com/containers/podman/v5/pkg/bindings/images"
-	"github.com/containers/podman/v5/pkg/bindings/pods"
 	"github.com/containers/podman/v5/pkg/bindings/secrets"
 	"github.com/containers/podman/v5/pkg/domain/entities/reports"
 )
@@ -42,6 +40,9 @@ func NewSocketPodmanClient(ctx context.Context, socketPath string) (*SocketPodma
 	return &SocketPodmanClient{connCtx: connCtx}, nil
 }
 
+// SecretExists reports whether a Podman secret with the given name exists.
+// Not part of the PodmanClient interface — used only by the e2e suite.
+//
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
 func (c *SocketPodmanClient) SecretExists(_ context.Context, name string) (bool, error) {
 	return secrets.Exists(c.connCtx, name)
@@ -96,6 +97,9 @@ func (c *SocketPodmanClient) SecretRemove(_ context.Context, name string) error 
 	return nil
 }
 
+// ContainerRemove removes a container by name or ID.
+// Not part of the PodmanClient interface — used only by the e2e suite.
+//
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
 func (c *SocketPodmanClient) ContainerRemove(_ context.Context, nameOrID string, force bool) error {
 	opts := new(containers.RemoveOptions).WithForce(force)
@@ -117,24 +121,6 @@ func (c *SocketPodmanClient) ContainerKill(_ context.Context, nameOrID, signal s
 		return fmt.Errorf("signaling container %s with %s: %w", nameOrID, signal, err)
 	}
 	return nil
-}
-
-//nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
-func (c *SocketPodmanClient) RunHealthcheck(_ context.Context, container string) (bool, error) {
-	result, err := containers.RunHealthCheck(c.connCtx, container, nil)
-	if err != nil {
-		return false, fmt.Errorf("healthcheck %s: %w", container, err)
-	}
-	return result.Status == define.HealthCheckHealthy, nil
-}
-
-//nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
-func (c *SocketPodmanClient) GetPodState(_ context.Context, pod string) (string, error) {
-	report, err := pods.Inspect(c.connCtx, pod, nil)
-	if err != nil {
-		return "", fmt.Errorf("inspecting pod %s: %w", pod, err)
-	}
-	return report.State, nil
 }
 
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
