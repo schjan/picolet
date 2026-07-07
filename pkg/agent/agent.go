@@ -365,7 +365,6 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 }
 
-//nolint:cyclop,funlen // multiple early-returns are clearer than restructuring
 func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.Store, healthChecker *health.Checker) error {
 	st, err := store.Load()
 	if err != nil {
@@ -381,59 +380,10 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	// Refresh the per-unit restart-pending metric from the final state at tick end.
 	defer func() { metrics.SetUnitRestartPending(pendingUnitAttempts(st.PendingUnits)) }()
 
-	// Seed managed-files metrics from state on every tick
-	metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
-	managedByCategory := make(map[string]float64, len(reconciler.Categories()))
-	for _, mf := range st.ManagedFiles {
-		managedByCategory[mf.Category.String()]++
-	}
-	setFilesManagedMetric(managedByCategory)
-	metrics.SetAppliedSHA(st.AppliedSHA)
-	// Seed once from persisted state (not every tick — prevents backward jumps when
-	// noop timestamps are in-memory only and store.Load() returns the older persisted value).
-	if !a.seededSuccessfulAt.Load() && !st.LastSuccessfulReconciliationAt.IsZero() {
-		a.seededSuccessfulAt.Store(true)
-		metrics.LastSuccessfulReconciliation.Set(float64(st.LastSuccessfulReconciliationAt.Unix()))
-	}
-	// Seed the last-prune timestamp once from persisted state so the metric
-	// survives a restart (the status store is in-memory and starts empty).
-	if !a.seededPrunedAt.Load() && !st.LastPrunedAt.IsZero() {
-		a.seededPrunedAt.Store(true)
-		a.statusStore.SetPrune(status.PruneStatus{LastRunAt: st.LastPrunedAt})
-	}
+	a.seedMetricsFromState(st)
 
 	// 1. Health enforcement (always — units must stay healthy even when paused)
-	hr, err := healthChecker.Enforce(ctx, st)
-	if err != nil {
-		slog.Error("health enforcement error", "error", err)
-	} else {
-		a.recordHealthMetrics(hr)
-	}
-
-	// Track consecutive D-Bus failures for /health endpoint.
-	// AllFailed() is true only when every GetUnitStatus call errored — the signal
-	// for D-Bus being dead (RestartUnit errors don't count because those units
-	// already appeared in Unhealthy).
-	if hr != nil {
-		a.updateHealthFailures(hr)
-	}
-
-	// Persist any PendingUnits change health-enforce made (clear on convergence,
-	// increment on a failed retry, prune removed units). Done here — before the
-	// pause check and the noop fast-path — because those paths return without
-	// otherwise saving state, which would lose the attempt count and cooldown.
-	//
-	// This maps.Equal compares PendingUnit values, time.Time fields included. It
-	// is reliable only because every write site — mergePendingUnits and
-	// health.recordPendingUnit — truncates timestamps to whole seconds, which
-	// strips the monotonic reading so a value survives a persist/reload round
-	// trip unchanged. A future write site that skips that truncation would
-	// silently break this change detection.
-	if !maps.Equal(st.PendingUnits, pendingUnitsBefore) {
-		if saveErr := store.Save(st); saveErr != nil {
-			slog.Error("saving state after health enforcement", "error", saveErr)
-		}
-	}
+	a.enforceHealth(ctx, healthChecker, st, pendingUnitsBefore, store)
 
 	// 1b. Pause check — health ran, skip reconciliation when paused via MQTT
 	if a.paused.Load() {
@@ -459,54 +409,162 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		return fmt.Errorf("polling git: %w", err)
 	}
 
-	if !pollResult.Changed && !a.opRefreshDue() && !a.ppRefreshDue() && len(st.PendingHooks) == 0 && len(st.PendingUnits) == 0 {
-		metrics.GitPollTotal.WithLabelValues("noop").Inc()
-		slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
-		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
-		if !a.statusStore.Snapshot().Bootstrapped {
-			if err := a.refreshResolvedSnapshot(ctx); err != nil {
-				slog.Warn("refreshing runtime status snapshot failed", "error", err)
-				a.recordEvent("status_error", pollResult.HeadSHA, err.Error())
-			}
-		}
-		// A noop is a successful reconciliation — the agent confirmed the
-		// desired state matches. Update the timestamp so dashboards and MQTT
-		// reflect "last time we verified everything is OK", not just "last
-		// time files changed". Only update in-memory (the defer publishes
-		// MQTT, Prometheus is scraped); no state save needed for noops.
-		now := time.Now()
-		st.LastSuccessfulReconciliationAt = now
-		metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
-		a.statusStore.SetVerifiedAt(now)
+	// 3. Reconcile (or record why no reconcile is needed)
+	switch trigger := a.classifyTick(pollResult.Changed, st); trigger {
+	case triggerNoop:
+		a.tickNoop(ctx, pollResult.HeadSHA, st)
 		return nil
-	}
-
-	// Pending-unit retry tick: nothing in git changed and no hook/secret retry
-	// is due, but units are still failing to restart. Health-enforce already
-	// retried them this tick (and persisted any change above). Report
-	// retry_pending — NOT a clean noop — so the SHA is not treated as fully
-	// converged and LastSuccessfulReconciliationAt is not advanced. Units are
-	// retried by health-enforce, so no ReconcileOnce is needed here.
-	if !pollResult.Changed && !a.opRefreshDue() && !a.ppRefreshDue() && len(st.PendingHooks) == 0 {
-		metrics.GitPollTotal.WithLabelValues("pending_unit_retry").Inc()
-		metrics.ReconciliationTotal.WithLabelValues("retry_pending").Inc()
-		slog.Warn("apply incomplete, units still failing to restart",
-			"sha", pollResult.HeadSHA, "pending_units", slices.Sorted(maps.Keys(st.PendingUnits)))
-		a.recordEvent("retry_pending", st.AppliedSHA, "units still failing to restart")
+	case triggerPendingUnitRetry:
+		a.tickPendingUnitRetry(pollResult.HeadSHA, st)
 		return nil
-	}
-
-	switch {
-	case pollResult.Changed:
-		metrics.GitPollTotal.WithLabelValues("changed").Inc()
-	case len(st.PendingHooks) > 0:
-		// Pending-hook retry takes priority over secret-provider refresh in the
-		// label even when both apply: the retry is the actionable reason this
-		// tick ran, and ReconcileOnce will refresh secrets regardless.
-		slog.Info("forcing reconciliation for pending hook retry", "sha", pollResult.HeadSHA, "pending", st.PendingHooks)
-		metrics.GitPollTotal.WithLabelValues("pending_hook_retry").Inc()
 	default:
-		slog.Info("forcing reconciliation for secret-provider refresh", "sha", pollResult.HeadSHA)
+		return a.reconcileTick(ctx, trigger, pollResult.HeadSHA, st, store)
+	}
+}
+
+// seedMetricsFromState seeds gauges and status-store fields from persisted
+// state at the start of every tick, so metrics survive an agent restart.
+func (a *Agent) seedMetricsFromState(st *state.State) {
+	metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
+	managedByCategory := make(map[string]float64, len(reconciler.Categories()))
+	for _, mf := range st.ManagedFiles {
+		managedByCategory[mf.Category.String()]++
+	}
+	setFilesManagedMetric(managedByCategory)
+	metrics.SetAppliedSHA(st.AppliedSHA)
+	// Seed once from persisted state (not every tick — prevents backward jumps when
+	// noop timestamps are in-memory only and store.Load() returns the older persisted value).
+	if !a.seededSuccessfulAt.Load() && !st.LastSuccessfulReconciliationAt.IsZero() {
+		a.seededSuccessfulAt.Store(true)
+		metrics.LastSuccessfulReconciliation.Set(float64(st.LastSuccessfulReconciliationAt.Unix()))
+	}
+	// Seed the last-prune timestamp once from persisted state so the metric
+	// survives a restart (the status store is in-memory and starts empty).
+	if !a.seededPrunedAt.Load() && !st.LastPrunedAt.IsZero() {
+		a.seededPrunedAt.Store(true)
+		a.statusStore.SetPrune(status.PruneStatus{LastRunAt: st.LastPrunedAt})
+	}
+}
+
+// enforceHealth runs health enforcement and persists any PendingUnits change
+// it made (clear on convergence, increment on a failed retry, prune removed
+// units). Persisting happens here — before the pause check and the noop
+// fast-path — because those paths return without otherwise saving state,
+// which would lose the attempt count and cooldown.
+func (a *Agent) enforceHealth(ctx context.Context, healthChecker *health.Checker, st *state.State, pendingUnitsBefore map[string]state.PendingUnit, store *state.Store) {
+	hr, err := healthChecker.Enforce(ctx, st)
+	if err != nil {
+		slog.Error("health enforcement error", "error", err)
+	} else {
+		a.recordHealthMetrics(hr)
+	}
+
+	// Track consecutive D-Bus failures for /health endpoint.
+	// AllFailed() is true only when every GetUnitStatus call errored — the signal
+	// for D-Bus being dead (RestartUnit errors don't count because those units
+	// already appeared in Unhealthy).
+	if hr != nil {
+		a.updateHealthFailures(hr)
+	}
+
+	// This maps.Equal compares PendingUnit values, time.Time fields included. It
+	// is reliable only because every write site — mergePendingUnits and
+	// health.recordPendingUnit — truncates timestamps to whole seconds, which
+	// strips the monotonic reading so a value survives a persist/reload round
+	// trip unchanged. A future write site that skips that truncation would
+	// silently break this change detection.
+	if !maps.Equal(st.PendingUnits, pendingUnitsBefore) {
+		if saveErr := store.Save(st); saveErr != nil {
+			slog.Error("saving state after health enforcement", "error", saveErr)
+		}
+	}
+}
+
+// tickTrigger classifies why a tick reconciles — or why it does not.
+type tickTrigger int
+
+const (
+	// triggerNoop: nothing changed, nothing pending — verify convergence and return.
+	triggerNoop tickTrigger = iota
+	// triggerPendingUnitRetry: nothing changed, but units are still failing to
+	// restart; health-enforce already retried them this tick.
+	triggerPendingUnitRetry
+	// triggerGitChanged: remote HEAD moved — the normal reconcile path.
+	triggerGitChanged
+	// triggerPendingHookRetry: same SHA, but keep_running hooks must retry.
+	triggerPendingHookRetry
+	// triggerSecretRefresh: same SHA, but a provider's refresh interval elapsed.
+	triggerSecretRefresh
+)
+
+// classifyTick determines the single trigger for this tick. The refresh-due
+// checks are evaluated exactly once per tick, here.
+func (a *Agent) classifyTick(gitChanged bool, st *state.State) tickTrigger {
+	switch {
+	case gitChanged:
+		return triggerGitChanged
+	case len(st.PendingHooks) > 0:
+		// Pending-hook retry takes priority over secret-provider refresh even
+		// when both apply: the retry is the actionable reason this tick runs,
+		// and ReconcileOnce will refresh secrets regardless.
+		return triggerPendingHookRetry
+	case a.opRefreshDue() || a.ppRefreshDue():
+		return triggerSecretRefresh
+	case len(st.PendingUnits) > 0:
+		return triggerPendingUnitRetry
+	default:
+		return triggerNoop
+	}
+}
+
+// tickNoop records a tick that verified convergence with nothing to do.
+func (a *Agent) tickNoop(ctx context.Context, headSHA string, st *state.State) {
+	metrics.GitPollTotal.WithLabelValues("noop").Inc()
+	slog.Debug("reconciliation: noop", "sha", headSHA, "reason", "no_git_changes")
+	metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
+	if !a.statusStore.Snapshot().Bootstrapped {
+		if err := a.refreshResolvedSnapshot(ctx); err != nil {
+			slog.Warn("refreshing runtime status snapshot failed", "error", err)
+			a.recordEvent("status_error", headSHA, err.Error())
+		}
+	}
+	// A noop is a successful reconciliation — the agent confirmed the
+	// desired state matches. Update the timestamp so dashboards and MQTT
+	// reflect "last time we verified everything is OK", not just "last
+	// time files changed". Only update in-memory (the deferred publish
+	// covers MQTT, Prometheus is scraped); no state save needed for noops.
+	now := time.Now()
+	st.LastSuccessfulReconciliationAt = now
+	metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
+	a.statusStore.SetVerifiedAt(now)
+}
+
+// tickPendingUnitRetry records a tick where nothing in git changed and no
+// hook/secret retry is due, but units are still failing to restart.
+// Health-enforce already retried them this tick (and persisted any change).
+// Report retry_pending — NOT a clean noop — so the SHA is not treated as fully
+// converged and LastSuccessfulReconciliationAt is not advanced. Units are
+// retried by health-enforce, so no ReconcileOnce is needed here.
+func (a *Agent) tickPendingUnitRetry(headSHA string, st *state.State) {
+	metrics.GitPollTotal.WithLabelValues("pending_unit_retry").Inc()
+	metrics.ReconciliationTotal.WithLabelValues("retry_pending").Inc()
+	slog.Warn("apply incomplete, units still failing to restart",
+		"sha", headSHA, "pending_units", slices.Sorted(maps.Keys(st.PendingUnits)))
+	a.recordEvent("retry_pending", st.AppliedSHA, "units still failing to restart")
+}
+
+// reconcileTick runs the reconcile path for the three proceed-triggers
+// (git change, pending-hook retry, secret refresh): failed-SHA gate,
+// deployment reporting, ReconcileOnce, and outcome classification.
+func (a *Agent) reconcileTick(ctx context.Context, trigger tickTrigger, headSHA string, st *state.State, store *state.Store) error {
+	switch trigger {
+	case triggerGitChanged:
+		metrics.GitPollTotal.WithLabelValues("changed").Inc()
+	case triggerPendingHookRetry:
+		slog.Info("forcing reconciliation for pending hook retry", "sha", headSHA, "pending", st.PendingHooks)
+		metrics.GitPollTotal.WithLabelValues("pending_hook_retry").Inc()
+	default: // triggerSecretRefresh — tick() handles noop and pending-unit retry
+		slog.Info("forcing reconciliation for secret-provider refresh", "sha", headSHA)
 		metrics.GitPollTotal.WithLabelValues("secret_refresh").Inc()
 	}
 
@@ -514,57 +572,64 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	// so transient failures (e.g. D-Bus reconnection) don't permanently brick the agent.
 	const maxRetries = 3
 	const failedSHAExpiry = 1 * time.Hour
-	if pollResult.HeadSHA == st.FailedSHA && st.FailedCount >= maxRetries && time.Since(st.FailedAt) < failedSHAExpiry {
-		slog.Warn("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "failed_sha_gate", "failures", st.FailedCount)
+	if headSHA == st.FailedSHA && st.FailedCount >= maxRetries && time.Since(st.FailedAt) < failedSHAExpiry {
+		slog.Warn("reconciliation: noop", "sha", headSHA, "reason", "failed_sha_gate", "failures", st.FailedCount)
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
 		// Bump every provider's last-refresh timestamp so the agent does not
 		// retry secret refreshes every tick while blocked by the failed-SHA gate.
 		a.markRefreshAttempted()
-		a.recordEvent("failed_sha_gate", pollResult.HeadSHA, "skipped after repeated failures")
+		a.recordEvent("failed_sha_gate", headSHA, "skipped after repeated failures")
 		return nil
 	}
 
 	// Report deployments only for new git SHAs; forced reconciliations on the
 	// same SHA (secret-provider refresh, pending hook retry) are not deployments.
 	var deploymentID int64
-	if pollResult.Changed {
-		slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
-		deploymentID = a.createDeployment(ctx, pollResult.HeadSHA)
+	if trigger == triggerGitChanged {
+		slog.Info("new git commit detected", "sha", headSHA, "prev", st.AppliedSHA)
+		deploymentID = a.createDeployment(ctx, headSHA)
 	}
 
 	start := time.Now()
-	result, err := a.ReconcileOnce(ctx, pollResult.HeadSHA, st, store)
+	result, err := a.ReconcileOnce(ctx, headSHA, st, store)
 	elapsed := time.Since(start)
 	metrics.ReconciliationDuration.Observe(elapsed.Seconds())
 
+	return a.recordReconcileOutcome(ctx, deploymentID, headSHA, st, store, result, err, elapsed)
+}
+
+// recordReconcileOutcome classifies a ReconcileOnce result into the three
+// terminal outcomes (retry-pending, failure, success) and records metrics,
+// events, deployment status, and failure tracking accordingly.
+func (a *Agent) recordReconcileOutcome(ctx context.Context, deploymentID int64, headSHA string, st *state.State, store *state.Store, result *ReconcileResult, err error, elapsed time.Duration) error {
 	if errors.Is(err, applier.ErrApplyIncomplete) {
 		// Files were applied; only hook retry is pending. This is not a
 		// reconciliation failure: do not increment FailedCount, do not arm the
 		// failed-SHA gate, do not report a failed deployment.
 		a.reportDeploymentResult(ctx, deploymentID, nil)
 		a.markRefreshAttempted()
-		slog.Warn("apply incomplete, hooks will retry on next tick", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
+		slog.Warn("apply incomplete, hooks will retry on next tick", "sha", headSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
 		metrics.ReconciliationTotal.WithLabelValues("retry_pending").Inc()
-		a.recordEvent("retry_pending", pollResult.HeadSHA, err.Error())
+		a.recordEvent("retry_pending", headSHA, err.Error())
 		return nil
 	}
 
 	a.reportDeploymentResult(ctx, deploymentID, err)
 
 	if err != nil {
-		slog.Error("reconciliation failed", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
+		slog.Error("reconciliation failed", "sha", headSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
 		metrics.ReconciliationTotal.WithLabelValues("failure").Inc()
 
 		// Track failure count for the same SHA
-		if st.FailedSHA == pollResult.HeadSHA {
+		if st.FailedSHA == headSHA {
 			st.FailedCount++
 		} else {
-			st.FailedSHA = pollResult.HeadSHA
+			st.FailedSHA = headSHA
 			st.FailedCount = 1
 		}
 		st.FailedAt = time.Now()
 		metrics.RecordFailedSHA(st.FailedCount)
-		a.recordEvent("failure", pollResult.HeadSHA, err.Error())
+		a.recordEvent("failure", headSHA, err.Error())
 		if saveErr := store.Save(st); saveErr != nil {
 			slog.Error("saving failed state", "error", saveErr)
 		}
@@ -576,9 +641,9 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	recordProviderSyncSuccess(resolver.ProviderProtonPass, result.PPSecretsCount)
 	metrics.ReconciliationTotal.WithLabelValues("success").Inc()
 	if result.HasChanges {
-		a.recordEvent("success", pollResult.HeadSHA, "reconciliation complete")
+		a.recordEvent("success", headSHA, "reconciliation complete")
 	}
-	slog.Info("reconciliation complete", "sha", pollResult.HeadSHA, "result", "success", "duration", elapsed.Round(time.Millisecond))
+	slog.Info("reconciliation complete", "sha", headSHA, "result", "success", "duration", elapsed.Round(time.Millisecond))
 	return nil
 }
 
