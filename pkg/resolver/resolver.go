@@ -611,14 +611,8 @@ func detectCollisions(files []ResolvedFile) error {
 		collisions[file.DestPath] = append(collisions[file.DestPath], file.SrcPath)
 	}
 
-	destPaths := make([]string, 0, len(collisions))
-	for destPath := range collisions {
-		destPaths = append(destPaths, destPath)
-	}
-	slices.Sort(destPaths)
-
 	var errs []error
-	for _, destPath := range destPaths {
+	for _, destPath := range slices.Sorted(maps.Keys(collisions)) {
 		uniquePaths := sortedUnique(collisions[destPath])
 		if len(uniquePaths) < 2 {
 			continue

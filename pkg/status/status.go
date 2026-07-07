@@ -112,7 +112,7 @@ func (s *Store) SetUnits(units map[string]UnitRuntimeStatus) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.snapshot.Units = cloneUnits(units)
+	s.snapshot.Units = maps.Clone(units)
 }
 
 // SetUnit sets the runtime status for a single unit.
@@ -236,7 +236,7 @@ func (s *Store) AddEvent(event ReconcileEvent) {
 
 func cloneSnapshot(in Snapshot) Snapshot {
 	return Snapshot{
-		Units:        cloneUnits(in.Units),
+		Units:        maps.Clone(in.Units),
 		Dependencies: cloneDependenciesMap(in.Dependencies),
 		Host:         cloneHost(in.Host),
 		OrphanScan:   in.OrphanScan,
@@ -245,10 +245,6 @@ func cloneSnapshot(in Snapshot) Snapshot {
 		VerifiedAt:   in.VerifiedAt,
 		Bootstrapped: in.Bootstrapped,
 	}
-}
-
-func cloneUnits(in map[string]UnitRuntimeStatus) map[string]UnitRuntimeStatus {
-	return maps.Clone(in)
 }
 
 func cloneDependenciesMap(in map[string]UnitDependencies) map[string]UnitDependencies {

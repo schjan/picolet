@@ -111,21 +111,23 @@ type RecentEvent struct {
 	Message string
 }
 
-// shortHash strips the "sha256:" prefix that pkg/reconciler emits, then
-// truncates to 8 chars.
-func shortHash(s string) string {
-	s = strings.TrimPrefix(s, "sha256:")
-	if len(s) > 8 {
-		return s[:8]
+// truncate returns at most the first n characters of s.
+func truncate(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
 	}
 	return s
 }
 
+// shortHash strips the "sha256:" prefix that pkg/reconciler emits, then
+// truncates to 8 chars.
+func shortHash(s string) string {
+	return truncate(strings.TrimPrefix(s, "sha256:"), 8)
+}
+
+// shortSHA renders a git SHA in the familiar 7-char form.
 func shortSHA(s string) string {
-	if len(s) > 7 {
-		return s[:7]
-	}
-	return s
+	return truncate(s, 7)
 }
 
 func relativeTime(t, now time.Time) string {

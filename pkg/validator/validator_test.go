@@ -36,6 +36,13 @@ func parseUnit(t *testing.T, filename, content string) *parser.UnitFile {
 	return unit
 }
 
+// validateQuadlet converts a quadlet unit and keeps only the error, for tests
+// that assert validity without caring about the generated service unit.
+func validateQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.UnitInfo, rootless bool) error {
+	_, err := convertQuadlet(unit, unitsInfoMap, rootless)
+	return err
+}
+
 //nolint:funlen // table-driven validation test
 func TestValidateQuadletContainer(t *testing.T) {
 	t.Parallel()

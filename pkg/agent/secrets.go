@@ -68,24 +68,20 @@ func resolveGitToken(ctx context.Context, provider resolver.ProviderKey, reader 
 	return token, nil
 }
 
+// refreshDue reports whether a provider's secrets should be re-fetched:
+// never refreshed yet, or the refresh interval has elapsed.
+func refreshDue(last time.Time, interval time.Duration) bool {
+	return last.IsZero() || time.Since(last) >= interval
+}
+
 // opRefreshDue reports whether op:// secrets should be re-fetched.
-// Returns true when 1Password is configured and the refresh interval has elapsed.
 // opReader is non-nil iff cfg.OnePassword is non-nil, so a single nil check suffices.
 func (a *Agent) opRefreshDue() bool {
-	if a.opReader == nil {
-		return false
-	}
-	interval := a.cfg.OnePassword.RefreshInterval
-	return a.lastOPRefresh.IsZero() || time.Since(a.lastOPRefresh) >= interval
+	return a.opReader != nil && refreshDue(a.lastOPRefresh, a.cfg.OnePassword.RefreshInterval)
 }
 
 // ppRefreshDue reports whether pass:// secrets should be re-fetched.
-// Returns true when Proton Pass is configured and the refresh interval has elapsed.
 // ppReader is non-nil iff cfg.ProtonPass is non-nil, so a single nil check suffices.
 func (a *Agent) ppRefreshDue() bool {
-	if a.ppReader == nil {
-		return false
-	}
-	interval := a.cfg.ProtonPass.RefreshInterval
-	return a.lastPPRefresh.IsZero() || time.Since(a.lastPPRefresh) >= interval
+	return a.ppReader != nil && refreshDue(a.lastPPRefresh, a.cfg.ProtonPass.RefreshInterval)
 }

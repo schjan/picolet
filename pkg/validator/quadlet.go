@@ -28,18 +28,14 @@ func buildUnitInfo(unit *parser.UnitFile) *quadlet.UnitInfo {
 	return info
 }
 
-// validateQuadlet validates a pre-parsed quadlet unit against the units info map.
+// convertQuadlet validates a pre-parsed quadlet unit against the units info map
+// by running Podman's Convert* for its type, returning the generated service unit.
 // The unit must already be parsed by the caller (via ValidateFiles or validateFile).
 // Podman's Convert* functions require the unit's own entry in unitsInfoMap
 // (via initServiceUnitFile), so we ensure it is populated before converting.
 // rootless must be true when validating units for rootless Podman; it controls
 // systemd dependency generation (e.g. podman-user-wait-network-online.service vs
 // network-online.target).
-func validateQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.UnitInfo, rootless bool) error {
-	_, err := convertQuadlet(unit, unitsInfoMap, rootless)
-	return err
-}
-
 func convertQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.UnitInfo, rootless bool) (*parser.UnitFile, error) {
 	// Ensure the unit's own entry is in the map. In the ValidateFiles path this is
 	// pre-populated by buildUnitsInfoFromFiles; this handles direct calls (e.g. tests).

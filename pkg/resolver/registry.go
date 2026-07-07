@@ -112,9 +112,9 @@ type RefCache struct {
 // the provider slice order.
 type ProviderCaches map[ProviderKey]*RefCache
 
-// ResolveAll resolves all configured provider caches.
+// ResolveAll resolves all configured provider caches in deterministic key order.
 func (c ProviderCaches) ResolveAll(ctx context.Context) error {
-	for _, key := range sortedCacheKeys(c) {
+	for _, key := range slices.Sorted(maps.Keys(c)) {
 		if err := c[key].Resolve(ctx); err != nil {
 			return err
 		}
@@ -243,12 +243,6 @@ func validateProviderKeys(providers []ProviderTemplate) error {
 		seen[p.Key] = p.FuncName
 	}
 	return nil
-}
-
-func sortedCacheKeys(c ProviderCaches) []ProviderKey {
-	keys := slices.Collect(maps.Keys(c))
-	slices.Sort(keys)
-	return keys
 }
 
 func loadTemplateSources(fsys fs.FS, include func(string) bool) (map[string]string, error) {
