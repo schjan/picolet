@@ -144,10 +144,9 @@ func TestSSHAuthUser(t *testing.T) {
 	}
 }
 
-func TestNewWithTokenAuthHTTPS(t *testing.T) {
+func TestStaticTokenAuthHTTPS(t *testing.T) {
 	t.Parallel()
-	p := NewWithToken("https://github.com/org/repo.git", "main", "/tmp/clone", "ghp_secret123")
-	auth, err := p.auth.GitAuth(context.Background())
+	auth, err := NewStaticTokenAuth("https://github.com/org/repo.git", "ghp_secret123").GitAuth(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, auth)
 	basic, ok := auth.(*http.BasicAuth)
@@ -156,10 +155,9 @@ func TestNewWithTokenAuthHTTPS(t *testing.T) {
 	assert.Equal(t, "ghp_secret123", basic.Password)
 }
 
-func TestNewWithTokenSSHTakesPrecedence(t *testing.T) {
+func TestStaticTokenAuthSSHTakesPrecedence(t *testing.T) {
 	t.Parallel()
-	p := NewWithToken("git@github.com:org/repo.git", "main", "/tmp/clone", "ghp_secret123")
-	auth, err := p.auth.GitAuth(context.Background())
+	auth, err := NewStaticTokenAuth("git@github.com:org/repo.git", "ghp_secret123").GitAuth(context.Background())
 	if err != nil {
 		// SSH agent may not be available in test/CI — skip gracefully
 		t.Skipf("SSH agent unavailable: %v", err)

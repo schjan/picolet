@@ -127,12 +127,6 @@ func New(repoURL, branch, localPath string, auth AuthProvider) *Poller {
 	}
 }
 
-// NewWithToken creates a poller that uses a direct token value for HTTP authentication.
-// The token takes precedence over a token file path.
-func NewWithToken(repoURL, branch, localPath, token string) *Poller {
-	return New(repoURL, branch, localPath, NewStaticTokenAuth(repoURL, token))
-}
-
 // Init opens an existing clone or clones fresh.
 func (p *Poller) Init(ctx context.Context) error {
 	repo, err := git.PlainOpen(p.localPath)

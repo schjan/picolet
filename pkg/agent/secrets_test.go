@@ -20,14 +20,14 @@ import (
 func TestOpRefreshDue(t *testing.T) {
 	t.Parallel()
 
-	dummyReader := resolver.OpSecretReader(func(_ context.Context, _ []string) (map[string]string, error) {
+	dummyReader := resolver.SecretRefReader(func(_ context.Context, _ []string) (map[string]string, error) {
 		return nil, nil //nolint:nilnil // test stub
 	})
 	opCfg := &agentcfg.OnePasswordConfig{RefreshInterval: 10 * time.Minute}
 
 	tests := []struct {
 		name          string
-		opReader      resolver.OpSecretReader
+		opReader      resolver.SecretRefReader
 		onePassword   *agentcfg.OnePasswordConfig
 		lastOPRefresh time.Time
 		want          bool

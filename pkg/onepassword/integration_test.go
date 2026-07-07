@@ -37,9 +37,9 @@ func TestResolveIntegration(t *testing.T) {
 	client := newTestClient(t)
 	ref := requireEnv(t, "OP_TEST_SECRET_REF")
 
-	val, err := client.Resolve(t.Context(), ref)
+	results, err := client.ResolveAll(t.Context(), []string{ref})
 	require.NoError(t, err)
-	require.NotEmpty(t, val)
+	require.NotEmpty(t, results[ref])
 }
 
 func TestResolveSecretSectionedField(t *testing.T) {
@@ -47,9 +47,9 @@ func TestResolveSecretSectionedField(t *testing.T) {
 	client := newTestClient(t)
 	ref := requireEnv(t, "OP_TEST_SECTIONED_REF")
 
-	val, err := client.Resolve(t.Context(), ref)
+	results, err := client.ResolveAll(t.Context(), []string{ref})
 	require.NoError(t, err)
-	require.NotEmpty(t, val)
+	require.NotEmpty(t, results[ref])
 }
 
 func TestResolveAllIntegration(t *testing.T) {
@@ -57,18 +57,10 @@ func TestResolveAllIntegration(t *testing.T) {
 	client := newTestClient(t)
 	ref := requireEnv(t, "OP_TEST_SECRET_REF")
 
-	ctx := t.Context()
-
-	// Batch with a single valid ref — should return the same value as Resolve.
-	results, err := client.ResolveAll(ctx, []string{ref})
+	results, err := client.ResolveAll(t.Context(), []string{ref})
 	require.NoError(t, err)
 	require.Contains(t, results, ref)
 	require.NotEmpty(t, results[ref])
-
-	// Cross-check: batch result matches individual Resolve.
-	individual, err := client.Resolve(ctx, ref)
-	require.NoError(t, err)
-	require.Equal(t, individual, results[ref])
 }
 
 func TestResolveAllPartialFailureIntegration(t *testing.T) {

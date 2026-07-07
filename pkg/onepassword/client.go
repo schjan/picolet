@@ -44,15 +44,6 @@ func NewClient(ctx context.Context, token string) (*Client, error) {
 	return &Client{opClient: c}, nil
 }
 
-// Resolve fetches a secret value by its 1Password reference (e.g. "op://vault/item/field").
-func (c *Client) Resolve(ctx context.Context, ref string) (string, error) {
-	val, err := c.opClient.Secrets().Resolve(ctx, ref)
-	if err != nil {
-		return "", fmt.Errorf("resolving 1password secret %q: %w", ref, err)
-	}
-	return val, nil
-}
-
 // ResolveAll fetches multiple secrets in a single SDK call.
 // Returns successfully resolved secrets and any per-reference errors separately,
 // so callers can use partial results (e.g. skip a broken secret while still
