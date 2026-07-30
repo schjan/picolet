@@ -9,7 +9,7 @@ require (
 	github.com/containers/podman/v5 v5.8.5
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/eclipse/paho.golang v0.23.0
-	github.com/go-git/go-git/v5 v5.19.1
+	github.com/go-git/go-git/v5 v5.19.2
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/go-github/v88 v88.0.0
 	github.com/moby/sys/mountinfo v0.7.2
