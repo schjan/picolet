@@ -337,6 +337,15 @@ Enable/disable/start/restart outcomes are exported as
 `picolet_systemd_unit_operations_total{operation,result}` — a restart skipped because
 the unit is a timer-triggered one-shot is recorded with `result="skipped"`.
 
+Two known one-shot edge cases are tracked but not yet handled:
+
+- A transient D-Bus failure during the pre-restart status check of a **non-timer**
+  one-shot fails closed (the restart is skipped and not retried), so a needed
+  restart-on-change can be silently lost ([#122](https://github.com/schjan/picolet/issues/122)).
+- Editing a running **daemon** in place into a `Type=oneshot` unit leaves the old
+  daemon process running, since only the new content is inspected and `daemon-reload`
+  does not stop it ([#123](https://github.com/schjan/picolet/issues/123)).
+
 #### Example: a `podman image prune -a` maintenance timer
 
 `systemd/maintenance.timer`:

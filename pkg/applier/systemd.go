@@ -296,7 +296,15 @@ func (m *DBusSystemdManager) GetUnitStatus(ctx context.Context, name string) (Un
 			if err != nil {
 				return fmt.Errorf("getting service type of %s: %w", name, err)
 			}
-			status.ServiceType, _ = prop.Value.Value().(string)
+			// Fail closed: a non-string Type (should be impossible per the D-Bus
+			// signature) must error, not leave ServiceType empty — an empty value
+			// makes ExternallyActivated false and health would restart the very
+			// one-shot this decode exists to protect.
+			serviceType, ok := prop.Value.Value().(string)
+			if !ok {
+				return fmt.Errorf("service Type of %s is not a string", name)
+			}
+			status.ServiceType = serviceType
 		}
 		return nil
 	})
