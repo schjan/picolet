@@ -206,6 +206,36 @@ func TestApplyQuadletOneshotNoTriggerRestarted(t *testing.T) {
 	assert.Empty(t, result.SkippedRestarts())
 }
 
+// When the pre-restart status check fails, the quadlet one-shot is not restarted
+// (fail closed), the error surfaces on result.Errors, and the restart op is
+// recorded as "error" — NOT "skipped" (that bucket is for deliberate timer gating)
+// and NOT in FailedRestartUnits (so it does not trip the 3-strike gate).
+func TestApplyQuadletOneshotStatusCheckErrorNotRestarted(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "job.service").Return(applier.UnitStatus{}, assert.AnError)
+	// RestartUnit must NOT be called.
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	a := applier.New(sys, pod, fw, false, nil)
+
+	cs := systemdChangeset(reconciler.Change{
+		DestPath: "/etc/containers/systemd/picolet/job.container", Category: "container",
+		Action: reconciler.ActionUpdate, NewContent: quadletOneshot, ServiceName: "job.service",
+	})
+
+	result, err := a.Apply(context.Background(), cs)
+	require.NoError(t, err)
+	assert.Empty(t, result.RestartedUnits)
+	assert.Empty(t, result.FailedRestartUnits)
+	assert.Empty(t, result.SkippedRestarts(), "a status-check failure is not a deliberate skip")
+	assert.Len(t, result.Errors, 1)
+	assert.Contains(t, result.SystemdUnitOps, applier.SystemdUnitOp{
+		Unit: "job.service", Operation: applier.SystemdOpRestart, Result: applier.SystemdOpResultError,
+	})
+}
+
 const rawOneshotWithInstall = "# Managed by picolet\n[Service]\nType=oneshot\nExecStart=/bin/true\n\n[Install]\nWantedBy=multi-user.target\n"
 
 // A raw one-shot with [Install] is a first-boot provisioning job: on create it is

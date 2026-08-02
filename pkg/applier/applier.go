@@ -677,21 +677,26 @@ func (a *Applier) restartChangedUnit(ctx context.Context, unit string, oneshot b
 
 // skipTimerTriggeredRestart reports whether a changed one-shot unit must be left
 // alone rather than restarted: a .timer activates it, so a restart would run the
-// job on a content edit (defect 2). Fails closed — a GetUnitStatus error also
-// skips, recording the error but NOT FailedRestartUnits, so a transient D-Bus
-// blip never executes a maintenance job and never trips the 3-strike gate. Only
-// content-derived one-shots reach here, so no daemon restart is ever delayed.
+// job on a content edit (defect 2). Only content-derived one-shots reach here, so
+// no daemon restart is ever delayed. Two skip reasons, recorded distinctly:
+//   - timer-triggered → result "skipped" (a deliberate gate).
+//   - a GetUnitStatus error → result "error" plus result.Errors (a status-check
+//     failure, kept out of the "skipped" bucket so the metric isn't misleading);
+//     still fails closed so a transient D-Bus blip never runs the job, and still
+//     NOT in FailedRestartUnits so it does not trip the 3-strike gate.
 func (a *Applier) skipTimerTriggeredRestart(ctx context.Context, unit string, result *ApplyResult) bool {
 	status, err := a.systemd.GetUnitStatus(ctx, unit)
-	switch {
-	case err != nil:
+	if err != nil {
 		slog.Warn("skipping one-shot restart: status check failed", "unit", unit, "error", err)
 		result.Errors = append(result.Errors, fmt.Errorf("checking %s before restart: %w", unit, err))
-	case !TimerTriggered(status):
-		return false
-	default:
-		slog.Info("skipping restart of timer-triggered one-shot", "unit", unit)
+		result.SystemdUnitOps = append(result.SystemdUnitOps,
+			SystemdUnitOp{Unit: unit, Operation: SystemdOpRestart, Result: SystemdOpResultError})
+		return true
 	}
+	if !TimerTriggered(status) {
+		return false
+	}
+	slog.Info("skipping restart of timer-triggered one-shot", "unit", unit)
 	result.SystemdUnitOps = append(result.SystemdUnitOps,
 		SystemdUnitOp{Unit: unit, Operation: SystemdOpRestart, Result: SystemdOpResultSkipped})
 	return true
