@@ -15,6 +15,7 @@ import (
 
 	"github.com/containers/podman/v5/pkg/bindings"
 	"github.com/containers/podman/v5/pkg/bindings/containers"
+	"github.com/coreos/go-systemd/v22/dbus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -131,7 +132,7 @@ func TestE2EPipeline(t *testing.T) {
 		// never leak (the file removal above does not remove enable symlinks).
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		for _, unit := range []string{"maintenance.timer", "custom.socket"} {
+		for _, unit := range []string{"maintenance.timer", "custom.socket", "failing.timer"} {
 			_ = systemd.StopUnit(cleanupCtx, unit)
 			_ = systemd.DisableUnit(cleanupCtx, unit)
 		}
@@ -579,7 +580,8 @@ func TestE2EPipeline(t *testing.T) {
 		assert.Contains(t, result.Healthy, "internal-network.service")
 		assert.Empty(t, result.Unhealthy, "all managed units should be active")
 		assert.Empty(t, result.Errors, "no health check errors expected")
-		// Note: custom.socket is not checked — systemd category files have no ServiceNames entry
+		// Note: custom.socket is not checked directly here — this asserts the quadlet
+		// units; raw systemd units do carry a ServiceNames entry (resolver.go).
 	})
 
 	t.Run("health_enforce_restart", func(t *testing.T) {
@@ -609,6 +611,166 @@ func TestE2EPipeline(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, result2.Healthy, "extra.service")
 		assert.NotContains(t, result2.Unhealthy, "extra.service")
+	})
+
+	// A timer-triggered one-shot is systemd's to run, not picolet's: it is never
+	// started/restarted on apply, never restarted by health-enforce, and the timer
+	// re-invokes it on its own. Runs after health_enforce_restart; stage G (in
+	// t.Cleanup) restores the assignments + AppliedSHA the next sub-test expects.
+	//
+	//nolint:funlen // sequential staged exercise of the full timer-oneshot contract
+	t.Run("timer_triggered_oneshot", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 180*time.Second)
+		defer cancel()
+
+		e2eContainers := []string{
+			"quadlets/containers/simple.container.tmpl",
+			"quadlets/containers/extra.container",
+		}
+		servicePath := filepath.Join(fleetDir, "systemd", "failing.service")
+
+		reconcile := func(t *testing.T, sha string, extraSystemd ...string) *agent.ReconcileResult {
+			t.Helper()
+			require.NoError(t, os.WriteFile(filepath.Join(fleetDir, "assignments.yml"),
+				[]byte(e2eAssignments(e2eContainers, true, extraSystemd...)), 0o644))
+			st, err := store.Load()
+			require.NoError(t, err)
+			result, err := a.ReconcileOnce(ctx, sha, st, store)
+			require.NoError(t, err)
+			require.NotNil(t, result.ApplyResult)
+			return result
+		}
+
+		// Stage G, registered first: remove both fixtures and restore AppliedSHA to
+		// "update-sha" (what validation_failure asserts) even if a stage below fails.
+		t.Cleanup(func() {
+			cctx, ccancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer ccancel()
+			_ = os.WriteFile(filepath.Join(fleetDir, "assignments.yml"),
+				[]byte(e2eAssignments(e2eContainers, true)), 0o644)
+			if st, err := store.Load(); err == nil {
+				_, _ = a.ReconcileOnce(cctx, "update-sha", st, store)
+			}
+		})
+
+		// Raw D-Bus for the uint64 timestamp/trigger properties GetUnitStatus omits.
+		conn, err := dbus.NewUserConnectionContext(ctx)
+		require.NoError(t, err)
+		defer conn.Close()
+
+		activeEnter := func(t *testing.T, unit string) uint64 {
+			t.Helper()
+			prop, err := conn.GetUnitPropertyContext(ctx, unit, "ActiveEnterTimestamp")
+			require.NoError(t, err)
+			v, ok := prop.Value.Value().(uint64)
+			require.True(t, ok, "ActiveEnterTimestamp should decode as uint64")
+			return v
+		}
+		lastTrigger := func(t *testing.T, unit string) uint64 {
+			t.Helper()
+			props, err := conn.GetUnitTypePropertiesContext(ctx, unit, "Timer")
+			require.NoError(t, err)
+			v, ok := props["LastTriggerUSec"].(uint64)
+			require.True(t, ok, "LastTriggerUSec should decode as uint64")
+			return v
+		}
+		opsFor := func(ops []applier.SystemdUnitOp, unit string) []applier.SystemdUnitOp {
+			var out []applier.SystemdUnitOp
+			for _, o := range ops {
+				if o.Unit == unit {
+					out = append(out, o)
+				}
+			}
+			return out
+		}
+		editService := func(t *testing.T, desc string) {
+			t.Helper()
+			require.NoError(t, os.WriteFile(servicePath, fmt.Appendf(nil,
+				"[Unit]\nDescription=%s\nStartLimitIntervalSec=0\n\n[Service]\nType=oneshot\nExecStart=/bin/false\n",
+				desc), 0o644))
+		}
+		requireFailed := func(t *testing.T, msg string) {
+			t.Helper()
+			require.Eventually(t, func() bool {
+				status, err := systemd.GetUnitStatus(ctx, "failing.service")
+				return err == nil && status.ActiveState == "failed"
+			}, 30*time.Second, 1*time.Second, msg)
+		}
+
+		// A: deploy the service alone (no timer). A static one-shot is written but
+		// never enabled/started, and must never have run.
+		t.Run("A_service_only_not_run", func(t *testing.T) {
+			result := reconcile(t, "failing-a-sha", "systemd/failing.service")
+			assert.Empty(t, opsFor(result.ApplyResult.SystemdUnitOps, "failing.service"),
+				"a no-[Install] one-shot must get no enable/start op")
+
+			status, err := systemd.GetUnitStatus(ctx, "failing.service")
+			require.NoError(t, err)
+			assert.Equal(t, "static", status.UnitFileState)
+			assert.Equal(t, "oneshot", status.ServiceType)
+			assert.Empty(t, status.TriggeredBy)
+			assert.Zero(t, activeEnter(t, "failing.service"), "service must never have run")
+		})
+
+		// B: an edit is applied but still never runs the job.
+		t.Run("B_edit_not_run", func(t *testing.T) {
+			editService(t, "Picolet e2e failing one-shot (edited)")
+			result := reconcile(t, "failing-b-sha", "systemd/failing.service")
+			assert.GreaterOrEqual(t, result.Summary[reconciler.ActionUpdate], 1)
+			assert.Empty(t, opsFor(result.ApplyResult.SystemdUnitOps, "failing.service"))
+			assert.Zero(t, activeEnter(t, "failing.service"), "an edit must not run the job")
+		})
+
+		// C: add the timer. It is enabled + started, and the trigger edge appears.
+		t.Run("C_add_timer", func(t *testing.T) {
+			result := reconcile(t, "failing-c-sha", "systemd/failing.service", "systemd/failing.timer")
+			assert.ElementsMatch(t, []applier.SystemdUnitOp{
+				{Unit: "failing.timer", Operation: applier.SystemdOpEnable, Result: applier.SystemdOpResultSuccess},
+				{Unit: "failing.timer", Operation: applier.SystemdOpStart, Result: applier.SystemdOpResultSuccess},
+			}, opsFor(result.ApplyResult.SystemdUnitOps, "failing.timer"))
+
+			status, err := systemd.GetUnitStatus(ctx, "failing.service")
+			require.NoError(t, err)
+			assert.Contains(t, status.TriggeredBy, "failing.timer",
+				"the timer→service trigger edge should be installed (real 'as' decode)")
+		})
+
+		// D: the timer fires and the job fails.
+		t.Run("D_job_fails", func(t *testing.T) {
+			requireFailed(t, "the timer should fire and the one-shot should fail")
+		})
+
+		// E: neither health-enforce nor a content-changing reconcile restarts it.
+		t.Run("E_never_restarted", func(t *testing.T) {
+			for range 3 {
+				st, err := store.Load()
+				require.NoError(t, err)
+				result, err := healthChecker.Enforce(ctx, st)
+				require.NoError(t, err)
+				assert.Contains(t, result.Unhealthy, "failing.service")
+				assert.Contains(t, result.ExternallyActivated, "failing.service")
+				assert.NotContains(t, result.Restarted, "failing.service")
+				assert.NotContains(t, result.Skipped, "failing.service")
+				status, err := systemd.GetUnitStatus(ctx, "failing.service")
+				require.NoError(t, err)
+				assert.Equal(t, "failed", status.ActiveState, "must stay failed, never restarted")
+			}
+
+			// A content-changing reconcile must not re-run the job either (defect 3).
+			editService(t, "Picolet e2e failing one-shot (edited again)")
+			result := reconcile(t, "failing-e-sha", "systemd/failing.service", "systemd/failing.timer")
+			assert.Empty(t, opsFor(result.ApplyResult.SystemdUnitOps, "failing.service"))
+			assert.NotContains(t, result.ApplyResult.RestartedUnits, "failing.service")
+			requireFailed(t, "the job stays failed after the edit")
+		})
+
+		// F: the timer keeps re-invoking the job on its own.
+		t.Run("F_timer_reinvokes", func(t *testing.T) {
+			before := lastTrigger(t, "failing.timer")
+			require.Eventually(t, func() bool {
+				return lastTrigger(t, "failing.timer") > before
+			}, 30*time.Second, 2*time.Second, "LastTriggerUSec should advance as the timer re-fires")
+		})
 	})
 
 	t.Run("validation_failure", func(t *testing.T) {
@@ -879,7 +1041,9 @@ WantedBy=default.target
 
 // e2eAssignments builds an assignments.yml YAML string with the shared base
 // structure, parameterising only the e2e pi_type's containers and optional secret.
-func e2eAssignments(e2eContainers []string, withSecret bool) string {
+// extraSystemd appends additional base.systemd entries (e.g. the timer-triggered
+// one-shot fixtures) without disturbing existing call sites.
+func e2eAssignments(e2eContainers []string, withSecret bool, extraSystemd ...string) string {
 	var sb strings.Builder
 	sb.WriteString(`base:
   networks:
@@ -889,7 +1053,11 @@ func e2eAssignments(e2eContainers []string, withSecret bool) string {
     - systemd/custom.service
     - systemd/maintenance.timer
     - systemd/maintenance.service
-pi_types:
+`)
+	for _, s := range extraSystemd {
+		fmt.Fprintf(&sb, "    - %s\n", s)
+	}
+	sb.WriteString(`pi_types:
   controller:
     containers:
       - quadlets/containers/exporter.container

@@ -544,7 +544,8 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		return err
 	}
 
-	slog.Info("apply complete", "applied", result.Applied, "restarted", result.RestartedUnits)
+	slog.Info("apply complete", "applied", result.Applied, "restarted", result.RestartedUnits,
+		"skipped_oneshot_restarts", result.SkippedRestarts())
 
 	st.MarkApplied(fmt.Sprintf("local-%d", time.Now().Unix()))
 	agent.UpdateState(st, changeset)

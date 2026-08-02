@@ -51,6 +51,7 @@ func TestApplySystemdTimerCreate(t *testing.T) {
 	}, result.SystemdUnitOps)
 }
 
+//nolint:dupl // near-identical op-assertion shape to the raw-oneshot-with-install test; distinct scenarios
 func TestApplySystemdTimerUpdate(t *testing.T) {
 	t.Parallel()
 	sys := appliermocks.NewMockSystemdManager(t)
@@ -144,6 +145,120 @@ func TestApplySystemdDaemonServiceWithInstall(t *testing.T) {
 	assert.ElementsMatch(t, []applier.SystemdUnitOp{
 		{Unit: "daemon.service", Operation: applier.SystemdOpEnable, Result: applier.SystemdOpResultSuccess},
 		{Unit: "daemon.service", Operation: applier.SystemdOpRestart, Result: applier.SystemdOpResultSuccess},
+	}, result.SystemdUnitOps)
+}
+
+const quadletOneshot = "[Container]\nImage=job\n\n[Service]\nType=oneshot\n"
+
+// A quadlet Type=oneshot whose generated .service is timer-triggered must not be
+// restarted on a content edit — that would run the job. The restart is recorded
+// as skipped instead.
+func TestApplyQuadletOneshotTimerTriggeredNotRestarted(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "job.service").Return(applier.UnitStatus{
+		ActiveState: "inactive", SubState: "dead", ServiceType: "oneshot",
+		TriggeredBy: []string{"job.timer"},
+	}, nil)
+	// RestartUnit must NOT be called.
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	a := applier.New(sys, pod, fw, false, nil)
+
+	cs := systemdChangeset(reconciler.Change{
+		DestPath: "/etc/containers/systemd/picolet/job.container", Category: "container",
+		Action: reconciler.ActionUpdate, NewContent: quadletOneshot, ServiceName: "job.service",
+	})
+
+	result, err := a.Apply(context.Background(), cs)
+	require.NoError(t, err)
+	assert.Empty(t, result.RestartedUnits)
+	assert.Empty(t, result.FailedRestartUnits)
+	assert.Equal(t, []string{"job.service"}, result.SkippedRestarts())
+	assert.Contains(t, result.SystemdUnitOps, applier.SystemdUnitOp{
+		Unit: "job.service", Operation: applier.SystemdOpRestart, Result: applier.SystemdOpResultSkipped,
+	})
+}
+
+// A quadlet Type=oneshot with no timer edge (nothing re-invokes it) is restarted
+// like any other changed unit.
+func TestApplyQuadletOneshotNoTriggerRestarted(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "job.service").Return(applier.UnitStatus{
+		ActiveState: "active", SubState: "exited", ServiceType: "oneshot",
+	}, nil)
+	sys.EXPECT().RestartUnit(mock.Anything, "job.service").Return(nil)
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	a := applier.New(sys, pod, fw, false, nil)
+
+	cs := systemdChangeset(reconciler.Change{
+		DestPath: "/etc/containers/systemd/picolet/job.container", Category: "container",
+		Action: reconciler.ActionUpdate, NewContent: quadletOneshot, ServiceName: "job.service",
+	})
+
+	result, err := a.Apply(context.Background(), cs)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"job.service"}, result.RestartedUnits)
+	assert.Empty(t, result.SkippedRestarts())
+}
+
+const rawOneshotWithInstall = "# Managed by picolet\n[Service]\nType=oneshot\nExecStart=/bin/true\n\n[Install]\nWantedBy=multi-user.target\n"
+
+// A raw one-shot with [Install] is a first-boot provisioning job: on create it is
+// enabled and started once (enable --now).
+//
+//nolint:dupl // near-identical op-assertion shape to the timer-update test; distinct scenarios
+func TestApplySystemdOneshotWithInstallCreate(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys.EXPECT().EnableUnit(mock.Anything, "provision.service").Return(nil)
+	sys.EXPECT().StartUnit(mock.Anything, "provision.service").Return(nil)
+	// RestartUnit must NOT be called.
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	a := applier.New(sys, pod, fw, false, nil)
+
+	cs := systemdChangeset(reconciler.Change{
+		DestPath: "/etc/systemd/system/provision.service", Category: "systemd",
+		Action: reconciler.ActionCreate, NewContent: rawOneshotWithInstall, ServiceName: "provision.service",
+	})
+
+	result, err := a.Apply(context.Background(), cs)
+	require.NoError(t, err)
+	assert.Empty(t, result.Errors)
+	assert.ElementsMatch(t, []applier.SystemdUnitOp{
+		{Unit: "provision.service", Operation: applier.SystemdOpEnable, Result: applier.SystemdOpResultSuccess},
+		{Unit: "provision.service", Operation: applier.SystemdOpStart, Result: applier.SystemdOpResultSuccess},
+	}, result.SystemdUnitOps)
+}
+
+// On update the same job is only re-enabled, never re-run — re-executing on edit
+// is the reported defect.
+func TestApplySystemdOneshotWithInstallUpdate(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys.EXPECT().EnableUnit(mock.Anything, "provision.service").Return(nil)
+	// Neither StartUnit nor RestartUnit may be called.
+	pod := appliermocks.NewMockPodmanClient(t)
+	fw := newMemFileWriter()
+	a := applier.New(sys, pod, fw, false, nil)
+
+	cs := systemdChangeset(reconciler.Change{
+		DestPath: "/etc/systemd/system/provision.service", Category: "systemd",
+		Action: reconciler.ActionUpdate, NewContent: rawOneshotWithInstall, ServiceName: "provision.service",
+	})
+
+	result, err := a.Apply(context.Background(), cs)
+	require.NoError(t, err)
+	assert.Empty(t, result.Errors)
+	assert.Equal(t, []applier.SystemdUnitOp{
+		{Unit: "provision.service", Operation: applier.SystemdOpEnable, Result: applier.SystemdOpResultSuccess},
 	}, result.SystemdUnitOps)
 }
 

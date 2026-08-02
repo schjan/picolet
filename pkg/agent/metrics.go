@@ -29,6 +29,9 @@ func (a *Agent) recordHealthMetrics(hr *health.CheckResult) {
 	for _, u := range hr.Skipped {
 		metrics.HealthEnforcementTotal.WithLabelValues(u, "skip_cooldown").Inc()
 	}
+	for _, u := range hr.ExternallyActivated {
+		metrics.HealthEnforcementTotal.WithLabelValues(u, "skip_external_activation").Inc()
+	}
 	// Status store is the single source of truth for per-unit health.
 	// metrics.NewUnitHealthCollector reads its scrape data from the store.
 	unitStatuses := make(map[string]status.UnitRuntimeStatus, len(hr.Statuses))

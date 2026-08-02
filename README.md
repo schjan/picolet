@@ -306,16 +306,36 @@ if they end in `.tmpl`). The unit name is the filename with any `.tmpl` stripped
   `*.target.wants` symlink so it survives reboots),
 - **starts** passive activator units (`.timer`/`.socket`/`.target`/`.path`) — and
   **restarts** them on a content change so a new schedule takes effect,
-- **enables + restarts** a raw `.service` that declares `[Install]` (a long-running
-  daemon managed directly),
-- leaves a oneshot `.service` with **no `[Install]`** merely present (it is fired by
-  its timer, not started by Picolet).
+- **enables + restarts** a raw `.service` that declares `[Install]` **unless it is
+  `Type=oneshot`** (a long-running daemon managed directly),
+- leaves a **`Type=oneshot` job that systemd activates** — fired by a `.timer`, or a
+  raw unit with **no `[Install]`** (systemd reports it `static`) — reported but never
+  started or restarted, on apply **or** by the health loop; a raw one-shot *with*
+  `[Install]` is enabled and started **once** on first deploy, then never re-run on
+  edit.
+
+Because Picolet never re-invokes a one-shot systemd owns, **retries belong in the
+unit**: `Restart=on-failure` plus `RestartSec=` (both `[Service]`), bounded by
+`StartLimitIntervalSec=`/`StartLimitBurst=` (both `[Unit]`). Not `OnFailure=`, which
+activates a *handler* unit rather than retrying. `Restart=always` and
+`Restart=on-success` are **rejected for `Type=oneshot`** — the unit fails to load;
+the legal values are `no`, `on-failure`, `on-abnormal`, `on-abort`, `on-watchdog`.
+
+The Quadlet form of a scheduled job is a `.container` with `[Service] Type=oneshot`
+plus a raw `.timer` targeting the generated `<name>.service`, **without**
+`RemainAfterExit=yes` (`podman-systemd.unit.5` recommends it for one-shot containers
+but warns it breaks subsequent timer activations). For `Type=oneshot` the start
+timeout is **disabled by default** (a systemd default, not a Quadlet quirk), so set a
+finite `TimeoutStartSec=` if a hung image pull must be bounded — non-one-shot Quadlet
+units keep the 90s `DefaultTimeoutStartSec` that image pulls routinely exceed.
 
 On removal Picolet stops and **disables** the unit (removing the enable symlink) and
 deletes the file. Deployed units appear in `/status` and the dashboard and are
-health-monitored; passive units (`.timer`/`.socket`/`.target`/`.path`) report their
-state but are never auto-restarted by the health loop. Enable/disable/start/restart
-outcomes are exported as `picolet_systemd_unit_operations_total{operation,result}`.
+health-monitored; passive units (`.timer`/`.socket`/`.target`/`.path`) and one-shots
+systemd activates report their state but are never auto-restarted by the health loop.
+Enable/disable/start/restart outcomes are exported as
+`picolet_systemd_unit_operations_total{operation,result}` — a restart skipped because
+the unit is a timer-triggered one-shot is recorded with `result="skipped"`.
 
 #### Example: a `podman image prune -a` maintenance timer
 
