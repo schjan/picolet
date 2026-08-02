@@ -116,6 +116,70 @@ func TestEnforceFailedServiceStillRestarted(t *testing.T) {
 	assert.Equal(t, []string{"app.service"}, result.Restarted)
 }
 
+// A failed one-shot systemd owns (timer-triggered or static raw) is reported but
+// never restarted; a failed daemon — even one with a timer attached, or a static
+// helper pulled in by Requires= — still is. mockery's NewMockSystemdManager fails
+// on an unexpected RestartUnit, which is how "must not restart" is asserted.
+func TestEnforceExternallyActivatedOneshots(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		unitFileState string
+		triggeredBy   []string
+		serviceType   string
+		wantRestart   bool
+	}{
+		{"static raw oneshot", "static", nil, "oneshot", false},
+		{"timer-triggered quadlet oneshot", "generated", []string{"job.timer"}, "oneshot", false},
+		{"daemon with a timer attached", "generated", []string{"app.timer"}, "notify", true},
+		{"Requires=-pulled helper daemon", "static", nil, "simple", true},
+		// A socket-triggered static oneshot is exempted by the static clause, not the
+		// trigger clause (sockets are not a reliable re-trigger) — still not restarted.
+		{"socket-triggered static oneshot", "static", []string{"job.socket"}, "oneshot", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sys := appliermocks.NewMockSystemdManager(t)
+			sys.EXPECT().GetUnitStatus(mock.Anything, "job.service").Return(applier.UnitStatus{
+				ActiveState:   "failed",
+				SubState:      "failed",
+				UnitFileState: tc.unitFileState,
+				TriggeredBy:   tc.triggeredBy,
+				ServiceType:   tc.serviceType,
+			}, nil)
+			if tc.wantRestart {
+				sys.EXPECT().RestartUnit(mock.Anything, "job.service").Return(nil)
+			}
+
+			c := New(sys)
+			// An old attempt so the restart cooldown never suppresses the daemon rows.
+			old := time.Now().Add(-time.Hour)
+			st := &state.State{
+				ServiceNames: map[string]string{
+					"/etc/containers/systemd/picolet/job.service": "job.service",
+				},
+				PendingUnits: map[string]state.PendingUnit{
+					"job.service": {SHA: "sha", Attempts: 2, FirstFailedAt: old, LastAttemptAt: old},
+				},
+			}
+
+			result, err := c.Enforce(context.Background(), st)
+			require.NoError(t, err)
+			assert.Contains(t, result.Unhealthy, "job.service")
+			if tc.wantRestart {
+				assert.Equal(t, []string{"job.service"}, result.Restarted)
+				assert.Empty(t, result.ExternallyActivated)
+				return
+			}
+			assert.Empty(t, result.Restarted)
+			assert.Equal(t, []string{"job.service"}, result.ExternallyActivated)
+			assert.NotContains(t, st.PendingUnits, "job.service",
+				"an externally-activated unit is never retried, so its pending record must clear")
+		})
+	}
+}
+
 func TestEnforceRestartsUnhealthy(t *testing.T) {
 	t.Parallel()
 	sys := appliermocks.NewMockSystemdManager(t)

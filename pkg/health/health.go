@@ -18,8 +18,11 @@ type CheckResult struct {
 	Inactive  []string // oneshots, timer-activated services between runs
 	Restarted []string
 	Skipped   []string
-	Errors    []error
-	Statuses  map[string]applier.UnitStatus // all successfully queried units
+	// ExternallyActivated is the subset of Unhealthy that picolet must not restart
+	// because systemd owns their (re-)invocation: timer-fired or static one-shots.
+	ExternallyActivated []string
+	Errors              []error
+	Statuses            map[string]applier.UnitStatus // all successfully queried units
 }
 
 // AllFailed reports whether every unit check errored and none succeeded.
@@ -124,9 +127,19 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State,
 		result.Inactive = append(result.Inactive, unit)
 		delete(st.PendingUnits, unit)
 	default:
-		// "failed" and any unexpected state — restart conservatively.
-		slog.Warn("unit unhealthy", "unit", unit, "active_state", status.ActiveState, "sub_state", status.SubState)
+		// "failed" and any unexpected state. A one-shot job systemd activates
+		// (timer-fired or a static raw unit) is picolet's to report, not to run:
+		// retries belong in the unit (Restart=on-failure) and its trigger re-invokes
+		// it. Restart everything else conservatively.
+		external := applier.ExternallyActivated(status)
+		slog.Warn("unit unhealthy", "unit", unit, "active_state", status.ActiveState,
+			"sub_state", status.SubState, "externally_activated", external)
 		result.Unhealthy = append(result.Unhealthy, unit)
+		if external {
+			result.ExternallyActivated = append(result.ExternallyActivated, unit)
+			delete(st.PendingUnits, unit) // never retried → must not loop retry_pending
+			return
+		}
 		c.maybeRestart(ctx, unit, st, result)
 	}
 }

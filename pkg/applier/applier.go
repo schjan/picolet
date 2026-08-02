@@ -60,9 +60,14 @@ type SystemdManager interface {
 // the Unit interface, and is not accessible for all unit types (.network, .volume, .kube).
 // SubState provides sufficient signal: "auto-restart" vs "failed" vs "running" vs "exited".
 type UnitStatus struct {
-	ActiveState   string // "active", "failed", "inactive", "activating", ...
-	SubState      string // "running", "exited", "auto-restart", "dead", "waiting", ...
-	UnitFileState string // "enabled", "disabled", "static", "linked", "masked", ...
+	ActiveState   string   // "active", "failed", "inactive", "activating", ...
+	SubState      string   // "running", "exited", "auto-restart", "dead", "waiting", ...
+	UnitFileState string   // "enabled", "disabled", "static", "linked", "masked", ...
+	TriggeredBy   []string // unit names that activate this one (e.g. "job.timer"); may be empty
+	// ServiceType is the [Service] Type= ("oneshot", "simple", "notify", ...).
+	// Populated by GetUnitStatus only for .service units that carry a trigger edge
+	// or report UnitFileState=="static"; empty otherwise. See GetUnitStatus.
+	ServiceType string
 }
 
 // PruneResult summarizes the outcome of an image-prune run.
@@ -123,6 +128,9 @@ const (
 
 	SystemdOpResultSuccess = "success"
 	SystemdOpResultError   = "error"
+	// SystemdOpResultSkipped records a restart that picolet declined because the
+	// unit is a timer-triggered one-shot job systemd re-invokes on its own.
+	SystemdOpResultSkipped = "skipped"
 )
 
 const (
@@ -180,6 +188,19 @@ type ApplyResult struct {
 	// for raw systemd units, for metrics. These operations are best-effort: a
 	// failure is logged and added to Errors but does not gate apply completeness.
 	SystemdUnitOps []SystemdUnitOp
+}
+
+// SkippedRestarts returns the units whose restart was skipped because they are
+// timer-triggered one-shots systemd re-invokes on its own. Derived from
+// SystemdUnitOps so no separate field is carried.
+func (r *ApplyResult) SkippedRestarts() []string {
+	var units []string
+	for _, op := range r.SystemdUnitOps {
+		if op.Operation == SystemdOpRestart && op.Result == SystemdOpResultSkipped {
+			units = append(units, op.Unit)
+		}
+	}
+	return units
 }
 
 // Option configures an Applier.
@@ -305,7 +326,12 @@ type applyPhaseResult struct {
 	// applied in order after daemon-reload, before the quadlet restarts. A unit's
 	// enable is appended before its start/restart so the symlink exists first.
 	SystemdActivations []systemdActivation
-	NeedsReload        bool
+	// OneshotUnits is the subset of ChangedUnits whose quadlet source declares
+	// [Service] Type=oneshot. restartUnits checks each against its live
+	// TriggeredBy before restarting, so a timer-driven job is not re-run on a
+	// content edit (defect 2). Content-derived, so hook-merged units never enter it.
+	OneshotUnits map[string]struct{}
+	NeedsReload  bool
 }
 
 // Apply applies the changeset in phased order. Equivalent to ApplyWithPending
@@ -374,6 +400,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		ChangedUnits:   make(map[string]struct{}),
 		ChangedSecrets: make(map[string]struct{}),
 		ChangedRels:    make(map[config.Category]map[string]struct{}),
+		OneshotUnits:   make(map[string]struct{}),
 	}
 	for _, change := range sorted {
 		if change.Action == reconciler.ActionNoop {
@@ -419,7 +446,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		if change.Category == config.CategorySystemd {
 			a.classifySystemdActivation(change, p)
 		} else if change.ServiceName != "" {
-			p.ChangedUnits[change.ServiceName] = struct{}{}
+			recordChangedUnit(change, p)
 		}
 		if a.isSelfContainer(change.DestPath) {
 			result.NeedsSelfRestart = true
@@ -447,14 +474,38 @@ func IsPassiveUnit(unitName string) bool {
 	return ok
 }
 
+// TimerTriggered reports whether a .timer activates this unit. Only timers are
+// considered: a .socket or .path that hits TriggerLimitIntervalSec= puts itself
+// into failure mode and stops triggering, so it is not a reliable re-invocation
+// path, whereas a timer always re-arms.
+func TimerTriggered(s UnitStatus) bool {
+	return slices.ContainsFunc(s.TriggeredBy,
+		func(t string) bool { return strings.HasSuffix(t, ".timer") })
+}
+
+// ExternallyActivated reports whether systemd, not picolet, runs this one-shot
+// job: it is fired by a .timer, or it is a raw unit with no [Install] (systemd:
+// "static") — the runtime mirror of the [Install] test parseUnitFile makes from
+// file content at apply time. Picolet never starts such a unit, so it must never
+// restart it:
+// retries belong in the unit (Restart=on-failure + RestartSec=), and the next
+// trigger re-invokes it. Anything that is not Type=oneshot is a daemon picolet
+// owns and keeps running.
+func ExternallyActivated(s UnitStatus) bool {
+	if s.ServiceType != "oneshot" {
+		return false
+	}
+	return TimerTriggered(s) || s.UnitFileState == "static"
+}
+
 // classifySystemdActivation records the enable/start/restart operations for a raw
 // systemd (CategorySystemd) create or update, keyed off the unit suffix and
 // whether the unit declares an [Install] section. Quadlet-generated units are
 // never routed here — systemd refuses to enable generated units.
 func (a *Applier) classifySystemdActivation(change reconciler.Change, p *applyPhaseResult) {
 	unit := filepath.Base(change.DestPath)
-	hasInstall := systemdUnitHasInstall(unit, change.NewContent)
-	if hasInstall {
+	parsed := parseUnitFile(unit, change.NewContent)
+	if unitHasInstall(parsed) {
 		p.SystemdActivations = append(p.SystemdActivations, systemdActivation{unit, SystemdOpEnable})
 	}
 	switch {
@@ -466,26 +517,59 @@ func (a *Applier) classifySystemdActivation(change reconciler.Change, p *applyPh
 			op = SystemdOpRestart
 		}
 		p.SystemdActivations = append(p.SystemdActivations, systemdActivation{unit, op})
-	case hasInstall:
-		// Raw .service (and other non-passive units): a long-running daemon managed
-		// directly. A oneshot with no [Install] is left for its timer to trigger
-		// (write + daemon-reload only).
+	case !unitHasInstall(parsed):
+		// oneshot with no [Install] is left for its timer to trigger; anything else
+		// without [Install] is not our daemon to start (write + daemon-reload only).
+	case isOneshotUnit(parsed):
+		// Provisioning one-shot with [Install]: enabled (above), started only on
+		// first deploy (enable --now), never restarted on edit — re-running it is
+		// the defect this avoids.
+		if change.Action == reconciler.ActionCreate {
+			p.SystemdActivations = append(p.SystemdActivations, systemdActivation{unit, SystemdOpStart})
+		}
+	default:
+		// Raw .service (or other non-passive unit) with [Install]: a long-running
+		// daemon managed directly — enable + restart.
 		p.SystemdActivations = append(p.SystemdActivations, systemdActivation{unit, SystemdOpRestart})
 	}
 }
 
-// systemdUnitHasInstall reports whether raw systemd content declares an [Install]
-// section, parsed via the podman INI parser to avoid false matches on comments or
-// values (the content carries the picolet marker comment prepended).
-func systemdUnitHasInstall(unitName, content string) bool {
-	unit := parser.NewUnitFile()
-	unit.Filename = unitName
-	if err := unit.Parse(content); err != nil {
-		// Unparseable content is rejected by the validator before apply; treat as
-		// no [Install] so a broken unit is not enabled.
+// parseUnitFile parses raw systemd/quadlet content via the podman INI parser (so
+// group/key tests do not false-match on comments or the prepended picolet marker),
+// returning nil on a parse error — the validator rejects unparseable content
+// before apply, so a broken unit is then neither enabled nor started.
+func parseUnitFile(unitName, content string) *parser.UnitFile {
+	u := parser.NewUnitFile()
+	u.Filename = unitName
+	if u.Parse(content) != nil {
+		return nil
+	}
+	return u
+}
+
+func unitHasInstall(u *parser.UnitFile) bool {
+	return u != nil && u.HasGroup("Install")
+}
+
+// isOneshotUnit reports whether [Service] Type=oneshot. Quadlet copies the source
+// [Service] group verbatim into the generated .service, so this content test
+// applies equally to a raw .service and a .container.
+func isOneshotUnit(u *parser.UnitFile) bool {
+	if u == nil {
 		return false
 	}
-	return unit.HasGroup("Install")
+	t, _ := u.LookupLast("Service", "Type")
+	return t == "oneshot"
+}
+
+// recordChangedUnit adds a quadlet unit to the restart set and, when it is a
+// one-shot, to the one-shot set so restartUnits gates its restart on a live
+// timer-trigger check (defect 2).
+func recordChangedUnit(change reconciler.Change, p *applyPhaseResult) {
+	p.ChangedUnits[change.ServiceName] = struct{}{}
+	if isOneshotUnit(parseUnitFile(filepath.Base(change.DestPath), change.NewContent)) {
+		p.OneshotUnits[change.ServiceName] = struct{}{}
+	}
 }
 
 func recordChangedRel(changedRels map[config.Category]map[string]struct{}, category config.Category, relPath string) {
@@ -569,16 +653,53 @@ func (a *Applier) restartUnits(ctx context.Context, phase *applyPhaseResult, res
 			selfRestarts = append(selfRestarts, unit)
 			continue
 		}
-		slog.Info("restarting unit", "unit", unit)
-		if err := a.systemd.RestartUnit(ctx, unit); err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("restarting %s: %w", unit, err))
-			result.FailedRestartUnits = append(result.FailedRestartUnits, unit)
-		} else {
-			result.RestartedUnits = append(result.RestartedUnits, unit)
-		}
+		_, oneshot := phase.OneshotUnits[unit]
+		a.restartChangedUnit(ctx, unit, oneshot, result)
 	}
 	a.scheduleSelfUnitOps(selfRestarts, result) //nolint:contextcheck // self ops intentionally detach from the apply context
 	return nil
+}
+
+// restartChangedUnit restarts one changed quadlet unit and records the outcome. A
+// one-shot the timer gate declines is left alone (see skipTimerTriggeredRestart).
+func (a *Applier) restartChangedUnit(ctx context.Context, unit string, oneshot bool, result *ApplyResult) {
+	if oneshot && a.skipTimerTriggeredRestart(ctx, unit, result) {
+		return
+	}
+	slog.Info("restarting unit", "unit", unit)
+	if err := a.systemd.RestartUnit(ctx, unit); err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("restarting %s: %w", unit, err))
+		result.FailedRestartUnits = append(result.FailedRestartUnits, unit)
+		return
+	}
+	result.RestartedUnits = append(result.RestartedUnits, unit)
+}
+
+// skipTimerTriggeredRestart reports whether a changed one-shot unit must be left
+// alone rather than restarted: a .timer activates it, so a restart would run the
+// job on a content edit (defect 2). Only content-derived one-shots reach here, so
+// no daemon restart is ever delayed. Two skip reasons, recorded distinctly:
+//   - timer-triggered → result "skipped" (a deliberate gate).
+//   - a GetUnitStatus error → result "error" plus result.Errors (a status-check
+//     failure, kept out of the "skipped" bucket so the metric isn't misleading);
+//     still fails closed so a transient D-Bus blip never runs the job, and still
+//     NOT in FailedRestartUnits so it does not trip the 3-strike gate.
+func (a *Applier) skipTimerTriggeredRestart(ctx context.Context, unit string, result *ApplyResult) bool {
+	status, err := a.systemd.GetUnitStatus(ctx, unit)
+	if err != nil {
+		slog.Warn("skipping one-shot restart: status check failed", "unit", unit, "error", err)
+		result.Errors = append(result.Errors, fmt.Errorf("checking %s before restart: %w", unit, err))
+		result.SystemdUnitOps = append(result.SystemdUnitOps,
+			SystemdUnitOp{Unit: unit, Operation: SystemdOpRestart, Result: SystemdOpResultError})
+		return true
+	}
+	if !TimerTriggered(status) {
+		return false
+	}
+	slog.Info("skipping restart of timer-triggered one-shot", "unit", unit)
+	result.SystemdUnitOps = append(result.SystemdUnitOps,
+		SystemdUnitOp{Unit: unit, Operation: SystemdOpRestart, Result: SystemdOpResultSkipped})
+	return true
 }
 
 // activateSystemdUnits runs the enable/start/restart operations for raw systemd

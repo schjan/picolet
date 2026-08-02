@@ -1066,6 +1066,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 	slog.Info("apply complete",
 		"applied", result.Applied,
 		"restarted", result.RestartedUnits,
+		"skipped_oneshot_restarts", result.SkippedRestarts(),
 		"dry_run", a.dryRun,
 	)
 

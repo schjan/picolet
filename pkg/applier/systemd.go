@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -272,10 +273,38 @@ func (m *DBusSystemdManager) GetUnitStatus(ctx context.Context, name string) (Un
 		if activeState == "" {
 			return fmt.Errorf("ActiveState not a string for %s", name)
 		}
+		triggeredBy, _ := props["TriggeredBy"].([]string)
 		status = UnitStatus{
 			ActiveState:   activeState,
 			SubState:      stringProp(props, "SubState"),
 			UnitFileState: stringProp(props, "UnitFileState"),
+			TriggeredBy:   triggeredBy,
+		}
+		// ServiceType lives on the Service interface, so it is only fetched for
+		// .service units that might be an externally-activated one-shot: those with
+		// a trigger edge or a static unit-file state. Ordinary quadlet daemons report
+		// "generated" with no trigger and never pay for the second D-Bus call.
+		//
+		// Invariant: this guard must fetch ServiceType for every case
+		// ExternallyActivated (applier.go) can return true — i.e. it must cover
+		// {TimerTriggered ∪ static}. TimerTriggered ⊆ (TriggeredBy non-empty) holds,
+		// so both clauses stay in lockstep; a new ExternallyActivated clause needs a
+		// matching clause here, or ServiceType reads empty and the unit is misjudged.
+		if strings.HasSuffix(name, ".service") &&
+			(len(triggeredBy) > 0 || status.UnitFileState == "static") {
+			prop, err := c.GetServicePropertyContext(ctx, name, "Type")
+			if err != nil {
+				return fmt.Errorf("getting service type of %s: %w", name, err)
+			}
+			// Fail closed: a non-string Type (should be impossible per the D-Bus
+			// signature) must error, not leave ServiceType empty — an empty value
+			// makes ExternallyActivated false and health would restart the very
+			// one-shot this decode exists to protect.
+			serviceType, ok := prop.Value.Value().(string)
+			if !ok {
+				return fmt.Errorf("service Type of %s is not a string", name)
+			}
+			status.ServiceType = serviceType
 		}
 		return nil
 	})

@@ -1,0 +1,9 @@
+[Unit]
+Description=Picolet e2e failing one-shot job
+# Disable systemd's start-rate limiter so the e2e test measures the timer
+# schedule, not the limiter — the job fails on purpose every trigger.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/bin/false

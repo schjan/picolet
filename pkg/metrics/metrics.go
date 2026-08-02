@@ -182,11 +182,12 @@ var (
 	)
 
 	// SystemdUnitOperationsTotal counts enable/disable/start/restart operations on
-	// raw systemd units (timers/sockets/services) by operation and result.
+	// raw systemd units (timers/sockets/services) plus restarts gated as skipped
+	// (a timer-triggered one-shot systemd re-invokes on its own), by operation and result.
 	SystemdUnitOperationsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "picolet_systemd_unit_operations_total",
-			Help: "Total enable/disable/start/restart operations on raw systemd units by operation and result.",
+			Help: "Total enable/disable/start/restart operations on raw systemd units (result=skipped: a timer-triggered one-shot restart was declined), by operation and result.",
 		},
 		[]string{"operation", "result"},
 	)

@@ -1,0 +1,10 @@
+[Unit]
+Description=Picolet e2e failing timer
+
+[Timer]
+OnCalendar=*:*:0/15
+# Default accuracy is 1min; tighten it so the 15s cadence actually fires.
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

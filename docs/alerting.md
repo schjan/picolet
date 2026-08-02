@@ -13,7 +13,8 @@
 | `picolet_failed_sha_consecutive_count` | Gauge | — | Consecutive failures for current SHA (gates at 3) |
 | `picolet_rollback_total` | Counter | — | Total rollbacks performed |
 | `picolet_health_check_total` | Counter | `unit`, `result` | Health checks by unit and result |
-| `picolet_health_enforcement_total` | Counter | `unit`, `action` (restart/skip_cooldown) | Health enforcement actions by unit |
+| `picolet_health_enforcement_total` | Counter | `unit`, `action` (restart/skip_cooldown/skip_external_activation) | Health enforcement actions by unit (`skip_external_activation`: a failed one-shot systemd owns — timer-triggered or static — reported but not restarted) |
+| `picolet_systemd_unit_operations_total` | Counter | `operation` (enable/disable/start/restart), `result` (success/error/skipped) | Enable/disable/start/restart operations on raw systemd units and one-shot restart gating (`result="skipped"`: a restart declined because the unit is a timer-triggered one-shot) |
 | `picolet_unit_restart_pending` | Gauge | `unit` | Managed units whose last restart attempt failed (value = consecutive failed attempts). Seeded from persisted state, so it survives an agent restart |
 | `picolet_applied_git_sha_info` | Gauge | `sha` | Currently applied git SHA (value=1) |
 | `picolet_orphans_removed_total` | Counter | `type` (file/secret) | Orphaned resources removed at startup |
