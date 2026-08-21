@@ -28,9 +28,9 @@ RUN --mount=type=cache,target=/go/pkg/mod/ \
 FROM docker.io/library/debian:trixie-slim AS passcli
 ARG TARGETARCH
 
-ARG PASS_CLI_VERSION=2.0.2
-ARG PASS_CLI_SHA256_AMD64=fd60a5041e642a7b1135ef6878c3d7ce3523b083210ea8100eee5c3701017ed9
-ARG PASS_CLI_SHA256_ARM64=c12c531adb823d4eae4f6e69065c6e767b10ed71328a1b3fa625a4897ae3b38c
+ARG PASS_CLI_VERSION=2.3.2
+ARG PASS_CLI_SHA256_AMD64=f95c6b39b45d96b670f249ccbb56b06b3a17d4579357d2d04c4ac64e4ffbeff7
+ARG PASS_CLI_SHA256_ARM64=b601334cc78f4ddb125708c6d64b8b509e5a82a337bb8bead0bc2f86dd9cabff
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && case "$TARGETARCH" in \
