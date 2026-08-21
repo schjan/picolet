@@ -91,9 +91,9 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 	}
 
 	cliCfg := autopaho.ClientConfig{
-		ServerUrls:        []*url.URL{brokerURL},
-		KeepAlive:         30,
-		ConnectRetryDelay: c.cfg.ConnectRetryDelay,
+		ServerUrls:       []*url.URL{brokerURL},
+		KeepAlive:        30,
+		ReconnectBackoff: autopaho.NewConstantBackoff(c.cfg.ConnectRetryDelay),
 		// Start fresh on initial connect; retained messages still delivered by broker.
 		CleanStartOnInitialConnection: true,
 		// Session survives short WiFi drops (5 minutes).
@@ -160,32 +160,30 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 			metrics.MQTTConnected.Set(0)
 		},
 
-		ClientConfig: paho.ClientConfig{
-			ClientID: "picolet-" + c.hostname,
-			OnClientError: func(clientErr error) {
-				slog.Error("mqtt client error", "error", clientErr)
-			},
-			OnServerDisconnect: func(d *paho.Disconnect) {
-				if d.Properties != nil {
-					slog.Warn("mqtt server disconnect", "reason", d.Properties.ReasonString, "code", d.ReasonCode)
-				} else {
-					slog.Warn("mqtt server disconnect", "code", d.ReasonCode)
+		ClientID: "picolet-" + c.hostname,
+		OnClientError: func(clientErr error) {
+			slog.Error("mqtt client error", "error", clientErr)
+		},
+		OnServerDisconnect: func(d *paho.Disconnect) {
+			if d.Properties != nil {
+				slog.Warn("mqtt server disconnect", "reason", d.Properties.ReasonString, "code", d.ReasonCode)
+			} else {
+				slog.Warn("mqtt server disconnect", "code", d.ReasonCode)
+			}
+		},
+		OnPublishReceived: []func(paho.PublishReceived) (bool, error){
+			func(pr paho.PublishReceived) (bool, error) {
+				switch pr.Packet.Topic {
+				case c.pauseTopic:
+					paused := string(pr.Packet.Payload) == "true"
+					pauseFlag.Store(paused)
+					metrics.AgentPaused.Set(boolToFloat64(paused))
+					slog.Info("mqtt pause state changed", "paused", paused)
+				case c.triggerTopic:
+					slog.Info("mqtt trigger received")
+					triggerFn()
 				}
-			},
-			OnPublishReceived: []func(paho.PublishReceived) (bool, error){
-				func(pr paho.PublishReceived) (bool, error) {
-					switch pr.Packet.Topic {
-					case c.pauseTopic:
-						paused := string(pr.Packet.Payload) == "true"
-						pauseFlag.Store(paused)
-						metrics.AgentPaused.Set(boolToFloat64(paused))
-						slog.Info("mqtt pause state changed", "paused", paused)
-					case c.triggerTopic:
-						slog.Info("mqtt trigger received")
-						triggerFn()
-					}
-					return true, nil
-				},
+				return true, nil
 			},
 		},
 	}
