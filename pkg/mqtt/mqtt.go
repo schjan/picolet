@@ -59,11 +59,15 @@ type Client struct {
 	lastStatus atomic.Pointer[Status] // last attempted status, replayed on reconnect
 
 	// subscribed is closed once the pause/trigger subscriptions are live on the
-	// broker. autopaho signals "connected" before it runs OnConnectionUp, so
-	// waiting on the connection alone is not enough to guarantee we receive
-	// messages published right after AwaitConnection returns.
+	// broker, and replaced with a fresh open channel when the connection drops.
+	// autopaho signals "connected" before it runs OnConnectionUp, so waiting on
+	// the connection alone is not enough to guarantee we receive messages
+	// published right after AwaitConnection returns. The channel is per
+	// connection: after a reconnect the broker may have dropped the session
+	// (offline longer than SessionExpiryInterval, or broker restart), so the
+	// subscriptions have to be re-established before we are ready again.
+	subMu      sync.Mutex
 	subscribed chan struct{}
-	subOnce    sync.Once
 }
 
 // NewClient creates a new MQTT Client. Sets TopicPrefix default to "picolet" if empty.
@@ -135,7 +139,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 				slog.Error("mqtt subscribe failed", "error", subErr)
 				return // connection likely broken, retry on next connect cycle
 			}
-			c.subOnce.Do(func() { close(c.subscribed) })
+			c.markSubscribed()
 
 			// Republish last known full status if available (reconnect after drop),
 			// otherwise publish state only (first connect, no tick completed yet).
@@ -162,6 +166,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 		OnConnectionDown: func() bool {
 			slog.Warn("mqtt connection lost, reconnecting", "broker", c.cfg.BrokerURL)
 			metrics.MQTTConnected.Set(0)
+			c.markUnsubscribed()
 			return true
 		},
 
@@ -269,14 +274,46 @@ func (c *Client) Close(ctx context.Context) {
 	metrics.AgentPaused.Set(0)
 }
 
+// markSubscribed signals that the current connection's subscriptions are live.
+func (c *Client) markSubscribed() {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+	select {
+	case <-c.subscribed:
+	default:
+		close(c.subscribed)
+	}
+}
+
+// markUnsubscribed arms the readiness signal for the next connection. An
+// already-open channel is kept so that callers currently waiting on it are
+// released by the next successful subscribe rather than stranded.
+func (c *Client) markUnsubscribed() {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+	select {
+	case <-c.subscribed:
+		c.subscribed = make(chan struct{})
+	default:
+	}
+}
+
 // AwaitConnection blocks until the MQTT connection is established and the
-// pause/trigger subscriptions are live, or the context is cancelled.
+// pause/trigger subscriptions are live, or the context is cancelled. After a
+// reconnect it blocks again until the subscriptions have been re-established.
+//
+// Note that autopaho may not have noticed a dropped connection yet, in which
+// case this returns while the client is in fact disconnected — the same caveat
+// applies to autopaho's own AwaitConnection.
 func (c *Client) AwaitConnection(ctx context.Context) error {
 	if err := c.conn.AwaitConnection(ctx); err != nil {
 		return err
 	}
+	c.subMu.Lock()
+	ch := c.subscribed
+	c.subMu.Unlock()
 	select {
-	case <-c.subscribed:
+	case <-ch:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
