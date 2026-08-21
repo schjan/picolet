@@ -20,8 +20,8 @@ require (
 	github.com/urfave/cli/v3 v3.10.1
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
 	golang.org/x/sys v0.47.0
-	k8s.io/api v0.36.3
-	k8s.io/apimachinery v0.36.3
+	k8s.io/api v0.36.4
+	k8s.io/apimachinery v0.36.4
 	sigs.k8s.io/yaml v1.6.0
 )
 
