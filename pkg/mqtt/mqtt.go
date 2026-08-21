@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -56,6 +57,17 @@ type Client struct {
 	statusPrefix string // base for all status subtopics
 
 	lastStatus atomic.Pointer[Status] // last attempted status, replayed on reconnect
+
+	// subscribed is closed once the pause/trigger subscriptions are live on the
+	// broker, and replaced with a fresh open channel when the connection drops.
+	// autopaho signals "connected" before it runs OnConnectionUp, so waiting on
+	// the connection alone is not enough to guarantee we receive messages
+	// published right after AwaitConnection returns. The channel is per
+	// connection: after a reconnect the broker may have dropped the session
+	// (offline longer than SessionExpiryInterval, or broker restart), so the
+	// subscriptions have to be re-established before we are ready again.
+	subMu      sync.Mutex
+	subscribed chan struct{}
 }
 
 // NewClient creates a new MQTT Client. Sets TopicPrefix default to "picolet" if empty.
@@ -77,6 +89,7 @@ func NewClient(cfg Config, hostname string) (*Client, error) {
 		triggerTopic: cfg.TopicPrefix + "/trigger",
 		stateTopic:   cfg.TopicPrefix + "/" + hostname + "/status/state",
 		statusPrefix: cfg.TopicPrefix + "/" + hostname + "/status",
+		subscribed:   make(chan struct{}),
 	}, nil
 }
 
@@ -91,9 +104,9 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 	}
 
 	cliCfg := autopaho.ClientConfig{
-		ServerUrls:        []*url.URL{brokerURL},
-		KeepAlive:         30,
-		ConnectRetryDelay: c.cfg.ConnectRetryDelay,
+		ServerUrls:       []*url.URL{brokerURL},
+		KeepAlive:        30,
+		ReconnectBackoff: autopaho.NewConstantBackoff(c.cfg.ConnectRetryDelay),
 		// Start fresh on initial connect; retained messages still delivered by broker.
 		CleanStartOnInitialConnection: true,
 		// Session survives short WiFi drops (5 minutes).
@@ -126,6 +139,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 				slog.Error("mqtt subscribe failed", "error", subErr)
 				return // connection likely broken, retry on next connect cycle
 			}
+			c.markSubscribed()
 
 			// Republish last known full status if available (reconnect after drop),
 			// otherwise publish state only (first connect, no tick completed yet).
@@ -152,6 +166,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 		OnConnectionDown: func() bool {
 			slog.Warn("mqtt connection lost, reconnecting", "broker", c.cfg.BrokerURL)
 			metrics.MQTTConnected.Set(0)
+			c.markUnsubscribed()
 			return true
 		},
 
@@ -160,32 +175,30 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 			metrics.MQTTConnected.Set(0)
 		},
 
-		ClientConfig: paho.ClientConfig{
-			ClientID: "picolet-" + c.hostname,
-			OnClientError: func(clientErr error) {
-				slog.Error("mqtt client error", "error", clientErr)
-			},
-			OnServerDisconnect: func(d *paho.Disconnect) {
-				if d.Properties != nil {
-					slog.Warn("mqtt server disconnect", "reason", d.Properties.ReasonString, "code", d.ReasonCode)
-				} else {
-					slog.Warn("mqtt server disconnect", "code", d.ReasonCode)
+		ClientID: "picolet-" + c.hostname,
+		OnClientError: func(clientErr error) {
+			slog.Error("mqtt client error", "error", clientErr)
+		},
+		OnServerDisconnect: func(d *paho.Disconnect) {
+			if d.Properties != nil {
+				slog.Warn("mqtt server disconnect", "reason", d.Properties.ReasonString, "code", d.ReasonCode)
+			} else {
+				slog.Warn("mqtt server disconnect", "code", d.ReasonCode)
+			}
+		},
+		OnPublishReceived: []func(paho.PublishReceived) (bool, error){
+			func(pr paho.PublishReceived) (bool, error) {
+				switch pr.Packet.Topic {
+				case c.pauseTopic:
+					paused := string(pr.Packet.Payload) == "true"
+					pauseFlag.Store(paused)
+					metrics.AgentPaused.Set(boolToFloat64(paused))
+					slog.Info("mqtt pause state changed", "paused", paused)
+				case c.triggerTopic:
+					slog.Info("mqtt trigger received")
+					triggerFn()
 				}
-			},
-			OnPublishReceived: []func(paho.PublishReceived) (bool, error){
-				func(pr paho.PublishReceived) (bool, error) {
-					switch pr.Packet.Topic {
-					case c.pauseTopic:
-						paused := string(pr.Packet.Payload) == "true"
-						pauseFlag.Store(paused)
-						metrics.AgentPaused.Set(boolToFloat64(paused))
-						slog.Info("mqtt pause state changed", "paused", paused)
-					case c.triggerTopic:
-						slog.Info("mqtt trigger received")
-						triggerFn()
-					}
-					return true, nil
-				},
+				return true, nil
 			},
 		},
 	}
@@ -261,9 +274,50 @@ func (c *Client) Close(ctx context.Context) {
 	metrics.AgentPaused.Set(0)
 }
 
-// AwaitConnection blocks until the MQTT connection is established or the context is cancelled.
+// markSubscribed signals that the current connection's subscriptions are live.
+func (c *Client) markSubscribed() {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+	select {
+	case <-c.subscribed:
+	default:
+		close(c.subscribed)
+	}
+}
+
+// markUnsubscribed arms the readiness signal for the next connection. An
+// already-open channel is kept so that callers currently waiting on it are
+// released by the next successful subscribe rather than stranded.
+func (c *Client) markUnsubscribed() {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+	select {
+	case <-c.subscribed:
+		c.subscribed = make(chan struct{})
+	default:
+	}
+}
+
+// AwaitConnection blocks until the MQTT connection is established and the
+// pause/trigger subscriptions are live, or the context is cancelled. After a
+// reconnect it blocks again until the subscriptions have been re-established.
+//
+// Note that autopaho may not have noticed a dropped connection yet, in which
+// case this returns while the client is in fact disconnected — the same caveat
+// applies to autopaho's own AwaitConnection.
 func (c *Client) AwaitConnection(ctx context.Context) error {
-	return c.conn.AwaitConnection(ctx)
+	if err := c.conn.AwaitConnection(ctx); err != nil {
+		return err
+	}
+	c.subMu.Lock()
+	ch := c.subscribed
+	c.subMu.Unlock()
+	select {
+	case <-ch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Trigger publishes a single message to the trigger topic using a short-lived raw paho.Client.
