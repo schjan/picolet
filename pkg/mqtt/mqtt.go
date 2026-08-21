@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -56,6 +57,13 @@ type Client struct {
 	statusPrefix string // base for all status subtopics
 
 	lastStatus atomic.Pointer[Status] // last attempted status, replayed on reconnect
+
+	// subscribed is closed once the pause/trigger subscriptions are live on the
+	// broker. autopaho signals "connected" before it runs OnConnectionUp, so
+	// waiting on the connection alone is not enough to guarantee we receive
+	// messages published right after AwaitConnection returns.
+	subscribed chan struct{}
+	subOnce    sync.Once
 }
 
 // NewClient creates a new MQTT Client. Sets TopicPrefix default to "picolet" if empty.
@@ -77,6 +85,7 @@ func NewClient(cfg Config, hostname string) (*Client, error) {
 		triggerTopic: cfg.TopicPrefix + "/trigger",
 		stateTopic:   cfg.TopicPrefix + "/" + hostname + "/status/state",
 		statusPrefix: cfg.TopicPrefix + "/" + hostname + "/status",
+		subscribed:   make(chan struct{}),
 	}, nil
 }
 
@@ -126,6 +135,7 @@ func (c *Client) Start(ctx context.Context, pauseFlag *atomic.Bool, triggerFn fu
 				slog.Error("mqtt subscribe failed", "error", subErr)
 				return // connection likely broken, retry on next connect cycle
 			}
+			c.subOnce.Do(func() { close(c.subscribed) })
 
 			// Republish last known full status if available (reconnect after drop),
 			// otherwise publish state only (first connect, no tick completed yet).
@@ -259,9 +269,18 @@ func (c *Client) Close(ctx context.Context) {
 	metrics.AgentPaused.Set(0)
 }
 
-// AwaitConnection blocks until the MQTT connection is established or the context is cancelled.
+// AwaitConnection blocks until the MQTT connection is established and the
+// pause/trigger subscriptions are live, or the context is cancelled.
 func (c *Client) AwaitConnection(ctx context.Context) error {
-	return c.conn.AwaitConnection(ctx)
+	if err := c.conn.AwaitConnection(ctx); err != nil {
+		return err
+	}
+	select {
+	case <-c.subscribed:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Trigger publishes a single message to the trigger topic using a short-lived raw paho.Client.
