@@ -20,13 +20,15 @@ import (
 // calls core.ReleaseClient and invalidates the underlying client ID. Storing
 // only the SecretsAPI interface — which does not back-reference *op.Client —
 // allows GC to reclaim the SDK client prematurely, producing "invalid client
-// id" errors on subsequent Resolve calls. Do not remove this field.
+// id" errors on subsequent ResolveAll calls. Do not remove this field.
 type Client struct {
 	opClient *op.Client
 }
 
-// onepassword-sdk-go v0.3.x initializes a shared global core without
-// synchronization. Guard client creation to avoid concurrent initialization.
+// The SDK lazily initializes a package-level core via an unguarded
+// `if core == nil` check (onepassword-sdk-go internal.GetExtismCore) — still
+// the case in v0.4.1. Serialize client creation so concurrent NewClient calls
+// cannot race that initialization.
 var newClientMu sync.Mutex
 
 // NewClient creates a 1Password SDK client with the given service account token.
