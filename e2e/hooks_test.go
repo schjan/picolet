@@ -289,7 +289,7 @@ func TestE2EHookHTTP(t *testing.T) {
 	// Start a test HTTP server to receive reload and health check requests.
 	var reloadCalls atomic.Int32
 	var healthCalls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/reload":
 			reloadCalls.Add(1)
@@ -301,7 +301,7 @@ func TestE2EHookHTTP(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
-	t.Cleanup(srv.Close)
+	srv.Start()
 
 	// Extract host:port from the test server URL (e.g., "127.0.0.1:12345")
 	srvAddr := strings.TrimPrefix(srv.URL, "http://")

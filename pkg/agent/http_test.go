@@ -69,10 +69,10 @@ func TestWebhookOnHTTPServer(t *testing.T) {
 	}
 	a := newTestAgent(t, cfg)
 
-	srv := httptest.NewServer(a.newMux())
-	defer srv.Close()
+	srv := httptest.NewTestServer(t, a.newMux())
+	client := srv.Client()
 
-	resp, err := http.Post(srv.URL+"/webhook", "application/json", strings.NewReader("{}")) //nolint:noctx // test helper, no context needed
+	resp, err := client.Post(srv.URL+"/webhook", "application/json", strings.NewReader("{}")) //nolint:noctx // test helper, no context needed
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
@@ -94,10 +94,10 @@ func TestHealthEndpoint_ReturnsUnavailableBeforeFirstTick(t *testing.T) {
 	}
 	a := newTestAgent(t, cfg)
 
-	srv := httptest.NewServer(a.newMux())
-	defer srv.Close()
+	srv := httptest.NewTestServer(t, a.newMux())
+	client := srv.Client()
 
-	resp, err := http.Get(srv.URL + "/health") //nolint:noctx // test helper
+	resp, err := client.Get(srv.URL + "/health") //nolint:noctx // test helper
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
@@ -139,12 +139,12 @@ func TestHealthEndpoint_ReturnsOKAfterSuccessfulTick(t *testing.T) {
 		errCh <- a.Run(ctx)
 	}()
 
-	srv := httptest.NewServer(a.newMux())
-	defer srv.Close()
+	srv := httptest.NewTestServer(t, a.newMux())
+	client := srv.Client()
 
 	// Wait until agent becomes ready
 	require.Eventually(t, func() bool {
-		resp, err := http.Get(srv.URL + "/health") //nolint:noctx // test helper
+		resp, err := client.Get(srv.URL + "/health") //nolint:noctx // test helper
 		if err != nil {
 			return false
 		}
@@ -213,8 +213,8 @@ func TestWebhookTriggersReconciliation(t *testing.T) {
 		errCh <- a.Run(ctx)
 	}()
 
-	srv := httptest.NewServer(a.newMux())
-	defer srv.Close()
+	srv := httptest.NewTestServer(t, a.newMux())
+	client := srv.Client()
 
 	// Wait for initial tick to complete
 	require.Eventually(t, func() bool {
@@ -240,7 +240,7 @@ Image=hello-world:latest
 	badReq, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/webhook", strings.NewReader("{}"))
 	require.NoError(t, err)
 	badReq.Header.Set("X-Hub-Signature-256", "sha256=invalid")
-	badResp, err := http.DefaultClient.Do(badReq)
+	badResp, err := client.Do(badReq)
 	require.NoError(t, err)
 	defer badResp.Body.Close()
 	assert.Equal(t, http.StatusForbidden, badResp.StatusCode)
@@ -258,7 +258,7 @@ Image=hello-world:latest
 	goodReq, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/webhook", strings.NewReader(string(body)))
 	require.NoError(t, err)
 	goodReq.Header.Set("X-Hub-Signature-256", sig)
-	goodResp, err := http.DefaultClient.Do(goodReq)
+	goodResp, err := client.Do(goodReq)
 	require.NoError(t, err)
 	defer goodResp.Body.Close()
 	assert.Equal(t, http.StatusAccepted, goodResp.StatusCode)
@@ -283,26 +283,26 @@ func TestHealthEndpoint_Returns503AfterConsecutiveDBusFailures(t *testing.T) {
 	a := newTestAgent(t, cfg)
 	a.ready.Store(true)
 
-	srv := httptest.NewServer(a.newMux())
-	defer srv.Close()
+	srv := httptest.NewTestServer(t, a.newMux())
+	client := srv.Client()
 
 	// Below threshold: should return 200
 	a.consecutiveHealthFailures.Store(2)
-	resp, err := http.Get(srv.URL + "/health") //nolint:noctx // test helper
+	resp, err := client.Get(srv.URL + "/health") //nolint:noctx // test helper
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	// At threshold: should return 503
 	a.consecutiveHealthFailures.Store(3)
-	resp2, err := http.Get(srv.URL + "/health") //nolint:noctx // test helper
+	resp2, err := client.Get(srv.URL + "/health") //nolint:noctx // test helper
 	require.NoError(t, err)
 	defer resp2.Body.Close()
 	assert.Equal(t, http.StatusServiceUnavailable, resp2.StatusCode)
 
 	// Recovery: counter resets below threshold
 	a.consecutiveHealthFailures.Store(0)
-	resp3, err := http.Get(srv.URL + "/health") //nolint:noctx // test helper
+	resp3, err := client.Get(srv.URL + "/health") //nolint:noctx // test helper
 	require.NoError(t, err)
 	defer resp3.Body.Close()
 	assert.Equal(t, http.StatusOK, resp3.StatusCode)
@@ -319,10 +319,10 @@ func TestHealthEndpoint_Returns200WhenPausedEvenWithDBusDown(t *testing.T) {
 	a.paused.Store(true)
 	a.consecutiveHealthFailures.Store(5) // well above threshold
 
-	srv := httptest.NewServer(a.newMux())
-	defer srv.Close()
+	srv := httptest.NewTestServer(t, a.newMux())
+	client := srv.Client()
 
-	resp, err := http.Get(srv.URL + "/health") //nolint:noctx // test helper
+	resp, err := client.Get(srv.URL + "/health") //nolint:noctx // test helper
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)

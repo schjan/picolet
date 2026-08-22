@@ -1,7 +1,8 @@
 package state
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -131,7 +132,7 @@ func (s *Store) Load() (*State, error) {
 
 // Save writes the state atomically using a unique temp file + rename.
 func (s *Store) Save(st *State) error {
-	data, err := json.MarshalIndent(st, "", "  ")
+	data, err := json.Marshal(st, json.Deterministic(true), jsontext.WithIndent("  "))
 	if err != nil {
 		return fmt.Errorf("marshaling state: %w", err)
 	}

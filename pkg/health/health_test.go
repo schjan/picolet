@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -477,34 +478,33 @@ func TestEnforcePrunesPendingUnitsForRemovedUnits(t *testing.T) {
 
 func TestEnforceIncrementsPendingUnitAttempts(t *testing.T) {
 	t.Parallel()
-	sys := appliermocks.NewMockSystemdManager(t)
-	sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{ActiveState: "failed", SubState: "failed"}, nil).Times(2)
-	sys.EXPECT().RestartUnit(mock.Anything, "foo.service").Return(assert.AnError).Times(2)
+	synctest.Test(t, func(t *testing.T) {
+		sys := appliermocks.NewMockSystemdManager(t)
+		sys.EXPECT().GetUnitStatus(mock.Anything, "foo.service").Return(applier.UnitStatus{ActiveState: "failed", SubState: "failed"}, nil).Times(2)
+		sys.EXPECT().RestartUnit(mock.Anything, "foo.service").Return(assert.AnError).Times(2)
 
-	c := New(sys)
-	st := &state.State{
-		AppliedSHA: "sha-abc",
-		ServiceNames: map[string]string{
-			"/etc/containers/systemd/foo.container": "foo.service",
-		},
-	}
+		c := New(sys)
+		st := &state.State{
+			AppliedSHA: "sha-abc",
+			ServiceNames: map[string]string{
+				"/etc/containers/systemd/foo.container": "foo.service",
+			},
+		}
 
-	_, err := c.Enforce(context.Background(), st)
-	require.NoError(t, err)
-	firstFailed := st.PendingUnits["foo.service"].FirstFailedAt
+		_, err := c.Enforce(t.Context(), st)
+		require.NoError(t, err)
+		firstFailed := st.PendingUnits["foo.service"].FirstFailedAt
 
-	// Age both the in-memory and persisted cooldowns past restartCooldown so the
-	// second Enforce attempts another restart.
-	old := time.Now().Add(-restartCooldown - time.Minute)
-	c.lastRestart["foo.service"] = old
-	pu := st.PendingUnits["foo.service"]
-	pu.LastAttemptAt = old
-	st.PendingUnits["foo.service"] = pu
+		// testing/synctest advances the fake clock instantly, so this ages both
+		// the in-memory and persisted cooldowns without mutating implementation
+		// internals or sleeping in real time.
+		time.Sleep(restartCooldown + time.Nanosecond)
 
-	_, err = c.Enforce(context.Background(), st)
-	require.NoError(t, err)
-	assert.Equal(t, 2, st.PendingUnits["foo.service"].Attempts)
-	assert.True(t, st.PendingUnits["foo.service"].FirstFailedAt.Equal(firstFailed), "FirstFailedAt must be preserved across attempts")
+		_, err = c.Enforce(t.Context(), st)
+		require.NoError(t, err)
+		assert.Equal(t, 2, st.PendingUnits["foo.service"].Attempts)
+		assert.True(t, st.PendingUnits["foo.service"].FirstFailedAt.Equal(firstFailed), "FirstFailedAt must be preserved across attempts")
+	})
 }
 
 func TestAllFailed(t *testing.T) {

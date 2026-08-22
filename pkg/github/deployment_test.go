@@ -15,8 +15,8 @@ import (
 func setupDeploymentTest(t *testing.T, handler http.Handler) *DeploymentReporter {
 	t.Helper()
 
-	srv := httptest.NewServer(handler)
-	t.Cleanup(srv.Close)
+	srv := httptest.NewTestServer(t, handler)
+	srv.Start()
 
 	c, err := newClientWithBaseURL(12345, 67890, writeTestPEM(t), "https://github.com/org/repo.git", srv.URL)
 	require.NoError(t, err)

@@ -73,8 +73,8 @@ func TestClientGitAuth(t *testing.T) {
 		_, _ = w.Write([]byte(`{"token":"ghs_test_token_123","expires_at":"2099-01-01T00:00:00Z"}`))
 	})
 
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	srv := httptest.NewTestServer(t, mux)
+	srv.Start()
 
 	c, err := newClientWithBaseURL(12345, 67890, writeTestPEM(t), "https://github.com/org/repo.git", srv.URL)
 	require.NoError(t, err)
