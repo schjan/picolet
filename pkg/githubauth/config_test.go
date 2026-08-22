@@ -192,7 +192,7 @@ func TestNewClientFromConfigRefsMissingResult(t *testing.T) {
 		},
 	}
 
-	reader := resolver.OpSecretReader(func(_ context.Context, _ []string) (map[string]string, error) {
+	reader := resolver.SecretRefReader(func(_ context.Context, _ []string) (map[string]string, error) {
 		return map[string]string{
 			"op://vault/app/id":          "12345",
 			"op://vault/app/private_key": string(testPrivateKeyPEM(t)),
@@ -216,7 +216,7 @@ func TestNewClientFromConfigRefsInvalidAppID(t *testing.T) {
 		},
 	}
 
-	reader := resolver.OpSecretReader(func(_ context.Context, _ []string) (map[string]string, error) {
+	reader := resolver.SecretRefReader(func(_ context.Context, _ []string) (map[string]string, error) {
 		return map[string]string{
 			"op://vault/app/id":           "abc",
 			"op://vault/app/installation": "67890",
@@ -241,7 +241,7 @@ func TestNewClientFromConfigRefsEmptyPrivateKey(t *testing.T) {
 		},
 	}
 
-	reader := resolver.OpSecretReader(func(_ context.Context, _ []string) (map[string]string, error) {
+	reader := resolver.SecretRefReader(func(_ context.Context, _ []string) (map[string]string, error) {
 		return map[string]string{
 			"op://vault/app/id":           "12345",
 			"op://vault/app/installation": "67890",

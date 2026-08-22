@@ -44,9 +44,6 @@ type SecretReader func(path string) (string, error)
 // Pass nil to disable a provider (its template function returns a placeholder).
 type SecretRefReader func(ctx context.Context, refs []string) (map[string]string, error)
 
-// OpSecretReader is a backward-compatible alias for SecretRefReader.
-type OpSecretReader = SecretRefReader
-
 // ProviderKey identifies a secret provider inside the template registry.
 type ProviderKey string
 
