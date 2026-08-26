@@ -333,6 +333,14 @@ func runResolve(ctx context.Context, repoDir, host string) error {
 	if err != nil {
 		return err
 	}
+	// Report the inputs that selected this file set (role + features), so a
+	// surprising result is traceable without opening host.yml. Logged, not
+	// printed: stdout stays a pure stream of rendered file content.
+	slog.Info("resolved host",
+		"host", resolved.Hostname,
+		"role", resolved.Host.Role,
+		"features", resolved.Host.Features,
+		"files", len(resolved.Files))
 	for _, f := range resolved.Files {
 		fmt.Printf("=== %s ===\n%s\n", f.DestPath, f.Content)
 	}
