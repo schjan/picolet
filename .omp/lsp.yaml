@@ -1,0 +1,32 @@
+# gopls must be told the same build context the project actually builds with.
+# Without `containers_image_openpgp` the containers/image signature chain pulls
+# github.com/proglottis/gpgme, which is cgo-only and has no files under
+# CGO_ENABLED=0 -- `go build ./...` fails there, and gopls silently type-checks a
+# graph that does not compile.
+#
+# Base tags mirror BUILD_TAGS in Taskfile.yml and .github/workflows/ci.yml.
+# Keep in sync.
+#
+# The three opt-in test tags are also enabled so that tag-gated test files get
+# code intelligence. This is an editor-only context, wider than any single build:
+#   e2e                      -> e2e/*_test.go
+#   onepassword_integration  -> pkg/onepassword/integration_test.go
+#   protonpass_integration   -> pkg/protonpass/integration_test.go
+# They guard disjoint files in disjoint packages, so there is no conflict.
+# Verified: `go vet` and `go test -run "^$"` over ./... both exit 0 with the
+# combined set. Note CI *tests* those files under their own tag contexts, but
+# the golangci-lint job runs with base BUILD_TAGS only, so they are never
+# linted. gopls will surface diagnostics in them that no CI job enforces.
+servers:
+  gopls:
+    settings:
+      gopls:
+        analyses:
+          unusedparams: true
+          shadow: true
+        staticcheck: true
+        gofumpt: true
+        env:
+          CGO_ENABLED: "0"
+        buildFlags:
+          - -tags=remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper,e2e,onepassword_integration,protonpass_integration
