@@ -18,7 +18,7 @@ func TestStoreSnapshotDeepCopy(t *testing.T) {
 	store.SetDependencies(map[string]UnitDependencies{
 		"web.service": {Requires: []string{"network.service"}},
 	})
-	store.SetHost(HostMetadata{PiType: "server", Features: []string{"mqtt"}})
+	store.SetHost(HostMetadata{Role: "server", Features: []string{"mqtt"}})
 
 	snap := store.Snapshot()
 	snap.Units["web.service"] = UnitRuntimeStatus{ActiveState: "failed"}
@@ -78,7 +78,7 @@ func TestStoreBootstrappedFlipsOnFirstSetDependencies(t *testing.T) {
 	store := NewStore()
 	assert.False(t, store.Snapshot().Bootstrapped, "fresh store is not bootstrapped")
 
-	store.SetHost(HostMetadata{PiType: "server"})
+	store.SetHost(HostMetadata{Role: "server"})
 	assert.False(t, store.Snapshot().Bootstrapped, "SetHost alone does not bootstrap")
 
 	store.SetDependencies(nil)

@@ -936,7 +936,7 @@ WantedBy=default.target
 		// Clear all assignments — every file in state becomes a delete
 		require.NoError(t, os.WriteFile(
 			filepath.Join(fleetDir, "assignments.yml"),
-			[]byte("base: {}\npi_types:\n  e2e: {}\n"), 0o644))
+			[]byte("base: {}\nroles:\n  e2e: {}\n"), 0o644))
 
 		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
@@ -1040,7 +1040,7 @@ WantedBy=default.target
 }
 
 // e2eAssignments builds an assignments.yml YAML string with the shared base
-// structure, parameterising only the e2e pi_type's containers and optional secret.
+// structure, parameterising only the e2e role's containers and optional secret.
 // extraSystemd appends additional base.systemd entries (e.g. the timer-triggered
 // one-shot fixtures) without disturbing existing call sites.
 func e2eAssignments(e2eContainers []string, withSecret bool, extraSystemd ...string) string {
@@ -1057,7 +1057,7 @@ func e2eAssignments(e2eContainers []string, withSecret bool, extraSystemd ...str
 	for _, s := range extraSystemd {
 		fmt.Fprintf(&sb, "    - %s\n", s)
 	}
-	sb.WriteString(`pi_types:
+	sb.WriteString(`roles:
   controller:
     containers:
       - quadlets/containers/exporter.container

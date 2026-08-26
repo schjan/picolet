@@ -32,7 +32,7 @@ func (d UnitDependencies) IsEmpty() bool {
 
 // HostMetadata describes the resolved host config for the current agent host.
 type HostMetadata struct {
-	PiType           string
+	Role             string
 	Features         []string
 	ExternalHostname string
 }
@@ -275,7 +275,7 @@ func cloneDependencies(in UnitDependencies) UnitDependencies {
 
 func cloneHost(in HostMetadata) HostMetadata {
 	return HostMetadata{
-		PiType:           in.PiType,
+		Role:             in.Role,
 		Features:         slices.Clone(in.Features),
 		ExternalHostname: in.ExternalHostname,
 	}

@@ -74,9 +74,9 @@ If the fleet grows or we add detail pages, lift the page from "plain HTML" to "H
 
 v1 ships with the system monospace stack (SF Mono / Cascadia Code / Liberation Mono depending on OS). For consistent cross-platform aesthetic — especially on Linux desktops — vendor a distinctive variable monospace as a Latin-subset woff2: candidates are Commit Mono (MIT), IBM Plex Mono (OFL), Sometype Mono. Subset via `pyftsubset` to ~50 KB. Adds NOTICE + license attribution. Originally part of v1 but pulled per review — font subsetting is the highest-churn slice of the asset pipeline and out of scope for "super simple".
 
-### 10. Host metadata in header (`pi_type`, `features`)
+### 10. Host metadata in header (`role`, `features`)
 
-Surface the resolved `HostConfig` (`pkg/config/host.go`: `PiType`, `Features`) in the dashboard header. Requires either (a) re-resolving fleet config on each dashboard request (cheap, repo is local — but couples dashboard to resolver) or (b) caching the last-resolved `*HostConfig` on the `Agent` and exposing it to the dashboard via the same `WithDashboard` wiring. (b) is cleaner.
+Surface the resolved `HostConfig` (`pkg/config/host.go`: `Role`, `Features`) in the dashboard header. Requires either (a) re-resolving fleet config on each dashboard request (cheap, repo is local — but couples dashboard to resolver) or (b) caching the last-resolved `*HostConfig` on the `Agent` and exposing it to the dashboard via the same `WithDashboard` wiring. (b) is cleaner.
 
 ### 11. Accessibility — refresh control
 

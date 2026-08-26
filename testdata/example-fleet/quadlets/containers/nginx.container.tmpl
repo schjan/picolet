@@ -3,6 +3,7 @@ Image={{ index .Images "nginx" }}
 PublishPort={{ index .Ports "http" }}:80
 Network=internal.network
 Label=host={{ .Host.ExternalHostname }}
+Label=role={{ .Host.Role }}
 
 [Install]
 WantedBy=default.target

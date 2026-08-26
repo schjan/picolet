@@ -67,7 +67,7 @@ func TestUnitDependencyCollector_NilStore(t *testing.T) {
 func TestHostInfoCollector(t *testing.T) {
 	t.Parallel()
 	store := status.NewStore()
-	store.SetHost(status.HostMetadata{PiType: "server", Features: []string{"mqtt", "gpu"}})
+	store.SetHost(status.HostMetadata{Role: "server", Features: []string{"mqtt", "gpu"}})
 
 	reg := prometheus.NewRegistry()
 	require.NoError(t, reg.Register(metrics.NewHostInfoCollector(store)))
@@ -79,7 +79,7 @@ picolet_host_feature_info{feature="gpu"} 1
 picolet_host_feature_info{feature="mqtt"} 1
 # HELP picolet_host_info Resolved host metadata (value=1).
 # TYPE picolet_host_info gauge
-picolet_host_info{pi_type="server"} 1
+picolet_host_info{role="server"} 1
 `
 	require.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(expected)))
 }

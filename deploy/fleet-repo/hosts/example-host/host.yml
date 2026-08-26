@@ -1,4 +1,4 @@
 # Replace with actual hostname — must match hostname: in /etc/picolet/config.yml
 hostname: rpi5-1
-pi_type: worker
+role: worker
 features: []

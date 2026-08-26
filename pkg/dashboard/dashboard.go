@@ -151,7 +151,7 @@ func (h *Handler) buildHeaderInput(st *state.State, snap status.Snapshot) Header
 		AppliedSHA:       st.AppliedSHA,
 		AppliedAt:        st.AppliedAt,
 		VerifiedAt:       liveVerifiedAt(st, snap),
-		PiType:           snap.Host.PiType,
+		Role:             snap.Host.Role,
 		Features:         snap.Host.Features,
 		ExternalHostname: snap.Host.ExternalHostname,
 		FailedSHA:        st.FailedSHA,

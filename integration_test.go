@@ -166,12 +166,12 @@ func newAggregatedSecretFleetFS(ruleExpr string) fstest.MapFS {
 		"assignments.yml": &fstest.MapFile{Data: []byte(`base:
   secrets:
     - secrets/alerts.yml.tmpl
-pi_types: {}
+roles: {}
 features: {}
 `)},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`hostname: test-host
 external_hostname: test-host.ts.net
-pi_type: node
+role: node
 features: []
 `)},
 		"secrets/alerts.yml.tmpl": &fstest.MapFile{Data: []byte(`groups:{{ concatFiles "rules/*.yml" | nindent 2 -}}`)},
@@ -240,10 +240,10 @@ func newSystemdUnitsFleetFS() fstest.MapFS {
   containers:
     - quadlets/web.container
     - quadlets/node-exporter.container.tmpl
-pi_types: {}
+roles: {}
 features: {}
 `)},
-		"hosts/mon-host/host.yml":   &fstest.MapFile{Data: []byte("hostname: mon-host\nexternal_hostname: mon-host.ts.net\npi_type: node\nfeatures: []\n")},
+		"hosts/mon-host/host.yml":   &fstest.MapFile{Data: []byte("hostname: mon-host\nexternal_hostname: mon-host.ts.net\nrole: node\nfeatures: []\n")},
 		"quadlets/internal.network": &fstest.MapFile{Data: []byte("[Network]\nInternal=true\n")},
 		"quadlets/web.container":    &fstest.MapFile{Data: []byte("[Container]\nImage=nginx:1.27\nContainerName=web\n\n[Install]\nWantedBy=default.target\n")},
 		"systemd/health.timer":      &fstest.MapFile{Data: []byte("[Timer]\nOnCalendar=daily\n\n[Install]\nWantedBy=timers.target\n")},
@@ -295,12 +295,12 @@ func TestIntegrationAggregatedSecretMalformedFragmentFailsValidation(t *testing.
 		"assignments.yml": &fstest.MapFile{Data: []byte(`base:
   secrets:
     - secrets/alerts.yml.tmpl
-pi_types: {}
+roles: {}
 features: {}
 `)},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`hostname: test-host
 external_hostname: test-host.ts.net
-pi_type: node
+role: node
 features: []
 `)},
 		"secrets/alerts.yml.tmpl": &fstest.MapFile{Data: []byte(`groups:{{ concatFiles "rules/*.yml" | nindent 2 -}}`)},

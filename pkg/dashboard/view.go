@@ -26,7 +26,7 @@ type HeaderInput struct {
 	AppliedSHA       string
 	AppliedAt        time.Time
 	VerifiedAt       time.Time
-	PiType           string
+	Role             string
 	Features         []string
 	ExternalHostname string
 	FailedSHA        string
@@ -41,7 +41,7 @@ type Header struct {
 	AppliedSHAShort  string
 	AppliedAgo       string
 	VerifiedAgo      string
-	PiType           string
+	Role             string
 	Features         string
 	ExternalHostname string
 }
@@ -228,7 +228,7 @@ func buildViewModel(
 			AppliedSHAShort:  shortSHA(in.AppliedSHA),
 			AppliedAgo:       relativeTime(in.AppliedAt, now),
 			VerifiedAgo:      relativeTime(in.VerifiedAt, now),
-			PiType:           in.PiType,
+			Role:             in.Role,
 			Features:         strings.Join(in.Features, ", "),
 			ExternalHostname: in.ExternalHostname,
 		},

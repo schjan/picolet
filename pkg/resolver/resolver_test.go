@@ -35,12 +35,6 @@ ports:
   alloy_otlp_grpc: 4317
   alloy_otlp_http: 4318
   prometheus: 9090
-prometheus:
-  scrape_interval: "15s"
-  scrape_timeout: "10s"
-  exporter_scrape_interval: "30s"
-  retention_time: "35d"
-  retention_size: "2GB"
 `)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:
@@ -50,13 +44,13 @@ base:
     - quadlets/containers/test.container.tmpl
   manifests:
     - manifests/app/deployment.yml.tmpl
-pi_types: {}
+roles: {}
 features: {}
 `)},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: test-host
 external_hostname: test-host.ts.net
-pi_type: server
+role: server
 features: []
 `)},
 		"quadlets/networks/internal.network": &fstest.MapFile{Data: []byte(`[Network]
@@ -159,13 +153,13 @@ func TestTemplateDataFields(t *testing.T) {
 			"server-host": {
 				Hostname:         "server-host",
 				ExternalHostname: "server.ts.net",
-				PiType:           "server",
+				Role:             "server",
 				Features:         []string{"mosquitto"},
 			},
 			"gateway-host": {
 				Hostname:         "gateway-host",
 				ExternalHostname: "gateway.ts.net",
-				PiType:           "monitoring_server",
+				Role:             "monitoring_server",
 			},
 		},
 		Assignments: &config.Assignments{},
@@ -175,7 +169,7 @@ func TestTemplateDataFields(t *testing.T) {
 		t.Parallel()
 		data, err := NewTemplateData(cfg, "server-host")
 		require.NoError(t, err)
-		assert.Equal(t, "server", data.Host.PiType)
+		assert.Equal(t, "server", data.Host.Role)
 		assert.Equal(t, "server.ts.net", data.Host.ExternalHostname)
 		assert.Contains(t, data.Host.Features, "mosquitto")
 		assert.Len(t, data.Fleet.Hosts, 2)
@@ -185,7 +179,7 @@ func TestTemplateDataFields(t *testing.T) {
 		t.Parallel()
 		data, err := NewTemplateData(cfg, "gateway-host")
 		require.NoError(t, err)
-		assert.Equal(t, "monitoring_server", data.Host.PiType)
+		assert.Equal(t, "monitoring_server", data.Host.Role)
 		assert.Equal(t, "gateway.ts.net", data.Host.ExternalHostname)
 	})
 }
@@ -195,11 +189,11 @@ func TestTemplateDataServices(t *testing.T) {
 	cfg := &config.Config{
 		Fleet: &config.FleetConfig{},
 		Hosts: map[string]*config.HostConfig{
-			"h1": {Hostname: "h1", PiType: "server", Features: []string{"feat-a"}},
+			"h1": {Hostname: "h1", Role: "server", Features: []string{"feat-a"}},
 		},
 		Assignments: &config.Assignments{
 			Base:     config.AssignmentGroup{Services: []string{"base-svc"}},
-			PiTypes:  map[string]config.AssignmentGroup{"server": {Services: []string{"server-svc"}}},
+			Roles:    map[string]config.AssignmentGroup{"server": {Services: []string{"server-svc"}}},
 			Features: map[string]config.AssignmentGroup{"feat-a": {Services: []string{"feat-svc"}}},
 		},
 	}
@@ -222,7 +216,7 @@ func systemdUnitsFS(assignments string, extra map[string]string) fstest.MapFS {
 	fsys := fstest.MapFS{
 		"fleet.yml":         &fstest.MapFile{Data: []byte("images:\n  app: \"img:v1\"\nports:\n  http: 8080\n")},
 		"assignments.yml":   &fstest.MapFile{Data: []byte(assignments)},
-		"hosts/h1/host.yml": &fstest.MapFile{Data: []byte("hostname: h1\nexternal_hostname: h1.ts.net\npi_type: server\nfeatures: []\n")},
+		"hosts/h1/host.yml": &fstest.MapFile{Data: []byte("hostname: h1\nexternal_hostname: h1.ts.net\nrole: server\nfeatures: []\n")},
 	}
 	for path, content := range extra {
 		fsys[path] = &fstest.MapFile{Data: []byte(content)}
@@ -262,7 +256,7 @@ func TestTemplateDataSystemdUnits_QuadletDerived(t *testing.T) {
     - quadlets/net.network
   volumes:
     - quadlets/data.volume
-pi_types: {}
+roles: {}
 features: {}
 `, map[string]string{
 		"quadlets/app.container": "[Container]\nImage=img:v1\n",
@@ -280,7 +274,7 @@ func TestTemplateDataSystemdUnits_ServiceNameOverride(t *testing.T) {
 	fsys := systemdUnitsFS(`base:
   containers:
     - quadlets/app.container
-pi_types: {}
+roles: {}
 features: {}
 `, map[string]string{
 		"quadlets/app.container": "[Container]\nServiceName=custom-name\nImage=img:v1\n",
@@ -294,7 +288,7 @@ func TestTemplateDataSystemdUnits_RawSystemd(t *testing.T) {
   systemd:
     - systemd/foo.socket
     - systemd/bar.timer.tmpl
-pi_types: {}
+roles: {}
 features: {}
 `, map[string]string{
 		"systemd/foo.socket":     "[Socket]\nListenStream=80\n",
@@ -310,7 +304,7 @@ func TestTemplateDataSystemdUnits_SortedAndUnique(t *testing.T) {
     - quadlets/z.container
     - quadlets/a.container
     - quadlets/m.container
-pi_types: {}
+roles: {}
 features: {}
 `, map[string]string{
 		"quadlets/z.container": "[Container]\nServiceName=dup\nImage=img:v1\n",
@@ -325,7 +319,7 @@ func TestTemplateDataSystemdUnits_NonTemplateQuadlet(t *testing.T) {
 	fsys := systemdUnitsFS(`base:
   containers:
     - quadlets/static.container
-pi_types: {}
+roles: {}
 features: {}
 `, map[string]string{
 		"quadlets/static.container": "[Container]\nImage=img:v1\n",
@@ -338,7 +332,7 @@ func TestTemplateDataSystemdUnits_PlaceholderMode(t *testing.T) {
 	fsys := systemdUnitsFS(`base:
   containers:
     - quadlets/app.container.tmpl
-pi_types: {}
+roles: {}
 features: {}
 `, map[string]string{
 		"quadlets/app.container.tmpl": "[Container]\nImage=img:v1\nLabel=secret={{ readSecretFile \"missing\" }}\n",
@@ -354,7 +348,7 @@ func TestTemplateDataSystemdUnits_PassOneErrorsTolerated(t *testing.T) {
   containers:
     - quadlets/bad.container.tmpl
     - quadlets/good.container
-pi_types: {}
+roles: {}
 features: {}
 `, map[string]string{
 		// index on the empty first-pass slice errors; the render is discarded.
@@ -368,7 +362,7 @@ features: {}
 
 func TestTemplateDataSystemdUnits_EmptyHost(t *testing.T) {
 	t.Parallel()
-	fsys := systemdUnitsFS("base: {}\npi_types: {}\nfeatures: {}\n", nil)
+	fsys := systemdUnitsFS("base: {}\nroles: {}\nfeatures: {}\n", nil)
 	assert.Empty(t, prepareUnits(t, fsys))
 }
 
@@ -378,7 +372,7 @@ func TestTemplateDataSystemdUnits_SelfReferencing(t *testing.T) {
   containers:
     - quadlets/node-exporter.container.tmpl
     - quadlets/other.container
-pi_types: {}
+roles: {}
 features: {}
 `, map[string]string{
 		"quadlets/node-exporter.container.tmpl": "[Container]\nImage=img:v1\nContainerName=node-exporter\n" +
@@ -537,12 +531,12 @@ base:
     - files/app.conf
   manifests:
     - manifests/scrape.yml
-pi_types: {}
+roles: {}
 features: {}
 `)},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: test-host
-pi_type: server
+role: server
 features: []
 `)},
 		"quadlets/app.container.tmpl": &fstest.MapFile{Data: []byte(`[Container]
@@ -637,7 +631,7 @@ ports:
 `)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base: {}
-pi_types:
+roles:
   bundled:
     services:
       - web
@@ -653,13 +647,13 @@ features: {}
 		"hosts/bundled/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: bundled
 external_hostname: bundled.example.net
-pi_type: bundled
+role: bundled
 features: []
 `)},
 		"hosts/explicit/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: explicit
 external_hostname: explicit.example.net
-pi_type: explicit
+role: explicit
 features: []
 `)},
 		"services/web/networks/internal.network": &fstest.MapFile{Data: []byte(`[Network]
@@ -725,7 +719,7 @@ ports:
 `)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base: {}
-pi_types:
+roles:
   server:
     services:
       - app
@@ -733,7 +727,7 @@ features: {}
 `)},
 		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: server
-pi_type: server
+role: server
 features: []
 `)},
 		"services/app/containers/app.container": &fstest.MapFile{Data: []byte(`[Container]
@@ -781,14 +775,14 @@ func TestResolveHostRejectsInvalidSecretHook(t *testing.T) {
 		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base: {}
-pi_types:
+roles:
   server:
     services: [app]
 features: {}
 `)},
 		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: server
-pi_type: server
+role: server
 features: []
 `)},
 		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
@@ -820,14 +814,14 @@ func TestResolveHostBatchesOpRefsFromHookTemplates(t *testing.T) {
 		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base: {}
-pi_types:
+roles:
   server:
     services: [app]
 features: {}
 `)},
 		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: server
-pi_type: server
+role: server
 features: []
 `)},
 		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
@@ -870,14 +864,14 @@ func TestResolveHostHookNameUniquenessErrorIncludesService(t *testing.T) {
 		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base: {}
-pi_types:
+roles:
   server:
     services: [app, api]
 features: {}
 `)},
 		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: server
-pi_type: server
+role: server
 features: []
 `)},
 		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
@@ -968,10 +962,10 @@ func TestResolveHostHookUnitResolution(t *testing.T) {
 
 			fsys := fstest.MapFS{
 				"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
-				"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\npi_types:\n  server:\n    services: [app]\nfeatures: {}\n")},
+				"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\nroles:\n  server:\n    services: [app]\nfeatures: {}\n")},
 				"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: server
-pi_type: server
+role: server
 features: []
 `)},
 				"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\nContainerName=app\n")},
@@ -1002,10 +996,10 @@ func TestResolveHostHookUnitQuadletNotFoundErrors(t *testing.T) {
 
 	fsys := fstest.MapFS{
 		"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
-		"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\npi_types:\n  server:\n    services: [app]\nfeatures: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\nroles:\n  server:\n    services: [app]\nfeatures: {}\n")},
 		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: server
-pi_type: server
+role: server
 features: []
 `)},
 		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\nContainerName=app\n")},
@@ -1082,10 +1076,10 @@ func TestBuildHooksValidatesSignalContainerName(t *testing.T) {
 			t.Parallel()
 			fsys := fstest.MapFS{
 				"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
-				"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\npi_types:\n  server:\n    services: [app]\nfeatures: {}\n")},
+				"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\nroles:\n  server:\n    services: [app]\nfeatures: {}\n")},
 				"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: server
-pi_type: server
+role: server
 features: []
 `)},
 				"services/app/containers/app.container": &fstest.MapFile{Data: []byte(tt.quadlet)},
@@ -1120,13 +1114,13 @@ ports:
 base:
   services:
     - web
-pi_types: {}
+roles: {}
 features: {}
 `)},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: test-host
 external_hostname: test-host.example.net
-pi_type: node
+role: node
 features: []
 `)},
 		"services/web/manifests/app/deployment.yml.tmpl": &fstest.MapFile{Data: []byte(`kind: ConfigMap
@@ -1164,13 +1158,13 @@ ports:
 base:
   services:
     - web
-pi_types: {}
+roles: {}
 features: {}
 `)},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: test-host
 external_hostname: test-host.example.net
-pi_type: node
+role: node
 features: []
 `)},
 		"services/web/files/config/scrape.yml.tmpl": &fstest.MapFile{Data: []byte(`target: {{ .Host.Hostname }}:{{ index .Ports "http" }}
@@ -1201,13 +1195,13 @@ func TestResolveHostBundleManifestNormalizesPath(t *testing.T) {
 base:
   services:
     - web
-pi_types: {}
+roles: {}
 features: {}
 `)},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: test-host
 external_hostname: test-host.example.net
-pi_type: node
+role: node
 features: []
 `)},
 		"services/web/manifests/app/deployment.yml": &fstest.MapFile{Data: []byte("kind: ConfigMap\n")},
@@ -1241,13 +1235,13 @@ base:
     - web
   systemd:
     - systemd/http.socket
-pi_types: {}
+roles: {}
 features: {}
 `)},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: test-host
 external_hostname: test-host.example.net
-pi_type: node
+role: node
 features: []
 `)},
 		"services/web/containers/web.container.tmpl": &fstest.MapFile{Data: []byte(`[Container]
@@ -1294,7 +1288,7 @@ base:
     - web
   containers:
     - quadlets/containers/web.container.tmpl
-pi_types: {}
+roles: {}
 features: {}
 `,
 			files: fstest.MapFS{
@@ -1327,7 +1321,7 @@ base:
     - web
   systemd:
     - systemd/http.socket
-pi_types: {}
+roles: {}
 features: {}
 `,
 			files: fstest.MapFS{
@@ -1348,7 +1342,7 @@ base:
     - web
   manifests:
     - manifests/app/deployment.yml.tmpl
-pi_types: {}
+roles: {}
 features: {}
 `,
 			files: fstest.MapFS{
@@ -1369,7 +1363,7 @@ base:
     - web
   secrets:
     - secrets/config.yaml
-pi_types: {}
+roles: {}
 features: {}
 `,
 			files: fstest.MapFS{
@@ -1388,7 +1382,7 @@ features: {}
 base:
   services:
     - web
-pi_types: {}
+roles: {}
 features: {}
 `,
 			files: fstest.MapFS{
@@ -1407,7 +1401,7 @@ features: {}
 base:
   services:
     - web
-pi_types: {}
+roles: {}
 features: {}
 `,
 			files: fstest.MapFS{
@@ -1426,7 +1420,7 @@ features: {}
 base:
   services:
     - web
-pi_types: {}
+roles: {}
 features: {}
 `,
 			files: fstest.MapFS{
@@ -1445,7 +1439,7 @@ features: {}
 base:
   services:
     - web
-pi_types: {}
+roles: {}
 features: {}
 `,
 			files: fstest.MapFS{
@@ -1469,7 +1463,7 @@ features: {}
 				"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: test-host
 external_hostname: test-host.example.net
-pi_type: node
+role: node
 features: []
 `)},
 			}
@@ -1505,13 +1499,13 @@ base:
     - web
   secrets:
     - secrets/config.yaml
-pi_types: {}
+roles: {}
 features: {}
 `)},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: test-host
 external_hostname: test-host.example.net
-pi_type: node
+role: node
 features: []
 `)},
 		"services/web/secrets/config.yml": &fstest.MapFile{Data: []byte("a: 1\n")},
@@ -1580,13 +1574,13 @@ func TestResolveHostBundledManifestCollectsOpSecrets(t *testing.T) {
 base:
   services:
     - web
-pi_types: {}
+roles: {}
 features: {}
 `)},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: test-host
 external_hostname: test-host.example.net
-pi_type: node
+role: node
 features: []
 `)},
 		"services/web/manifests/app/secret.yml.tmpl": &fstest.MapFile{Data: []byte(`kind: Secret
@@ -1677,13 +1671,13 @@ base:
     - secrets/static_config.yml
     - secrets/rendered.yml.tmpl
     - secrets/host_only.txt
-pi_types: {}
+roles: {}
 features: {}
 `)},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: test-host
 external_hostname: test-host.ts.net
-pi_type: server
+role: server
 features: []
 `)},
 		// Static repo secret — should be copied as-is
@@ -1785,7 +1779,7 @@ func TestStaticRepoSecretReadError(t *testing.T) {
 base:
   secrets:
     - secrets/broken.yml
-pi_types: {}
+roles: {}
 features: {}
 `)}
 	fsys["secrets/broken.yml"] = &fstest.MapFile{Mode: fs.ModeDir}
@@ -1826,12 +1820,12 @@ func TestResolveServicesForHostRendersOnlyRequestedService(t *testing.T) {
 		"fleet.yml": &fstest.MapFile{Data: []byte(`images: {picolet: "picolet:test"}`)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base: {}
-pi_types:
+roles:
   node:
     services: [picolet, unrelated]
 features: {}
 `)},
-		"hosts/node-1/host.yml":                              &fstest.MapFile{Data: []byte("hostname: node-1\npi_type: node\n")},
+		"hosts/node-1/host.yml":                              &fstest.MapFile{Data: []byte("hostname: node-1\nrole: node\n")},
 		"services/picolet/containers/picolet.container.tmpl": &fstest.MapFile{Data: []byte("[Container]\nImage={{ index .Images \"picolet\" }}\n")},
 		"services/unrelated/secrets/bad.tmpl":                &fstest.MapFile{Data: []byte(`{{`)},
 	}
@@ -1853,12 +1847,12 @@ func TestResolveServicesForHostStrictProviderErrorsInRequestedService(t *testing
 		"fleet.yml": &fstest.MapFile{Data: []byte(`images: {picolet: "picolet:test"}`)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base: {}
-pi_types:
+roles:
   node:
     services: [picolet]
 features: {}
 `)},
-		"hosts/node-1/host.yml":                            &fstest.MapFile{Data: []byte("hostname: node-1\npi_type: node\n")},
+		"hosts/node-1/host.yml":                            &fstest.MapFile{Data: []byte("hostname: node-1\nrole: node\n")},
 		"services/picolet/secrets/picolet_config.yml.tmpl": &fstest.MapFile{Data: []byte(`token: {{ readOpSecret "op://vault/item/field" }}`)},
 	}
 	cfg, err := config.LoadAll(fsys)
@@ -2054,13 +2048,13 @@ base:
   secrets:
     - op://vault/item/field
     - secrets/normal.yml
-pi_types: {}
+roles: {}
 features: {}
 `)},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: test-host
 external_hostname: test-host.ts.net
-pi_type: server
+role: server
 features: []
 `)},
 		"secrets/normal.yml": &fstest.MapFile{Data: []byte("normal-secret-data")},
@@ -2097,13 +2091,13 @@ ports:
 base:
   secrets:
     - %s
-pi_types: {}
+roles: {}
 features: {}
 `, secretRef)},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: test-host
 external_hostname: test-host.ts.net
-pi_type: server
+role: server
 features: []
 `)},
 	}
@@ -2197,13 +2191,13 @@ base:
   secrets:
     - op://vault/good/field
     - op://vault/bad/field
-pi_types: {}
+roles: {}
 features: {}
 `)},
 			"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: test-host
 external_hostname: test-host.ts.net
-pi_type: server
+role: server
 features: []
 `)},
 		}

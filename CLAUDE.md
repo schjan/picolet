@@ -47,7 +47,7 @@ The agent runs a timer-based loop (`pkg/agent`). Each tick:
 2. **Git poll** — fetch + hard reset to remote HEAD, compare SHA
 3. **Failure gate** — skip if same SHA failed 3+ times
 4. **Config load** — `fleet.yml`, `assignments.yml`, `hosts/<name>/host.yml` from repo FS
-5. **Resolve** — merge assignments (base → pi_type → features), render templates
+5. **Resolve** — merge assignments (base → role → features), render templates
 6. **Diff** — compare desired files against `state.ManagedFiles` by SHA-256 content hash
 7. **Validate** — quadlet files via `quadlet.Convert*()`, K8s manifests via strict unmarshal, systemd units structurally
 8. **Snapshot** — save current disk state for rollback
@@ -81,7 +81,7 @@ type SecretReader func(path string) (string, error)
 ### Configuration Layers
 
 - **Agent config** (`/etc/picolet/config.yml`) — hostname, repo URL, poll interval. Loaded by `pkg/agentcfg`.
-- **Fleet config** (in git repo) — `fleet.yml` (images, ports), `assignments.yml` (file mappings per pi_type/feature), `hosts/<name>/host.yml` (per-host settings). Loaded by `pkg/config`.
+- **Fleet config** (in git repo) — `fleet.yml` (images, ports), `assignments.yml` (file mappings per role/feature), `hosts/<name>/host.yml` (per-host settings). Loaded by `pkg/config`.
 - **Secrets** — read from local filesystem (`cfg.SecretsDir`), not from git.
 
 ### Template System
@@ -90,7 +90,7 @@ Files ending in `.tmpl` are rendered with Go `text/template` (`missingkey=error`
 
 Custom functions: `readFile`, `renderTemplate`, `indent`, `readSecretFile`, `has` (slices.Contains for feature checks).
 
-Template data root: `.Host` (hostname, pi_type, features, services, systemd_units), `.Fleet` (full config + all hosts), `.Images`, `.Ports`. `.Host.SystemdUnits` is populated by a first render pass — see `prepareTemplateData` in `pkg/resolver/resolver.go`.
+Template data root: `.Host` (hostname, role, features, services, systemd_units), `.Fleet` (full config + all hosts), `.Images`, `.Ports`. `.Host.SystemdUnits` is populated by a first render pass — see `prepareTemplateData` in `pkg/resolver/resolver.go`.
 
 ### Error Patterns
 

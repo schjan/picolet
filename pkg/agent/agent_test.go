@@ -45,9 +45,6 @@ func initTestRepo(t *testing.T) string {
   traefik: "traefik:v3"
 ports:
   alloy_http: 12345
-prometheus:
-  scrape_interval: "15s"
-  retention_time: "35d"
 `)
 
 	// Create assignments.yml
@@ -59,7 +56,7 @@ prometheus:
 	// Create host config
 	writeTestFile(t, workDir, "hosts/test-host/host.yml", `hostname: test-host
 external_hostname: test-host.ts.net
-pi_type: server
+role: server
 features: []
 `)
 
@@ -102,7 +99,7 @@ ports: {}
     - app
 `)
 	writeTestFile(t, workDir, "hosts/test-host/host.yml", `hostname: test-host
-pi_type: server
+role: server
 features: []
 `)
 	writeTestFile(t, workDir, "services/app/secrets/app_config.yml", "v: 1\n")
@@ -191,7 +188,7 @@ ports: {}
     - app
 `)
 	writeTestFile(t, repoDir, "hosts/test-host/host.yml", `hostname: test-host
-pi_type: server
+role: server
 features: []
 `)
 	writeTestFile(t, repoDir, "services/app/secrets/app_config", "shared-secret-value\n")
@@ -520,7 +517,7 @@ func TestReconcileOnceSavesPendingUnitsOnFailedRestart(t *testing.T) {
     - quadlets/networks/internal.network
 `)
 	writeTestFile(t, repoDir, "hosts/test-host/host.yml", `hostname: test-host
-pi_type: server
+role: server
 features: []
 `)
 	writeTestFile(t, repoDir, "quadlets/networks/internal.network", "[Network]\nInternal=true\n")
@@ -1030,7 +1027,7 @@ ports: {}
     - quadlets/networks/internal.network
 `)
 	writeTestFile(t, repoDir, "hosts/test-host/host.yml", `hostname: test-host
-pi_type: server
+role: server
 features: []
 `)
 	writeTestFile(t, repoDir, "quadlets/networks/internal.network", `[Network]
@@ -1376,7 +1373,7 @@ ports:
 `)
 	writeTestFile(t, repoDir, filepath.Join(subDir, "hosts/test-host/host.yml"), `hostname: test-host
 external_hostname: test-host.local
-pi_type: server
+role: server
 features: []
 `)
 	writeTestFile(t, repoDir, filepath.Join(subDir, "quadlets/networks/internal.network"), `[Network]
@@ -1412,7 +1409,7 @@ func TestRefreshResolvedSnapshot_ValidationFailure(t *testing.T) {
     - quadlets/broken.container
 `), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "hosts/test-host/host.yml"), []byte(`hostname: test-host
-pi_type: server
+role: server
 features: []
 `), 0o600))
 	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "quadlets"), 0o755))
@@ -1436,7 +1433,7 @@ ContainerName=broken
 	assert.False(t, snap.Bootstrapped, "validation failure must not bootstrap the store")
 	assert.Empty(t, snap.Dependencies, "deps must remain unset on validation failure")
 	// Host metadata IS recorded (recordHostMetadata happens before AnalyzeFiles).
-	assert.Equal(t, "server", snap.Host.PiType)
+	assert.Equal(t, "server", snap.Host.Role)
 }
 
 func TestTickDoesNotCreateDeploymentForUnchangedSHAOpRefresh(t *testing.T) {

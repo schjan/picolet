@@ -1,4 +1,4 @@
 hostname: e2e-host
 external_hostname: e2e-host.test
-pi_type: e2e
+role: e2e
 features: []

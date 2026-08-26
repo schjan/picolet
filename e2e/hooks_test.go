@@ -44,13 +44,13 @@ func setupHookFleet(t *testing.T, fleetDir string, params hookFleetParams) {
 	files := map[string]string{
 		"fleet.yml": params.FleetYAML,
 		"assignments.yml": fmt.Sprintf(`base: {}
-pi_types:
+roles:
   hook-test:
     services:
       - %s
 `, params.ServiceName),
 		filepath.Join("hosts", "hook-host", "host.yml"): `hostname: hook-host
-pi_type: hook-test
+role: hook-test
 features: []
 `,
 		filepath.Join("services", params.ServiceName, "containers", params.ContainerFile): params.ContainerContent,
