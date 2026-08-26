@@ -1,4 +1,4 @@
 hostname: node-2
 external_hostname: node-2.example.net
-pi_type: controller
+role: controller
 features: []

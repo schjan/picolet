@@ -41,7 +41,7 @@ func setupApplyDownFleet(t *testing.T, fleetDir string) {
   apply: "docker.io/library/alpine:3.23"
 `,
 		"assignments.yml": `base: {}
-pi_types:
+roles:
   apply:
     containers:
       - quadlets/containers/apply.container.tmpl
@@ -50,7 +50,7 @@ pi_types:
 `,
 		filepath.Join("hosts", "apply-host", "host.yml"): `hostname: apply-host
 external_hostname: apply-host.local
-pi_type: apply
+role: apply
 features: []
 `,
 		filepath.Join("quadlets", "containers", "apply.container.tmpl"): `[Container]

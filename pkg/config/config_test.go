@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.yaml.in/yaml/v4"
 )
 
-//nolint:funlen // table-driven test
 func TestLoadAll(t *testing.T) {
 	t.Parallel()
 	fsys := fstest.MapFS{
@@ -20,12 +20,6 @@ images:
 ports:
   alloy_http: 12345
   prometheus: 9090
-prometheus:
-  scrape_interval: "15s"
-  scrape_timeout: "10s"
-  exporter_scrape_interval: "30s"
-  retention_time: "35d"
-  retention_size: "2GB"
 `)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:
@@ -33,7 +27,7 @@ base:
     - quadlets/networks/internal.network
   containers:
     - quadlets/containers/traefik.container.tmpl
-pi_types:
+roles:
   monitoring_server:
     containers:
       - quadlets/containers/prometheus.container.tmpl
@@ -45,14 +39,14 @@ features:
 		"hosts/host-a/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: host-a
 external_hostname: host-a.ts.net
-pi_type: server
+role: server
 features:
   - mosquitto
 `)},
 		"hosts/host-b/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: host-b
 external_hostname: host-b.ts.net
-pi_type: monitoring_server
+role: monitoring_server
 features: []
 `)},
 	}
@@ -63,12 +57,12 @@ features: []
 	// Check fleet config
 	assert.Equal(t, "traefik:v3", cfg.Fleet.Images["traefik"])
 	assert.Equal(t, 12345, cfg.Fleet.Ports["alloy_http"])
-	assert.Equal(t, "35d", cfg.Fleet.Prometheus["retention_time"])
+	assert.Equal(t, 9090, cfg.Fleet.Ports["prometheus"])
 
 	// Check hosts
 	require.Len(t, cfg.Hosts, 2)
-	assert.Equal(t, "server", cfg.Hosts["host-a"].PiType)
-	assert.Equal(t, "monitoring_server", cfg.Hosts["host-b"].PiType)
+	assert.Equal(t, "server", cfg.Hosts["host-a"].Role)
+	assert.Equal(t, "monitoring_server", cfg.Hosts["host-b"].Role)
 	assert.Equal(t, "host-a.ts.net", cfg.Hosts["host-a"].ExternalHostname)
 
 	// Check sorted hostnames
@@ -87,7 +81,7 @@ func TestAssignmentsResolve(t *testing.T) {
 			Containers: []string{"base-container"},
 			Services:   []string{"base-service"},
 		},
-		PiTypes: map[string]AssignmentGroup{
+		Roles: map[string]AssignmentGroup{
 			"monitoring_server": {
 				Containers: []string{"prometheus"},
 				Volumes:    []string{"prom-vol"},
@@ -113,7 +107,7 @@ func TestAssignmentsResolve(t *testing.T) {
 	}{
 		{
 			name:      "server with mosquitto",
-			host:      &HostConfig{PiType: "server", Features: []string{"mosquitto"}},
+			host:      &HostConfig{Role: "server", Features: []string{"mosquitto"}},
 			wantNets:  1,
 			wantConts: 1,
 			wantKubes: 1,
@@ -121,7 +115,7 @@ func TestAssignmentsResolve(t *testing.T) {
 		},
 		{
 			name:      "monitoring_server no features",
-			host:      &HostConfig{PiType: "monitoring_server"},
+			host:      &HostConfig{Role: "monitoring_server"},
 			wantNets:  1,
 			wantConts: 2,
 			wantVols:  1,
@@ -129,7 +123,7 @@ func TestAssignmentsResolve(t *testing.T) {
 		},
 		{
 			name:      "server no features",
-			host:      &HostConfig{PiType: "server"},
+			host:      &HostConfig{Role: "server"},
 			wantNets:  1,
 			wantConts: 1,
 			wantSvcs:  []string{"base-service"},
@@ -169,6 +163,137 @@ features: []
 	_, err := LoadAll(fsys)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "not_a_field")
+}
+
+// TestValidateRejectsRetiredKeysExactly pins the migration text at the
+// validation boundary, where it is unwrapped. Every value variant must be
+// rejected: presence of the retired key is what matters, not what it carried.
+func TestValidateRejectsRetiredKeysExactly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		newCfg  func() interface{ Validate() error }
+		wantErr string
+		// docs are value variants of the same retired key; presence alone must
+		// trigger the rejection, so an empty or null value counts too.
+		docs []string
+	}{
+		{
+			name:    "host.yml pi_type",
+			newCfg:  func() interface{ Validate() error } { return &HostConfig{} },
+			wantErr: "host.yml: 'pi_type:' was renamed to 'role:'",
+			docs: []string{
+				"hostname: host-a\npi_type: server\n",
+				"hostname: host-a\nrole: server\npi_type: \"\"\n",
+				"hostname: host-a\nrole: server\npi_type:\n",
+			},
+		},
+		{
+			name:    "assignments.yml pi_types",
+			newCfg:  func() interface{ Validate() error } { return &Assignments{} },
+			wantErr: "assignments.yml: 'pi_types:' was renamed to 'roles:'",
+			docs: []string{
+				"base: {}\npi_types:\n  server: {}\n",
+				"base: {}\npi_types: {}\n",
+				"base: {}\npi_types:\n",
+			},
+		},
+		{
+			name:    "fleet.yml prometheus",
+			newCfg:  func() interface{ Validate() error } { return &FleetConfig{} },
+			wantErr: "fleet.yml: 'prometheus:' was removed from the schema; delete it",
+			docs: []string{
+				"images: {}\nprometheus:\n  retention_time: \"35d\"\n",
+				"images: {}\nprometheus: {}\n",
+				"images: {}\nprometheus:\n",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		for _, doc := range tt.docs {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				cfg := tt.newCfg()
+				require.NoError(t, yaml.Load([]byte(doc), cfg, yaml.WithKnownFields()))
+				require.EqualError(t, cfg.Validate(), tt.wantErr, "document: %q", doc)
+			})
+		}
+	}
+}
+
+// TestLoadAllRejectsRetiredKeys covers the wiring: each Validate is reached
+// from LoadAll, whichever file carries the retired key.
+func TestLoadAllRejectsRetiredKeys(t *testing.T) {
+	t.Parallel()
+
+	const (
+		goodFleet       = "images: {}\nports: {}\n"
+		goodAssignments = "base: {}\nroles: {}\nfeatures: {}\n"
+		goodHost        = "hostname: host-a\nrole: server\nfeatures: []\n"
+	)
+
+	tests := []struct {
+		name        string
+		fleet       string
+		assignments string
+		host        string
+		wantMessage string
+	}{
+		{
+			name:        "pi_type in host.yml",
+			fleet:       goodFleet,
+			assignments: goodAssignments,
+			host:        "hostname: host-a\npi_type: server\nfeatures: []\n",
+			wantMessage: migratePiType,
+		},
+		{
+			name:        "pi_types in assignments.yml",
+			fleet:       goodFleet,
+			assignments: "base: {}\npi_types: {}\nfeatures: {}\n",
+			host:        goodHost,
+			wantMessage: migratePiTypes,
+		},
+		{
+			name:        "prometheus in fleet.yml",
+			fleet:       "images: {}\nports: {}\nprometheus:\n  retention_time: \"35d\"\n",
+			assignments: goodAssignments,
+			host:        goodHost,
+			wantMessage: migratePrometheus,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fsys := fstest.MapFS{
+				"fleet.yml":             &fstest.MapFile{Data: []byte(tt.fleet)},
+				"assignments.yml":       &fstest.MapFile{Data: []byte(tt.assignments)},
+				"hosts/host-a/host.yml": &fstest.MapFile{Data: []byte(tt.host)},
+			}
+			_, err := LoadAll(fsys)
+			require.ErrorContains(t, err, tt.wantMessage)
+		})
+	}
+}
+
+// A ports entry named "prometheus" is a port name, not the retired key.
+func TestLoadAllAcceptsPortNamedPrometheus(t *testing.T) {
+	t.Parallel()
+	fsys := fstest.MapFS{
+		"fleet.yml":             &fstest.MapFile{Data: []byte("images: {}\nports:\n  prometheus: 9090\n")},
+		"assignments.yml":       &fstest.MapFile{Data: []byte("base: {}\nroles: {}\nfeatures: {}\n")},
+		"hosts/host-a/host.yml": &fstest.MapFile{Data: []byte("hostname: host-a\nrole: server\nfeatures: []\n")},
+	}
+	cfg, err := LoadAll(fsys)
+	require.NoError(t, err)
+	assert.Equal(t, 9090, cfg.Fleet.Ports["prometheus"])
+}
+
+func TestHostConfigValidateRequiresRole(t *testing.T) {
+	t.Parallel()
+	require.EqualError(t, (&HostConfig{Hostname: "host-a"}).Validate(), "role is required")
 }
 
 //nolint:funlen // table-driven mismatched-field coverage is clearer inline.
@@ -325,7 +450,7 @@ func TestAssignmentsResolveMergesFiles(t *testing.T) {
 			"observability": {Files: []string{"shared/obs.yml"}},
 		},
 	}
-	host := &HostConfig{Hostname: "h", PiType: "p", Features: []string{"observability"}}
+	host := &HostConfig{Hostname: "h", Role: "p", Features: []string{"observability"}}
 	resolved := a.Resolve(host)
 	assert.Equal(t, []string{"shared/base.yml", "shared/obs.yml"}, resolved.Files)
 }

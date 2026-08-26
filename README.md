@@ -212,9 +212,9 @@ Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a co
 
 | File | Purpose |
 |------|---------|
-| `fleet.yml` | Image versions, ports, shared config (Renovate-managed) |
-| `assignments.yml` | Maps pi_type + features to file sets per host |
-| `hosts/<name>/host.yml` | Per-host config: hostname, type, features, secrets |
+| `fleet.yml` | Image versions and ports (Renovate-managed) |
+| `assignments.yml` | Maps role + features to file sets per host |
+| `hosts/<name>/host.yml` | Per-host config: hostname, role, features, secrets |
 
 ### File Categories
 
@@ -480,7 +480,7 @@ The template data root exposes `.Images`, `.Ports`, `.Fleet` (all hosts + full c
 |-------|----------|
 | `.Host.Hostname` | The host's name |
 | `.Host.ExternalHostname` | The host's external hostname |
-| `.Host.PiType` | The host's `pi_type` |
+| `.Host.Role` | The host's `role` |
 | `.Host.Features` | The host's enabled features |
 | `.Host.Services` | Resolved service-bundle names for this host (sorted, deduplicated) |
 | `.Host.SystemdUnits` | Systemd unit names picolet manages on this host — quadlet-derived (`.container`/`.kube`/`.network`/`.volume`) plus raw systemd files, sorted and deduplicated. See [Two-pass rendering](#two-pass-rendering) |

@@ -3,7 +3,7 @@
 ## Prerequisites (already done)
 - `picolet apply` and `picolet down` commands exist
 - `data_dir` config field works
-- `dev` pi_type + dev-host in example fleet
+- `dev` role + dev-host in example fleet
 - `task dev` and `task dev:teardown` work for `go run` workflow
 - `SystemdManager` interface has `Close()`
 

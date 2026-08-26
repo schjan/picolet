@@ -125,7 +125,7 @@ func (a *Agent) recordHostMetadata(host *config.HostConfig) {
 		return
 	}
 	a.statusStore.SetHost(status.HostMetadata{
-		PiType:           host.PiType,
+		Role:             host.Role,
 		Features:         host.Features,
 		ExternalHostname: host.ExternalHostname,
 	})

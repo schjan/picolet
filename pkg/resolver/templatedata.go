@@ -16,11 +16,11 @@ type TemplateData struct {
 type HostTemplateData struct {
 	Hostname         string
 	ExternalHostname string
-	PiType           string
+	Role             string
 	Features         []string
 
 	// Services is the resolved bundle name list for this host, merged from
-	// assignments.yml (base + pi_type + features). Sorted and deduplicated.
+	// assignments.yml (base + role + features). Sorted and deduplicated.
 	// Mirrors Assignments.Resolve(host).Services. Populated only for .Host;
 	// .Fleet.Hosts entries leave it empty.
 	Services []string
@@ -75,7 +75,7 @@ func buildHostData(host *config.HostConfig) HostTemplateData {
 	return HostTemplateData{
 		Hostname:         host.Hostname,
 		ExternalHostname: host.ExternalHostname,
-		PiType:           host.PiType,
+		Role:             host.Role,
 		Features:         host.Features,
 	}
 }

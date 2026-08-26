@@ -28,10 +28,16 @@ func LoadAll(fsys fs.FS) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading fleet.yml: %w", err)
 	}
+	if err := fleet.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 
 	assignments, err := loadYAML[Assignments](fsys, "assignments.yml")
 	if err != nil {
 		return nil, fmt.Errorf("loading assignments.yml: %w", err)
+	}
+	if err := assignments.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
 	hosts, err := loadHosts(fsys)

@@ -259,7 +259,7 @@ func TestServeIndex_UsesStatusSnapshot(t *testing.T) {
 		"web.service": {Requires: []string{"internal-network.service"}},
 	})
 	statusStore.SetHost(status.HostMetadata{
-		PiType:           "server",
+		Role:             "server",
 		Features:         []string{"mqtt"},
 		ExternalHostname: "edge.example.net",
 	})
@@ -280,7 +280,7 @@ func TestServeIndex_UsesStatusSnapshot(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"edge.example.net",
-		"server",
+		"<dt>role</dt><dd>server</dd>",
 		"mqtt",
 		"verified",
 		"dependencies",

@@ -6,7 +6,7 @@ base:
     - systemd/custom.service
     - systemd/maintenance.timer
     - systemd/maintenance.service
-pi_types:
+roles:
   controller:
     containers:
       - quadlets/containers/exporter.container

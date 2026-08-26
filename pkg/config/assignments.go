@@ -1,15 +1,30 @@
 package config
 
 import (
+	"errors"
 	"log/slog"
 	"slices"
+
+	"go.yaml.in/yaml/v4"
 )
 
-// Assignments maps pi_type + features to file sets per host.
+// Assignments maps role + features to file sets per host.
 type Assignments struct {
 	Base     AssignmentGroup            `yaml:"base"`
-	PiTypes  map[string]AssignmentGroup `yaml:"pi_types"`
+	Roles    map[string]AssignmentGroup `yaml:"roles"`
 	Features map[string]AssignmentGroup `yaml:"features"`
+
+	// RetiredPiTypes captures the pre-rename `pi_types:` key so Validate can
+	// name the replacement. Reject-only — see keyPresent.
+	RetiredPiTypes yaml.Node `yaml:"pi_types"`
+}
+
+// Validate rejects retired keys.
+func (a *Assignments) Validate() error {
+	if keyPresent(a.RetiredPiTypes) {
+		return errors.New(migratePiTypes)
+	}
+	return nil
 }
 
 // AssignmentGroup is a collection of file paths grouped by type.
@@ -39,14 +54,14 @@ type ResolvedFileSet struct {
 }
 
 // Resolve computes the complete file set for a host by merging
-// base + pi_type + features assignments.
+// base + role + features assignments.
 func (a *Assignments) Resolve(host *HostConfig) *ResolvedFileSet {
 	result := &ResolvedFileSet{}
 	result.merge(a.Base)
-	if group, ok := a.PiTypes[host.PiType]; ok {
+	if group, ok := a.Roles[host.Role]; ok {
 		result.merge(group)
-	} else if host.PiType != "" {
-		slog.Warn("no assignments for pi_type", "pi_type", host.PiType, "host", host.Hostname)
+	} else if host.Role != "" {
+		slog.Warn("no assignments for role", "role", host.Role, "host", host.Hostname)
 	}
 	for _, feature := range host.Features {
 		if group, ok := a.Features[feature]; ok {

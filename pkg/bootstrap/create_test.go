@@ -86,8 +86,8 @@ ports:
   picolet_metrics: 9417
   picolet_system_metrics: 9418
 `)
-	writeFile(t, dir, "assignments.yml", "base: {}\npi_types:\n  node:\n    services: ["+service+"]\nfeatures: {}\n")
-	writeFile(t, dir, "hosts/node-1/host.yml", "hostname: node-1\npi_type: node\n")
+	writeFile(t, dir, "assignments.yml", "base: {}\nroles:\n  node:\n    services: ["+service+"]\nfeatures: {}\n")
+	writeFile(t, dir, "hosts/node-1/host.yml", "hostname: node-1\nrole: node\n")
 	metricsKey := "picolet_metrics"
 	configName := "picolet_config"
 	if service == "picolet-system" {

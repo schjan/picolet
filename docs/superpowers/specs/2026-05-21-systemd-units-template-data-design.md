@@ -102,11 +102,11 @@ negligible compared to git fetches and secret-provider round-trips.
 type HostTemplateData struct {
     Hostname         string
     ExternalHostname string
-    PiType           string
+    Role             string
     Features         []string
 
     // Services is the resolved bundle name list for this host, merged from
-    // assignments.yml (base + pi_type + features). Sorted and deduplicated.
+    // assignments.yml (base + role + features). Sorted and deduplicated.
     // Mirrors what Assignments.Resolve(host).Services returns.
     Services []string
 

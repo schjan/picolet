@@ -19,7 +19,7 @@
 | `picolet_applied_git_sha_info` | Gauge | `sha` | Currently applied git SHA (value=1) |
 | `picolet_orphans_removed_total` | Counter | `type` (file/secret) | Orphaned resources removed at startup |
 | `picolet_unit_dependency_count` | Gauge | `unit`, `relation` | Current generated systemd dependency count by managed unit and relation |
-| `picolet_host_info` | Gauge | `pi_type` | Resolved host metadata (value=1) |
+| `picolet_host_info` | Gauge | `role` | Resolved host metadata (value=1) |
 | `picolet_host_feature_info` | Gauge | `feature` | Resolved host feature metadata (value=1) |
 | `picolet_secrets_managed_count` | Gauge | `provider` (`onepassword`/`protonpass`) | Number of direct provider-backed secret refs currently managed |
 | `picolet_secret_sync_total` | Counter | `provider` | Successful secret-provider sync attempts (failures counted on `picolet_reconciliation_total{result="failure"}`) |

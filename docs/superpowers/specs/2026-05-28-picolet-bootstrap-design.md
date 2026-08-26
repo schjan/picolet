@@ -101,8 +101,8 @@ Default output is annotated for human reading; `--script` strips comments and em
 
 **Determinations made:**
 
-- **Rootful vs rootless** — by the resolved service name (`picolet-system` → rootful, `picolet` → rootless). `host.yml`'s `pi_type` is informational; it doesn't drive the determination.
-- **Service to deploy** — defaults to whichever of `picolet` / `picolet-system` appears in the host's resolved assignment set (a given `host.yml` has exactly one `pi_type`, so exactly one is present). Overridable via `--service`. Must exist in the resolved host's bundles; otherwise create errors with the available service names. **The generated invocation always carries an explicit `--service=<name>`**, so the target-side default never has to guess.
+- **Rootful vs rootless** — by the resolved service name (`picolet-system` → rootful, `picolet` → rootless). `host.yml`'s `role` is informational; it doesn't drive the determination.
+- **Service to deploy** — defaults to whichever of `picolet` / `picolet-system` appears in the host's resolved assignment set (a given `host.yml` has exactly one `role`, so exactly one is present). Overridable via `--service`. Must exist in the resolved host's bundles; otherwise create errors with the available service names. **The generated invocation always carries an explicit `--service=<name>`**, so the target-side default never has to guess.
 - **Image** — read from `fleet.yml`'s `images.picolet` entry.
 - **Host-side paths for the `-v` mounts** — picolet's rootful and rootless quadlets follow stable conventions today (rootful uses `/etc/...`, `/var/lib/picolet[-system]`, system sockets; rootless uses `~/.config/...`, `~/.local/share/picolet`, `$XDG_RUNTIME_DIR/...`). `bootstrap create` emits these conventional paths directly. If a fleet diverges from convention (e.g. moves the systemd dir), the operator edits the generated script before running it. Parsing the rendered quadlet's `Volume=` directives to auto-derive divergent paths is a future enhancement; for now, convention covers every fleet we have.
 - **Host-managed secret checklist** — after resolving the fleet repo, parse the rendered `picolet_config` content as `agentcfg.Config` (structural, not regex). Walk the populated fields and emit one checklist line per host-managed credential, labelled by auth mode:
@@ -120,7 +120,7 @@ Default output is annotated for human reading; `--script` strips comments and em
 **Output example (rootful target):**
 
 ```
-# Bootstrap plan for rpi5-1-system (pi_type=node-system, rootful)
+# Bootstrap plan for rpi5-1-system (role=node-system, rootful)
 # Fleet repo: /Users/jannis/src/jannis/gitops (HEAD: a32ca09)
 # Picolet image: ghcr.io/schjan/picolet:0.1.27
 # Service: picolet-system
@@ -230,8 +230,8 @@ Implementation: a new resolver entry point that takes an explicit service allow-
 // pkg/resolver/resolver.go
 //
 // ResolveServicesForHost resolves only the listed services for the given host.
-// The host's pi_type and features are still loaded (so template data exposes
-// .Host.PiType, .Host.Features as usual), but only the listed services'
+// The host's role and features are still loaded (so template data exposes
+// .Host.Role, .Host.Features as usual), but only the listed services'
 // bundles are walked and rendered.
 //
 // Strict secret-resolution mode (from rc.Strict) applies to the rendered subset.
@@ -640,10 +640,10 @@ Both levels point at the same stub fleet repo and the same local Podman socket.
 ```
 testdata/bootstrap-fleet/
     fleet.yml              # only the picolet image and metrics port
-    assignments.yml        # one pi_type: bootstrap-test → [picolet]
+    assignments.yml        # one role: bootstrap-test → [picolet]
     hosts/
         e2e-bootstrap/
-            host.yml       # hostname: e2e-bootstrap, pi_type: bootstrap-test
+            host.yml       # hostname: e2e-bootstrap, role: bootstrap-test
     services/
         picolet/
             containers/

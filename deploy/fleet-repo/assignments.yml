@@ -1,6 +1,6 @@
 base: {}
 
-pi_types:
+roles:
   # Production: rootful Podman, system-level systemd
   worker:
     services:

@@ -72,7 +72,7 @@ func NewHostInfoCollector(store *status.Store) *HostInfoCollector {
 		descHost: prometheus.NewDesc(
 			"picolet_host_info",
 			"Resolved host metadata (value=1).",
-			[]string{"pi_type"}, nil,
+			[]string{"role"}, nil,
 		),
 		descFeature: prometheus.NewDesc(
 			"picolet_host_feature_info",
@@ -92,8 +92,8 @@ func (c *HostInfoCollector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 	host := c.store.Snapshot().Host
-	if host.PiType != "" {
-		ch <- prometheus.MustNewConstMetric(c.descHost, prometheus.GaugeValue, 1, host.PiType)
+	if host.Role != "" {
+		ch <- prometheus.MustNewConstMetric(c.descHost, prometheus.GaugeValue, 1, host.Role)
 	}
 	for _, feature := range host.Features {
 		ch <- prometheus.MustNewConstMetric(c.descFeature, prometheus.GaugeValue, 1, feature)
