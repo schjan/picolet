@@ -3,6 +3,8 @@ package health
 import (
 	"context"
 	"log/slog"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/schjan/picolet/pkg/applier"
@@ -21,8 +23,17 @@ type CheckResult struct {
 	// ExternallyActivated is the subset of Unhealthy that picolet must not restart
 	// because systemd owns their (re-)invocation: timer-fired or static one-shots.
 	ExternallyActivated []string
-	Errors              []error
-	Statuses            map[string]applier.UnitStatus // all successfully queried units
+	// TimerJobs names the units picolet keeps run bookkeeping for: one-shots a
+	// .timer fires, plus the .timers that fire them. Every name is a key of
+	// Statuses. Sorted. See timerJobUnits.
+	TimerJobs []string
+	// Managed is every unit this pass covered — the Fleet's unit set, including
+	// units whose query errored. Callers prune retained per-unit records by it,
+	// which is why it must not be narrowed to the successfully queried subset.
+	// Sorted.
+	Managed  []string
+	Errors   []error
+	Statuses map[string]applier.UnitStatus // all successfully queried units
 }
 
 // AllFailed reports whether every unit check errored and none succeeded.
@@ -79,10 +90,14 @@ func (c *Checker) Enforce(ctx context.Context, st *state.State) (*CheckResult, e
 			c.lastRestart[unit] = pu.LastAttemptAt
 		}
 	}
-
-	for unit := range units {
+	result.Managed = slices.Sorted(maps.Keys(units))
+	for _, unit := range result.Managed {
 		c.enforceUnit(ctx, unit, st, result)
 	}
+	// Derived from the whole pass, not per state branch: a one-shot that works
+	// spends its life *inactive*, so a classification made only where a unit is
+	// failed (as ExternallyActivated is) would never see a healthy job.
+	result.TimerJobs = timerJobUnits(result.Statuses)
 
 	if len(st.PendingUnits) == 0 {
 		st.PendingUnits = nil
@@ -142,6 +157,33 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State,
 		}
 		c.maybeRestart(ctx, unit, st, result)
 	}
+}
+
+// timerJobUnits selects the units picolet keeps run bookkeeping for: every
+// one-shot a .timer fires — the scheduled-job class whose last successful run
+// operators alert on — plus the .timers that fire those jobs, which carry the
+// trigger clock for them. A timer that activates a daemon is not a scheduled job
+// and is left out.
+//
+// The timers come from the one-shots' own TriggeredBy edges, so selecting them
+// costs no extra D-Bus call. Only units this pass actually queried are selected
+// (statuses membership implies the unit is managed): a unit whose query failed
+// must stay out, or the caller would record a zero-valued observation over its
+// retained one and the series would flap on a D-Bus hiccup.
+func timerJobUnits(statuses map[string]applier.UnitStatus) []string {
+	tracked := make(map[string]bool)
+	for unit, s := range statuses {
+		if !applier.TimerTriggeredOneshot(s) {
+			continue
+		}
+		tracked[unit] = true
+		for _, trigger := range s.TriggeredBy {
+			if _, queried := statuses[trigger]; queried && applier.IsTimerUnit(trigger) {
+				tracked[trigger] = true
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(tracked))
 }
 
 func (c *Checker) maybeRestart(ctx context.Context, unit string, st *state.State, result *CheckResult) {

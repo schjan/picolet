@@ -16,6 +16,10 @@
 | `picolet_health_enforcement_total` | Counter | `unit`, `action` (restart/skip_cooldown/skip_external_activation) | Health enforcement actions by unit (`skip_external_activation`: a failed one-shot systemd owns — timer-triggered or static — reported but not restarted) |
 | `picolet_systemd_unit_operations_total` | Counter | `operation` (enable/disable/start/restart), `result` (success/error/skipped) | Enable/disable/start/restart operations on raw systemd units and one-shot restart gating (`result="skipped"`: a restart declined because the unit is a timer-triggered one-shot) |
 | `picolet_unit_restart_pending` | Gauge | `unit` | Managed units whose last restart attempt failed (value = consecutive failed attempts). Seeded from persisted state, so it survives an agent restart |
+| `picolet_unit_last_run_timestamp_seconds` | Gauge | `unit` | Unix timestamp at which a timer-triggered one-shot last started, whatever the outcome. Absent until the first run, so `absent()` distinguishes "never fired" from "fired and failed" |
+| `picolet_unit_last_success_timestamp_seconds` | Gauge | `unit` | Unix timestamp at which a timer-triggered one-shot last completed successfully. Absent until the first observed success — never zero, so `time() - series` is never poisoned by the epoch |
+| `picolet_unit_last_result` | Gauge | `unit`, `result` (`success`/`exit-code`/`timeout`/`signal`/…) | Info metric (value=1) for the unit's **current** systemd `Result=`, one series per unit. systemd resets `Result=` to `success` when a run starts, so while a job is in flight this reads `success` even if the previous run failed — join with `picolet_unit_last_success_timestamp_seconds` when only a completed outcome counts. Absent until the unit has run at all |
+| `picolet_timer_last_trigger_timestamp_seconds` | Gauge | `unit` | Unix timestamp at which a managed `.timer` last fired |
 | `picolet_applied_git_sha_info` | Gauge | `sha` | Currently applied git SHA (value=1) |
 | `picolet_orphans_removed_total` | Counter | `type` (file/secret) | Orphaned resources removed at startup |
 | `picolet_unit_dependency_count` | Gauge | `unit`, `relation` | Current generated systemd dependency count by managed unit and relation |
@@ -27,6 +31,8 @@
 | `picolet_secret_credential_expires_at` | Gauge | `provider` | Unix timestamp at which the configured credential expires (only emitted when the operator records the expiry in config) |
 
 Dependency targets, file paths, hashes, recent error strings, and dashboard event history are intentionally not exported as labels to avoid high-cardinality or churn-heavy series.
+
+> **Scheduled jobs:** the four `picolet_unit_last_*` / `picolet_timer_last_trigger_*` series cover every Managed unit picolet classifies as a timer-triggered one-shot (`Type=oneshot` with a `.timer` in `TriggeredBy=`) plus the timers that fire them. They are read from systemd on every health pass and retained across a failed D-Bus query, so a hiccup does not make them flap. `picolet_unit_last_result` is systemd's live `Result=`; last-success is *derived* on top of it, because systemd resets `Result=` to `success` when a run starts and keeps no success history. Consequences: a job that has not succeeded since the agent restarted reports no last-success series (the never-succeeded rule below covers it), and the last-success value never advances on the strength of a run picolet did not see finish. `picolet_last_image_prune_timestamp` is unchanged and still covers picolet's own pruning.
 
 > **Self-update monitoring:** use node-exporter's `systemd_unit_start_time_seconds` for `picolet.service` to detect restart failures.
 
@@ -73,6 +79,41 @@ groups:
         annotations:
           summary: "{{ $labels.unit }} has been failing to restart"
           description: "picolet on {{ $labels.instance }} has not been able to restart {{ $labels.unit }} ({{ $value }} consecutive failed attempts). Check the unit's quadlet and `pending_units` in state.json."
+
+      # picolet exports the timestamps, not the OnCalendar= interval: pick the
+      # threshold per schedule class (2x the interval) with a unit matcher, and
+      # duplicate the rule for jobs on a different schedule. A daily job:
+      - alert: PicoletScheduledJobStale
+        expr: time() - picolet_unit_last_success_timestamp_seconds > 2 * 86400
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.unit }} has not succeeded for over two days"
+          description: "The timer-triggered one-shot {{ $labels.unit }} on {{ $labels.instance }} last succeeded {{ $value | humanizeDuration }} ago. Check `picolet_unit_last_result` for why and `journalctl -u {{ $labels.unit }}`."
+
+      # A job that has fired but never once succeeded has no last-success series
+      # at all, so the staleness rule above cannot see it.
+      - alert: PicoletScheduledJobNeverSucceeded
+        expr: picolet_unit_last_run_timestamp_seconds unless on(instance, unit) picolet_unit_last_success_timestamp_seconds
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.unit }} has never completed successfully"
+          description: "{{ $labels.unit }} on {{ $labels.instance }} has run at least once and has never been observed to succeed."
+
+      # picolet_unit_last_result is systemd's live Result=, so this clears while the
+      # next attempt runs and re-fires if that attempt fails too. Use the staleness
+      # rule above for the stable "has stopped succeeding" signal.
+      - alert: PicoletScheduledJobFailed
+        expr: picolet_unit_last_result{result!="success"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.unit }} last run ended in {{ $labels.result }}"
+          description: "The last run of {{ $labels.unit }} on {{ $labels.instance }} ended with Result={{ $labels.result }}."
 
       - alert: PicoletSecretCredentialNearExpiry
         expr: picolet_secret_credential_expires_at - time() < 14 * 86400

@@ -55,10 +55,9 @@ type SystemdManager interface {
 	GetUnitStatus(ctx context.Context, name string) (UnitStatus, error)
 }
 
-// UnitStatus holds the runtime status of a systemd unit from a single D-Bus call.
-// Result is intentionally omitted: it is on org.freedesktop.systemd1.Service, not
-// the Unit interface, and is not accessible for all unit types (.network, .volume, .kube).
-// SubState provides sufficient signal: "auto-restart" vs "failed" vs "running" vs "exited".
+// UnitStatus holds the runtime status of a systemd unit. Every field except
+// ServiceType/Result/LastTriggerAt comes from the single Unit-interface
+// properties call; the scoped extras are documented on GetUnitStatus.
 type UnitStatus struct {
 	ActiveState   string   // "active", "failed", "inactive", "activating", ...
 	SubState      string   // "running", "exited", "auto-restart", "dead", "waiting", ...
@@ -68,6 +67,33 @@ type UnitStatus struct {
 	// Populated by GetUnitStatus only for .service units that carry a trigger edge
 	// or report UnitFileState=="static"; empty otherwise. See GetUnitStatus.
 	ServiceType string
+	// Result is the [Service] Result= of the last run ("success", "exit-code",
+	// "timeout", "signal", ...). It lives on org.freedesktop.systemd1.Service, so
+	// it is fetched under the same scope as ServiceType and is empty for every
+	// other unit type (.timer, .network, .volume, .kube). systemd resets it to
+	// "success" when a run starts, so it is the unit's *current* result, not
+	// necessarily the outcome of the last completed run — status.Store.ObserveRun
+	// owns what that distinction means for the derived last-success.
+	Result string
+	// LastRunStartedAt is when the unit last left the inactive state, i.e. when its
+	// last run started (Unit InactiveExitTimestamp). Zero when it never ran.
+	//
+	// ActiveEnterTimestamp is deliberately not used: it stays 0 for Type=oneshot
+	// units without RemainAfterExit=, which is exactly the timer-fired job class
+	// these fields exist for.
+	LastRunStartedAt time.Time
+	// LastRunFinishedAt is when the unit last entered the inactive state, i.e. when
+	// its last run finished, whatever the outcome (Unit InactiveEnterTimestamp).
+	// Zero when no run has finished.
+	//
+	// ExecMainExitTimestamp is deliberately not used: systemd zeroes it for the
+	// whole duration of a run, so a series derived from it would vanish while the
+	// job is in flight.
+	LastRunFinishedAt time.Time
+	// LastTriggerAt is when a .timer last fired (Timer LastTriggerUSec). Populated
+	// by GetUnitStatus for .timer units only; zero for everything else and for a
+	// timer that has never fired.
+	LastTriggerAt time.Time
 }
 
 // PruneResult summarizes the outcome of an image-prune run.
@@ -474,13 +500,25 @@ func IsPassiveUnit(unitName string) bool {
 	return ok
 }
 
+// IsTimerUnit reports whether a systemd unit name is a .timer.
+func IsTimerUnit(unitName string) bool {
+	return filepath.Ext(unitName) == ".timer"
+}
+
 // TimerTriggered reports whether a .timer activates this unit. Only timers are
 // considered: a .socket or .path that hits TriggerLimitIntervalSec= puts itself
 // into failure mode and stops triggering, so it is not a reliable re-invocation
 // path, whereas a timer always re-arms.
 func TimerTriggered(s UnitStatus) bool {
-	return slices.ContainsFunc(s.TriggeredBy,
-		func(t string) bool { return strings.HasSuffix(t, ".timer") })
+	return slices.ContainsFunc(s.TriggeredBy, IsTimerUnit)
+}
+
+// TimerTriggeredOneshot reports whether this unit is a one-shot job a .timer
+// fires — the scheduled-job class picolet exports last-run/last-success
+// bookkeeping for. Unlike ExternallyActivated it excludes static one-shots,
+// which have no schedule to be late against.
+func TimerTriggeredOneshot(s UnitStatus) bool {
+	return s.ServiceType == "oneshot" && TimerTriggered(s)
 }
 
 // ExternallyActivated reports whether systemd, not picolet, runs this one-shot

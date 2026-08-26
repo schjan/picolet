@@ -7,7 +7,11 @@ import (
 	"time"
 )
 
-const defaultEventLimit = 50
+const (
+	defaultEventLimit = 50
+	// resultSuccess is systemd's Result= value for a run that completed cleanly.
+	resultSuccess = "success"
+)
 
 // UnitRuntimeStatus is the current systemd state for a managed unit.
 type UnitRuntimeStatus struct {
@@ -61,6 +65,38 @@ type PruneStatus struct {
 	Error          string
 }
 
+// RunObservation is one health pass's raw view of a unit's last run, straight
+// from systemd. A zero time means systemd reports no such event yet.
+type RunObservation struct {
+	// StartedAt is when the last run started (Unit InactiveExitTimestamp).
+	StartedAt time.Time
+	// FinishedAt is when the last run finished, whatever the outcome
+	// (Unit InactiveEnterTimestamp). It doubles as the change detector for
+	// "a run completed since the previous pass".
+	FinishedAt time.Time
+	// Result is the service's current Result= ("success", "exit-code",
+	// "timeout", ...). systemd resets it to "success" when a run starts, so while
+	// a run is in flight it describes that run's provisional state rather than the
+	// outcome of the previous one; ObserveRun therefore never derives last-success
+	// from it in that window.
+	Result string
+	// TriggeredAt is when a .timer last fired (Timer LastTriggerUSec); zero for
+	// service units.
+	TriggeredAt time.Time
+}
+
+// UnitRun is the retained run bookkeeping for one timer-triggered one-shot, or
+// the last-trigger time for one managed .timer. It is what the metrics collector
+// exports and it outlives a failed observation: only PruneRuns removes a record.
+type UnitRun struct {
+	RunObservation
+
+	// SucceededAt is the FinishedAt of the last run that ended in "success",
+	// derived across observations by ObserveRun. Zero means "never seen to
+	// succeed" and the corresponding series is omitted rather than zeroed.
+	SucceededAt time.Time
+}
+
 // ReconcileEvent is a compact in-memory event rendered by the dashboard.
 type ReconcileEvent struct {
 	At      time.Time
@@ -71,7 +107,10 @@ type ReconcileEvent struct {
 
 // Snapshot is a point-in-time copy of agent runtime status.
 type Snapshot struct {
-	Units        map[string]UnitRuntimeStatus
+	Units map[string]UnitRuntimeStatus
+	// Runs holds run bookkeeping for timer-triggered one-shots and managed
+	// .timers. Unlike Units it is merged, never replaced: see ObserveRun.
+	Runs         map[string]UnitRun
 	Dependencies map[string]UnitDependencies
 	Host         HostMetadata
 	OrphanScan   OrphanScan
@@ -146,6 +185,65 @@ func (s *Store) ClearUnits() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	clear(s.snapshot.Units)
+}
+
+// ObserveRun merges one health pass's observation of a timer-triggered one-shot
+// (or a managed .timer) into the retained record and derives last-success.
+//
+// Run records deliberately do not share the Units lifecycle: SetUnits replaces
+// and ClearUnits empties that map, whereas a run record survives a failed
+// per-unit query and an all-failed pass — the series they feed are "how long ago
+// did this job last succeed", which must not flap on a D-Bus hiccup. Only
+// PruneRuns removes a record.
+//
+// Result follows the observation: it is the unit's current systemd Result=, which
+// systemd resets to "success" the moment a run starts. Only a unit that has never
+// run reports no result at all, because systemd initialises Result= to "success"
+// before there is any outcome to report.
+//
+// Last success, by contrast, is derived across observations precisely because of
+// that reset: it advances only when the finish timestamp moved since the previous
+// observation, no run started after that finish (StartedAt after FinishedAt means
+// one is in flight, so Result belongs to it and not to the finished run), and the
+// result was "success". Anything else keeps the previous last-success — on a first
+// observation that means publishing none at all, which is honest: systemd has
+// already overwritten whatever the last completed run reported.
+func (s *Store) ObserveRun(unit string, obs RunObservation) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.snapshot.Runs == nil {
+		s.snapshot.Runs = make(map[string]UnitRun)
+	}
+	prev := s.snapshot.Runs[unit]
+	run := UnitRun{RunObservation: obs, SucceededAt: prev.SucceededAt}
+	if obs.StartedAt.IsZero() {
+		// Never ran: systemd's initial Result="success" is not an outcome.
+		run.Result = ""
+	}
+	if !obs.FinishedAt.Equal(prev.FinishedAt) &&
+		!obs.StartedAt.After(obs.FinishedAt) &&
+		obs.Result == resultSuccess {
+		run.SucceededAt = obs.FinishedAt
+	}
+	s.snapshot.Runs[unit] = run
+}
+
+// PruneRuns drops run records for units outside keep, the Fleet's current unit
+// set. Leaving the Fleet is the only reason a record disappears.
+func (s *Store) PruneRuns(keep []string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for unit := range s.snapshot.Runs {
+		if !slices.Contains(keep, unit) {
+			delete(s.snapshot.Runs, unit)
+		}
+	}
 }
 
 // SetDependencies replaces the generated dependency snapshot.
@@ -237,6 +335,7 @@ func (s *Store) AddEvent(event ReconcileEvent) {
 func cloneSnapshot(in Snapshot) Snapshot {
 	return Snapshot{
 		Units:        cloneUnits(in.Units),
+		Runs:         maps.Clone(in.Runs),
 		Dependencies: cloneDependenciesMap(in.Dependencies),
 		Host:         cloneHost(in.Host),
 		OrphanScan:   in.OrphanScan,

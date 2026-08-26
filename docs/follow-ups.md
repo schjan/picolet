@@ -62,6 +62,13 @@ intended fix. Prune entries as they land.
 - **Suggested fix:** documented allowlist (e.g., loopback + per-fleet declared hosts) or blocklist (link-local, multicast, metadata IPs).
 
 ### F12. E2E expansion: keep_running retry, on_failure: restart fallback, manifest trigger
-- **Where:** `e2e_hooks_test.go`
+- **Where:** `e2e/hooks_test.go`
 - **What:** Existing e2e tests cover only happy-path restart and HTTP. The retry-budget exhaustion path, fallback-restart on hook failure, and manifest-triggered hooks have no e2e coverage.
 - **Suggested fix:** add three e2e scenarios using `httptest.Server` returning 500 (for retry exhaustion), a hook with `on_failure: restart` (for fallback path), and a manifest-triggered hook with a real systemd unit on the test bench.
+
+## From issue #159 (timer one-shot run metrics)
+
+### F13. Last-success history does not survive an agent restart
+- **Where:** `pkg/status/status.go` — `Store.ObserveRun` / `Snapshot.Runs`
+- **What:** `SucceededAt` is derived across observations and lives only in the in-memory status store, as #159 specifies ("these values live in their own map in the status store"). systemd itself keeps no success history: `Result=` holds only the current run's state. So for a job that succeeded, then failed, then had picolet restarted, the `picolet_unit_last_success_timestamp_seconds` series disappears until the job succeeds again — which weakens #142's "metrics survive an Agent restart" story in exactly the failing-backup case the alert is for. The same gap appears when a job's next run is already in flight at the first observation: no success can be credited to a run picolet never saw finish.
+- **Suggested fix:** persist the per-unit `SucceededAt` (and last completed `Result`) in `state.json` alongside `LastPrunedAt`, and seed the store from it on startup the way `seededPrunedAt` does. Alternative: reconstruct from journald, which is heavier and not worth it.

@@ -40,11 +40,41 @@ func (a *Agent) recordHealthMetrics(hr *health.CheckResult) {
 	}
 	a.statusStore.SetUnits(unitStatuses)
 
+	RecordTimerJobRuns(a.statusStore, hr)
+
 	metrics.HealthCheckErrorsTotal.Add(float64(len(hr.Errors)))
 
 	if hr.AllFailed() {
 		a.statusStore.ClearUnits()
 	}
+}
+
+// RecordTimerJobRuns merges a health pass's run bookkeeping into store. It is the
+// single place a systemd observation of a timer-triggered one-shot — or of the
+// .timer that fires it — enters the status store, shared by the agent tick and the
+// e2e bench test that drives the same path against real systemd.
+//
+// Run records have a lifecycle of their own: they are merged rather than replaced,
+// so a failed per-unit query or an all-failed pass keeps the last known values
+// (recordHealthMetrics' ClearUnits deliberately does not touch them), and a record
+// only disappears when its unit leaves the Fleet's unit set.
+func RecordTimerJobRuns(store *status.Store, hr *health.CheckResult) {
+	for _, unit := range hr.TimerJobs {
+		st := hr.Statuses[unit]
+		if applier.IsTimerUnit(unit) {
+			// A .timer contributes its trigger clock only. Its own
+			// InactiveExit/InactiveEnter timestamps say when the timer unit was last
+			// armed, which is not a run of the job it fires.
+			store.ObserveRun(unit, status.RunObservation{TriggeredAt: st.LastTriggerAt})
+			continue
+		}
+		store.ObserveRun(unit, status.RunObservation{
+			StartedAt:  st.LastRunStartedAt,
+			FinishedAt: st.LastRunFinishedAt,
+			Result:     st.Result,
+		})
+	}
+	store.PruneRuns(hr.Managed)
 }
 
 // setFilesManagedMetric overwrites FilesManagedTotal for every known category.

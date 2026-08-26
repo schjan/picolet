@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -262,6 +263,24 @@ func waitJobResult(ctx context.Context, ch <-chan string, verb, unit string, acc
 	}
 }
 
+// GetUnitStatus reads one unit's runtime status. The Unit-interface properties —
+// including the InactiveExit/InactiveEnter run timestamps — come from a single
+// call. Two scoped extras cost one further call each:
+//
+//   - .service units that might be an externally-activated one-shot (a trigger
+//     edge or a static unit-file state) get Type and Result from the Service
+//     interface. Ordinary quadlet daemons report "generated" with no trigger and
+//     never pay for it.
+//   - .timer units get LastTriggerUSec from the Timer interface, the trigger clock
+//     for the last-trigger series.
+//
+// Invariant: the service guard must fetch ServiceType for every case
+// ExternallyActivated (applier.go) can return true — i.e. it must cover
+// {TimerTriggered ∪ static} — and for every case TimerTriggeredOneshot can return
+// true, which the metrics consumer scopes its run bookkeeping by. TimerTriggered ⊆
+// (TriggeredBy non-empty) holds, so all clauses stay in lockstep; a new clause in
+// either predicate needs a matching clause here, or ServiceType reads empty and
+// the unit is misjudged.
 func (m *DBusSystemdManager) GetUnitStatus(ctx context.Context, name string) (UnitStatus, error) {
 	var status UnitStatus
 	err := m.withReconnect(ctx, func(c *dbus.Conn) error {
@@ -269,49 +288,113 @@ func (m *DBusSystemdManager) GetUnitStatus(ctx context.Context, name string) (Un
 		if err != nil {
 			return fmt.Errorf("getting status of %s: %w", name, err)
 		}
-		activeState := stringProp(props, "ActiveState")
-		if activeState == "" {
-			return fmt.Errorf("ActiveState not a string for %s", name)
+		status, err = unitStatusFromProps(name, props)
+		if err != nil {
+			return err
 		}
-		triggeredBy, _ := props["TriggeredBy"].([]string)
-		status = UnitStatus{
-			ActiveState:   activeState,
-			SubState:      stringProp(props, "SubState"),
-			UnitFileState: stringProp(props, "UnitFileState"),
-			TriggeredBy:   triggeredBy,
-		}
-		// ServiceType lives on the Service interface, so it is only fetched for
-		// .service units that might be an externally-activated one-shot: those with
-		// a trigger edge or a static unit-file state. Ordinary quadlet daemons report
-		// "generated" with no trigger and never pay for the second D-Bus call.
-		//
-		// Invariant: this guard must fetch ServiceType for every case
-		// ExternallyActivated (applier.go) can return true — i.e. it must cover
-		// {TimerTriggered ∪ static}. TimerTriggered ⊆ (TriggeredBy non-empty) holds,
-		// so both clauses stay in lockstep; a new ExternallyActivated clause needs a
-		// matching clause here, or ServiceType reads empty and the unit is misjudged.
-		if strings.HasSuffix(name, ".service") &&
-			(len(triggeredBy) > 0 || status.UnitFileState == "static") {
-			prop, err := c.GetServicePropertyContext(ctx, name, "Type")
-			if err != nil {
-				return fmt.Errorf("getting service type of %s: %w", name, err)
-			}
-			// Fail closed: a non-string Type (should be impossible per the D-Bus
-			// signature) must error, not leave ServiceType empty — an empty value
-			// makes ExternallyActivated false and health would restart the very
-			// one-shot this decode exists to protect.
-			serviceType, ok := prop.Value.Value().(string)
-			if !ok {
-				return fmt.Errorf("service Type of %s is not a string", name)
-			}
-			status.ServiceType = serviceType
+		switch {
+		case strings.HasSuffix(name, ".service") &&
+			(len(status.TriggeredBy) > 0 || status.UnitFileState == "static"):
+			return readServiceProps(ctx, c, name, &status)
+		case IsTimerUnit(name):
+			return readTimerTrigger(ctx, c, name, &status)
 		}
 		return nil
 	})
 	return status, err
 }
 
+// unitStatusFromProps decodes the org.freedesktop.systemd1.Unit properties every
+// unit type carries.
+func unitStatusFromProps(name string, props map[string]any) (UnitStatus, error) {
+	activeState := stringProp(props, "ActiveState")
+	if activeState == "" {
+		return UnitStatus{}, fmt.Errorf("ActiveState not a string for %s", name)
+	}
+	triggeredBy, _ := props["TriggeredBy"].([]string)
+	startedAt, err := usecProp(props, "InactiveExitTimestamp", name)
+	if err != nil {
+		return UnitStatus{}, err
+	}
+	finishedAt, err := usecProp(props, "InactiveEnterTimestamp", name)
+	if err != nil {
+		return UnitStatus{}, err
+	}
+	return UnitStatus{
+		ActiveState:       activeState,
+		SubState:          stringProp(props, "SubState"),
+		UnitFileState:     stringProp(props, "UnitFileState"),
+		TriggeredBy:       triggeredBy,
+		LastRunStartedAt:  startedAt,
+		LastRunFinishedAt: finishedAt,
+	}, nil
+}
+
+// readServiceProps fills the Service-interface fields (Type, Result) from one
+// D-Bus call.
+//
+// Fail closed on a non-string value (it should be impossible per the D-Bus
+// signature) rather than leaving the field empty: an empty ServiceType makes
+// ExternallyActivated false and health would restart the very one-shot this
+// decode exists to protect, and an empty Result would publish "no run yet" for a
+// job that has one.
+func readServiceProps(ctx context.Context, c *dbus.Conn, name string, status *UnitStatus) error {
+	props, err := c.GetUnitTypePropertiesContext(ctx, name, "Service")
+	if err != nil {
+		return fmt.Errorf("getting service properties of %s: %w", name, err)
+	}
+	serviceType, ok := props["Type"].(string)
+	if !ok {
+		return fmt.Errorf("service Type of %s is not a string", name)
+	}
+	result, ok := props["Result"].(string)
+	if !ok {
+		return fmt.Errorf("service Result of %s is not a string", name)
+	}
+	status.ServiceType = serviceType
+	status.Result = result
+	return nil
+}
+
+// readTimerTrigger fills LastTriggerAt for a .timer from one D-Bus call.
+func readTimerTrigger(ctx context.Context, c *dbus.Conn, name string, status *UnitStatus) error {
+	props, err := c.GetUnitTypePropertiesContext(ctx, name, "Timer")
+	if err != nil {
+		return fmt.Errorf("getting timer properties of %s: %w", name, err)
+	}
+	lastTrigger, err := usecProp(props, "LastTriggerUSec", name)
+	if err != nil {
+		return err
+	}
+	status.LastTriggerAt = lastTrigger
+	return nil
+}
+
 func stringProp(props map[string]any, key string) string {
 	s, _ := props[key].(string)
 	return s
+}
+
+// usecProp decodes a systemd CLOCK_REALTIME microsecond timestamp property into a
+// time.Time, mapping systemd's "never happened" encodings to the zero time so
+// callers can omit the series instead of publishing the Unix epoch.
+//
+// A missing or non-uint64 value is an error, not a silent zero: a zero reads as
+// "never ran" and would drop the unit's last-run/last-success series on what is
+// really a decode bug.
+func usecProp(props map[string]any, key, name string) (time.Time, error) {
+	v, ok := props[key]
+	if !ok {
+		return time.Time{}, fmt.Errorf("%s has no %s property", name, key)
+	}
+	usec, ok := v.(uint64)
+	if !ok {
+		return time.Time{}, fmt.Errorf("%s of %s is not a uint64", key, name)
+	}
+	// 0 is "the event never happened"; USEC_INFINITY (UINT64_MAX) is systemd's
+	// "unset" for timer clocks. Both mean absent, not the epoch.
+	if usec == 0 || usec > math.MaxInt64 {
+		return time.Time{}, nil
+	}
+	return time.UnixMicro(int64(usec)).UTC(), nil
 }

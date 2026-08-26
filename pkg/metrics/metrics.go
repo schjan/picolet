@@ -253,6 +253,7 @@ func Register(store *status.Store) {
 			ImagePruneReclaimedBytesTotal,
 			unitRestartPending,
 			NewUnitHealthCollector(store),
+			NewUnitRunCollector(store),
 			NewUnitDependencyCollector(store),
 			NewHostInfoCollector(store),
 			NewLastImagePruneCollector(store),
