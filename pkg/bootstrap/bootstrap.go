@@ -53,7 +53,7 @@ type RunConfig struct {
 	RepoDir      string
 	SecretsDir   string
 	HealthPath   string
-	MetricsPort  int
+	HealthAddr   string
 	Timeout      time.Duration
 	AllowRestart bool
 }
@@ -125,9 +125,9 @@ func Run(ctx context.Context, cfg RunConfig) error { //nolint:cyclop,funlen // o
 	if err := verifyUnitResolved(resolved.Files, tgt); err != nil {
 		return err
 	}
-	metricsPort := cfg.MetricsPort
-	if metricsPort == 0 {
-		metricsPort, err = metricsPortFromResolved(resolved.Files, tgt.unitName)
+	healthAddr := cfg.HealthAddr
+	if healthAddr == "" {
+		healthAddr, err = healthAddrFromResolved(resolved.Files, tgt.unitName)
 		if err != nil {
 			return err
 		}
@@ -145,7 +145,7 @@ func Run(ctx context.Context, cfg RunConfig) error { //nolint:cyclop,funlen // o
 	}
 	store := state.NewStore(filepath.Join(tgt.dataDir, "state.json"))
 	if slices.Contains([]string{"active", "activating", "reloading"}, status.ActiveState) {
-		done, err := handleActiveBootstrap(ctx, systemd, store, resolved.Files, tgt.unitName, metricsPort, cfg)
+		done, err := handleActiveBootstrap(ctx, systemd, store, resolved.Files, tgt.unitName, healthAddr, cfg)
 		if err != nil {
 			return err
 		}
@@ -207,20 +207,20 @@ func Run(ctx context.Context, cfg RunConfig) error { //nolint:cyclop,funlen // o
 	if err := systemd.StartUnit(ctx, tgt.unitName); err != nil {
 		return err
 	}
-	return WaitForHealth(ctx, metricsPort, cfg.HealthPath, cfg.Timeout)
+	return WaitForHealth(ctx, healthAddr, cfg.HealthPath, cfg.Timeout)
 }
 
 // handleActiveBootstrap guards against re-bootstrapping under a live agent.
 // Returns done=true when the active agent already matches the desired state;
 // otherwise (with AllowRestart) the unit is stopped and bootstrap proceeds.
-func handleActiveBootstrap(ctx context.Context, systemd applier.SystemdManager, store *state.Store, files []resolver.ResolvedFile, unitName string, metricsPort int, cfg RunConfig) (bool, error) {
+func handleActiveBootstrap(ctx context.Context, systemd applier.SystemdManager, store *state.Store, files []resolver.ResolvedFile, unitName, healthAddr string, cfg RunConfig) (bool, error) {
 	st, err := store.Load()
 	if err != nil {
 		return false, fmt.Errorf("loading state: %w", err)
 	}
 	guardChangeset := diffBootstrapScope(files, st, unitName)
 	if !guardChangeset.HasChanges() {
-		return true, WaitForHealth(ctx, metricsPort, cfg.HealthPath, cfg.Timeout)
+		return true, WaitForHealth(ctx, healthAddr, cfg.HealthPath, cfg.Timeout)
 	}
 	if !cfg.AllowRestart {
 		return false, fmt.Errorf("%s is already active and bootstrap would change its managed files; stop it first or pass --allow-restart", unitName)
@@ -367,16 +367,19 @@ func verifyUnitResolved(files []resolver.ResolvedFile, tgt resolvedTarget) error
 		tgt.service, tgt.unitName, strings.Join(units, ", "))
 }
 
-func metricsPortFromResolved(files []resolver.ResolvedFile, unitName string) (int, error) {
+// healthAddrFromResolved reads the agent's effective listen address out of the
+// rendered agent config the bundle mounts, and returns the address a probe on
+// this Machine must dial to reach it.
+func healthAddrFromResolved(files []resolver.ResolvedFile, unitName string) (string, error) {
 	file, err := configSecret(files, unitName)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	cfg, err := agentcfg.Parse([]byte(file.Content))
 	if err != nil {
-		return 0, fmt.Errorf("parsing rendered picolet config: %w", err)
+		return "", fmt.Errorf("parsing rendered picolet config: %w", err)
 	}
-	return cfg.MetricsPort, nil
+	return cfg.DialAddr(), nil
 }
 
 // configSecret returns the resolved secret the bundle's container quadlet

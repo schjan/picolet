@@ -367,7 +367,7 @@ func runTrigger(_ context.Context, configPath, urlOverride string) error {
 
 	webhookURL := urlOverride
 	if webhookURL == "" {
-		webhookURL = fmt.Sprintf("http://localhost:%d/webhook", cfg.MetricsPort)
+		webhookURL = "http://" + cfg.DialAddr() + "/webhook"
 	}
 
 	var body []byte
@@ -646,7 +646,7 @@ func runHealthcheck(_ context.Context, configPath string) error {
 	// container shutdown doesn't spuriously cancel the probe.
 	checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	url := fmt.Sprintf("http://localhost:%d/health", cfg.MetricsPort)
+	url := "http://" + cfg.DialAddr() + "/health"
 	req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, url, nil) //nolint:contextcheck // intentional detached context — health probe must not inherit signal cancellation
 	if err != nil {
 		return fmt.Errorf("building health check request: %w", err)

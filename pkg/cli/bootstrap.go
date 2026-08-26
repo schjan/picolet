@@ -22,7 +22,7 @@ func bootstrapCmd() *cli.Command {
 				RepoDir:      cmd.String("repo-dir"),
 				SecretsDir:   cmd.String("secrets-dir"),
 				HealthPath:   cmd.String("health-path"),
-				MetricsPort:  cmd.Int("metrics-port"),
+				HealthAddr:   cmd.String("health-addr"),
 				Timeout:      cmd.Duration("timeout"),
 				AllowRestart: cmd.Bool("allow-restart"),
 			})
@@ -61,7 +61,7 @@ func bootstrapRunFlags() []cli.Flag {
 		&cli.StringFlag{Name: "repo-dir", Usage: "local fleet repo path inside the bootstrap container"},
 		&cli.StringFlag{Name: "secrets-dir", Value: "/etc/picolet/secrets", Usage: "host-managed secrets directory inside the bootstrap container"},
 		&cli.StringFlag{Name: "health-path", Value: "/health", Usage: "health endpoint path"},
-		&cli.IntFlag{Name: "metrics-port", Usage: "health endpoint port override"},
+		&cli.StringFlag{Name: "health-addr", Usage: "health endpoint address override (host:port; default: the agent config's listen_addr)"},
 		&cli.DurationFlag{Name: "timeout", Value: 0, Usage: "health wait timeout"},
 		&cli.BoolFlag{Name: "allow-restart", Usage: "allow restarting an already-active picolet when files changed"},
 	)

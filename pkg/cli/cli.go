@@ -153,7 +153,7 @@ func healthcheckCmd() *cli.Command {
 			&cli.StringFlag{
 				Name:    "config",
 				Value:   "/etc/picolet/config.yml",
-				Usage:   "agent config file (to read metrics port)",
+				Usage:   "agent config file (to read listen_addr)",
 				Sources: cli.EnvVars("PICOLET_CONFIG"),
 			},
 		},
@@ -176,7 +176,7 @@ func triggerCmd() *cli.Command {
 			},
 			&cli.StringFlag{
 				Name:  "url",
-				Usage: "webhook URL override (default: http://localhost:<metrics_port>/webhook)",
+				Usage: "webhook URL override (default: http://<listen_addr>/webhook)",
 			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {

@@ -24,7 +24,7 @@ import (
 
 func TestStartHTTPBindFailure(t *testing.T) {
 	t.Parallel()
-	a := newTestAgent(t, &agentcfg.Config{MetricsPort: 70000})
+	a := newTestAgent(t, &agentcfg.Config{ListenAddr: "127.0.0.1:70000"})
 	shutdown, err := a.startHTTP()
 	require.Error(t, err)
 	assert.Nil(t, shutdown)
@@ -119,7 +119,7 @@ func TestHealthEndpoint_ReturnsOKAfterSuccessfulTick(t *testing.T) {
 		RepoURL:      bareDir,
 		RepoBranch:   "master",
 		PollInterval: time.Hour,
-		MetricsPort:  0,
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   t.TempDir(),
 	}
 
@@ -192,7 +192,7 @@ func TestWebhookTriggersReconciliation(t *testing.T) {
 		RepoURL:           bareDir,
 		RepoBranch:        "master",
 		PollInterval:      time.Hour, // only webhook-triggered reconciliation
-		MetricsPort:       0,
+		ListenAddr:        "127.0.0.1:0",
 		SecretsDir:        t.TempDir(),
 		WebhookSecretPath: secretFile,
 	}

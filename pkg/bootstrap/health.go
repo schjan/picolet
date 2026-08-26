@@ -13,13 +13,15 @@ const maxHealthProbeTimeout = 5 * time.Second
 
 var healthHTTPClient = http.DefaultClient
 
-func WaitForHealth(ctx context.Context, port int, healthPath string, timeout time.Duration) error {
+// WaitForHealth polls the agent's /health endpoint at addr (host:port) until it
+// reports healthy or timeout expires.
+func WaitForHealth(ctx context.Context, addr, healthPath string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		remaining := time.Until(deadline)
 		probeCtx, cancel := context.WithTimeout(ctx, min(maxHealthProbeTimeout, remaining))
-		err := probeOnce(probeCtx, port, healthPath)
+		err := probeOnce(probeCtx, healthHTTPClient, addr, healthPath)
 		cancel()
 		if err == nil {
 			return nil
@@ -38,15 +40,17 @@ func WaitForHealth(ctx context.Context, port int, healthPath string, timeout tim
 	return fmt.Errorf("picolet did not report healthy within %s: %w", timeout, lastErr)
 }
 
-func probeOnce(ctx context.Context, port int, healthPath string) error {
+// probeOnce takes its client explicitly so tests can drive a probe without
+// touching the package-level default.
+func probeOnce(ctx context.Context, client *http.Client, addr, healthPath string) error {
 	if !strings.HasPrefix(healthPath, "/") {
 		healthPath = "/" + healthPath
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://localhost:%d%s", port, healthPath), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+healthPath, nil)
 	if err != nil {
 		return err
 	}
-	resp, err := healthHTTPClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
