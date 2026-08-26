@@ -212,7 +212,7 @@ Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a co
 
 | File | Purpose |
 |------|---------|
-| `fleet.yml` | Image versions, ports, shared config (Renovate-managed) |
+| `fleet.yml` | Image versions and ports (Renovate-managed) |
 | `assignments.yml` | Maps role + features to file sets per host |
 | `hosts/<name>/host.yml` | Per-host config: hostname, role, features, secrets |
 

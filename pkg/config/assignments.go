@@ -14,14 +14,14 @@ type Assignments struct {
 	Roles    map[string]AssignmentGroup `yaml:"roles"`
 	Features map[string]AssignmentGroup `yaml:"features"`
 
-	// DeprecatedPiTypes captures the pre-rename `pi_types:` key so Validate can
+	// RetiredPiTypes captures the pre-rename `pi_types:` key so Validate can
 	// name the replacement. Reject-only — see keyPresent.
-	DeprecatedPiTypes yaml.Node `yaml:"pi_types"`
+	RetiredPiTypes yaml.Node `yaml:"pi_types"`
 }
 
-// Validate rejects renamed keys.
+// Validate rejects retired keys.
 func (a *Assignments) Validate() error {
-	if keyPresent(a.DeprecatedPiTypes) {
+	if keyPresent(a.RetiredPiTypes) {
 		return errors.New(migratePiTypes)
 	}
 	return nil

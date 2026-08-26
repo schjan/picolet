@@ -13,15 +13,15 @@ type HostConfig struct {
 	Role             string   `yaml:"role"`
 	Features         []string `yaml:"features"`
 
-	// DeprecatedPiType captures the pre-rename `pi_type:` key so Validate can
+	// RetiredPiType captures the pre-rename `pi_type:` key so Validate can
 	// reject it with a migration message instead of the generic unknown-field
 	// error WithKnownFields() would produce. Reject-only — see keyPresent.
-	DeprecatedPiType yaml.Node `yaml:"pi_type"`
+	RetiredPiType yaml.Node `yaml:"pi_type"`
 }
 
-// Validate checks that required fields are present and that no renamed key is used.
+// Validate checks that required fields are present and that no retired key is used.
 func (h *HostConfig) Validate() error {
-	if keyPresent(h.DeprecatedPiType) {
+	if keyPresent(h.RetiredPiType) {
 		return errors.New(migratePiType)
 	}
 	if h.Hostname == "" {

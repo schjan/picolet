@@ -11,15 +11,15 @@ type FleetConfig struct {
 	Images map[string]string `yaml:"images"`
 	Ports  map[string]int    `yaml:"ports"`
 
-	// DeprecatedPrometheus captures the removed `prometheus:` key so Validate
-	// can say so explicitly. The key was never read by picolet.
+	// RetiredPrometheus captures the removed `prometheus:` key so Validate can
+	// say so explicitly. The key was never read by picolet.
 	// Reject-only — see keyPresent.
-	DeprecatedPrometheus yaml.Node `yaml:"prometheus"`
+	RetiredPrometheus yaml.Node `yaml:"prometheus"`
 }
 
-// Validate rejects removed keys.
+// Validate rejects retired keys.
 func (f *FleetConfig) Validate() error {
-	if keyPresent(f.DeprecatedPrometheus) {
+	if keyPresent(f.RetiredPrometheus) {
 		return errors.New(migratePrometheus)
 	}
 	return nil
