@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1671,6 +1672,118 @@ func TestTickClearsPendingUnitWhenHealthy(t *testing.T) {
 	loaded, err := store.Load()
 	require.NoError(t, err)
 	assert.Empty(t, loaded.PendingUnits, "a healthy unit must clear its pending record and the change must be persisted")
+}
+
+// tickTimerJobFixture clones the network-only test repo, pre-seeds state at the
+// current SHA (empty diff) and adds a raw .timer + one-shot pair to the managed
+// unit set so the health pass queries them.
+func tickTimerJobFixture(t *testing.T, poller *gitpoll.Poller, repoDir, statePath, secretsDir string) *state.Store {
+	t.Helper()
+	ctx := t.Context()
+	initial, err := poller.Poll(ctx, "")
+	require.NoError(t, err)
+
+	files, err := LoadAndResolve(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
+	require.NoError(t, err)
+	store := state.NewStore(statePath)
+	st := state.NewState()
+	UpdateState(st, reconciler.Diff(files, st))
+	st.MarkApplied(initial.HeadSHA)
+	if st.ServiceNames == nil {
+		st.ServiceNames = make(map[string]string)
+	}
+	st.ServiceNames["/etc/systemd/user/job.service"] = "job.service"
+	st.ServiceNames["/etc/systemd/user/job.timer"] = "job.timer"
+	require.NoError(t, store.Save(st))
+	return store
+}
+
+// timerJobStatuses wires GetUnitStatus for one timer-triggered one-shot
+// (job.service) and the timer that fires it, returning the flag that switches the
+// one-shot to "a new run is in flight": InactiveExitTimestamp moves, the finish
+// timestamp does not, and systemd has already reset Result= to "success".
+func timerJobStatuses(sys *appliermocks.MockSystemdManager, firstStart, firstEnd, secondStart time.Time) *atomic.Bool {
+	var running atomic.Bool
+	sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
+		RunAndReturn(func(_ context.Context, name string) (applier.UnitStatus, error) {
+			switch name {
+			case "job.service":
+				job := applier.UnitStatus{
+					ActiveState: "inactive", SubState: "dead", ServiceType: "oneshot",
+					TriggeredBy:       []string{"job.timer"},
+					LastRunStartedAt:  firstStart,
+					LastRunFinishedAt: firstEnd,
+					Result:            "success",
+				}
+				if running.Load() {
+					job.ActiveState, job.SubState = "activating", "start"
+					job.LastRunStartedAt = secondStart
+				}
+				return job, nil
+			case "job.timer":
+				return applier.UnitStatus{
+					ActiveState: "active", SubState: "waiting", UnitFileState: "enabled",
+					LastTriggerAt: secondStart,
+				}, nil
+			}
+			return applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil
+		}).Maybe()
+	return &running
+}
+
+// A full tick must record run bookkeeping for the timer-triggered one-shot and
+// the timer that fires it, and must keep the derived last-success while a new run
+// is in flight — the window where systemd has already reset Result= to "success"
+// and has not yet moved the finish timestamp.
+func TestTickRecordsTimerOneshotRuns(t *testing.T) {
+	t.Parallel()
+	bareDir := initTestRepo(t)
+	repoDir := filepath.Join(t.TempDir(), "clone")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	metrics.Register(nil)
+
+	firstStart := time.Date(2026, 8, 20, 1, 0, 0, 0, time.UTC)
+	firstEnd := firstStart.Add(time.Minute)
+	secondStart := firstStart.Add(time.Hour)
+
+	sys, pod, fw := newBareMocks(t)
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
+	jobRunning := timerJobStatuses(sys, firstStart, firstEnd, secondStart)
+
+	cfg := &agentcfg.Config{
+		Hostname: "test-host", RepoURL: bareDir, RepoBranch: "master",
+		PollInterval: time.Second, MetricsPort: 0, SecretsDir: t.TempDir(),
+	}
+	a := newTestAgent(t, cfg,
+		WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
+		WithRepoPath(repoDir), WithStatePath(statePath),
+	)
+
+	ctx := t.Context()
+	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
+	require.NoError(t, poller.Init(ctx))
+	store := tickTimerJobFixture(t, poller, repoDir, statePath, cfg.SecretsDir)
+	healthChecker := health.New(sys)
+
+	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
+
+	runs := a.statusStore.Snapshot().Runs
+	require.Contains(t, runs, "job.service")
+	assert.Equal(t, firstStart, runs["job.service"].StartedAt)
+	assert.Equal(t, firstEnd, runs["job.service"].SucceededAt)
+	assert.Equal(t, "success", runs["job.service"].Result)
+	assert.Equal(t, secondStart, runs["job.timer"].TriggeredAt)
+	for unit := range runs {
+		assert.Contains(t, []string{"job.service", "job.timer"}, unit,
+			"only timer-triggered one-shots and managed timers are tracked")
+	}
+
+	jobRunning.Store(true)
+	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
+
+	runs = a.statusStore.Snapshot().Runs
+	assert.Equal(t, secondStart, runs["job.service"].StartedAt, "the in-flight run is the last run")
+	assert.Equal(t, firstEnd, runs["job.service"].SucceededAt, "a running job keeps its previous last success")
 }
 
 // TestTickDropsStalePendingHookNameOnRetry exercises the retryPendingHooks path

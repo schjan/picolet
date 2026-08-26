@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"testing"
 	"time"
@@ -207,4 +208,131 @@ func TestIsConnectionDead(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+// The run timestamps feed metrics that alert on a job having stopped succeeding,
+// so a decode that silently yields zero would delete the series rather than
+// surface the bug. usecProp therefore fails closed on anything it cannot read and
+// maps only systemd's own "never happened" encodings to the zero time.
+func TestUsecProp(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		props   map[string]any
+		want    time.Time
+		wantErr string
+	}{
+		{
+			"realtime microseconds",
+			map[string]any{"InactiveEnterTimestamp": uint64(1_800_000_000_500_000)},
+			time.UnixMicro(1_800_000_000_500_000).UTC(), "",
+		},
+		{
+			"zero is never happened, not the epoch",
+			map[string]any{"InactiveEnterTimestamp": uint64(0)},
+			time.Time{},
+			"",
+		},
+		{
+			// Same guard rejects anything above MaxInt64, which no realtime stamp reaches.
+			"USEC_INFINITY is unset, not year 586524",
+			map[string]any{"InactiveEnterTimestamp": uint64(math.MaxUint64)},
+			time.Time{},
+			"",
+		},
+		{
+			"missing property fails closed",
+			map[string]any{},
+			time.Time{},
+			"job.service has no InactiveEnterTimestamp property",
+		},
+		{
+			"wrong type fails closed",
+			map[string]any{"InactiveEnterTimestamp": int64(17)},
+			time.Time{},
+			"InactiveEnterTimestamp of job.service is not a uint64",
+		},
+		{
+			"nil value fails closed",
+			map[string]any{"InactiveEnterTimestamp": nil},
+			time.Time{},
+			"InactiveEnterTimestamp of job.service is not a uint64",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := usecProp(tc.props, "InactiveEnterTimestamp", "job.service")
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, got.Equal(tc.want), "got %v, want %v", got, tc.want)
+		})
+	}
+}
+
+func TestUnitStatusFromProps(t *testing.T) {
+	t.Parallel()
+	// Untyped constants: both the uint64 property values and the int64 time.UnixMicro
+	// arguments below are constant conversions, so no runtime narrowing happens.
+	const (
+		startedUSec  = 1_800_000_000_000_000
+		finishedUSec = startedUSec + 30_000_000
+	)
+
+	t.Run("decodes the unit interface", func(t *testing.T) {
+		t.Parallel()
+		status, err := unitStatusFromProps("job.service", map[string]any{
+			"ActiveState":            "inactive",
+			"SubState":               "dead",
+			"UnitFileState":          "static",
+			"TriggeredBy":            []string{"job.timer"},
+			"InactiveExitTimestamp":  uint64(startedUSec),
+			"InactiveEnterTimestamp": uint64(finishedUSec),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "inactive", status.ActiveState)
+		assert.Equal(t, []string{"job.timer"}, status.TriggeredBy)
+		assert.True(t, status.LastRunStartedAt.Equal(time.UnixMicro(startedUSec).UTC()))
+		assert.True(t, status.LastRunFinishedAt.Equal(time.UnixMicro(finishedUSec).UTC()))
+		// Scoped extras belong to the per-interface reads, not this decode.
+		assert.Empty(t, status.ServiceType)
+		assert.Empty(t, status.Result)
+		assert.Zero(t, status.LastTriggerAt)
+	})
+
+	t.Run("a unit that never ran reports no run times", func(t *testing.T) {
+		t.Parallel()
+		status, err := unitStatusFromProps("job.timer", map[string]any{
+			"ActiveState":            "active",
+			"SubState":               "waiting",
+			"InactiveExitTimestamp":  uint64(0),
+			"InactiveEnterTimestamp": uint64(0),
+		})
+		require.NoError(t, err)
+		assert.Zero(t, status.LastRunStartedAt)
+		assert.Zero(t, status.LastRunFinishedAt)
+	})
+
+	t.Run("a missing run timestamp fails the whole read", func(t *testing.T) {
+		t.Parallel()
+		_, err := unitStatusFromProps("job.service", map[string]any{
+			"ActiveState":           "active",
+			"SubState":              "running",
+			"InactiveExitTimestamp": uint64(0),
+		})
+		require.ErrorContains(t, err, "InactiveEnterTimestamp")
+	})
+
+	t.Run("a non-string ActiveState fails the whole read", func(t *testing.T) {
+		t.Parallel()
+		_, err := unitStatusFromProps("job.service", map[string]any{
+			"ActiveState":            uint64(1),
+			"InactiveExitTimestamp":  uint64(0),
+			"InactiveEnterTimestamp": uint64(0),
+		})
+		require.ErrorContains(t, err, "ActiveState not a string")
+	})
 }

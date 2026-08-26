@@ -63,6 +63,48 @@ func TestRecordHealthMetrics_UpdatesStatusStore(t *testing.T) {
 	assert.Equal(t, "running", snap.Units["web.service"].SubState)
 }
 
+// A per-unit query failure and a wholesale D-Bus outage both leave the job's
+// last-known run record intact — the health pass reports the Fleet's whole unit
+// set, errored units included, so nothing is pruned. Only a unit that has left
+// the Fleet loses its record.
+func TestRecordHealthMetrics_RunRecordLifecycle(t *testing.T) {
+	t.Parallel()
+	metrics.Register(nil)
+	a := newTestAgent(t, &agentcfg.Config{Hostname: "test", RepoURL: "https://example.com/repo.git"})
+
+	started := time.Date(2026, 8, 20, 1, 0, 0, 0, time.UTC)
+	finished := started.Add(time.Minute)
+	a.recordHealthMetrics(&health.CheckResult{
+		Statuses: map[string]applier.UnitStatus{
+			"job.service": {
+				ActiveState: "inactive", SubState: "dead", ServiceType: "oneshot",
+				TriggeredBy:       []string{"job.timer"},
+				LastRunStartedAt:  started,
+				LastRunFinishedAt: finished,
+				Result:            "success",
+			},
+		},
+		TimerJobs: []string{"job.service"},
+		Managed:   []string{"job.service"},
+	})
+	require.Equal(t, finished, a.statusStore.Snapshot().Runs["job.service"].SucceededAt)
+
+	// The unit's query failed this pass: no status, no classification, still managed.
+	a.recordHealthMetrics(&health.CheckResult{
+		Statuses: map[string]applier.UnitStatus{},
+		Errors:   []error{fmt.Errorf("dbus timeout")},
+		Managed:  []string{"job.service"},
+	})
+	snap := a.statusStore.Snapshot()
+	assert.Empty(t, snap.Units, "an all-failed pass clears live unit state")
+	assert.Equal(t, finished, snap.Runs["job.service"].SucceededAt,
+		"a failed pass must not drop the last-success value")
+
+	// The unit left the Fleet: its record goes with it.
+	a.recordHealthMetrics(&health.CheckResult{Statuses: map[string]applier.UnitStatus{}})
+	assert.NotContains(t, a.statusStore.Snapshot().Runs, "job.service")
+}
+
 func TestSetFilesManagedMetric(t *testing.T) {
 	t.Parallel()
 	metrics.Register(nil)

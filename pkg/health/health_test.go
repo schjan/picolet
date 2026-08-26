@@ -181,6 +181,127 @@ func TestEnforceExternallyActivatedOneshots(t *testing.T) {
 	}
 }
 
+// Run bookkeeping must be classified on every state path. A one-shot that works
+// spends its life *inactive*, so classifying only failed units — where
+// ExternallyActivated is consulted — would never record a healthy job.
+func TestEnforceClassifiesTimerJobsOnEveryPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		status      applier.UnitStatus
+		wantTracked bool
+	}{
+		{
+			"completed timer one-shot (inactive)",
+			applier.UnitStatus{ActiveState: "inactive", SubState: "dead", ServiceType: "oneshot", TriggeredBy: []string{"job.timer"}},
+			true,
+		},
+		{
+			"running timer one-shot (activating)",
+			applier.UnitStatus{ActiveState: "activating", SubState: "start", ServiceType: "oneshot", TriggeredBy: []string{"job.timer"}},
+			true,
+		},
+		{
+			"failed timer one-shot",
+			applier.UnitStatus{ActiveState: "failed", SubState: "failed", ServiceType: "oneshot", TriggeredBy: []string{"job.timer"}},
+			true,
+		},
+		{
+			"static one-shot with no timer has no schedule to be late against",
+			applier.UnitStatus{ActiveState: "inactive", SubState: "dead", ServiceType: "oneshot", UnitFileState: "static"},
+			false,
+		},
+		{
+			"daemon with a timer attached is not a job",
+			applier.UnitStatus{ActiveState: "active", SubState: "running", ServiceType: "notify", TriggeredBy: []string{"job.timer"}},
+			false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sys := appliermocks.NewMockSystemdManager(t)
+			sys.EXPECT().GetUnitStatus(mock.Anything, "job.service").Return(tc.status, nil)
+			// No RestartUnit expectation: every row here is either healthy or an
+			// externally-activated one-shot, so the strict mock fails the test if the
+			// checker tries to restart it.
+
+			c := New(sys)
+			st := &state.State{ServiceNames: map[string]string{
+				"/etc/systemd/user/job.service": "job.service",
+			}}
+
+			result, err := c.Enforce(context.Background(), st)
+			require.NoError(t, err)
+			if tc.wantTracked {
+				assert.Equal(t, []string{"job.service"}, result.TimerJobs)
+				return
+			}
+			assert.Empty(t, result.TimerJobs)
+		})
+	}
+}
+
+// A .timer earns its trigger series through the one-shot it fires, so a pass that
+// could not query that one-shot tracks nothing — recording a zero observation over
+// the timer's retained trigger time would make the series flap. Managed still
+// lists the whole Fleet unit set, errored units included, or a D-Bus hiccup would
+// prune the retained records of everything it failed to query.
+func TestEnforceTimerNeedsQueryableJob(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "backup.timer").
+		Return(applier.UnitStatus{ActiveState: "active", SubState: "waiting", UnitFileState: "enabled"}, nil)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "backup.service").Return(applier.UnitStatus{}, assert.AnError)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "web.service").
+		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
+
+	c := New(sys)
+	st := &state.State{ServiceNames: map[string]string{
+		"/etc/systemd/user/backup.timer":                "backup.timer",
+		"/etc/systemd/user/backup.service":              "backup.service",
+		"/etc/containers/systemd/picolet/web.container": "web.service",
+	}}
+
+	result, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.Empty(t, result.TimerJobs,
+		"the one-shot that would qualify its timer could not be queried this pass")
+	assert.Equal(t, []string{"backup.service", "backup.timer", "web.service"}, result.Managed)
+}
+
+// A .timer is tracked through the job it fires, and only that job: a timer that
+// activates a daemon has no scheduled-run history to report.
+func TestEnforceTracksTimersOfJobsOnly(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "backup.timer").
+		Return(applier.UnitStatus{ActiveState: "active", SubState: "waiting", UnitFileState: "enabled"}, nil)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "backup.service").Return(applier.UnitStatus{
+		ActiveState: "inactive", SubState: "dead", ServiceType: "oneshot",
+		TriggeredBy: []string{"backup.timer"},
+	}, nil)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "churn.timer").
+		Return(applier.UnitStatus{ActiveState: "active", SubState: "waiting", UnitFileState: "enabled"}, nil)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "web.service").Return(applier.UnitStatus{
+		ActiveState: "active", SubState: "running", ServiceType: "notify",
+		TriggeredBy: []string{"churn.timer"},
+	}, nil)
+
+	c := New(sys)
+	st := &state.State{ServiceNames: map[string]string{
+		"/etc/systemd/user/backup.timer":                "backup.timer",
+		"/etc/systemd/user/backup.service":              "backup.service",
+		"/etc/systemd/user/churn.timer":                 "churn.timer",
+		"/etc/containers/systemd/picolet/web.container": "web.service",
+	}}
+
+	result, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"backup.service", "backup.timer"}, result.TimerJobs,
+		"only the one-shot and the timer that fires it carry run bookkeeping")
+}
+
 func TestEnforceRestartsUnhealthy(t *testing.T) {
 	t.Parallel()
 	sys := appliermocks.NewMockSystemdManager(t)
