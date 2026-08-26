@@ -175,7 +175,7 @@ func TestE2EPipeline(t *testing.T) {
 		RepoURL:      repoURL,
 		RepoBranch:   branch,
 		PollInterval: time.Minute,
-		MetricsPort:  0,
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   secretsDir,
 		Rootless:     true,
 	}

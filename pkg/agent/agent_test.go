@@ -685,7 +685,7 @@ func TestAgentFullCycle(t *testing.T) {
 		RepoURL:      bareDir,
 		RepoBranch:   "master",
 		PollInterval: time.Second,
-		MetricsPort:  0, // disabled
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   t.TempDir(),
 	}
 
@@ -732,7 +732,7 @@ func TestAgentDryRun(t *testing.T) {
 		RepoURL:      bareDir,
 		RepoBranch:   "master",
 		PollInterval: time.Second,
-		MetricsPort:  0,
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   t.TempDir(),
 	}
 
@@ -776,7 +776,7 @@ func TestAgentSkipsFailedSHA(t *testing.T) {
 		RepoURL:      bareDir,
 		RepoBranch:   "master",
 		PollInterval: 100 * time.Millisecond,
-		MetricsPort:  0,
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   t.TempDir(),
 	}
 
@@ -831,7 +831,7 @@ func TestAgentRetriesExpiredFailedSHA(t *testing.T) {
 		RepoURL:      bareDir,
 		RepoBranch:   "master",
 		PollInterval: 100 * time.Millisecond,
-		MetricsPort:  0,
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   t.TempDir(),
 	}
 
@@ -887,7 +887,7 @@ func TestAgentRetriesFailedSHA(t *testing.T) {
 		RepoURL:      bareDir,
 		RepoBranch:   "master",
 		PollInterval: 100 * time.Millisecond,
-		MetricsPort:  0,
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   t.TempDir(),
 	}
 
@@ -962,7 +962,7 @@ func TestAgentDeletionCycle(t *testing.T) { //nolint:funlen // three-phase test:
 		RepoURL:      bareDir,
 		RepoBranch:   "master",
 		PollInterval: time.Second,
-		MetricsPort:  0,
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   t.TempDir(),
 	}
 
@@ -1084,7 +1084,7 @@ func TestAgentRollbackOnApplyFailure(t *testing.T) {
 		RepoURL:      bareDir,
 		RepoBranch:   "master",
 		PollInterval: time.Second,
-		MetricsPort:  0,
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   t.TempDir(),
 	}
 
@@ -1194,7 +1194,7 @@ func TestAgentPauseSkipsReconciliation(t *testing.T) {
 		RepoURL:      bareDir,
 		RepoBranch:   "master",
 		PollInterval: time.Second,
-		MetricsPort:  0,
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   t.TempDir(),
 	}
 
@@ -1257,7 +1257,7 @@ func TestAgentMQTTStatusPublished(t *testing.T) {
 		RepoURL:      bareDir,
 		RepoBranch:   "master",
 		PollInterval: time.Hour, // prevent second tick
-		MetricsPort:  0,
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   t.TempDir(),
 	}
 
@@ -1317,7 +1317,7 @@ func TestLastSuccessfulReconciliationSeededFromState(t *testing.T) {
 		RepoURL:      bareDir,
 		RepoBranch:   "master",
 		PollInterval: time.Hour,
-		MetricsPort:  0,
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   t.TempDir(),
 	}
 
@@ -1453,7 +1453,7 @@ func TestTickDoesNotCreateDeploymentForUnchangedSHAOpRefresh(t *testing.T) {
 		RepoURL:      bareDir,
 		RepoBranch:   "master",
 		PollInterval: time.Second,
-		MetricsPort:  0,
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   t.TempDir(),
 		OnePassword: &agentcfg.OnePasswordConfig{
 			RefreshInterval: time.Hour,
@@ -1514,7 +1514,7 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 		RepoURL:      bareDir,
 		RepoBranch:   "master",
 		PollInterval: time.Second,
-		MetricsPort:  0,
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   t.TempDir(),
 	}
 	a := newTestAgent(t, cfg,
@@ -1607,7 +1607,7 @@ func TestTickReportsRetryPendingWhenUnitsPending(t *testing.T) {
 
 	cfg := &agentcfg.Config{
 		Hostname: "test-host", RepoURL: bareDir, RepoBranch: "master",
-		PollInterval: time.Second, MetricsPort: 0, SecretsDir: t.TempDir(),
+		PollInterval: time.Second, ListenAddr: "127.0.0.1:0", SecretsDir: t.TempDir(),
 	}
 	a := newTestAgent(t, cfg,
 		WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
@@ -1653,7 +1653,7 @@ func TestTickClearsPendingUnitWhenHealthy(t *testing.T) {
 
 	cfg := &agentcfg.Config{
 		Hostname: "test-host", RepoURL: bareDir, RepoBranch: "master",
-		PollInterval: time.Second, MetricsPort: 0, SecretsDir: t.TempDir(),
+		PollInterval: time.Second, ListenAddr: "127.0.0.1:0", SecretsDir: t.TempDir(),
 	}
 	a := newTestAgent(t, cfg,
 		WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
@@ -1696,7 +1696,7 @@ func TestTickDropsStalePendingHookNameOnRetry(t *testing.T) {
 		RepoURL:      bareDir,
 		RepoBranch:   "master",
 		PollInterval: time.Second,
-		MetricsPort:  0,
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   t.TempDir(),
 	}
 	a := newTestAgent(t, cfg,
@@ -1753,7 +1753,7 @@ func TestTickDoesNotIncrementFailedCountOnRetryableHookError(t *testing.T) {
 		RepoURL:      bareDir,
 		RepoBranch:   "master",
 		PollInterval: time.Second,
-		MetricsPort:  0,
+		ListenAddr:   "127.0.0.1:0",
 		SecretsDir:   t.TempDir(),
 	}
 	a := newTestAgent(t, cfg,

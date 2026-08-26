@@ -3,4 +3,5 @@
 /dist/
 .DS_Store
 .claude/
+.idea/
 .picolet-dev/

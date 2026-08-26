@@ -12,7 +12,7 @@ systemd units running on a host. The motivating case is Prometheus
 `node-exporter`, whose `--collector.systemd.unit-include` flag takes a regex.
 In fleet repos using picolet today, this regex is hardcoded in the
 quadlet template and must be updated by hand whenever a node gains or loses
-a service. Example from the `iuk-gitops` fleet repo:
+a service. Example from a real fleet repo:
 
 ```
 --collector.systemd.unit-include=^(picolet.*|podman.*|node-exporter|mosquitto|victoriametrics|vmalert|...|tailscale|dbus|systemd-networkd|systemd-resolved)[.](service|socket|timer)$
@@ -230,7 +230,7 @@ own first pass. Hosts do not see each other's `SystemdUnits`.
 
 ## Consumer-side change (fleet repo)
 
-The node-exporter template in `iuk-gitops`
+The node-exporter template in the reference
 (`services/node-exporter/containers/node-exporter.container.tmpl`) becomes:
 
 ```gotemplate
@@ -311,7 +311,7 @@ Extend `integration_test.go` with a fleet variant that includes a template
 referencing `.Host.SystemdUnits`. Use `goldie` to snapshot the rendered
 output.
 
-### iuk-gitops
+### Fleet repo
 
 Run `picolet validate` in CI (existing). The new node-exporter template
 must validate against `picolet validate` with the current host fixtures.
@@ -328,7 +328,7 @@ must validate against `picolet validate` with the current host fixtures.
 | `pkg/resolver/templatedata.go` | Field comments (above) |
 | `pkg/resolver/resolver.go` | `preparedData` doc comment (above) is the single source of truth for the rationale |
 
-### iuk-gitops repo
+### Fleet repo
 
 - The node-exporter template gets a short header comment pointing readers at
   picolet's `.Host.SystemdUnits` documentation.

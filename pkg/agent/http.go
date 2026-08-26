@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
 )
@@ -42,8 +43,9 @@ func (a *Agent) newMux() *http.ServeMux {
 }
 
 func (a *Agent) startHTTP() (func(context.Context), error) {
+	addr := a.cfg.EffectiveListenAddr()
 	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", a.cfg.MetricsPort),
+		Addr:              addr,
 		Handler:           a.newMux(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -53,7 +55,8 @@ func (a *Agent) startHTTP() (func(context.Context), error) {
 		return nil, fmt.Errorf("starting http listener on %s: %w", srv.Addr, err)
 	}
 
-	slog.Info("http server starting", "port", a.cfg.MetricsPort)
+	slog.Info("http server starting", "addr", addr)
+	warnUnreachableLoopback(a.cfg)
 	go func() {
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			slog.Error("http server error", "error", err)
@@ -78,4 +81,17 @@ func (a *Agent) updateHealthFailures(hr *health.CheckResult) {
 	} else {
 		a.consecutiveHealthFailures.Store(0)
 	}
+}
+
+// warnUnreachableLoopback flags a loopback bind that the Machine probably
+// cannot reach: in a container network namespace of its own, /metrics, /health
+// and /webhook are invisible to Prometheus and to `picolet trigger`. The
+// namespace check is a heuristic, so the message stays conditional.
+func warnUnreachableLoopback(cfg *agentcfg.Config) {
+	if !cfg.ListensOnLoopback() || !agentcfg.InPrivateNetworkNamespace() {
+		return
+	}
+	slog.Warn("loopback listen address in what looks like a container-private network namespace",
+		"addr", cfg.EffectiveListenAddr(),
+		"hint", "unless this container runs with Network=host, nothing on the Machine can reach it; otherwise set listen_addr to 0.0.0.0 and publish the port")
 }

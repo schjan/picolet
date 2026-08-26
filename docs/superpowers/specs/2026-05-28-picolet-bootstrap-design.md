@@ -47,10 +47,10 @@ operator workstation                            target host
 ─────────────────────                           ───────────
 git clone <fleet repo>          ───rsync───►    /tmp/fleet/
 picolet bootstrap create                        (operator places host-managed
-  --hostname rpi5-1-system                       secrets at /etc/picolet/secrets/)
+  --hostname node-1-system                       secrets at /etc/picolet/secrets/)
   → prints script with                          podman run --rm <volumes> \
     target invocation                             picolet bootstrap \
-    (explicit --service)                          --hostname=rpi5-1-system \
+    (explicit --service)                          --hostname=node-1-system \
                                                   --repo-dir=/tmp/fleet \
                                                   --service=picolet-system
                                                 ↓
@@ -120,13 +120,13 @@ Default output is annotated for human reading; `--script` strips comments and em
 **Output example (rootful target):**
 
 ```
-# Bootstrap plan for rpi5-1-system (role=node-system, rootful)
-# Fleet repo: /Users/jannis/src/jannis/gitops (HEAD: a32ca09)
+# Bootstrap plan for node-1-system (role=node-system, rootful)
+# Fleet repo: /srv/fleet (HEAD: a32ca09)
 # Picolet image: ghcr.io/schjan/picolet:0.1.27
 # Service: picolet-system
 
 # Step 1 — Transfer the fleet repo to the target:
-rsync -a --delete ./ rpi5-1-system:/tmp/fleet/
+rsync -a --delete ./ node-1-system:/tmp/fleet/
 
 # Step 2 — Place host-managed secrets on the target (parsed from picolet_system_config):
 #   /etc/picolet/secrets/git_token   (required: git_token_path)
@@ -142,7 +142,7 @@ sudo podman run --rm \
   -v /run/podman/podman.sock:/run/podman/podman.sock \
   --network host \
   ghcr.io/schjan/picolet:0.1.27 bootstrap \
-    --hostname=rpi5-1-system \
+    --hostname=node-1-system \
     --repo-dir=/repo \
     --service=picolet-system
 
@@ -500,7 +500,7 @@ Two narrowly-scoped runtime additions, both in `pkg/agentcfg`. Both are pure add
 
 ### `systemd_user` auto-detection (not `rootless`)
 
-The first version of this spec auto-detected `Rootless`, but that's wrong. `Rootless` controls more than which systemd to talk to — it also drives **path layout** in the resolver (`pkg/resolver/resolver.go`: `Rootless=true` switches destination paths to `~/.config/...` and `~/.local/share/...` instead of `/etc/...` and `/var/lib/...`). For a containerized rootless picolet (the iuk-gitops / gitops case), the container internally sees `/etc/containers/systemd`, `/etc/systemd/system`, `/var/lib/picolet` — those are bind-mount destinations the rootless quadlet template wires up to `~/.config/containers/systemd` etc. on the host. Auto-setting `Rootless=true` inside that container would make the resolver write to `~/.config/...` paths that don't exist inside the container, and track them in state.json at the wrong locations.
+The first version of this spec auto-detected `Rootless`, but that's wrong. `Rootless` controls more than which systemd to talk to — it also drives **path layout** in the resolver (`pkg/resolver/resolver.go`: `Rootless=true` switches destination paths to `~/.config/...` and `~/.local/share/...` instead of `/etc/...` and `/var/lib/...`). For a containerized rootless picolet (the reference / gitops case), the container internally sees `/etc/containers/systemd`, `/etc/systemd/system`, `/var/lib/picolet` — those are bind-mount destinations the rootless quadlet template wires up to `~/.config/containers/systemd` etc. on the host. Auto-setting `Rootless=true` inside that container would make the resolver write to `~/.config/...` paths that don't exist inside the container, and track them in state.json at the wrong locations.
 
 The signal we get from D-Bus presence (system bus mounted vs not) really tells us "**should picolet connect to system or user systemd?**" — which is `SystemdUser`, not `Rootless`. Those two concepts coincide for native deployments but diverge for containerized ones, and picolet supports both.
 
@@ -537,11 +537,11 @@ Truth table (what gets detected for `SystemdUser`):
 
 **`Rootless` does NOT change shape.** It remains `bool`, defaults to `false`. The only consumers of `Rootless=true` are the resolver's path-layout switch and a couple of CLI defaults — both correctly disabled when picolet runs containerized (which is the dominant case). For native-rootless deployments operators continue setting `rootless: true` in YAML.
 
-**Migration story still works.** The iuk-gitops `picolet_config.yml.tmpl` never set `rootless` (it correctly defaulted to false for the containerized case); it set `systemd_user: true` explicitly. With auto-detection, that line goes away — the explicit `systemd_user: true` becomes redundant because the rootless container has no `/run/dbus/system_bus_socket` mount and auto-detection arrives at the same answer. Combined with `host_data_dir` auto-detection, the template drops two lines and the user-specific `drkda` username disappears, exactly as intended. No fleet repo is required to change; existing explicit values still win.
+**Migration story still works.** The fleet `picolet_config.yml.tmpl` never set `rootless` (it correctly defaulted to false for the containerized case); it set `systemd_user: true` explicitly. With auto-detection, that line goes away — the explicit `systemd_user: true` becomes redundant because the rootless container has no `/run/dbus/system_bus_socket` mount and auto-detection arrives at the same answer. Combined with `host_data_dir` auto-detection, the template drops two lines and the user-specific `pi` username disappears, exactly as intended. No fleet repo is required to change; existing explicit values still win.
 
 ### `host_data_dir` auto-detection
 
-`HostDataDir` is set today so that `filePath`/`manifestPath` template helpers emit host-visible paths when picolet runs containerised. In rootless deployments today this hardcodes the operator's username (`/home/drkda/.local/share/picolet`). It's discoverable directly from the bind-mount's source.
+`HostDataDir` is set today so that `filePath`/`manifestPath` template helpers emit host-visible paths when picolet runs containerised. In rootless deployments today this hardcodes the operator's username (`/home/pi/.local/share/picolet`). It's discoverable directly from the bind-mount's source.
 
 **Implementation must use a proper mountinfo parser**, not raw `strings.Fields`. The kernel escapes whitespace and a few other characters in mountinfo paths (`\040` for space, `\011` for tab, `\012` for newline, `\134` for backslash), and a `strings.Fields` split would either miscount fields or return un-unescaped paths. A small dedicated parser in `pkg/agentcfg` covers this:
 
@@ -589,16 +589,16 @@ func detectHostDataDir(dataDir string) string {
 
 ### Resulting fleet-repo simplification (opt-in)
 
-After these two changes ship, an iuk-gitops-style `picolet_config.yml.tmpl` can shrink from:
+After these two changes ship, an reference-style `picolet_config.yml.tmpl` can shrink from:
 
 ```yaml
 hostname: "{{ .Host.Hostname }}"
-repo_url: "https://github.com/drk-darmstadt-iuk/iuk-gitops.git"
+repo_url: "https://github.com/example-org/fleet.git"
 repo_branch: "main"
 systemd_user: true
 git_token_path: "/etc/picolet/secrets/git_token"
 metrics_port: {{ index .Ports "picolet_metrics" }}
-host_data_dir: "/home/drkda/.local/share/picolet"
+host_data_dir: "/home/pi/.local/share/picolet"
 onepassword:
   token_path: "/etc/picolet/secrets/op_service_account_token"
 mqtt:
@@ -609,7 +609,7 @@ to:
 
 ```yaml
 hostname: "{{ .Host.Hostname }}"
-repo_url: "https://github.com/drk-darmstadt-iuk/iuk-gitops.git"
+repo_url: "https://github.com/example-org/fleet.git"
 git_token_path: "/etc/picolet/secrets/git_token"
 metrics_port: {{ index .Ports "picolet_metrics" }}
 onepassword:
@@ -618,7 +618,7 @@ mqtt:
   broker_url: "tcp://localhost:{{ index .Ports "mosquitto" }}"
 ```
 
-`repo_branch` was already defaulted. `systemd_user` is now auto-detected via D-Bus presence (the rootless container has no `/run/dbus/system_bus_socket` mounted, so detection returns `true` — same outcome as the explicit `true` it replaces). `host_data_dir` is auto-detected via mountinfo. The user-specific `drkda` is gone, and the template becomes portable across rootless users without edits.
+`repo_branch` was already defaulted. `systemd_user` is now auto-detected via D-Bus presence (the rootless container has no `/run/dbus/system_bus_socket` mounted, so detection returns `true` — same outcome as the explicit `true` it replaces). `host_data_dir` is auto-detected via mountinfo. The user-specific `pi` is gone, and the template becomes portable across rootless users without edits.
 
 Note that the template never set `rootless` — and still doesn't. `Rootless` continues to default to `false` for the containerized case (which is correct: the container sees `/etc/...` internally; the rootless-ness is in the bind-mount mapping, not in picolet's path-layout decision). Auto-detection only changes `SystemdUser`.
 

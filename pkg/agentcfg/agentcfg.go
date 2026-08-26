@@ -62,7 +62,8 @@ type Config struct {
 	RepoBranch           string             `yaml:"repo_branch"`
 	GitTokenPath         string             `yaml:"git_token_path"`
 	PollInterval         time.Duration      `yaml:"poll_interval"`
-	MetricsPort          int                `yaml:"metrics_port"`
+	ListenAddr           string             `yaml:"listen_addr"`  // host:port the HTTP server binds; defaults to 127.0.0.1:<metrics_port>
+	MetricsPort          int                `yaml:"metrics_port"` // short form for the listen_addr port; 0 means unset
 	SecretsDir           string             `yaml:"secrets_dir"`
 	Rootless             bool               `yaml:"rootless"`
 	SystemdUser          *bool              `yaml:"systemd_user"`
@@ -114,9 +115,6 @@ func (c *Config) setDefaults() {
 	}
 	if c.PollInterval == 0 {
 		c.PollInterval = 5 * time.Minute
-	}
-	if c.MetricsPort == 0 {
-		c.MetricsPort = 9417
 	}
 	if c.SecretsDir == "" {
 		c.SecretsDir = "/etc/picolet/secrets"
@@ -204,6 +202,9 @@ func (c *Config) Validate() error {
 	}
 	if c.PruneImagesEnabled() && c.PruneInterval < time.Minute {
 		return errors.New("prune_interval must be at least 1m")
+	}
+	if err := c.validateListenAddr(); err != nil {
+		return err
 	}
 	if c.OnePassword != nil {
 		if err := c.validateOnePassword(); err != nil {

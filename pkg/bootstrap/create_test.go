@@ -99,7 +99,7 @@ ports:
 	writeFile(t, dir, "services/"+service+"/secrets/"+configName+".yml.tmpl", `hostname: "{{ .Host.Hostname }}"
 repo_url: "https://example.test/fleet.git"
 git_token_path: "/etc/picolet/secrets/git_token"
-metrics_port: {{ index .Ports "`+metricsKey+`" }}
+listen_addr: 127.0.0.1:{{ index .Ports "`+metricsKey+`" }}
 `)
 	return dir
 }

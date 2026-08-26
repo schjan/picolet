@@ -35,7 +35,7 @@ The `validate` and `resolve` commands require a fleet repository with `fleet.yml
 
 ```bash
 ./picolet validate
-./picolet resolve --host=rpi5-1
+./picolet resolve --host=node-1
 ```
 
 ### Build Tags
@@ -157,17 +157,49 @@ Push to git. Picolet detects the change, writes the updated Quadlet, and restart
 
 ### 5. Monitoring
 
+The agent serves `/metrics`, `/health`, `/webhook` and the dashboard on
+**`127.0.0.1:9417`** by default. None of them is authenticated, so a fresh
+install exposes nothing on a public Machine; Prometheus scrapes it from the same
+Machine, and remote access goes through a reverse proxy or a mesh network.
+
 ```bash
 # Logs (rootful / rootless)
 journalctl -fu picolet.service
 journalctl --user -fu picolet.service
 
 # Prometheus metrics
-curl http://localhost:9417/metrics
+curl http://127.0.0.1:9417/metrics
 
 # Health check
-curl http://localhost:9417/health
+curl http://127.0.0.1:9417/health
 ```
+
+A Prometheus (or VictoriaMetrics) instance on the same Machine scrapes loopback;
+two Agents on one Machine differ only in port:
+
+```yaml
+scrape_configs:
+  - job_name: picolet
+    static_configs:
+      - targets: ["127.0.0.1:9417", "127.0.0.1:9418"]
+```
+
+To expose the listener deliberately, set `listen_addr` in the agent config:
+
+```yaml
+listen_addr: "0.0.0.0:9417"   # every interface
+listen_addr: "192.168.1.20:9417"  # one interface
+listen_addr: "127.0.0.1:9418"     # loopback, second Agent on the same Machine
+```
+
+`metrics_port` remains the short form for the port and keeps the loopback
+default. Setting both is only allowed when they name the same port — otherwise
+the agent refuses to start.
+
+A **containerized** agent reaches the Machine's loopback only with
+`Network=host` (both reference Quadlets in `deploy/fleet-repo/` use it). In a
+container with its own network namespace, bind `0.0.0.0` and publish the port
+instead; picolet logs a warning when it detects that combination.
 
 ### 6. Node Maintenance (image pruning)
 
@@ -193,7 +225,7 @@ disabling it. Observability:
 
 ```bash
 journalctl -u picolet | grep "image prune"
-curl -s http://localhost:9417/metrics | grep image_prune
+curl -s http://127.0.0.1:9417/metrics | grep image_prune
 # picolet_image_prune_total{result="success"}, picolet_images_pruned_total,
 # picolet_image_prune_reclaimed_bytes_total, picolet_last_image_prune_timestamp
 ```
@@ -330,7 +362,7 @@ finite `TimeoutStartSec=` if a hung image pull must be bounded — non-one-shot 
 units keep the 90s `DefaultTimeoutStartSec` that image pulls routinely exceed.
 
 On removal Picolet stops and **disables** the unit (removing the enable symlink) and
-deletes the file. Deployed units appear in `/status` and the dashboard and are
+deletes the file. Deployed units appear in `/metrics` and the dashboard and are
 health-monitored; passive units (`.timer`/`.socket`/`.target`/`.path`) and one-shots
 systemd activates report their state but are never auto-restarted by the health loop.
 Enable/disable/start/restart outcomes are exported as

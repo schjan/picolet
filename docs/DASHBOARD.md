@@ -32,7 +32,7 @@ Explicit non-goal: graph visualization (SVG / DAG layout). Plain text per row is
 
 Operator-initiated triggers from the dashboard. Issues to think through before building:
 
-- **Auth model**: today the dashboard is anonymous, matching `/metrics`. Actions need at minimum CSRF protection plus something stronger than network trust. Options: basic auth (simplest), per-host bearer token in agent config, OIDC (overkill for one-binary agents).
+- **Auth model**: today the dashboard is anonymous, matching `/metrics`; since #140 the HTTP server binds `127.0.0.1` by default, so network trust is all that protects it and `listen_addr` is what widens that. Actions need at minimum CSRF protection plus something stronger. Options: basic auth (simplest), per-host bearer token in agent config, OIDC (overkill for one-binary agents).
 - **Action surface**: trigger reconcile (already exists via `/webhook` with HMAC — could expose a separately-tokened browser-friendly endpoint), suspend reconciliation (new — needs a flag in `state.State`), resume.
 - **Audit log**: who triggered what, when. Could be a ring buffer in memory or appended to a log file.
 

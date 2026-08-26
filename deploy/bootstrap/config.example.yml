@@ -3,14 +3,20 @@
 # Rootless: ~/.config/picolet/config.yml
 
 # Required: must exactly match hosts/<name>/host.yml in the fleet repo
-hostname: "rpi5-1"
+hostname: "node-1"
 
 # Required: HTTPS URL (SSH is not supported)
 repo_url: "https://github.com/yourorg/your-fleet-repo.git"
 
 repo_branch: "main"
 poll_interval: "60s"
-metrics_port: 9417
+
+# HTTP listener for /metrics, /health, /webhook and the dashboard. None of them
+# is authenticated, so the default is loopback-only: 127.0.0.1:9417.
+# Set an interface address or 0.0.0.0 to expose it on the LAN deliberately.
+# metrics_port is the short form for the port and must not disagree with the
+# port in listen_addr.
+listen_addr: "127.0.0.1:9417"
 secrets_dir: "/etc/picolet/secrets"
 
 # Rootless mode: compute file paths relative to $HOME (~/.config/..., ~/.local/share/...).

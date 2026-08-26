@@ -18,9 +18,9 @@ func TestParseRepoURL(t *testing.T) {
 	}{
 		{
 			name:      "https with .git suffix",
-			url:       "https://github.com/drk-darmstadt-iuk/iuk-gitops.git",
-			wantOwner: "drk-darmstadt-iuk",
-			wantRepo:  "iuk-gitops",
+			url:       "https://github.com/example-org/fleet.git",
+			wantOwner: "example-org",
+			wantRepo:  "fleet",
 		},
 		{
 			name:      "https without .git suffix",
