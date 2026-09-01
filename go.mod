@@ -12,6 +12,7 @@ require (
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/go-github/v88 v88.0.0
+	github.com/google/go-github/v90 v90.0.0
 	github.com/moby/sys/mountinfo v0.7.2
 	github.com/mochi-mqtt/server/v2 v2.7.9
 	github.com/prometheus/client_golang v1.24.1
