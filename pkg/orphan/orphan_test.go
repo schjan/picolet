@@ -379,6 +379,17 @@ func TestScan_StalePodStopFollowsAgentContainerSettings(t *testing.T) {
 			writeFile(t, filepath.Join(other, "api.container.d", "10-pod.conf"), "[Container]\nPod=web.pod\n")
 			return []string{filepath.Join(dir, "picolet.container")}
 		}},
+		{name: "agent container lives only in another unit dir", setup: func(t *testing.T, _, other string) []string {
+			t.Helper()
+			writeFile(t, filepath.Join(other, "picolet.container"), "[Container]\nImage=picolet\nPod=web.pod\n")
+			return nil
+		}},
+		{name: "higher-priority unit dir shadows the Quadlet-dir container", podStopped: true, setup: func(t *testing.T, dir, other string) []string {
+			t.Helper()
+			writeFile(t, filepath.Join(dir, "picolet.container"), "[Container]\nImage=picolet\nPod=web.pod\n")
+			writeFile(t, filepath.Join(other, "picolet.container"), agentUnit)
+			return []string{filepath.Join(dir, "picolet.container")}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -452,4 +463,25 @@ func TestScan_SymlinkedOwnedDirIsNotRemoved(t *testing.T) {
 			assert.Zero(t, result.FilesRemoved)
 		})
 	}
+}
+
+// The stopped service follows the stale unit's drop-ins too: a drop-in may
+// rename it with ServiceName=.
+func TestScan_StaleQuadletServiceNameFromDropIn(t *testing.T) {
+	t.Parallel()
+	quadletDir, otherUnitDir := t.TempDir(), t.TempDir()
+	podPath := filepath.Join(quadletDir, "web.pod")
+	writeFile(t, podPath, "[Pod]\n")
+	writeFile(t, filepath.Join(otherUnitDir, "web.pod.d", "10-name.conf"), "[Pod]\nServiceName=shop\n")
+
+	sys := appliermocks.NewMockSystemdManager(t)
+	stop := sys.EXPECT().StopUnit(mock.Anything, "shop.service").Return(nil).Once()
+	fw := appliermocks.NewMockFileWriter(t)
+	fw.EXPECT().Remove(podPath).Return(nil).Once().NotBefore(stop)
+	pod := appliermocks.NewMockPodmanClient(t)
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
+
+	_, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir(), orphan.WithUnitDirs(otherUnitDir)).
+		Scan(context.Background(), map[string]state.ManagedFile{})
+	require.NoError(t, err)
 }

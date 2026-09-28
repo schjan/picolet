@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
@@ -42,7 +41,7 @@ type Option func(*Scanner)
 // (quadlet.GetUnitDirs). Without it only the Quadlet directory is searched.
 func WithUnitDirs(dirs ...string) Option {
 	return func(s *Scanner) {
-		s.unitDirs = dirs
+		s.unitDirs = slices.Clone(dirs)
 	}
 }
 
@@ -60,7 +59,7 @@ func New(writer applier.FileWriter, podman applier.PodmanClient, systemd applier
 		opt(s)
 	}
 	if !slices.Contains(s.unitDirs, quadletDir) {
-		s.unitDirs = append(slices.Clone(s.unitDirs), quadletDir)
+		s.unitDirs = append(s.unitDirs, quadletDir)
 	}
 	return s
 }
@@ -151,17 +150,11 @@ func (s *Scanner) stopGeneratedUnit(ctx context.Context, path string, guard podG
 	if spec, _ := config.SpecFor(category); !ok || spec.Unit != config.GeneratedUnit {
 		return
 	}
-	unit, err := parser.ParseUnitFile(path)
+	_, service, err := s.loadUnit(path)
 	if err != nil {
-		slog.Warn("orphan scan: cannot parse quadlet, its service is not stopped", "path", path, "error", err)
+		slog.Warn("orphan scan: cannot read quadlet settings, its service is not stopped", "path", path, "error", err)
 		return
 	}
-	name, err := quadlet.GetUnitServiceName(unit)
-	if err != nil {
-		slog.Warn("orphan scan: cannot derive service name, not stopped", "path", path, "error", err)
-		return
-	}
-	service := name + ".service"
 	if config.IsDefaultSelfUnit(service) {
 		return
 	}
@@ -190,64 +183,72 @@ func (g podGuard) protects(podFile string) bool {
 	return joined || g.blind
 }
 
-// readPodGuard reads every container Quadlet in the Quadlet directory, managed
-// or not, for the pods the agent's own container joins. Each unit's drop-ins
-// are merged in from all of Podman's unit directories first, as Podman's
-// generator does, since they may set ServiceName= or Pod=. It runs before any
+// readPodGuard finds the pods the agent's own container joins, reading
+// container Quadlets the way Podman's generator does (cmd/quadlet
+// loadUnitsFromDir): every unit directory in order, not recursively (the list
+// already holds subdirectories), the first file of a name winning, each merged
+// with its drop-ins, since they may set ServiceName= or Pod=. So the agent's
+// container counts wherever it lives, managed or stale. It runs before any
 // orphan is removed, so a stale agent container still protects its pod. The
-// validator rejects such a Fleet; this guards files deployed before that check
-// or after a state reset. It fails closed: only a missing Quadlet directory is
-// harmless; any unit or drop-in that cannot be read makes the guard blind.
+// validator rejects such a Fleet; this guards files deployed before that check,
+// placed by hand, or left after a state reset. It fails closed: a missing unit
+// directory is harmless, any other unit or drop-in that cannot be read makes
+// the guard blind.
 func (s *Scanner) readPodGuard() podGuard {
 	guard := podGuard{agentPods: make(map[string]struct{})}
-	err := filepath.WalkDir(s.quadletDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			if path == s.quadletDir && errors.Is(err, fs.ErrNotExist) {
-				return filepath.SkipAll
-			}
-			return err
-		}
-		if d.IsDir() {
-			if path != s.quadletDir && strings.HasSuffix(d.Name(), ".d") {
-				return filepath.SkipDir // drop-ins, merged per unit below; Podman does not read units here
-			}
-			return nil
-		}
-		if category, _ := config.CategoryForExtension(filepath.Ext(path)); category != config.CategoryContainer {
-			return nil
-		}
-		pod, err := s.agentPod(path)
-		if pod != "" {
-			guard.agentPods[pod] = struct{}{}
-		}
-		return err
-	})
-	if err != nil {
+	if err := s.collectAgentPods(guard.agentPods); err != nil {
 		slog.Warn("orphan scan: cannot read every container's settings, no pod will be stopped", "error", err)
 		guard.blind = true
 	}
 	return guard
 }
 
-// agentPod returns the pod ("web.pod") the container Quadlet at path joins if
-// its generated service is the agent's own, else "".
-func (s *Scanner) agentPod(path string) (string, error) {
+func (s *Scanner) collectAgentPods(pods map[string]struct{}) error {
+	seen := make(map[string]struct{})
+	for _, dir := range s.unitDirs {
+		entries, err := os.ReadDir(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("reading unit dir: %w", err)
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if category, _ := config.CategoryForExtension(filepath.Ext(name)); category != config.CategoryContainer {
+				continue
+			}
+			if _, shadowed := seen[name]; shadowed {
+				continue
+			}
+			seen[name] = struct{}{}
+			unit, service, err := s.loadUnit(filepath.Join(dir, name))
+			if err != nil {
+				return err
+			}
+			if pod, _ := unit.Lookup(quadlet.ContainerGroup, quadlet.KeyPod); pod != "" && config.IsDefaultSelfUnit(service) {
+				pods[pod] = struct{}{}
+			}
+		}
+	}
+	return nil
+}
+
+// loadUnit parses the Quadlet at path, merges its drop-ins as Podman does, and
+// returns it with the service it generates ("web-pod.service").
+func (s *Scanner) loadUnit(path string) (*parser.UnitFile, string, error) {
 	unit, err := parser.ParseUnitFile(path)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", path, err)
+		return nil, "", fmt.Errorf("%s: %w", path, err)
 	}
 	if err := mergeDropIns(unit, s.unitDirs); err != nil {
-		return "", fmt.Errorf("%s: %w", path, err)
+		return nil, "", fmt.Errorf("%s: %w", path, err)
 	}
 	name, err := quadlet.GetUnitServiceName(unit)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", path, err)
+		return nil, "", fmt.Errorf("%s: %w", path, err)
 	}
-	if !config.IsDefaultSelfUnit(name + ".service") {
-		return "", nil
-	}
-	pod, _ := unit.Lookup(quadlet.ContainerGroup, quadlet.KeyPod)
-	return pod, nil
+	return unit, name + ".service", nil
 }
 
 // mergeDropIns merges the unit's drop-ins into it the way Podman's generator
