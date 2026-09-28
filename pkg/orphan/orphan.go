@@ -261,11 +261,12 @@ func (s *Scanner) readUnitEntry(path string, view *quadletView) error {
 	}
 	category, _ := config.CategoryForExtension(filepath.Ext(name))
 	spec, _ := config.SpecFor(category)
-	_, claimed := view.units[name]
+	_, taken := view.units[name]
+	claim := !taken && spec.StopOrphan
 	if category == config.CategoryContainer {
-		return s.readContainerEntry(path, !claimed && spec.StopOrphan, view)
+		return s.readContainerEntry(path, name, claim, view)
 	}
-	if claimed || !spec.StopOrphan {
+	if !claim {
 		return nil
 	}
 	if _, err := parser.ParseUnitFile(path); err != nil {
@@ -277,14 +278,14 @@ func (s *Scanner) readUnitEntry(path string, view *quadletView) error {
 }
 
 // readContainerEntry loads the container at path, records the pod it joins if
-// it is the agent's, and claims its name if claim is set.
-func (s *Scanner) readContainerEntry(path string, claim bool, view *quadletView) error {
+// it is the agent's, and claims name if claim is set.
+func (s *Scanner) readContainerEntry(path, name string, claim bool, view *quadletView) error {
 	loaded, err := s.loadUnit(path)
 	if err != nil {
 		return err
 	}
 	if claim {
-		view.units[filepath.Base(path)] = path
+		view.units[name] = path
 	}
 	if pod, _ := loaded.unit.Lookup(quadlet.ContainerGroup, quadlet.KeyPod); pod != "" && config.IsDefaultSelfUnit(loaded.service) {
 		view.agentPods[pod] = struct{}{}
