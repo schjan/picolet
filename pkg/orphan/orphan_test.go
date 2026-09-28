@@ -2,6 +2,7 @@ package orphan_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -213,11 +214,14 @@ func TestScan_StaleQuadletStopsItsGeneratedService(t *testing.T) {
 		file     string
 		content  string
 		wantStop string // "" = no stop expected
+		stopErr  error
 	}{
 		{name: "pod", file: "web.pod", content: "[Pod]\nPublishPort=8080:80\n", wantStop: "web-pod.service"},
 		{name: "ServiceName= override", file: "web.pod", content: "[Pod]\nServiceName=shop\n", wantStop: "shop.service"},
 		{name: "network", file: "lan.network", content: "[Network]\n", wantStop: "lan-network.service"},
-		{name: "agent's own unit is not stopped", file: "picolet.container", content: "[Container]\nImage=picolet\n"},
+		{name: "failed stop still removes the file", file: "web.pod", content: "[Pod]\n", wantStop: "web-pod.service", stopErr: errors.New("unit web-pod.service not loaded")},
+		{name: "agent's own user unit is not stopped", file: "picolet.container", content: "[Container]\nImage=picolet\n"},
+		{name: "agent's own system unit is not stopped", file: "picolet-system.container", content: "[Container]\nImage=picolet\n"},
 		{name: "unparseable file is still removed", file: "broken.container", content: "[Container\n"},
 	}
 	for _, tt := range tests {
@@ -231,7 +235,7 @@ func TestScan_StaleQuadletStopsItsGeneratedService(t *testing.T) {
 			fw := appliermocks.NewMockFileWriter(t)
 			remove := fw.EXPECT().Remove(path).Return(nil).Once()
 			if tt.wantStop != "" {
-				remove.NotBefore(sys.EXPECT().StopUnit(mock.Anything, tt.wantStop).Return(nil).Once())
+				remove.NotBefore(sys.EXPECT().StopUnit(mock.Anything, tt.wantStop).Return(tt.stopErr).Once())
 			}
 			pod := appliermocks.NewMockPodmanClient(t)
 			pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)

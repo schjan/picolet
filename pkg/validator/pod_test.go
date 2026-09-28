@@ -1,6 +1,8 @@
 package validator
 
 import (
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,8 +30,9 @@ func TestAnalyzeFilesPodListsMemberContainers(t *testing.T) {
 	require.NoError(t, err)
 
 	pod := depsByUnit["web-pod.service"]
-	assert.Subset(t, pod.Wants, []string{"api.service", "proxy.service"})
-	assert.NotContains(t, pod.Wants, "solo.service")
+	// Podman adds network-online.target to Wants=; the members are the services.
+	members := slices.DeleteFunc(slices.Clone(pod.Wants), func(u string) bool { return !strings.HasSuffix(u, ".service") })
+	assert.Equal(t, []string{"api.service", "proxy.service"}, members)
 	assert.Equal(t, []string{"api.service", "proxy.service"}, pod.Before)
 	assert.Contains(t, depsByUnit["api.service"].BindsTo, "web-pod.service")
 	assert.Contains(t, depsByUnit["proxy.service"].After, "web-pod.service")

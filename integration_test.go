@@ -157,8 +157,8 @@ func TestIntegrationReconcilePipelinePod(t *testing.T) {
 }
 
 // applyPodStackDelete removes the shop stack from the desired files and applies
-// the resulting deletes: each file is removed and its generated service stopped;
-// the pod's service is stopped as shop-pod.service, the name recorded in state.
+// the resulting deletes: each generated service, named from state (the pod's as
+// shop-pod.service), is stopped before its file is removed.
 func applyPodStackDelete(t *testing.T, files []resolver.ResolvedFile, deployed *state.State) {
 	t.Helper()
 	remaining := slices.DeleteFunc(slices.Clone(files), func(f resolver.ResolvedFile) bool {
@@ -168,12 +168,15 @@ func applyPodStackDelete(t *testing.T, files []resolver.ResolvedFile, deployed *
 	require.Equal(t, 3, cs.Summary[reconciler.ActionDelete])
 	sys := appliermocks.NewMockSystemdManager(t)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
-	for _, unit := range []string{"shop-pod.service", "shop-api.service", "shop-proxy.service"} {
-		sys.EXPECT().StopUnit(mock.Anything, unit).Return(nil).Once()
-	}
 	fw := appliermocks.NewMockFileWriter(t)
-	for _, path := range []string{shopPodPath, shopAPIPath, shopProxyPath} {
-		fw.EXPECT().Remove(path).Return(nil).Once()
+	for path, unit := range map[string]string{
+		shopPodPath:   "shop-pod.service",
+		shopAPIPath:   "shop-api.service",
+		shopProxyPath: "shop-proxy.service",
+	} {
+		assert.Equal(t, unit, findChange(t, cs, path).ServiceName)
+		stop := sys.EXPECT().StopUnit(mock.Anything, unit).Return(nil).Once()
+		fw.EXPECT().Remove(path).Return(nil).Once().NotBefore(stop)
 	}
 	_, err := applier.New(sys, appliermocks.NewMockPodmanClient(t), fw, false, nil).Apply(t.Context(), cs)
 	require.NoError(t, err)
