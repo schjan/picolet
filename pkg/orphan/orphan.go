@@ -141,7 +141,7 @@ func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]state.Managed
 // stopGeneratedUnit stops the service Podman generated from an orphaned Quadlet
 // file: removing the file and reloading only drops the unit definition and
 // leaves the service running. Nothing is stopped unless the file is the one
-// Podman generates its unit from (see selectUnits), nor the agent's own unit,
+// Podman generates its unit from (see readQuadletView), nor the agent's own unit,
 // nor a pod the agent's own container may join: stopping a pod stops its
 // members (BindsTo=), the agent included. Like the applier's pre-delete stop,
 // this is best-effort: a failure is logged and the file is removed regardless,
@@ -170,9 +170,9 @@ func (s *Scanner) generatedService(path string, view quadletView) (string, confi
 	if spec, _ := config.SpecFor(category); !ok || spec.Unit != config.GeneratedUnit {
 		return "", "", false
 	}
-	if src, found := view.units[filepath.Base(path)]; !found || !src.generated || !samePath(src.path, path) {
+	if selected := view.units[filepath.Base(path)]; !samePath(selected, path) {
 		slog.Warn("orphaned quadlet is not the file Podman generates this unit from, its service is not stopped",
-			"path", path, "selected", src.path)
+			"path", path, "selected", selected)
 		return "", "", false
 	}
 	loaded, err := s.loadUnit(path)
@@ -187,30 +187,26 @@ func (s *Scanner) generatedService(path string, view quadletView) (string, confi
 	return loaded.service, category, true
 }
 
-// samePath reports whether a and b name the same file once symlinks are
-// resolved; false if either cannot be resolved. Not inode identity: to Podman
-// two hard links are two unit files.
+// samePath reports whether a and b are the same directory entry: same name in
+// the same directory once the directories' symlinks are resolved. The entries
+// themselves are not resolved: to Podman a symlink or hard link in another
+// directory is a separate unit file.
 func samePath(a, b string) bool {
-	ra, errA := filepath.EvalSymlinks(a)
-	rb, errB := filepath.EvalSymlinks(b)
-	return errA == nil && errB == nil && ra == rb
-}
-
-// unitSource is the file a unit name is claimed by.
-type unitSource struct {
-	path string
-	// generated is false when another unit file in the same directory failed
-	// to parse: Podman then keeps the directory's names claimed but generates
-	// none of its units.
-	generated bool
+	if filepath.Base(a) != filepath.Base(b) {
+		return false
+	}
+	da, errA := filepath.EvalSymlinks(filepath.Dir(a))
+	db, errB := filepath.EvalSymlinks(filepath.Dir(b))
+	return errA == nil && errB == nil && da == db
 }
 
 // quadletView is the Quadlet unit set as Podman's generator sees it, read
 // once before any orphan is removed.
 type quadletView struct {
-	// units maps each unit filename ("web.pod") to the file claiming it.
-	units map[string]unitSource
-	// agentPods are the pod files ("web.pod") the agent's own container names in Pod=.
+	// units maps each unit filename ("web.pod") to the file Podman generates
+	// it from: the first file of that name that parses, unit dirs in order.
+	units map[string]string
+	// agentPods are the pod files ("web.pod") an agent container names in Pod=.
 	agentPods map[string]struct{}
 	// blind is set when a container's settings (the unit or one of its
 	// drop-ins) or a unit directory could not be read: any pod might then be
@@ -223,30 +219,25 @@ func (v quadletView) protectsPod(podFile string) bool {
 	return joined || v.blind
 }
 
-// readQuadletView selects the units as Podman's generator does and merges
-// each container with its drop-ins, since they may set ServiceName= or Pod=,
-// to find the pods the agent's own container joins, wherever it lives. A
-// stale agent container still protects its pod, since this runs before any
-// orphan is removed. The validator rejects such a Fleet; this guards files
-// deployed before that check, placed by hand, or left after a state reset. It
-// fails closed on anything that could hide the agent's container.
+// readQuadletView reads the unit directories as Podman's generator does
+// (cmd/quadlet loadUnitsFromDir): in order, not recursively (the list already
+// holds subdirectories), a name going to the first file of that name that
+// parses. Every container file, even one shadowed by a same-named file, is
+// merged with its drop-ins (they may set ServiceName= or Pod=) and checked
+// for being the agent's: the running agent may come from any of them, since
+// files can change after the generator last ran. A stale agent container
+// still protects its pod, since this runs before any orphan is removed. The
+// validator rejects such a Fleet; this guards files deployed before that
+// check, placed by hand, or left after a state reset. It fails closed on
+// anything that could hide the agent's container.
 func (s *Scanner) readQuadletView() quadletView {
-	units, err := selectUnits(s.unitDirs)
-	view := quadletView{units: units, agentPods: make(map[string]struct{})}
-	errs := []error{err}
-	for name, src := range units {
-		if category, _ := config.CategoryForExtension(filepath.Ext(name)); category != config.CategoryContainer {
-			continue
-		}
-		// Read even if not generated now: the agent may still run from an
-		// earlier generation.
-		loaded, err := s.loadUnit(src.path)
-		errs = append(errs, err, loaded.dropInErr)
-		if err != nil || !config.IsDefaultSelfUnit(loaded.service) {
-			continue
-		}
-		if pod, _ := loaded.unit.Lookup(quadlet.ContainerGroup, quadlet.KeyPod); pod != "" {
-			view.agentPods[pod] = struct{}{}
+	view := quadletView{units: make(map[string]string), agentPods: make(map[string]struct{})}
+	var errs []error
+	for _, dir := range s.unitDirs {
+		entries, err := readDirIfExists(dir)
+		errs = append(errs, err)
+		for _, entry := range entries {
+			errs = append(errs, s.readUnitEntry(filepath.Join(dir, entry.Name()), &view))
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
@@ -256,59 +247,49 @@ func (s *Scanner) readQuadletView() quadletView {
 	return view
 }
 
-// selectUnits picks the file each unit name is claimed by, as Podman's
-// generator does (cmd/quadlet loadUnitsFromDir and its caller): unit
-// directories in order, not recursively (the list already holds
-// subdirectories); a name is claimed by the first file of that name that
-// parses; a directory in which any unit file fails to parse keeps its names
-// claimed but generates none of them. The returned error covers what could
-// hide a container: unreadable directories and unparseable containers.
-func selectUnits(dirs []string) (map[string]unitSource, error) {
-	units := make(map[string]unitSource)
-	var errs []error
-	for _, dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("reading %s: %w", dir, err))
-			continue
-		}
-		claimed, failed, err := claimUnits(dir, entries, units)
-		errs = append(errs, err)
-		for _, name := range claimed {
-			units[name] = unitSource{path: filepath.Join(dir, name), generated: !failed}
-		}
+// readUnitEntry adds the unit file at path to view: it claims its name if
+// still free and it parses, and a container is checked for being the agent's.
+// The error covers containers only; other unparseable units are just logged.
+func (s *Scanner) readUnitEntry(path string, view *quadletView) error {
+	name := filepath.Base(path)
+	if !quadlet.IsExtSupported(name) {
+		return nil
 	}
-	return units, errors.Join(errs...)
+	_, claimed := view.units[name]
+	if category, _ := config.CategoryForExtension(filepath.Ext(name)); category != config.CategoryContainer {
+		if claimed {
+			return nil
+		}
+		if _, err := parser.ParseUnitFile(path); err != nil {
+			slog.Warn("orphan scan: cannot parse quadlet", "path", path, "error", err)
+			return nil
+		}
+		view.units[name] = path
+		return nil
+	}
+	loaded, err := s.loadUnit(path)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		view.units[name] = path
+	}
+	if pod, _ := loaded.unit.Lookup(quadlet.ContainerGroup, quadlet.KeyPod); pod != "" && config.IsDefaultSelfUnit(loaded.service) {
+		view.agentPods[pod] = struct{}{}
+	}
+	return loaded.dropInErr
 }
 
-// claimUnits returns the unit names in dir not yet claimed whose file parses,
-// and whether any unit file in dir failed to parse; the error covers the
-// containers among the failures.
-func claimUnits(dir string, entries []fs.DirEntry, units map[string]unitSource) ([]string, bool, error) {
-	var claimed []string
-	var failed bool
-	var errs []error
-	for _, entry := range entries {
-		name := entry.Name()
-		if _, taken := units[name]; taken || !quadlet.IsExtSupported(name) {
-			continue
-		}
-		path := filepath.Join(dir, name)
-		if _, err := parser.ParseUnitFile(path); err != nil {
-			failed = true
-			if category, _ := config.CategoryForExtension(filepath.Ext(name)); category == config.CategoryContainer {
-				errs = append(errs, fmt.Errorf("%s: %w", path, err))
-			} else {
-				slog.Warn("orphan scan: cannot parse quadlet", "path", path, "error", err)
-			}
-			continue
-		}
-		claimed = append(claimed, name)
+// readDirIfExists lists dir; a missing dir is empty, not an error.
+func readDirIfExists(dir string) ([]fs.DirEntry, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
 	}
-	return claimed, failed, errors.Join(errs...)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", dir, err)
+	}
+	return entries, nil
 }
 
 // loadedUnit is a Quadlet merged with its drop-ins.
@@ -350,14 +331,8 @@ func mergeDropIns(unit *parser.UnitFile, unitDirs []string) error {
 	for _, dropInDir := range unit.GetUnitDropinPaths() {
 		for _, unitDir := range unitDirs {
 			dir := filepath.Join(unitDir, dropInDir)
-			entries, err := os.ReadDir(dir)
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
-			if err != nil {
-				errs = append(errs, fmt.Errorf("reading %s: %w", dir, err))
-				continue
-			}
+			entries, err := readDirIfExists(dir)
+			errs = append(errs, err)
 			for _, entry := range entries {
 				if _, seen := byName[entry.Name()]; !seen && filepath.Ext(entry.Name()) == ".conf" {
 					byName[entry.Name()] = filepath.Join(dir, entry.Name())

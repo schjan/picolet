@@ -313,9 +313,6 @@ func TestScan_StalePodStopFollowsAgentContainerSettings(t *testing.T) {
 		setup      func(t *testing.T, quadletDir, otherUnitDir string) []string
 		podStopped bool
 	}{
-		// Broken containers sit in the other unit dir: in the Quadlet dir they
-		// would also stop Podman generating its other units (see
-		// TestScan_StaleQuadletStopFollowsPodmanUnitView).
 		{name: "unparseable container", setup: func(t *testing.T, _, other string) []string {
 			t.Helper()
 			writeFile(t, filepath.Join(other, "agent.container"), "[Container\nPod=web.pod\n")
@@ -386,7 +383,9 @@ func TestScan_StalePodStopFollowsAgentContainerSettings(t *testing.T) {
 			writeFile(t, filepath.Join(other, "picolet.container"), "[Container]\nImage=picolet\nPod=web.pod\n")
 			return nil
 		}},
-		{name: "higher-priority unit dir shadows the Quadlet-dir container", podStopped: true, setup: func(t *testing.T, dir, other string) []string {
+		// Files may change after Podman's generator last ran: the agent can
+		// still be running from a container another file now shadows.
+		{name: "a shadowed agent container still protects its pod", setup: func(t *testing.T, dir, other string) []string {
 			t.Helper()
 			writeFile(t, filepath.Join(dir, "picolet.container"), "[Container]\nImage=picolet\nPod=web.pod\n")
 			writeFile(t, filepath.Join(other, "picolet.container"), agentUnit)
@@ -469,41 +468,58 @@ func TestScan_SymlinkedOwnedDirIsNotRemoved(t *testing.T) {
 
 // Which service a stale unit's cleanup stops follows Podman's view of that
 // unit: its drop-ins, and whether it is the file Podman generates the unit
-// from at all (cmd/quadlet: first file of a name that parses, per unit dir in
-// order; a dir with a file that fails to parse generates none of its units).
+// from at all (cmd/quadlet: first file of a name that parses, unit dirs in
+// order).
+//
+//nolint:funlen // table of filesystem setups
 func TestScan_StaleQuadletStopFollowsPodmanUnitView(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		// setup writes into the second Podman unit dir (searched first); stale
-		// is the stale web.pod in the Quadlet dir.
-		setup    func(t *testing.T, otherUnitDir, stale string)
+		// setup writes into the second Podman unit dir (searched first) or next
+		// to stale, the stale web.pod in the Quadlet dir, and returns any other
+		// stale Quadlet-dir files the scan removes.
+		setup    func(t *testing.T, otherUnitDir, stale string) []string
 		wantStop string // "" = nothing stopped
 	}{
-		{name: "drop-in renames the service", wantStop: "shop.service", setup: func(t *testing.T, other, _ string) {
+		{name: "drop-in renames the service", wantStop: "shop.service", setup: func(t *testing.T, other, _ string) []string {
 			t.Helper()
 			writeFile(t, filepath.Join(other, "web.pod.d", "10-name.conf"), "[Pod]\nServiceName=shop\n")
+			return nil
 		}},
-		{name: "malformed drop-in still stops the service Podman generates anyway", wantStop: "web-pod.service", setup: func(t *testing.T, other, _ string) {
+		{name: "malformed drop-in still stops the service Podman generates anyway", wantStop: "web-pod.service", setup: func(t *testing.T, other, _ string) []string {
 			t.Helper()
 			writeFile(t, filepath.Join(other, "pod.d", "10-bad.conf"), "[Pod\n")
+			return nil
 		}},
-		{name: "a higher-priority same-named file is the one Podman uses", setup: func(t *testing.T, other, _ string) {
+		{name: "a higher-priority same-named file is the one Podman uses", setup: func(t *testing.T, other, _ string) []string {
 			t.Helper()
 			writeFile(t, filepath.Join(other, "web.pod"), "[Pod]\n")
+			return nil
 		}},
-		{name: "a malformed higher-priority file loses to the stale one", wantStop: "web-pod.service", setup: func(t *testing.T, other, _ string) {
+		{name: "a malformed higher-priority file loses to the stale one", wantStop: "web-pod.service", setup: func(t *testing.T, other, _ string) []string {
 			t.Helper()
 			writeFile(t, filepath.Join(other, "web.pod"), "[Pod\n")
+			return nil
 		}},
-		{name: "a hard link in a higher-priority dir is a separate file to Podman", setup: func(t *testing.T, other, stale string) {
+		{name: "a hard link in a higher-priority dir is a separate file to Podman", setup: func(t *testing.T, other, stale string) []string {
 			t.Helper()
 			require.NoError(t, os.Link(stale, filepath.Join(other, "web.pod")))
+			return nil
 		}},
-		{name: "higher-priority dir with a broken file claims the name but generates nothing", setup: func(t *testing.T, other, _ string) {
+		{name: "a stale symlink to a higher-priority file is not that file", setup: func(t *testing.T, other, stale string) []string {
 			t.Helper()
-			writeFile(t, filepath.Join(other, "web.pod"), "[Pod]\n")
-			writeFile(t, filepath.Join(other, "lan.network"), "[Network\n")
+			target := filepath.Join(other, "web.pod")
+			writeFile(t, target, "[Pod]\nServiceName=foreign\n")
+			require.NoError(t, os.Remove(stale))
+			require.NoError(t, os.Symlink(target, stale))
+			return nil
+		}},
+		{name: "a malformed neighbour does not block the stop", wantStop: "web-pod.service", setup: func(t *testing.T, _, stale string) []string {
+			t.Helper()
+			bad := filepath.Join(filepath.Dir(stale), "bad.network")
+			writeFile(t, bad, "[Network\n")
+			return []string{bad}
 		}},
 	}
 	for _, tt := range tests {
@@ -512,13 +528,16 @@ func TestScan_StaleQuadletStopFollowsPodmanUnitView(t *testing.T) {
 			quadletDir, otherUnitDir := t.TempDir(), t.TempDir()
 			podPath := filepath.Join(quadletDir, "web.pod")
 			writeFile(t, podPath, "[Pod]\n")
-			tt.setup(t, otherUnitDir, podPath)
+			alsoRemoved := tt.setup(t, otherUnitDir, podPath)
 
 			sys := appliermocks.NewMockSystemdManager(t)
 			fw := appliermocks.NewMockFileWriter(t)
 			remove := fw.EXPECT().Remove(podPath).Return(nil).Once()
 			if tt.wantStop != "" {
 				remove.NotBefore(sys.EXPECT().StopUnit(mock.Anything, tt.wantStop).Return(nil).Once())
+			}
+			for _, path := range alsoRemoved {
+				fw.EXPECT().Remove(path).Return(nil).Once()
 			}
 			pod := appliermocks.NewMockPodmanClient(t)
 			pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
