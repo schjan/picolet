@@ -68,3 +68,7 @@ A reload action (HTTP call, signal or unit restart) triggered when specific secr
 **Secret Reference**:
 A pointer (`op://…`, `pass://…`) in the Fleet to a value held by a secret provider; the value itself never enters git.
 _Avoid_: secret (when the reference, not the value, is meant)
+
+**Timer-triggered One-shot**:
+A `Type=oneshot` unit from the Fleet that a `.timer` starts on a schedule (a backup, a restore-verify); picolet tracks when it last ran, last succeeded and with what result.
+_Avoid_: job, cron job, scheduled job (systemd's D-Bus jobs are a different thing picolet already models)

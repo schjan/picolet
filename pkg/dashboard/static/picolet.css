@@ -270,6 +270,8 @@ main {
 
 .status .glyph { display: inline-block; width: 1ch; }
 .status .substate { color: var(--fg-dim); margin-left: 0.5rem; }
+.status .last-run { display: block; margin-left: 1ch; color: var(--fg-dim); font-size: 0.85em; }
+.status .last-run--bad { color: var(--bad); }
 .status--ok      { color: var(--ok); }
 .status--pending { color: var(--pending); }
 .status--cold    { color: var(--cold); }

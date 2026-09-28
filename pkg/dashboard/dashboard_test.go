@@ -345,6 +345,7 @@ func TestServeIndex_Goldie(t *testing.T) {
 			"/etc/containers/systemd/picolet/lan.network":   {Hash: "sha256:cccccccc3333", Category: "network"},
 			"/etc/containers/systemd/picolet/data.volume":   {Hash: "sha256:dddddddd4444", Category: "volume"},
 			"/etc/containers/systemd/picolet/app.yml":       {Hash: "sha256:eeeeeeee5555", Category: "manifest"},
+			"/etc/systemd/system/backup.service":            {Hash: "sha256:ffffffff6666", Category: "systemd"},
 		},
 		ServiceNames: map[string]string{
 			"/etc/containers/systemd/picolet/web.container": "web.service",
@@ -361,6 +362,19 @@ func TestServeIndex_Goldie(t *testing.T) {
 		"db.service":          {ActiveState: "failed", SubState: "dead"},
 		"lan-network.service": {ActiveState: "active", SubState: "running"},
 		"data-volume.service": {ActiveState: "active", SubState: "running"},
+		"backup.service":      {ActiveState: "inactive", SubState: "dead"},
+	})
+	// backup.service is a timer-triggered one-shot: it succeeded, then its
+	// latest run failed, so the row shows both the last success and the result.
+	statusStore.ObserveRun("backup.service", status.RunObservation{
+		StartedAt:  fixedNow.Add(-26*time.Hour - time.Minute),
+		FinishedAt: fixedNow.Add(-26 * time.Hour),
+		Result:     "success",
+	})
+	statusStore.ObserveRun("backup.service", status.RunObservation{
+		StartedAt:  fixedNow.Add(-2*time.Hour - time.Minute),
+		FinishedAt: fixedNow.Add(-2 * time.Hour),
+		Result:     "exit-code",
 	})
 
 	h, err := dashboard.NewHandler(store, cfg, "0.7.2-test", nil, dashboard.WithStatusStore(statusStore))

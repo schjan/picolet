@@ -9,6 +9,7 @@ v2 implements the read-only runtime slice: dependency disclosure, host metadata,
 Shipped: #1 (dependency view), #10 (host metadata in header), #11 (`?refresh=0` accessibility), #12 (live verified-OK signal).
 Partially shipped: #6 (orphan view — panel renders only when something was cleaned up, full would-clean-up dry-run remains).
 Deferred: #2 (actions — needs auth/CSRF), #3 (persisted reconciliation history — current ring is in-memory, drops noops), #4 (per-unit drill-down), #5 (HTMX), #7 (recent apply errors — folded into the recent-events ring), #8 (configurability), #9 (font subsetting).
+Also shipped (GitHub issue #160): unit rows of timer-triggered one-shots show "last success … ago" and, when the unit's current `Result=` is not `success`, that result — a pure passthrough of the status store's run record, the same data the `picolet_unit_last_*` metrics export.
 
 ---
 

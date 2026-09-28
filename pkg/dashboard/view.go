@@ -75,13 +75,18 @@ type Status struct {
 
 // UnitRow is one row in a category table.
 type UnitRow struct {
-	Path         string
-	Basename     string
-	HashShort    string
-	Service      string
-	Status       Status
-	SubState     string
-	Dependencies []DependencyGroup
+	Path      string
+	Basename  string
+	HashShort string
+	Service   string
+	Status    Status
+	SubState  string
+	// LastSuccessAgo and LastResult pass a timer-triggered one-shot's run record
+	// through from the status store. LastResult is set only when the unit's
+	// current Result= is not "success".
+	LastSuccessAgo string
+	LastResult     string
+	Dependencies   []DependencyGroup
 }
 
 // CategoryGroup bundles rows under one apply-phase heading.
@@ -207,6 +212,7 @@ func buildViewModel(
 	services map[string]string,
 	statuses map[string]status.UnitRuntimeStatus,
 	deps map[string]status.UnitDependencies,
+	runs map[string]status.UnitRun,
 	orphan status.OrphanScan,
 	events []status.ReconcileEvent,
 	now time.Time,
@@ -216,8 +222,10 @@ func buildViewModel(
 	for gi := range groups {
 		cat := groups[gi].Category
 		for ri := range groups[gi].Rows {
-			resolveRowStatus(&groups[gi].Rows[ri], cat, statuses)
-			groups[gi].Rows[ri].Dependencies = dependencyGroups(deps[groups[gi].Rows[ri].Service])
+			row := &groups[gi].Rows[ri]
+			resolveRowStatus(row, cat, statuses)
+			row.Dependencies = dependencyGroups(deps[row.Service])
+			setRowRun(row, runs[row.Service], now)
 		}
 	}
 
@@ -278,6 +286,15 @@ func resolveRowStatus(row *UnitRow, category string, statuses map[string]status.
 	}
 	row.Status = statusFromActiveState(st.ActiveState)
 	row.SubState = st.SubState
+}
+
+// setRowRun copies a timer-triggered one-shot's run record onto its row. A zero
+// record (no run observed, or not a one-shot) leaves both fields empty.
+func setRowRun(row *UnitRow, run status.UnitRun, now time.Time) {
+	row.LastSuccessAgo = relativeTime(run.SucceededAt, now)
+	if run.Result != status.ResultSuccess {
+		row.LastResult = run.Result
+	}
 }
 
 func buildBanner(in HeaderInput, now time.Time) *Banner {
