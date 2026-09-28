@@ -225,7 +225,7 @@ func buildViewModel(
 			row := &groups[gi].Rows[ri]
 			resolveRowStatus(row, cat, statuses)
 			row.Dependencies = dependencyGroups(deps[row.Service])
-			applyRun(row, runs[row.Service], now)
+			setRowRun(row, runs[row.Service], now)
 		}
 	}
 
@@ -288,11 +288,11 @@ func resolveRowStatus(row *UnitRow, category string, statuses map[string]status.
 	row.SubState = st.SubState
 }
 
-// applyRun copies a timer-triggered one-shot's run record onto its row. A zero
+// setRowRun copies a timer-triggered one-shot's run record onto its row. A zero
 // record (no run observed, or not a one-shot) leaves both fields empty.
-func applyRun(row *UnitRow, run status.UnitRun, now time.Time) {
+func setRowRun(row *UnitRow, run status.UnitRun, now time.Time) {
 	row.LastSuccessAgo = relativeTime(run.SucceededAt, now)
-	if run.Result != "success" {
+	if run.Result != status.ResultSuccess {
 		row.LastResult = run.Result
 	}
 }

@@ -7,11 +7,10 @@ import (
 	"time"
 )
 
-const (
-	defaultEventLimit = 50
-	// resultSuccess is systemd's Result= value for a run that completed cleanly.
-	resultSuccess = "success"
-)
+const defaultEventLimit = 50
+
+// ResultSuccess is systemd's Result= value for a run that completed cleanly.
+const ResultSuccess = "success"
 
 // UnitRuntimeStatus is the current systemd state for a managed unit.
 type UnitRuntimeStatus struct {
@@ -225,7 +224,7 @@ func (s *Store) ObserveRun(unit string, obs RunObservation) {
 	}
 	if !obs.FinishedAt.Equal(prev.FinishedAt) &&
 		!obs.StartedAt.After(obs.FinishedAt) &&
-		obs.Result == resultSuccess {
+		obs.Result == ResultSuccess {
 		run.SucceededAt = obs.FinishedAt
 	}
 	s.snapshot.Runs[unit] = run

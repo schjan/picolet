@@ -32,7 +32,7 @@
 
 Dependency targets, file paths, hashes, recent error strings, and dashboard event history are intentionally not exported as labels to avoid high-cardinality or churn-heavy series.
 
-> **Timer-triggered one-shots:** the four `picolet_unit_last_*` / `picolet_timer_last_trigger_*` series cover every Managed unit picolet classifies as a timer-triggered one-shot (`Type=oneshot` with a `.timer` in `TriggeredBy=`) plus the timers that fire them. They are read from systemd on every health pass and retained across a failed D-Bus query, so a hiccup does not make them flap. `picolet_unit_last_result` is systemd's live `Result=`; last-success is *derived* on top of it, because systemd resets `Result=` to `success` when a run starts and keeps no success history. Consequences: a one-shot that has not succeeded since the Agent restarted reports no last-success series, and the last-success value never advances on the strength of a run picolet did not see finish. The dashboard shows the same record on the unit's row: "last success … ago" and, when the current `Result=` is not `success`, that result. See [Alerting on timer-triggered one-shots](#alerting-on-timer-triggered-one-shots) for rules.
+> **Timer-triggered one-shots:** the four `picolet_unit_last_*` / `picolet_timer_last_trigger_*` series cover every Managed unit picolet classifies as a timer-triggered one-shot (`Type=oneshot` with a `.timer` in `TriggeredBy=`) plus the timers that fire them. They are read from systemd on every health pass and retained across a failed D-Bus query, so a hiccup does not make them flap. `picolet_unit_last_result` is systemd's live `Result=`; last-success is *derived* on top of it, because systemd resets `Result=` to `success` when a run starts and keeps no success history. Consequences: a one-shot whose last run before an Agent restart did not succeed (or was still running) reports no last-success series until it next succeeds, and the last-success value never advances on the strength of a run picolet did not see finish. The dashboard shows the same record on the unit's row: "last success … ago" and, when the current `Result=` is not `success`, that result. See [Alerting on timer-triggered one-shots](#alerting-on-timer-triggered-one-shots) for rules.
 
 > **Self-update monitoring:** use node-exporter's `systemd_unit_start_time_seconds` for `picolet.service` to detect restart failures.
 
@@ -108,13 +108,18 @@ schedule, so write the threshold per unit (or per schedule class, with a regex
 
 The staleness expression evaluates only while a last-success series exists. Pair
 it with an `absent_over_time()` companion over the same window, so a series that
-vanished or never appeared also fires: the one-shot has not succeeded since the
-Agent restarted (last-success lives in memory), the Machine rebooted and the
-one-shot has not run since (see below), or it stopped being classified as a
-timer-triggered one-shot (its `.timer` was removed from the Fleet). `absent_over_time()`
-knows only the labels its selector pins with `=`: pin `unit`, and also pin
-`instance` when the one-shot runs on several Hosts and each must be checked —
-without it the companion fires only when *no* Host reports the series.
+vanished or never appeared also fires: the one-shot has never succeeded; the
+Agent restarted after a run that did not succeed (last-success lives in memory,
+so it is re-derived only from systemd's current `Result=`) and none has
+succeeded since; the Machine rebooted and the one-shot has not succeeded since
+(see below); or picolet is not being scraped. Removing only the `.timer` from the
+Fleet does not make the series vanish — the `.service` is still managed, so its
+last-success stays frozen and the staleness rule fires. When the one-shot itself
+leaves the Fleet its series goes away, so remove its rules with it.
+`absent_over_time()` knows only the labels its selector pins with `=`: pin
+`unit`, and also pin `instance` when the one-shot runs on several Hosts and each
+must be checked — without it the companion fires only when *no* Host reports the
+series.
 
 Example: a daily `backup.service` and a weekly `restore-verify.service`.
 
@@ -140,7 +145,7 @@ groups:
           schedule: daily
         annotations:
           summary: "No success of {{ $labels.unit }} reported for two days"
-          description: "No Host has reported a successful run of {{ $labels.unit }} for two days: it has not succeeded since the Agent or Machine restarted, or it is no longer a timer-triggered one-shot."
+          description: "No Host has reported a successful run of {{ $labels.unit }} for two days: it has never succeeded, has not succeeded since an Agent or Machine restart, or picolet is not being scraped."
 
       # restore-verify.service — OnCalendar=weekly, so 14 days.
       - alert: PicoletOneShotStale
@@ -160,7 +165,7 @@ groups:
           schedule: weekly
         annotations:
           summary: "No success of {{ $labels.unit }} reported for two weeks"
-          description: "No Host has reported a successful run of {{ $labels.unit }} for two weeks: it has not succeeded since the Agent or Machine restarted, or it is no longer a timer-triggered one-shot."
+          description: "No Host has reported a successful run of {{ $labels.unit }} for two weeks: it has never succeeded, has not succeeded since an Agent or Machine restart, or picolet is not being scraped."
 
       # Unit-agnostic: a one-shot that has run but has not been seen to succeed
       # since the Agent started. Needs no per-unit rule.
