@@ -465,23 +465,49 @@ func TestScan_SymlinkedOwnedDirIsNotRemoved(t *testing.T) {
 	}
 }
 
-// The stopped service follows the stale unit's drop-ins too: a drop-in may
-// rename it with ServiceName=.
-func TestScan_StaleQuadletServiceNameFromDropIn(t *testing.T) {
+// Which service a stale unit's cleanup stops follows Podman's view of that
+// unit: its drop-ins, and whether it is the file Podman uses at all.
+func TestScan_StaleQuadletStopFollowsPodmanUnitView(t *testing.T) {
 	t.Parallel()
-	quadletDir, otherUnitDir := t.TempDir(), t.TempDir()
-	podPath := filepath.Join(quadletDir, "web.pod")
-	writeFile(t, podPath, "[Pod]\n")
-	writeFile(t, filepath.Join(otherUnitDir, "web.pod.d", "10-name.conf"), "[Pod]\nServiceName=shop\n")
+	tests := []struct {
+		name string
+		// setup writes into the second Podman unit dir (searched first).
+		setup    func(t *testing.T, otherUnitDir string)
+		wantStop string // "" = nothing stopped
+	}{
+		{name: "drop-in renames the service", wantStop: "shop.service", setup: func(t *testing.T, other string) {
+			t.Helper()
+			writeFile(t, filepath.Join(other, "web.pod.d", "10-name.conf"), "[Pod]\nServiceName=shop\n")
+		}},
+		{name: "unreadable drop-in still stops the service Podman generates anyway", wantStop: "web-pod.service", setup: func(t *testing.T, other string) {
+			t.Helper()
+			writeFile(t, filepath.Join(other, "pod.d", "10-bad.conf"), "[Pod\n")
+		}},
+		{name: "a higher-priority same-named file is the one Podman uses", setup: func(t *testing.T, other string) {
+			t.Helper()
+			writeFile(t, filepath.Join(other, "web.pod"), "[Pod]\n")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			quadletDir, otherUnitDir := t.TempDir(), t.TempDir()
+			podPath := filepath.Join(quadletDir, "web.pod")
+			writeFile(t, podPath, "[Pod]\n")
+			tt.setup(t, otherUnitDir)
 
-	sys := appliermocks.NewMockSystemdManager(t)
-	stop := sys.EXPECT().StopUnit(mock.Anything, "shop.service").Return(nil).Once()
-	fw := appliermocks.NewMockFileWriter(t)
-	fw.EXPECT().Remove(podPath).Return(nil).Once().NotBefore(stop)
-	pod := appliermocks.NewMockPodmanClient(t)
-	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
+			sys := appliermocks.NewMockSystemdManager(t)
+			fw := appliermocks.NewMockFileWriter(t)
+			remove := fw.EXPECT().Remove(podPath).Return(nil).Once()
+			if tt.wantStop != "" {
+				remove.NotBefore(sys.EXPECT().StopUnit(mock.Anything, tt.wantStop).Return(nil).Once())
+			}
+			pod := appliermocks.NewMockPodmanClient(t)
+			pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
-	_, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir(), orphan.WithUnitDirs(otherUnitDir)).
-		Scan(context.Background(), map[string]state.ManagedFile{})
-	require.NoError(t, err)
+			_, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir(), orphan.WithUnitDirs(otherUnitDir)).
+				Scan(context.Background(), map[string]state.ManagedFile{})
+			require.NoError(t, err)
+		})
+	}
 }
