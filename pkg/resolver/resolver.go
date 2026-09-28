@@ -381,7 +381,7 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.Resol
 	merged := &config.ResolvedFileSet{Paths: make(map[config.Category][]string)}
 	bundleFileRefs := slices.Clone(expanded.NestedRefs)
 	for _, spec := range config.Specs() {
-		if spec.Category.UsesRelPath() {
+		if spec.Dest == config.DestData {
 			for _, srcPath := range fileSet.Paths[spec.Category] {
 				bundleFileRefs = append(bundleFileRefs, newLegacyBundleFileRef(srcPath, spec))
 			}

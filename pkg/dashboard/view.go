@@ -246,13 +246,13 @@ var mutedStatus = Status{Glyph: "·", Token: "—", Class: "muted"}
 
 // unitNameFor returns the systemd unit name for a managed file, or "" for
 // categories that legitimately have no associated unit (manifest, secret).
-// Mirrors applier.unitNameForDelete; kept private here to avoid exporting
-// applier internals just for the dashboard.
+// Follows the category table's unit naming, like applier.unitNameForDelete.
 func unitNameFor(category, path, mappedService string) string {
-	switch category {
-	case "container", "network", "volume", "kube":
+	spec, _ := config.SpecFor(config.Category(category))
+	switch spec.Unit {
+	case config.GeneratedUnit:
 		return mappedService
-	case "systemd":
+	case config.FileUnit:
 		if mappedService != "" {
 			return mappedService
 		}

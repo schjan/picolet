@@ -243,12 +243,14 @@ func TestFilePathValidatesInputs(t *testing.T) {
 func TestBundleFilePathFuncUsesHostDataDir(t *testing.T) {
 	t.Parallel()
 
-	manifestFn := bundleFilePathFunc("manifestPath", "/host/share/picolet", config.CategoryManifest)
+	manifestSpec, _ := config.SpecFor(config.CategoryManifest)
+	manifestFn := bundleFilePathFunc("/host/share/picolet", manifestSpec)
 	got, err := manifestFn("config/scrape.yml")
 	require.NoError(t, err)
 	assert.Equal(t, "/host/share/picolet/manifests/config/scrape.yml", got)
 
-	fileFn := bundleFilePathFunc("filePath", "/host/share/picolet", config.CategoryFile)
+	fileSpec, _ := config.SpecFor(config.CategoryFile)
+	fileFn := bundleFilePathFunc("/host/share/picolet", fileSpec)
 	got, err = fileFn("nginx/app.conf")
 	require.NoError(t, err)
 	assert.Equal(t, "/host/share/picolet/files/nginx/app.conf", got)

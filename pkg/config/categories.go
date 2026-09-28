@@ -180,11 +180,11 @@ var categories = []Spec{
 	},
 	{
 		Category: CategoryBuild, Dest: DestQuadlet,
-		ApplyRank: 40, ConvertOrder: 3, Health: HealthDaemon, Restart: RestartChanged, Unit: GeneratedUnit,
+		ApplyRank: 40, ConvertOrder: 3, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, Unit: GeneratedUnit,
 	},
 	{
 		Category: CategoryPod, Dest: DestQuadlet,
-		ApplyRank: 90, ConvertOrder: 5, Health: HealthDaemon, Restart: RestartChanged, Unit: GeneratedUnit,
+		ApplyRank: 90, ConvertOrder: 5, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, Unit: GeneratedUnit,
 	},
 }
 

@@ -19,18 +19,16 @@ import (
 	pp "github.com/schjan/picolet/pkg/protonpass"
 )
 
-// bundleFilePathFunc returns a template func that resolves a relative path
-// inside a data category's deployed subdirectory (e.g. dataDir/manifests/...).
-// funcName is included in error messages for clarity to template authors.
-func bundleFilePathFunc(funcName, dataDir string, category config.Category) func(string) (string, error) {
-	spec, _ := config.SpecFor(category)
-	subdir := spec.Subdir
+// bundleFilePathFunc returns the spec.PathHelper template func, resolving a
+// relative path inside a data category's deployed subdirectory (e.g.
+// dataDir/manifests/...).
+func bundleFilePathFunc(dataDir string, spec config.Spec) func(string) (string, error) {
 	return func(relPath string) (string, error) {
 		cleaned, err := config.ValidateRelPath(relPath)
 		if err != nil {
-			return "", fmt.Errorf("%s %q: %w", funcName, relPath, err)
+			return "", fmt.Errorf("%s %q: %w", spec.PathHelper, relPath, err)
 		}
-		return filepath.Join(dataDir, subdir, filepath.FromSlash(cleaned)), nil
+		return filepath.Join(dataDir, spec.Subdir, filepath.FromSlash(cleaned)), nil
 	}
 }
 
@@ -218,7 +216,7 @@ func buildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, p
 	})
 	for _, spec := range config.Specs() {
 		if spec.PathHelper != "" {
-			funcMap[spec.PathHelper] = bundleFilePathFunc(spec.PathHelper, dataDir, spec.Category)
+			funcMap[spec.PathHelper] = bundleFilePathFunc(dataDir, spec)
 		}
 	}
 

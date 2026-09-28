@@ -396,6 +396,12 @@ func applyRank(category config.Category) int {
 	return spec.ApplyRank
 }
 
+// destination returns where the category's files are deployed (0 if unknown).
+func destination(category config.Category) config.Destination {
+	spec, _ := config.SpecFor(category)
+	return spec.Dest
+}
+
 //nolint:cyclop // multiple early-continues are clearer than restructuring
 func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, result *ApplyResult) (*applyPhaseResult, error) {
 	p := &applyPhaseResult{
@@ -425,7 +431,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			return nil, fmt.Errorf("applying %s (%s): %w", change.DestPath, change.Action, err)
 		}
 		result.Applied++
-		if change.Category == config.CategorySecret {
+		if destination(change.Category) == config.DestSecret {
 			if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
 				p.ChangedSecrets[reconciler.SecretNameFromPath(change.DestPath)] = struct{}{}
 			}
@@ -982,7 +988,7 @@ func hookMatchesChange(hook config.Hook, changedSecrets map[string]struct{}, cha
 }
 
 func (a *Applier) applyCreateOrUpdate(ctx context.Context, change reconciler.Change) error {
-	if change.Category == config.CategorySecret {
+	if destination(change.Category) == config.DestSecret {
 		name := reconciler.SecretNameFromPath(change.DestPath)
 		replace := change.Action == reconciler.ActionUpdate
 		return a.podman.SecretCreate(ctx, name, []byte(change.NewContent), replace)
@@ -997,7 +1003,7 @@ func (a *Applier) applyCreateOrUpdate(ctx context.Context, change reconciler.Cha
 }
 
 func (a *Applier) applyDelete(ctx context.Context, change reconciler.Change) error {
-	if change.Category == config.CategorySecret {
+	if destination(change.Category) == config.DestSecret {
 		name := reconciler.SecretNameFromPath(change.DestPath)
 		return a.podman.SecretRemove(ctx, name)
 	}

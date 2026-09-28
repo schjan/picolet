@@ -152,7 +152,7 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State,
 		slog.Warn("unit unhealthy", "unit", unit, "active_state", status.ActiveState,
 			"sub_state", status.SubState, "externally_activated", external)
 		result.Unhealthy = append(result.Unhealthy, unit)
-		if external || !daemonUnit(unit, st) {
+		if external || !restartableByHealth(unit, st) {
 			result.ExternallyActivated = append(result.ExternallyActivated, unit)
 			delete(st.PendingUnits, unit) // never retried → must not loop retry_pending
 			return
@@ -161,11 +161,11 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State,
 	}
 }
 
-// daemonUnit reports whether every managed file backing unit belongs to a
+// restartableByHealth reports whether every managed file backing unit belongs to a
 // HealthDaemon category, i.e. the health loop may restart it. Files whose
 // category is not in the table (e.g. state written by another version) keep
 // the conservative default of being restarted.
-func daemonUnit(unit string, st *state.State) bool {
+func restartableByHealth(unit string, st *state.State) bool {
 	for path, name := range st.ServiceNames {
 		if name != unit {
 			continue
