@@ -8,6 +8,7 @@ import (
 	"github.com/containers/podman/v5/pkg/systemd/parser"
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
 
+	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
 )
 
@@ -101,6 +102,26 @@ func convertQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.Unit
 		return nil, fmt.Errorf("%s: %w", unit.Filename, convertErr)
 	}
 	return service, nil
+}
+
+// rejectSelfPodMember rejects the agent's own container joining a pod. The
+// member is BindsTo= the pod's service, so restarting the pod on a change, or
+// stopping it on delete or orphan cleanup, would stop the agent before it
+// saves state.
+func rejectSelfPodMember(unit *parser.UnitFile) error {
+	pod, _ := unit.Lookup(quadlet.ContainerGroup, quadlet.KeyPod)
+	if pod == "" {
+		return nil
+	}
+	info := buildUnitInfo(unit)
+	if info == nil {
+		return nil
+	}
+	if service := info.ServiceFileName(); applier.IsDefaultSelfUnit(service) {
+		return fmt.Errorf("%s: the agent's own unit %s must not join a pod (Pod=%s): "+
+			"restarting or stopping the pod would stop the agent before it saves state", unit.Filename, service, pod)
+	}
+	return nil
 }
 
 func unsupportedError(path, ext string) error {

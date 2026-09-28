@@ -52,7 +52,8 @@ type ScanResult struct {
 // Directory-scan errors are returned because they indicate a systemic problem.
 func (s *Scanner) Scan(ctx context.Context, managedFiles map[string]state.ManagedFile) (ScanResult, error) {
 	var result ScanResult
-	removed, err := s.scanOwnedDir(s.quadletDir, managedFiles, func(path string) { s.stopGeneratedUnit(ctx, path) })
+	agentPods := s.agentJoinedPods()
+	removed, err := s.scanOwnedDir(s.quadletDir, managedFiles, func(path string) { s.stopGeneratedUnit(ctx, path, agentPods) })
 	result.FilesRemoved += removed
 	if err != nil {
 		return result, err
@@ -110,11 +111,13 @@ func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]state.Managed
 
 // stopGeneratedUnit stops the service Podman generated from an orphaned Quadlet
 // file: removing the file and reloading only drops the unit definition and
-// leaves the service running. The agent's own unit is never stopped. Like the
-// applier's pre-delete stop, this is best-effort: a failure is logged and the
-// file is removed regardless, because StopUnit also fails for a unit systemd
-// never loaded, and keeping the file would make such an orphan permanent.
-func (s *Scanner) stopGeneratedUnit(ctx context.Context, path string) {
+// leaves the service running. The agent's own unit is never stopped, nor is a
+// pod in agentPods: stopping a pod stops its members (BindsTo=), the agent
+// included. Like the applier's pre-delete stop, this is best-effort: a failure
+// is logged and the file is removed regardless, because StopUnit also fails
+// for a unit systemd never loaded, and keeping the file would make such an
+// orphan permanent.
+func (s *Scanner) stopGeneratedUnit(ctx context.Context, path string, agentPods map[string]struct{}) {
 	category, ok := config.CategoryForExtension(filepath.Ext(path))
 	if spec, _ := config.SpecFor(category); !ok || spec.Unit != config.GeneratedUnit {
 		return
@@ -133,10 +136,38 @@ func (s *Scanner) stopGeneratedUnit(ctx context.Context, path string) {
 	if applier.IsDefaultSelfUnit(service) {
 		return
 	}
+	if _, joined := agentPods[filepath.Base(path)]; joined {
+		slog.Warn("orphaned pod is joined by the agent's own container, not stopping it", "path", path, "unit", service)
+		return
+	}
 	slog.Warn("orphaned quadlet detected, stopping its service", "path", path, "unit", service)
 	if err := s.systemd.StopUnit(ctx, service); err != nil {
 		slog.Error("stopping orphaned service failed", "unit", service, "error", err)
 	}
+}
+
+// agentJoinedPods returns the pod files ("web.pod") that the agent's own
+// container joins via Pod=, read from every .container in the Quadlet
+// directory, managed or not. It runs before any orphan is removed, so a stale
+// agent container still protects its pod. The validator rejects such a Fleet;
+// this guards files deployed before that check or after a state reset.
+func (s *Scanner) agentJoinedPods() map[string]struct{} {
+	pods := make(map[string]struct{})
+	_ = filepath.WalkDir(s.quadletDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".container" {
+			return nil //nolint:nilerr // unreadable entries are left to scanOwnedDir's error handling
+		}
+		unit, err := parser.ParseUnitFile(path)
+		if err != nil {
+			return nil //nolint:nilerr // an unparseable container joins no pod
+		}
+		pod, _ := unit.Lookup(quadlet.ContainerGroup, quadlet.KeyPod)
+		if name, err := quadlet.GetUnitServiceName(unit); err == nil && pod != "" && applier.IsDefaultSelfUnit(name+".service") {
+			pods[pod] = struct{}{}
+		}
+		return nil
+	})
+	return pods
 }
 
 // scanMarkedDir scans a shared directory (systemd) and removes only files that carry

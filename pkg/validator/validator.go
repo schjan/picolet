@@ -109,6 +109,9 @@ func analyzeQuadlet(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitI
 	if err != nil {
 		return status.UnitDependencies{}, err
 	}
+	if err := rejectSelfPodMember(f.ParsedUnit); err != nil {
+		return status.UnitDependencies{}, err
+	}
 	return dependenciesFromUnit(generated), nil
 }
 

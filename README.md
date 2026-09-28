@@ -266,6 +266,8 @@ A `.pod` generates `<name>-pod.service` (hooks may target it as `unit: <name>.po
 Containers join it with `Pod=<name>.pod`; the pod must be deployed to the same host.
 The pod service starts its members (unless `StartWithPod=false`), so when a pod
 changes in the same reconciliation as its members, only the pod service is restarted.
+The agent's own container (`picolet.service`/`picolet-system.service`) must not join a
+pod: `validate` rejects it, because restarting or stopping the pod would stop the agent.
 
 ### Service Bundles
 

@@ -247,3 +247,45 @@ func TestScan_StaleQuadletStopsItsGeneratedService(t *testing.T) {
 		})
 	}
 }
+
+// Stopping a pod stops its members (BindsTo=). A stale pod the agent's own
+// container joins must therefore not be stopped, whether that container is
+// still managed or stale itself (e.g. after a state reset).
+func TestScan_StalePodWithAgentMemberIsNotStopped(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		agentFile    string
+		agentContent string
+		agentIsStale bool
+	}{
+		{name: "managed agent container", agentFile: "picolet.container", agentContent: "[Container]\nImage=picolet\nPod=web.pod\n"},
+		{name: "stale agent container", agentFile: "picolet.container", agentContent: "[Container]\nImage=picolet\nPod=web.pod\n", agentIsStale: true},
+		{name: "agent unit via ServiceName=", agentFile: "agent.container", agentContent: "[Container]\nImage=picolet\nServiceName=picolet-system\nPod=web.pod\n", agentIsStale: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			quadletDir := t.TempDir()
+			podPath := filepath.Join(quadletDir, "web.pod")
+			agentPath := filepath.Join(quadletDir, tt.agentFile)
+			require.NoError(t, os.WriteFile(podPath, []byte("[Pod]\n"), 0o600))
+			require.NoError(t, os.WriteFile(agentPath, []byte(tt.agentContent), 0o600))
+
+			sys := appliermocks.NewMockSystemdManager(t) // no StopUnit expected
+			fw := appliermocks.NewMockFileWriter(t)
+			fw.EXPECT().Remove(podPath).Return(nil).Once()
+			managed := map[string]state.ManagedFile{agentPath: {Hash: "sha256:abc", Category: "container"}}
+			if tt.agentIsStale {
+				fw.EXPECT().Remove(agentPath).Return(nil).Once()
+				managed = map[string]state.ManagedFile{}
+			}
+			pod := appliermocks.NewMockPodmanClient(t)
+			pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
+
+			_, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir()).
+				Scan(context.Background(), managed)
+			require.NoError(t, err)
+		})
+	}
+}

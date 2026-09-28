@@ -66,6 +66,30 @@ func TestValidateFilesPodErrors(t *testing.T) {
 			},
 			wantErr: "quadlet pod unit web.pod does not exist",
 		},
+		{
+			name: "agent's own container must not join a pod",
+			files: func(t *testing.T) []resolver.ResolvedFile {
+				t.Helper()
+				return []resolver.ResolvedFile{
+					newParsedFile(t, config.CategoryPod, testQuadletDir+"web.pod", "[Pod]\n"),
+					newParsedFile(t, config.CategoryContainer, testQuadletDir+"picolet.container", "[Container]\nImage=ghcr.io/schjan/picolet:1\nPod=web.pod\n"),
+				}
+			},
+			wantErr: "picolet.service must not join a pod",
+		},
+		{
+			// BindsTo= ties the member to the pod whether or not the pod starts it.
+			name: "agent's own unit under ServiceName= must not join a pod either",
+			files: func(t *testing.T) []resolver.ResolvedFile {
+				t.Helper()
+				return []resolver.ResolvedFile{
+					newParsedFile(t, config.CategoryPod, testQuadletDir+"web.pod", "[Pod]\n"),
+					newParsedFile(t, config.CategoryContainer, testQuadletDir+"agent.container",
+						"[Container]\nImage=ghcr.io/schjan/picolet:1\nServiceName=picolet-system\nPod=web.pod\nStartWithPod=false\n"),
+				}
+			},
+			wantErr: "picolet-system.service must not join a pod",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
