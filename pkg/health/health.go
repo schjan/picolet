@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/schjan/picolet/pkg/applier"
+	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/state"
 )
 
@@ -145,18 +146,35 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State,
 		// "failed" and any unexpected state. A one-shot job systemd activates
 		// (timer-fired or a static raw unit) is picolet's to report, not to run:
 		// retries belong in the unit (Restart=on-failure) and its trigger re-invokes
-		// it. Restart everything else conservatively.
+		// it. So is a unit whose category is not HealthDaemon. Restart everything
+		// else conservatively.
 		external := applier.ExternallyActivated(status)
 		slog.Warn("unit unhealthy", "unit", unit, "active_state", status.ActiveState,
 			"sub_state", status.SubState, "externally_activated", external)
 		result.Unhealthy = append(result.Unhealthy, unit)
-		if external {
+		if external || !daemonUnit(unit, st) {
 			result.ExternallyActivated = append(result.ExternallyActivated, unit)
 			delete(st.PendingUnits, unit) // never retried → must not loop retry_pending
 			return
 		}
 		c.maybeRestart(ctx, unit, st, result)
 	}
+}
+
+// daemonUnit reports whether every managed file backing unit belongs to a
+// HealthDaemon category, i.e. the health loop may restart it. Files whose
+// category is not in the table (e.g. state written by another version) keep
+// the conservative default of being restarted.
+func daemonUnit(unit string, st *state.State) bool {
+	for path, name := range st.ServiceNames {
+		if name != unit {
+			continue
+		}
+		if spec, ok := config.SpecFor(st.ManagedFiles[path].Category); ok && spec.Health != config.HealthDaemon {
+			return false
+		}
+	}
+	return true
 }
 
 // timerJobUnits selects the units picolet keeps run bookkeeping for: every

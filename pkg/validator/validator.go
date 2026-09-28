@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -77,37 +78,46 @@ func ValidateAll(ctx context.Context, r *resolver.Resolver, cfg *config.Config) 
 
 func analyzeFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo, rootless bool) (status.UnitDependencies, error) {
 	slog.Debug("validating file", "path", f.DestPath, "category", f.Category)
-	switch f.Category {
-	case config.CategoryNetwork, config.CategoryVolume, config.CategoryContainer, config.CategoryKube:
-		if f.ParsedUnit == nil {
-			return status.UnitDependencies{}, fmt.Errorf("%s: quadlet unit could not be parsed (invalid INI syntax)", f.DestPath)
-		}
-		generated, err := convertQuadlet(f.ParsedUnit, unitsInfo, rootless)
-		if err != nil {
-			return status.UnitDependencies{}, err
-		}
-		return dependenciesFromUnit(generated), nil
-	case config.CategoryManifest:
+	spec, ok := config.SpecFor(f.Category)
+	if !ok {
+		return status.UnitDependencies{}, fmt.Errorf("%s: unknown file category %q", f.DestPath, f.Category)
+	}
+	switch spec.Check {
+	case config.CheckQuadlet:
+		return analyzeQuadlet(f, unitsInfo, rootless)
+	case config.CheckManifest:
 		return status.UnitDependencies{}, validateManifest(f.DestPath, []byte(f.Content))
-	case config.CategorySystemd:
+	case config.CheckSystemd:
 		if err := validateSystemdUnit(f.DestPath, f.Content); err != nil {
 			return status.UnitDependencies{}, err
 		}
 		return dependenciesFromSystemd(f), nil
-	case config.CategorySecret:
+	case config.CheckSecret:
 		return status.UnitDependencies{}, validateSecret(f)
-	case config.CategoryFile:
+	case config.CheckFile:
 		return status.UnitDependencies{}, validateFile(f)
 	default:
-		return status.UnitDependencies{}, fmt.Errorf("%s: unknown file category %q", f.DestPath, f.Category)
+		return status.UnitDependencies{}, unsupportedError(f.DestPath, filepath.Ext(f.DestPath))
 	}
+}
+
+func analyzeQuadlet(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo, rootless bool) (status.UnitDependencies, error) {
+	if f.ParsedUnit == nil {
+		return status.UnitDependencies{}, fmt.Errorf("%s: quadlet unit could not be parsed (invalid INI syntax)", f.DestPath)
+	}
+	generated, err := convertQuadlet(f.ParsedUnit, unitsInfo, rootless)
+	if err != nil {
+		return status.UnitDependencies{}, err
+	}
+	return dependenciesFromUnit(generated), nil
 }
 
 // buildUnitsInfoFromFiles builds a UnitInfo map from resolved files for cross-reference resolution.
 // It mirrors Podman's two-phase generateUnitsInfoMap + Convert* flow:
-//  1. Pre-populate all unit entries (with ServiceName; ResourceName for containers).
-//  2. Call Convert* for network/volume/kube to populate their ResourceName so that
-//     containers referencing them can resolve the cross-reference via ConvertContainer.
+//  1. Pre-populate all unit entries (with ServiceName; ResourceName for Prefill categories).
+//  2. Convert the units of Quadlet categories without Prefill, in ConvertOrder, to
+//     populate their ResourceName so that units referencing them (e.g. a
+//     container's Network=/Volume=) resolve the cross-reference.
 func buildUnitsInfoFromFiles(files []resolver.ResolvedFile, rootless bool) map[string]*quadlet.UnitInfo {
 	units := make(map[string]*quadlet.UnitInfo)
 
@@ -122,26 +132,13 @@ func buildUnitsInfoFromFiles(files []resolver.ResolvedFile, rootless bool) map[s
 		}
 	}
 
-	// Pass 2: run Convert* for non-container quadlet types to populate ResourceName.
-	// This is required because ConvertContainer reads ResourceName from the unitsInfoMap
-	// when resolving Network=/Volume= references, and Convert{Network,Volume,Kube}
-	// sets it as a side effect.
+	// Pass 2: Convert* sets ResourceName as a side effect, which later
+	// conversions read from the unitsInfoMap.
 	// Errors here are not fatal: the same unit will be validated individually in
 	// ValidateFiles and will produce a proper error there. We log so the root cause
 	// is visible even if the container validation reports it with a less precise message.
-	for _, f := range files {
-		if f.ParsedUnit == nil {
-			continue
-		}
-		var err error
-		switch f.Category {
-		case config.CategoryNetwork:
-			_, _, err = quadlet.ConvertNetwork(f.ParsedUnit, units, rootless)
-		case config.CategoryVolume:
-			_, _, err = quadlet.ConvertVolume(f.ParsedUnit, units, rootless)
-		case config.CategoryKube:
-			_, err = quadlet.ConvertKube(f.ParsedUnit, units, rootless)
-		}
+	for _, f := range preConvertFiles(files) {
+		_, _, err := quadletConverters[f.Category].convert(f.ParsedUnit, units, rootless)
 		if err != nil {
 			slog.Debug("pre-populating units info: conversion failed, will be reported in per-file validation",
 				"file", f.DestPath, "error", err)
@@ -149,6 +146,24 @@ func buildUnitsInfoFromFiles(files []resolver.ResolvedFile, rootless bool) map[s
 	}
 
 	return units
+}
+
+// preConvertFiles selects the parsed units whose category is converted by
+// Podman and not prefilled, stably ordered by the category's ConvertOrder.
+func preConvertFiles(files []resolver.ResolvedFile) []resolver.ResolvedFile {
+	var selected []resolver.ResolvedFile
+	for _, f := range files {
+		spec, _ := config.SpecFor(f.Category)
+		if f.ParsedUnit != nil && spec.Check == config.CheckQuadlet && !spec.Prefill {
+			selected = append(selected, f)
+		}
+	}
+	slices.SortStableFunc(selected, func(a, b resolver.ResolvedFile) int {
+		sa, _ := config.SpecFor(a.Category)
+		sb, _ := config.SpecFor(b.Category)
+		return cmp.Compare(sa.ConvertOrder, sb.ConvertOrder)
+	})
+	return selected
 }
 
 func validateSystemdUnit(path, content string) error {
@@ -236,7 +251,7 @@ func unitNameForAnalysis(f resolver.ResolvedFile) string {
 			return info.ServiceFileName()
 		}
 	}
-	if f.Category == config.CategorySystemd {
+	if spec, _ := config.SpecFor(f.Category); spec.Unit == config.FileUnit {
 		return filepath.Base(f.DestPath)
 	}
 	return ""

@@ -48,8 +48,10 @@ type ScanResult struct {
 func (s *Scanner) Scan(ctx context.Context, managedFiles map[string]state.ManagedFile) (ScanResult, error) {
 	var result ScanResult
 	ownedDirs := []string{s.quadletDir}
-	for _, cat := range []config.Category{config.CategoryManifest, config.CategoryFile} {
-		ownedDirs = append(ownedDirs, filepath.Join(s.dataDir, cat.BundleSubdir()))
+	for _, spec := range config.Specs() {
+		if spec.Dest == config.DestData {
+			ownedDirs = append(ownedDirs, filepath.Join(s.dataDir, spec.Subdir))
+		}
 	}
 	for _, dir := range ownedDirs {
 		removed, err := s.scanOwnedDir(dir, managedFiles)

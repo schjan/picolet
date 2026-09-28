@@ -12,9 +12,9 @@ import (
 
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
+	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
-	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/status"
 )
@@ -120,7 +120,7 @@ func TestSetFilesManagedMetric(t *testing.T) {
 	}
 	setFilesManagedMetric(counts)
 
-	for _, cat := range reconciler.Categories() {
+	for _, cat := range config.Deployable() {
 		category := cat.String()
 		got := testutil.ToFloat64(metrics.FilesManagedTotal.WithLabelValues(category))
 		assert.InDelta(t, counts[category], got, 0.001, "category %s", category)

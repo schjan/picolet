@@ -20,10 +20,11 @@ import (
 )
 
 // bundleFilePathFunc returns a template func that resolves a relative path
-// inside a bundle category's deployed subdirectory (e.g. dataDir/manifests/...).
+// inside a data category's deployed subdirectory (e.g. dataDir/manifests/...).
 // funcName is included in error messages for clarity to template authors.
 func bundleFilePathFunc(funcName, dataDir string, category config.Category) func(string) (string, error) {
-	subdir := category.BundleSubdir()
+	spec, _ := config.SpecFor(category)
+	subdir := spec.Subdir
 	return func(relPath string) (string, error) {
 		cleaned, err := config.ValidateRelPath(relPath)
 		if err != nil {
@@ -197,8 +198,6 @@ func buildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, p
 			}
 			return secretReader(path)
 		},
-		"manifestPath": bundleFilePathFunc("manifestPath", dataDir, config.CategoryManifest),
-		"filePath":     bundleFilePathFunc("filePath", dataDir, config.CategoryFile),
 		// renderTemplate uses a closure depth counter to prevent infinite recursion.
 		// Not goroutine-safe; template rendering must be serial.
 		"renderTemplate": func() any {
@@ -217,6 +216,11 @@ func buildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, p
 			}
 		}(),
 	})
+	for _, spec := range config.Specs() {
+		if spec.PathHelper != "" {
+			funcMap[spec.PathHelper] = bundleFilePathFunc(spec.PathHelper, dataDir, spec.Category)
+		}
+	}
 
 	for i := range providers {
 		registerProviderFunc(ctx, funcMap, providers[i], caches[providers[i].Key])

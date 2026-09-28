@@ -40,17 +40,27 @@ type AssignmentGroup struct {
 	Services   []string `yaml:"services"`
 }
 
+// byCategory binds the typed lists of the assignments.yml schema to their
+// categories. The lists are the schema itself; #146/#148 replace them with
+// extension-derived paths:.
+func (g AssignmentGroup) byCategory() map[Category][]string {
+	return map[Category][]string{
+		CategoryNetwork:   g.Networks,
+		CategorySystemd:   g.Systemd,
+		CategoryVolume:    g.Volumes,
+		CategoryContainer: g.Containers,
+		CategoryKube:      g.Kube,
+		CategoryManifest:  g.Manifests,
+		CategoryFile:      g.Files,
+		CategorySecret:    g.Secrets,
+	}
+}
+
 // ResolvedFileSet is the merged set of all files assigned to a host.
 type ResolvedFileSet struct {
-	Networks   []string
-	Systemd    []string
-	Volumes    []string
-	Containers []string
-	Kube       []string
-	Manifests  []string
-	Files      []string
-	Secrets    []string
-	Services   []string
+	// Paths holds the source paths per category, sorted and unique.
+	Paths    map[Category][]string
+	Services []string
 }
 
 // Resolve computes the complete file set for a host by merging
@@ -75,14 +85,9 @@ func (a *Assignments) Resolve(host *HostConfig) *ResolvedFileSet {
 }
 
 func (r *ResolvedFileSet) deduplicate() {
-	r.Networks = sortedUnique(r.Networks)
-	r.Systemd = sortedUnique(r.Systemd)
-	r.Volumes = sortedUnique(r.Volumes)
-	r.Containers = sortedUnique(r.Containers)
-	r.Kube = sortedUnique(r.Kube)
-	r.Manifests = sortedUnique(r.Manifests)
-	r.Files = sortedUnique(r.Files)
-	r.Secrets = sortedUnique(r.Secrets)
+	for category, paths := range r.Paths {
+		r.Paths[category] = sortedUnique(paths)
+	}
 	r.Services = sortedUnique(r.Services)
 }
 
@@ -92,13 +97,11 @@ func sortedUnique(s []string) []string {
 }
 
 func (r *ResolvedFileSet) merge(g AssignmentGroup) {
-	r.Networks = append(r.Networks, g.Networks...)
-	r.Systemd = append(r.Systemd, g.Systemd...)
-	r.Volumes = append(r.Volumes, g.Volumes...)
-	r.Containers = append(r.Containers, g.Containers...)
-	r.Kube = append(r.Kube, g.Kube...)
-	r.Manifests = append(r.Manifests, g.Manifests...)
-	r.Files = append(r.Files, g.Files...)
-	r.Secrets = append(r.Secrets, g.Secrets...)
+	if r.Paths == nil {
+		r.Paths = make(map[Category][]string)
+	}
+	for category, paths := range g.byCategory() {
+		r.Paths[category] = append(r.Paths[category], paths...)
+	}
 	r.Services = append(r.Services, g.Services...)
 }

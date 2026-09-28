@@ -51,8 +51,12 @@ The agent runs a timer-based loop (`pkg/agent`). Each tick:
 6. **Diff** — compare desired files against `state.ManagedFiles` by SHA-256 content hash
 7. **Validate** — quadlet files via `quadlet.Convert*()`, K8s manifests via strict unmarshal, systemd units structurally
 8. **Snapshot** — save current disk state for rollback
-9. **Apply** — phased by category order: network → volume → secret → systemd → manifest → container → kube, then `DaemonReload` + restart changed units
+9. **Apply** — writes ordered by the category table's `ApplyRank` (network → volume → secret → systemd → manifest → file → container → kube), then `DaemonReload` + restart changed units (alphabetical; start order comes from the Quadlet-generated dependencies)
 10. **State save** — atomic JSON write (tmp + rename) with new SHA + managed file hashes
+
+### Category Table
+
+`pkg/config/categories.go` holds the one category table (destination, validator `Check`, `ApplyRank`, `ConvertOrder`, health class, restart policy, resource-name prefill, unit naming) plus the extension map; every consumer derives from it. Rows with `CheckUnsupported` (`.image`, `.build`, `.pod`, `.artifact`) are known to Podman but rejected by the validator; enabling one means setting `CheckQuadlet` and wiring its converter in `quadletConverters` (`pkg/validator/quadlet.go`). `ConvertOrder` must equal `quadlet.SupportedExtensions` — a test fails on a Podman upgrade that adds or reorders extensions.
 
 ### Orphan Detection & Ownership Markers
 

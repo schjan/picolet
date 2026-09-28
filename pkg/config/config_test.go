@@ -134,10 +134,10 @@ func TestAssignmentsResolve(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			result := assignments.Resolve(tt.host)
-			assert.Len(t, result.Networks, tt.wantNets)
-			assert.Len(t, result.Containers, tt.wantConts)
-			assert.Len(t, result.Kube, tt.wantKubes)
-			assert.Len(t, result.Volumes, tt.wantVols)
+			assert.Len(t, result.Paths[CategoryNetwork], tt.wantNets)
+			assert.Len(t, result.Paths[CategoryContainer], tt.wantConts)
+			assert.Len(t, result.Paths[CategoryKube], tt.wantKubes)
+			assert.Len(t, result.Paths[CategoryVolume], tt.wantVols)
 			assert.Equal(t, tt.wantSvcs, result.Services)
 		})
 	}
@@ -452,7 +452,7 @@ func TestAssignmentsResolveMergesFiles(t *testing.T) {
 	}
 	host := &HostConfig{Hostname: "h", Role: "p", Features: []string{"observability"}}
 	resolved := a.Resolve(host)
-	assert.Equal(t, []string{"shared/base.yml", "shared/obs.yml"}, resolved.Files)
+	assert.Equal(t, []string{"shared/base.yml", "shared/obs.yml"}, resolved.Paths[CategoryFile])
 }
 
 func TestHookNormalizeValidatesFiles(t *testing.T) {

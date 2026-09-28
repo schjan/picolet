@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/schjan/picolet/pkg/applier"
+	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/state"
 	"github.com/schjan/picolet/pkg/status"
 )
@@ -182,7 +182,7 @@ func groupByCategory(files map[string]state.ManagedFile, services map[string]str
 		})
 	}
 	var out []CategoryGroup
-	for _, cat := range applier.CategoryOrder() {
+	for _, cat := range config.ApplyOrder() {
 		category := cat.String()
 		if rows, ok := buckets[category]; ok {
 			slices.SortFunc(rows, func(a, b UnitRow) int { return cmp.Compare(a.Basename, b.Basename) })

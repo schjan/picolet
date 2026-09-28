@@ -1211,7 +1211,7 @@ func TestSecretHookReloaderHonorsHealthDelayCancellation(t *testing.T) {
 
 func TestCategoryOrderIncludesFileNextToManifest(t *testing.T) {
 	t.Parallel()
-	order := applier.CategoryOrder()
+	order := config.ApplyOrder()
 	manifestIdx := slices.Index(order, config.CategoryManifest)
 	fileIdx := slices.Index(order, config.CategoryFile)
 	require.NotEqual(t, -1, manifestIdx, "manifest must be present")

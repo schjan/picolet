@@ -215,7 +215,7 @@ func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host
 	}
 
 	// Batch-resolve direct (non-template) secret refs in one call per provider.
-	resolvedDirect, err := r.batchResolveDirectSecrets(ctx, expanded.FileSet.Secrets)
+	resolvedDirect, err := r.batchResolveDirectSecrets(ctx, expanded.FileSet.Paths[config.CategorySecret])
 	if err != nil {
 		return nil, err
 	}
@@ -302,24 +302,25 @@ func (r *Resolver) prepareTemplateData(ctx context.Context, registry *template.T
 }
 
 // collectSystemdUnits derives the sorted, unique list of systemd unit names
-// picolet manages on the host. Quadlet units (.container/.kube/.network/.volume)
-// are rendered and parsed via Podman's GetUnitServiceName, which honors
-// ServiceName= overrides; raw CategorySystemd files contribute their filename
-// with any .tmpl suffix stripped. Render and parse errors are swallowed here —
-// the final pass and the validator surface them with proper diagnostics.
+// picolet manages on the host. Quadlet units (GeneratedUnit categories) are
+// rendered and parsed via Podman's GetUnitServiceName, which honors
+// ServiceName= overrides; FileUnit categories contribute their filename with
+// any .tmpl suffix stripped. Render and parse errors are swallowed here — the
+// final pass and the validator surface them with proper diagnostics.
 func (r *Resolver) collectSystemdUnits(registry *template.Template, tmplData *TemplateData, fileSet *config.ResolvedFileSet) []string {
 	var units []string
-	for _, g := range quadletCategoryPaths(fileSet) {
+	for _, g := range unitCategoryPaths(fileSet) {
 		for _, srcPath := range g.Paths {
-			f, err := r.resolveFile(registry, tmplData, srcPath, g.Category, r.quadletDestPath(srcPath), true)
+			if g.Spec.Unit == config.FileUnit {
+				units = append(units, destFilename(srcPath))
+				continue
+			}
+			f, err := r.resolveFile(registry, tmplData, srcPath, g.Spec, r.unitDestPath(g.Spec, srcPath))
 			if err != nil || f.ServiceName == "" {
 				continue
 			}
 			units = append(units, f.ServiceName)
 		}
-	}
-	for _, srcPath := range fileSet.Systemd {
-		units = append(units, destFilename(srcPath))
 	}
 	return sortedUnique(units)
 }
@@ -367,9 +368,9 @@ func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*expanded
 
 // expandFileSet returns a new ResolvedFileSet merged with any service bundles,
 // plus the full list of nested data refs (legacy + bundled). The input fileSet
-// is not mutated. Manifests, Files, and Services are left nil: nested data paths
-// flow through bundleFileRefs, and Services is already flattened into the
-// category slices.
+// is not mutated. Data categories (UsesRelPath) and Services are left out of
+// the returned Paths: nested data paths flow through bundleFileRefs, and
+// Services is already flattened into the category paths.
 // Populating them would let a future caller miss bundle contents.
 func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []bundleFileRef, []hookRef, error) {
 	expanded, err := expandServiceBundles(r.fsys, fileSet.Services)
@@ -377,74 +378,65 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.Resol
 		return nil, nil, nil, err
 	}
 
-	merged := &config.ResolvedFileSet{
-		Networks:   sortedUnique(slices.Concat(fileSet.Networks, expanded.Networks)),
-		Systemd:    sortedUnique(slices.Concat(fileSet.Systemd, expanded.Systemd)),
-		Volumes:    sortedUnique(slices.Concat(fileSet.Volumes, expanded.Volumes)),
-		Containers: sortedUnique(slices.Concat(fileSet.Containers, expanded.Containers)),
-		Kube:       sortedUnique(slices.Concat(fileSet.Kube, expanded.Kube)),
-		Secrets:    sortedUnique(slices.Concat(fileSet.Secrets, expanded.Secrets)),
+	merged := &config.ResolvedFileSet{Paths: make(map[config.Category][]string)}
+	bundleFileRefs := slices.Clone(expanded.NestedRefs)
+	for _, spec := range config.Specs() {
+		if spec.Category.UsesRelPath() {
+			for _, srcPath := range fileSet.Paths[spec.Category] {
+				bundleFileRefs = append(bundleFileRefs, newLegacyBundleFileRef(srcPath, spec))
+			}
+			continue
+		}
+		if paths := sortedUnique(slices.Concat(fileSet.Paths[spec.Category], expanded.Paths[spec.Category])); len(paths) > 0 {
+			merged.Paths[spec.Category] = paths
+		}
 	}
-
-	bundleFileRefs := make([]bundleFileRef, 0, len(fileSet.Manifests)+len(fileSet.Files)+len(expanded.NestedRefs))
-	for _, srcPath := range fileSet.Manifests {
-		bundleFileRefs = append(bundleFileRefs, newLegacyBundleFileRef(srcPath, config.CategoryManifest))
-	}
-	for _, srcPath := range fileSet.Files {
-		bundleFileRefs = append(bundleFileRefs, newLegacyBundleFileRef(srcPath, config.CategoryFile))
-	}
-	bundleFileRefs = append(bundleFileRefs, expanded.NestedRefs...)
 	return merged, uniqueBundleFileRefs(bundleFileRefs), expanded.Hooks, nil
 }
 
 // newLegacyBundleFileRef constructs a bundleFileRef for a legacy (non-bundled)
 // data path, where the source and logical paths are the same. Bundled refs set
 // a stripped LogicalPath and are built in readNestedSubdir.
-func newLegacyBundleFileRef(srcPath string, category config.Category) bundleFileRef {
+func newLegacyBundleFileRef(srcPath string, spec config.Spec) bundleFileRef {
 	return bundleFileRef{
 		SrcPath:     srcPath,
 		LogicalPath: srcPath,
-		Category:    category,
-		RelPath:     stripSubdirPrefix(deployedLogicalPath(srcPath), category.BundleSubdir()),
+		Category:    spec.Category,
+		RelPath:     stripSubdirPrefix(deployedLogicalPath(srcPath), spec.Subdir),
 	}
 }
 
-// categoryPaths pairs a quadlet category with its host source paths.
+// categoryPaths pairs a unit category's table row with its host source paths.
 type categoryPaths struct {
-	Category config.Category
-	Paths    []string
+	Spec  config.Spec
+	Paths []string
 }
 
-// quadletCategoryPaths groups a host's quadlet sources by category, in apply
-// order. Single source of truth for buildFileSkeletons and collectSystemdUnits.
-func quadletCategoryPaths(fileSet *config.ResolvedFileSet) []categoryPaths {
-	return []categoryPaths{
-		{config.CategoryNetwork, fileSet.Networks},
-		{config.CategoryVolume, fileSet.Volumes},
-		{config.CategoryContainer, fileSet.Containers},
-		{config.CategoryKube, fileSet.Kube},
+// unitCategoryPaths groups a host's unit sources (Quadlet and raw systemd
+// destinations) by category, in table order. Single source of truth for
+// buildFileSkeletons, buildStandardFiles, collectSystemdUnits and
+// collectTemplateRefs.
+func unitCategoryPaths(fileSet *config.ResolvedFileSet) []categoryPaths {
+	var groups []categoryPaths
+	for _, spec := range config.Specs() {
+		if spec.Dest == config.DestQuadlet || spec.Dest == config.DestSystemd {
+			groups = append(groups, categoryPaths{Spec: spec, Paths: fileSet.Paths[spec.Category]})
+		}
 	}
+	return groups
 }
 
 // buildFileSkeletons returns SrcPath/Category/DestPath tuples for every file
 // the host will deploy. It does not render templates, read files, or call the
 // 1Password SDK, so it's safe (and cheap) to run before expensive operations.
 func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, bundleFileRefs []bundleFileRef) ([]ResolvedFile, error) {
-	total := len(fileSet.Networks) + len(fileSet.Systemd) + len(fileSet.Volumes) +
-		len(fileSet.Containers) + len(fileSet.Kube) + len(bundleFileRefs) + len(fileSet.Secrets)
-	skeletons := make([]ResolvedFile, 0, total)
-
-	for _, g := range quadletCategoryPaths(fileSet) {
+	var skeletons []ResolvedFile
+	for _, g := range unitCategoryPaths(fileSet) {
 		for _, srcPath := range g.Paths {
 			skeletons = append(skeletons, ResolvedFile{
-				SrcPath: srcPath, Category: g.Category, DestPath: r.quadletDestPath(srcPath),
+				SrcPath: srcPath, Category: g.Spec.Category, DestPath: r.unitDestPath(g.Spec, srcPath),
 			})
 		}
-	}
-	for _, srcPath := range fileSet.Systemd {
-		skeletons = append(skeletons, ResolvedFile{
-			SrcPath: srcPath, Category: config.CategorySystemd, DestPath: r.systemdDestPath(srcPath),
-		})
 	}
 	for _, ref := range bundleFileRefs {
 		skeletons = append(skeletons, ResolvedFile{
@@ -452,7 +444,7 @@ func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, bundleFil
 			RelPath: ref.RelPath,
 		})
 	}
-	for _, srcPath := range fileSet.Secrets {
+	for _, srcPath := range fileSet.Paths[config.CategorySecret] {
 		dest, err := r.secretDestPath(srcPath)
 		if err != nil {
 			return nil, fmt.Errorf("resolving secret %s: %w", srcPath, err)
@@ -464,12 +456,13 @@ func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, bundleFil
 	return skeletons, nil
 }
 
-func (r *Resolver) quadletDestPath(srcPath string) string {
-	return filepath.Join(r.quadletDir, destFilename(srcPath))
-}
-
-func (r *Resolver) systemdDestPath(srcPath string) string {
-	return filepath.Join(r.systemdDir, destFilename(srcPath))
+// unitDestPath returns the deployed path of a Quadlet or raw systemd source.
+func (r *Resolver) unitDestPath(spec config.Spec, srcPath string) string {
+	dir := r.quadletDir
+	if spec.Dest == config.DestSystemd {
+		dir = r.systemdDir
+	}
+	return filepath.Join(dir, destFilename(srcPath))
 }
 
 func (r *Resolver) dataDestPath(logicalPath string) string {
@@ -536,7 +529,7 @@ func (r *Resolver) buildFiles(
 		files = append(files, *f)
 	}
 
-	secretFiles, err := r.buildSecretFiles(registry, tmplData, fileSet.Secrets, opResolved)
+	secretFiles, err := r.buildSecretFiles(registry, tmplData, fileSet.Paths[config.CategorySecret], opResolved)
 	if err != nil {
 		return nil, err
 	}
@@ -550,23 +543,10 @@ func (r *Resolver) buildStandardFiles(
 	tmplData *TemplateData,
 	fileSet *config.ResolvedFileSet,
 ) ([]ResolvedFile, error) {
-	fileGroups := []struct {
-		paths    []string
-		cat      config.Category
-		destPath func(string) string
-		quadlet  bool
-	}{
-		{fileSet.Networks, config.CategoryNetwork, r.quadletDestPath, true},
-		{fileSet.Systemd, config.CategorySystemd, r.systemdDestPath, false},
-		{fileSet.Volumes, config.CategoryVolume, r.quadletDestPath, true},
-		{fileSet.Containers, config.CategoryContainer, r.quadletDestPath, true},
-		{fileSet.Kube, config.CategoryKube, r.quadletDestPath, true},
-	}
-
 	var files []ResolvedFile
-	for _, g := range fileGroups {
-		for _, srcPath := range g.paths {
-			f, err := r.resolveFile(registry, tmplData, srcPath, g.cat, g.destPath(srcPath), g.quadlet)
+	for _, g := range unitCategoryPaths(fileSet) {
+		for _, srcPath := range g.Paths {
+			f, err := r.resolveFile(registry, tmplData, srcPath, g.Spec, r.unitDestPath(g.Spec, srcPath))
 			if err != nil {
 				return nil, err
 			}
@@ -628,21 +608,21 @@ func detectCollisions(files []ResolvedFile) error {
 	return errors.Join(errs...)
 }
 
-func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateData, srcPath string, category config.Category, destPath string, quadlet bool) (*ResolvedFile, error) {
+func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateData, srcPath string, spec config.Spec, destPath string) (*ResolvedFile, error) {
 	content, err := r.renderOrRead(registry, tmplData, srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving %s: %w", srcPath, err)
 	}
 
-	if !quadlet && category == config.CategorySystemd {
+	if spec.Dest == config.DestSystemd {
 		content = config.PicoletMarker + "\n" + content
 	}
 
 	filename := destFilename(srcPath)
 	var parsedUnit *parser.UnitFile
 	var serviceName string
-	switch {
-	case quadlet:
+	switch spec.Unit {
+	case config.GeneratedUnit:
 		unit := parser.NewUnitFile()
 		unit.Filename = filename
 		if err := unit.Parse(content); err == nil {
@@ -650,18 +630,19 @@ func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateDa
 			serviceName = unitServiceName(unit)
 		}
 		// Parse errors are silent here — validator catches them with proper error messages
-	case category == config.CategorySystemd:
+	case config.FileUnit:
 		// Raw systemd units are not parsed; the unit name is the filename. Populate
 		// it so the unit is tracked in state.ServiceNames — driving health checks,
 		// the status store, and the dashboard, just like quadlet-derived units.
 		serviceName = filename
+	case config.NoUnit:
 	}
 
 	return &ResolvedFile{
 		SrcPath:     srcPath,
 		DestPath:    destPath,
 		Content:     content,
-		Category:    category,
+		Category:    spec.Category,
 		ParsedUnit:  parsedUnit,
 		ServiceName: serviceName,
 	}, nil
@@ -729,9 +710,12 @@ func resolveHookQuadletUnit(quadletName string, files []ResolvedFile) (string, e
 // isQuadletUnit reports whether the given unit name has a Quadlet file extension,
 // indicating it needs resolution to its generated systemd service name.
 func isQuadletUnit(unit string) bool {
-	ext := filepath.Ext(unit)
-	_, ok := quadlet.SupportedExtensions[ext]
-	return ok
+	category, ok := config.CategoryForExtension(filepath.Ext(unit))
+	if !ok {
+		return false
+	}
+	spec, _ := config.SpecFor(category)
+	return spec.Dest == config.DestQuadlet
 }
 
 // destFilename returns the base filename for a source path, stripping any .tmpl suffix.
@@ -892,10 +876,10 @@ func (r *Resolver) collectTemplateRefs(
 	bundleFileRefs []bundleFileRef,
 	hookRefs []hookRef,
 ) {
-	allPaths := slices.Concat(
-		fileSet.Networks, fileSet.Systemd, fileSet.Volumes,
-		fileSet.Containers, fileSet.Kube,
-	)
+	var allPaths []string
+	for _, g := range unitCategoryPaths(fileSet) {
+		allPaths = append(allPaths, g.Paths...)
+	}
 	for _, ref := range bundleFileRefs {
 		allPaths = append(allPaths, ref.SrcPath)
 	}
@@ -905,7 +889,7 @@ func (r *Resolver) collectTemplateRefs(
 	// Include secret entries that are templates — they may call provider
 	// reader functions. Direct provider refs (op://, pass://) are not
 	// templates and are skipped.
-	for _, path := range fileSet.Secrets {
+	for _, path := range fileSet.Paths[config.CategorySecret] {
 		if !op.IsRef(path) && !pp.IsRef(path) {
 			allPaths = append(allPaths, path)
 		}

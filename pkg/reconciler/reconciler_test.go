@@ -193,8 +193,3 @@ func TestMergeChangesetPreservesUntouchedState(t *testing.T) {
 	assert.Equal(t, "keep.service", st.ServiceNames["/untouched"])
 	assert.NotContains(t, st.ServiceNames, "/plain")
 }
-
-func TestCategoriesIncludesFile(t *testing.T) {
-	t.Parallel()
-	assert.Contains(t, Categories(), config.CategoryFile)
-}

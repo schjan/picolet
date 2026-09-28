@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/schjan/picolet/pkg/config"
 )
 
 func TestExpandServiceBundlesHappyPath(t *testing.T) {
@@ -27,12 +29,12 @@ func TestExpandServiceBundlesHappyPath(t *testing.T) {
 	expanded, err := expandServiceBundles(fsys, []string{"web"})
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"services/web/networks/internal.network"}, expanded.Networks)
-	assert.Equal(t, []string{"services/web/systemd/http.socket"}, expanded.Systemd)
-	assert.Equal(t, []string{"services/web/volumes/data.volume"}, expanded.Volumes)
-	assert.Equal(t, []string{"services/web/containers/web.container.tmpl"}, expanded.Containers)
-	assert.Equal(t, []string{"services/web/kube/app.kube.tmpl"}, expanded.Kube)
-	assert.Equal(t, []string{"services/web/secrets/config.yml.tmpl"}, expanded.Secrets)
+	assert.Equal(t, []string{"services/web/networks/internal.network"}, expanded.Paths[config.CategoryNetwork])
+	assert.Equal(t, []string{"services/web/systemd/http.socket"}, expanded.Paths[config.CategorySystemd])
+	assert.Equal(t, []string{"services/web/volumes/data.volume"}, expanded.Paths[config.CategoryVolume])
+	assert.Equal(t, []string{"services/web/containers/web.container.tmpl"}, expanded.Paths[config.CategoryContainer])
+	assert.Equal(t, []string{"services/web/kube/app.kube.tmpl"}, expanded.Paths[config.CategoryKube])
+	assert.Equal(t, []string{"services/web/secrets/config.yml.tmpl"}, expanded.Paths[config.CategorySecret])
 	assert.Equal(t, []hookRef{{Service: "web", SrcPath: "services/web/picolet.yml"}}, expanded.Hooks)
 	assert.Equal(t, []bundleFileRef{
 		{
@@ -117,8 +119,8 @@ func TestExpandServiceBundlesEmptySubdirIsFine(t *testing.T) {
 
 	expanded, err := expandServiceBundles(fsys, []string{"web"})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"services/web/networks/internal.network"}, expanded.Networks)
-	assert.Empty(t, expanded.Containers)
+	assert.Equal(t, []string{"services/web/networks/internal.network"}, expanded.Paths[config.CategoryNetwork])
+	assert.Empty(t, expanded.Paths[config.CategoryContainer])
 }
 
 func TestExpandServiceBundlesUnknownRootEntry(t *testing.T) {
@@ -307,7 +309,7 @@ func TestAddPathUnknownCategory(t *testing.T) {
 
 	// Valid category still works after an invalid one.
 	require.NoError(t, b.addPath("container", "services/web/containers/x.container"))
-	assert.Equal(t, []string{"services/web/containers/x.container"}, b.Containers)
+	assert.Equal(t, []string{"services/web/containers/x.container"}, b.Paths[config.CategoryContainer])
 }
 
 func TestStripServicePrefix(t *testing.T) {

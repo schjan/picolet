@@ -4,27 +4,56 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"strings"
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
+
+	"github.com/schjan/picolet/pkg/config"
 )
+
+// quadletConverter wires a CheckQuadlet category row to Podman's converter.
+type quadletConverter struct {
+	// convert returns the generated service, a non-fatal warning, and an error.
+	convert func(unit *parser.UnitFile, units map[string]*quadlet.UnitInfo, rootless bool) (*parser.UnitFile, error, error)
+	// resourceName prefills UnitInfo.ResourceName; set iff the row has Prefill.
+	resourceName func(unit *parser.UnitFile) string
+}
+
+// quadletConverters holds the converter for every CheckQuadlet category.
+var quadletConverters = map[config.Category]quadletConverter{
+	config.CategoryNetwork: {convert: quadlet.ConvertNetwork},
+	config.CategoryVolume:  {convert: quadlet.ConvertVolume},
+	config.CategoryContainer: {
+		convert:      quadlet.ConvertContainer,
+		resourceName: quadlet.GetContainerResourceName,
+	},
+	config.CategoryKube: {convert: withoutWarning(quadlet.ConvertKube)},
+}
+
+func withoutWarning(convert func(*parser.UnitFile, map[string]*quadlet.UnitInfo, bool) (*parser.UnitFile, error)) func(*parser.UnitFile, map[string]*quadlet.UnitInfo, bool) (*parser.UnitFile, error, error) {
+	return func(unit *parser.UnitFile, units map[string]*quadlet.UnitInfo, rootless bool) (*parser.UnitFile, error, error) {
+		service, err := convert(unit, units, rootless)
+		return service, nil, err
+	}
+}
 
 // buildUnitInfo mirrors Podman's generateUnitsInfoMap logic exactly.
 // GetUnitServiceName returns the base service name without ".service" suffix;
 // quadlet.UnitInfo.ServiceFileName appends the suffix when needed.
-// ResourceName must be pre-filled for .container (network reuse resolution via GetContainerResourceName).
-// Convert* fills ResourceName for all other types (.network, .volume, .kube).
+// ResourceName is pre-filled for categories whose row has Prefill (e.g.
+// .container, for network reuse resolution via GetContainerResourceName);
+// Convert* fills it for the others.
 func buildUnitInfo(unit *parser.UnitFile) *quadlet.UnitInfo {
 	serviceName, err := quadlet.GetUnitServiceName(unit)
 	if err != nil {
 		return nil
 	}
 	info := &quadlet.UnitInfo{ServiceName: serviceName}
-	if strings.HasSuffix(unit.Filename, ".container") {
-		info.ResourceName = quadlet.GetContainerResourceName(unit)
+	if category, ok := config.CategoryForExtension(filepath.Ext(unit.Filename)); ok {
+		if conv := quadletConverters[category]; conv.resourceName != nil {
+			info.ResourceName = conv.resourceName(unit)
+		}
 	}
-	// .network, .volume, .kube: ResourceName left empty — Convert* sets it
 	return info
 }
 
@@ -50,23 +79,17 @@ func convertQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.Unit
 	}
 
 	ext := filepath.Ext(unit.Filename)
-
-	var warn error
-	var convertErr error
-	var service *parser.UnitFile
-	switch ext {
-	case ".container":
-		service, warn, convertErr = quadlet.ConvertContainer(unit, unitsInfoMap, rootless)
-	case ".network":
-		service, warn, convertErr = quadlet.ConvertNetwork(unit, unitsInfoMap, rootless)
-	case ".volume":
-		service, warn, convertErr = quadlet.ConvertVolume(unit, unitsInfoMap, rootless)
-	case ".kube":
-		service, convertErr = quadlet.ConvertKube(unit, unitsInfoMap, rootless)
-	default:
+	category, _ := config.CategoryForExtension(ext)
+	spec, ok := config.SpecFor(category)
+	if !ok || spec.Dest != config.DestQuadlet {
 		return nil, fmt.Errorf("%s: unknown quadlet extension %q", unit.Filename, ext)
 	}
+	conv, ok := quadletConverters[category]
+	if !ok {
+		return nil, unsupportedError(unit.Filename, ext)
+	}
 
+	service, warn, convertErr := conv.convert(unit, unitsInfoMap, rootless)
 	if warn != nil {
 		slog.Warn("quadlet warning", "file", unit.Filename, "warning", warn)
 	}
@@ -74,4 +97,8 @@ func convertQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.Unit
 		return nil, fmt.Errorf("%s: %w", unit.Filename, convertErr)
 	}
 	return service, nil
+}
+
+func unsupportedError(path, ext string) error {
+	return fmt.Errorf("%s: `%s` is not supported by picolet", path, ext)
 }
