@@ -28,6 +28,10 @@ var quadletConverters = map[config.Category]quadletConverter{
 		resourceName: quadlet.GetContainerResourceName,
 	},
 	config.CategoryKube: {convert: withoutWarning(quadlet.ConvertKube)},
+	config.CategoryPod: {
+		convert:      quadlet.ConvertPod,
+		resourceName: quadlet.GetPodResourceName,
+	},
 }
 
 func withoutWarning(convert func(*parser.UnitFile, map[string]*quadlet.UnitInfo, bool) (*parser.UnitFile, error)) func(*parser.UnitFile, map[string]*quadlet.UnitInfo, bool) (*parser.UnitFile, error, error) {

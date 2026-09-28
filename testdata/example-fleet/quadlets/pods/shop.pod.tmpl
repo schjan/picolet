@@ -1,0 +1,7 @@
+[Pod]
+PublishPort={{ index .Ports "app" }}:80
+Network=internal.network
+Label=host={{ .Host.ExternalHostname }}
+
+[Install]
+WantedBy=default.target

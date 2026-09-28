@@ -950,6 +950,11 @@ func TestResolveHostHookUnitResolution(t *testing.T) {
 			wantUnit: "app.service",
 		},
 		{
+			name:     "quadlet pod resolves to its generated -pod service",
+			hookUnit: "web.pod",
+			wantUnit: "web-pod.service",
+		},
+		{
 			name:     "explicit service passes through unchanged",
 			hookUnit: "app.service",
 			wantUnit: "app.service",
@@ -969,6 +974,7 @@ role: server
 features: []
 `)},
 				"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\nContainerName=app\n")},
+				"services/app/pods/web.pod":             &fstest.MapFile{Data: []byte("[Pod]\n")},
 				"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
 hooks:
   - name: app-reload

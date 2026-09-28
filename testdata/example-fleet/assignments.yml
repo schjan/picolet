@@ -21,6 +21,10 @@ roles:
   worker:
     containers:
       - quadlets/containers/exporter.container
+      - quadlets/containers/shop-api.container
+      - quadlets/containers/shop-proxy.container.tmpl
+    pods:
+      - quadlets/pods/shop.pod.tmpl
   web:
     services:
       - web-app

@@ -154,11 +154,15 @@ var categories = []Spec{
 	},
 	{
 		Category: CategoryContainer, Dest: DestQuadlet, Subdir: "containers", Check: CheckQuadlet,
-		ApplyRank: 100, ConvertOrder: 4, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, Unit: GeneratedUnit,
+		ApplyRank: 100, ConvertOrder: 4, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
 		Category: CategoryKube, Dest: DestQuadlet, Subdir: "kube", Check: CheckQuadlet,
 		ApplyRank: 110, ConvertOrder: 4, Health: HealthDaemon, Restart: RestartChanged, PreConvert: true, Unit: GeneratedUnit,
+	},
+	{
+		Category: CategoryPod, Dest: DestQuadlet, Subdir: "pods", Check: CheckQuadlet,
+		ApplyRank: 90, ConvertOrder: 5, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
 		Category: CategoryManifest, Dest: DestData, Subdir: "manifests", PathHelper: "manifestPath", Check: CheckManifest,
@@ -184,10 +188,6 @@ var categories = []Spec{
 	{
 		Category: CategoryBuild, Dest: DestQuadlet, Check: CheckUnsupported,
 		ApplyRank: 40, ConvertOrder: 3, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, Unit: GeneratedUnit,
-	},
-	{
-		Category: CategoryPod, Dest: DestQuadlet, Check: CheckUnsupported,
-		ApplyRank: 90, ConvertOrder: 5, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, Unit: GeneratedUnit,
 	},
 }
 

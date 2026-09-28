@@ -1,0 +1,4 @@
+[Container]
+Image=docker.io/library/alpine:3.23
+Pod=shop.pod
+Exec=sleep infinity

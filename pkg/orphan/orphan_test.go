@@ -33,7 +33,9 @@ func TestScanOwnedDir_RemovesOrphans(t *testing.T) {
 	pod := appliermocks.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
-	s := orphan.New(fw, pod, quadletDir, t.TempDir(), t.TempDir())
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().StopUnit(mock.Anything, "old.service").Return(nil)
+	s := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir())
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{
 		managedPath: {Hash: "sha256:abc", Category: "container"},
 	})
@@ -49,7 +51,7 @@ func TestScanOwnedDir_DirNotExist(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
 	nonExistent := filepath.Join(t.TempDir(), "does-not-exist")
-	s := orphan.New(fw, pod, nonExistent, t.TempDir(), t.TempDir())
+	s := orphan.New(fw, pod, appliermocks.NewMockSystemdManager(t), nonExistent, t.TempDir(), t.TempDir())
 	// Should return zero — non-existent dir means no orphans
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{})
 	require.NoError(t, err)
@@ -73,7 +75,7 @@ func TestScanFilesDir_RemovesOnlyOrphanedFiles(t *testing.T) {
 	pod := appliermocks.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
-	s := orphan.New(fw, pod, t.TempDir(), t.TempDir(), dataDir)
+	s := orphan.New(fw, pod, appliermocks.NewMockSystemdManager(t), t.TempDir(), t.TempDir(), dataDir)
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{
 		managedPath: {Hash: "sha256:abc", Category: "file"},
 	})
@@ -96,7 +98,7 @@ func TestScanMarkedDir_RemovesOrphans(t *testing.T) {
 	pod := appliermocks.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
-	s := orphan.New(fw, pod, t.TempDir(), systemdDir, t.TempDir())
+	s := orphan.New(fw, pod, appliermocks.NewMockSystemdManager(t), t.TempDir(), systemdDir, t.TempDir())
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.FilesRemoved)
@@ -118,7 +120,7 @@ func TestScanMarkedDir_IgnoresUnmarkedFiles(t *testing.T) {
 	pod := appliermocks.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
-	s := orphan.New(fw, pod, t.TempDir(), systemdDir, t.TempDir())
+	s := orphan.New(fw, pod, appliermocks.NewMockSystemdManager(t), t.TempDir(), systemdDir, t.TempDir())
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{})
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.FilesRemoved)
@@ -137,7 +139,7 @@ func TestScanMarkedDir_KeepsManagedFiles(t *testing.T) {
 	pod := appliermocks.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
-	s := orphan.New(fw, pod, t.TempDir(), systemdDir, t.TempDir())
+	s := orphan.New(fw, pod, appliermocks.NewMockSystemdManager(t), t.TempDir(), systemdDir, t.TempDir())
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{
 		managedPath: {Hash: "sha256:abc", Category: "systemd"},
 	})
@@ -153,7 +155,7 @@ func TestScanSecrets_RemovesOrphans(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return([]string{"kept", "orphan"}, nil)
 	pod.EXPECT().SecretRemove(mock.Anything, "orphan").Return(nil)
 
-	s := orphan.New(fw, pod, t.TempDir(), t.TempDir(), t.TempDir())
+	s := orphan.New(fw, pod, appliermocks.NewMockSystemdManager(t), t.TempDir(), t.TempDir(), t.TempDir())
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{
 		"secret:kept": {Hash: "sha256:abc", Category: "secret"},
 	})
@@ -168,7 +170,7 @@ func TestScanSecrets_KeepsAllManaged(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return([]string{"db-pass", "api-key"}, nil)
 	// No SecretRemove calls expected
 
-	s := orphan.New(fw, pod, t.TempDir(), t.TempDir(), t.TempDir())
+	s := orphan.New(fw, pod, appliermocks.NewMockSystemdManager(t), t.TempDir(), t.TempDir(), t.TempDir())
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{
 		"secret:db-pass": {Hash: "sha256:abc", Category: "secret"},
 		"secret:api-key": {Hash: "sha256:def", Category: "secret"},
@@ -192,9 +194,52 @@ func TestScan_CountsFilesAndSecretsSeparately(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return([]string{"orphan-secret"}, nil)
 	pod.EXPECT().SecretRemove(mock.Anything, "orphan-secret").Return(nil)
 
-	s := orphan.New(fw, pod, quadletDir, t.TempDir(), t.TempDir())
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().StopUnit(mock.Anything, "a.service").Return(nil)
+	sys.EXPECT().StopUnit(mock.Anything, "b.service").Return(nil)
+	s := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir())
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{})
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.FilesRemoved)
 	assert.Equal(t, 1, result.SecretsRemoved)
+}
+
+// A stale Quadlet's generated service keeps running after daemon-reload drops
+// its definition, so it is stopped before the file is removed.
+func TestScan_StaleQuadletStopsItsGeneratedService(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		file     string
+		content  string
+		wantStop string // "" = no stop expected
+	}{
+		{name: "pod", file: "web.pod", content: "[Pod]\nPublishPort=8080:80\n", wantStop: "web-pod.service"},
+		{name: "ServiceName= override", file: "web.pod", content: "[Pod]\nServiceName=shop\n", wantStop: "shop.service"},
+		{name: "network", file: "lan.network", content: "[Network]\n", wantStop: "lan-network.service"},
+		{name: "agent's own unit is not stopped", file: "picolet.container", content: "[Container]\nImage=picolet\n"},
+		{name: "unparseable file is still removed", file: "broken.container", content: "[Container\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			quadletDir := t.TempDir()
+			path := filepath.Join(quadletDir, tt.file)
+			require.NoError(t, os.WriteFile(path, []byte(tt.content), 0o600))
+
+			sys := appliermocks.NewMockSystemdManager(t)
+			fw := appliermocks.NewMockFileWriter(t)
+			remove := fw.EXPECT().Remove(path).Return(nil).Once()
+			if tt.wantStop != "" {
+				remove.NotBefore(sys.EXPECT().StopUnit(mock.Anything, tt.wantStop).Return(nil).Once())
+			}
+			pod := appliermocks.NewMockPodmanClient(t)
+			pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
+
+			result, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir()).
+				Scan(context.Background(), map[string]state.ManagedFile{})
+			require.NoError(t, err)
+			assert.Equal(t, 1, result.FilesRemoved)
+		})
+	}
 }

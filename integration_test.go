@@ -2,14 +2,18 @@ package picolet_test
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
 
 	"github.com/sebdah/goldie/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	appliermocks "github.com/schjan/picolet/mocks/applier"
+	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
@@ -82,21 +86,104 @@ func TestIntegrationReconcilePipeline(t *testing.T) {
 	assert.Equal(t, 0, cs.Summary[reconciler.ActionUpdate])
 	assert.Equal(t, 0, cs.Summary[reconciler.ActionDelete])
 
-	// Build full state from changeset (simulating post-apply)
-	fullState := state.NewState()
+	// Idempotent: all noops
+	cs2 := reconciler.Diff(resolved.Files, stateAfter(cs))
+	assert.False(t, cs2.HasChanges())
+	assert.Equal(t, len(resolved.Files), cs2.Summary[reconciler.ActionNoop])
+}
+
+// stateAfter builds the state a successful apply of cs leaves behind.
+func stateAfter(cs *reconciler.Changeset) *state.State {
+	st := state.NewState()
 	for _, c := range cs.Changes {
 		if c.Action != reconciler.ActionDelete {
-			fullState.ManagedFiles[c.DestPath] = state.ManagedFile{Hash: c.NewHash, Category: c.Category}
+			st.ManagedFiles[c.DestPath] = state.ManagedFile{Hash: c.NewHash, Category: c.Category}
 			if c.ServiceName != "" {
-				fullState.ServiceNames[c.DestPath] = c.ServiceName
+				st.ServiceNames[c.DestPath] = c.ServiceName
 			}
 		}
 	}
+	return st
+}
 
-	// Idempotent: all noops
-	cs2 := reconciler.Diff(resolved.Files, fullState)
-	assert.False(t, cs2.HasChanges())
-	assert.Equal(t, len(resolved.Files), cs2.Summary[reconciler.ActionNoop])
+const (
+	shopPodPath   = "/etc/containers/systemd/picolet/shop.pod"
+	shopAPIPath   = "/etc/containers/systemd/picolet/shop-api.container"
+	shopProxyPath = "/etc/containers/systemd/picolet/shop-proxy.container"
+)
+
+// TestIntegrationReconcilePipelinePod drives the example fleet's pod stack
+// (shop.pod.tmpl + two member containers on node-1) through create, update
+// and delete: changing the pod and a member restarts only the pod service,
+// and removing the stack stops the pod's generated <name>-pod.service.
+func TestIntegrationReconcilePipelinePod(t *testing.T) {
+	t.Parallel()
+	repoFS := os.DirFS(testdataDir)
+	cfg, err := config.LoadAll(repoFS)
+	require.NoError(t, err)
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	require.NoError(t, err)
+	resolved, err := r.ResolveHost(t.Context(), "node-1")
+	require.NoError(t, err)
+
+	created := reconciler.Diff(resolved.Files, state.NewState())
+	pod := findChange(t, created, shopPodPath)
+	assert.Equal(t, reconciler.ActionCreate, pod.Action)
+	assert.Equal(t, config.CategoryPod, pod.Category)
+	assert.Equal(t, "shop-pod.service", pod.ServiceName)
+	deployed := stateAfter(created)
+
+	// Update the pod and one member: only the pod service restarts.
+	updated := slices.Clone(resolved.Files)
+	for i := range updated {
+		if updated[i].DestPath == shopPodPath || updated[i].DestPath == shopAPIPath {
+			updated[i].Content += "# rev 2\n"
+		}
+	}
+	cs := reconciler.Diff(updated, deployed)
+	require.Equal(t, 2, cs.Summary[reconciler.ActionUpdate])
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys.EXPECT().RestartUnit(mock.Anything, "shop-pod.service").Return(nil).Once()
+	fw := appliermocks.NewMockFileWriter(t)
+	fw.EXPECT().MkdirAll(mock.Anything).Return(nil)
+	fw.EXPECT().WriteFile(shopPodPath, mock.Anything).Return(nil).Once()
+	fw.EXPECT().WriteFile(shopAPIPath, mock.Anything).Return(nil).Once()
+	result, err := applier.New(sys, appliermocks.NewMockPodmanClient(t), fw, false, nil).Apply(t.Context(), cs)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"shop-pod.service"}, result.RestartedUnits)
+
+	applyPodStackDelete(t, resolved.Files, deployed)
+}
+
+// applyPodStackDelete removes the shop stack from the desired files and applies
+// the resulting deletes: each file is removed and its generated service stopped;
+// the pod's service is stopped as shop-pod.service, the name recorded in state.
+func applyPodStackDelete(t *testing.T, files []resolver.ResolvedFile, deployed *state.State) {
+	t.Helper()
+	remaining := slices.DeleteFunc(slices.Clone(files), func(f resolver.ResolvedFile) bool {
+		return f.DestPath == shopPodPath || f.DestPath == shopAPIPath || f.DestPath == shopProxyPath
+	})
+	cs := reconciler.Diff(remaining, deployed)
+	require.Equal(t, 3, cs.Summary[reconciler.ActionDelete])
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	for _, unit := range []string{"shop-pod.service", "shop-api.service", "shop-proxy.service"} {
+		sys.EXPECT().StopUnit(mock.Anything, unit).Return(nil).Once()
+	}
+	fw := appliermocks.NewMockFileWriter(t)
+	for _, path := range []string{shopPodPath, shopAPIPath, shopProxyPath} {
+		fw.EXPECT().Remove(path).Return(nil).Once()
+	}
+	_, err := applier.New(sys, appliermocks.NewMockPodmanClient(t), fw, false, nil).Apply(t.Context(), cs)
+	require.NoError(t, err)
+}
+
+func findChange(t *testing.T, cs *reconciler.Changeset, destPath string) reconciler.Change {
+	t.Helper()
+	i := slices.IndexFunc(cs.Changes, func(c reconciler.Change) bool { return c.DestPath == destPath })
+	require.GreaterOrEqual(t, i, 0, "no change for %s", destPath)
+	return cs.Changes[i]
 }
 
 func TestIntegrationMultiHostConsistency(t *testing.T) {

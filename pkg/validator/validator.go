@@ -117,7 +117,11 @@ func analyzeQuadlet(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitI
 //  1. Pre-populate all unit entries (with ServiceName; ResourceName for Prefill categories).
 //  2. Convert the units of PreConvert categories, in ConvertOrder, to
 //     populate their ResourceName so that units referencing them (e.g. a
-//     container's Network=/Volume=) resolve the cross-reference.
+//     container's Network=/Volume=) resolve the cross-reference, and to
+//     record pod membership: ConvertContainer appends each Pod= member to the
+//     pod's ContainersToStart, which ConvertPod (converted last) turns into
+//     Wants=/Before=. Per-file validation converts containers again, appending
+//     the members a second time; dependenciesFromUnit deduplicates them.
 func buildUnitsInfoFromFiles(files []resolver.ResolvedFile, rootless bool) map[string]*quadlet.UnitInfo {
 	units := make(map[string]*quadlet.UnitInfo)
 

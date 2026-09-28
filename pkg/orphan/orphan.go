@@ -10,6 +10,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/containers/podman/v5/pkg/systemd/parser"
+	"github.com/containers/podman/v5/pkg/systemd/quadlet"
+
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/state"
@@ -20,16 +23,18 @@ import (
 type Scanner struct {
 	writer     applier.FileWriter
 	podman     applier.PodmanClient
+	systemd    applier.SystemdManager
 	quadletDir string
 	systemdDir string
 	dataDir    string
 }
 
 // New creates a new Scanner.
-func New(writer applier.FileWriter, podman applier.PodmanClient, quadletDir, systemdDir, dataDir string) *Scanner {
+func New(writer applier.FileWriter, podman applier.PodmanClient, systemd applier.SystemdManager, quadletDir, systemdDir, dataDir string) *Scanner {
 	return &Scanner{
 		writer:     writer,
 		podman:     podman,
+		systemd:    systemd,
 		quadletDir: quadletDir,
 		systemdDir: systemdDir,
 		dataDir:    dataDir,
@@ -47,20 +52,22 @@ type ScanResult struct {
 // Directory-scan errors are returned because they indicate a systemic problem.
 func (s *Scanner) Scan(ctx context.Context, managedFiles map[string]state.ManagedFile) (ScanResult, error) {
 	var result ScanResult
-	ownedDirs := []string{s.quadletDir}
-	for _, spec := range config.Specs() {
-		if spec.Dest == config.DestData {
-			ownedDirs = append(ownedDirs, filepath.Join(s.dataDir, spec.Subdir))
-		}
+	removed, err := s.scanOwnedDir(s.quadletDir, managedFiles, func(path string) { s.stopGeneratedUnit(ctx, path) })
+	result.FilesRemoved += removed
+	if err != nil {
+		return result, err
 	}
-	for _, dir := range ownedDirs {
-		removed, err := s.scanOwnedDir(dir, managedFiles)
+	for _, spec := range config.Specs() {
+		if spec.Dest != config.DestData {
+			continue
+		}
+		removed, err := s.scanOwnedDir(filepath.Join(s.dataDir, spec.Subdir), managedFiles, nil)
 		result.FilesRemoved += removed
 		if err != nil {
 			return result, err
 		}
 	}
-	removed, err := s.scanMarkedDir(s.systemdDir, managedFiles)
+	removed, err = s.scanMarkedDir(s.systemdDir, managedFiles)
 	result.FilesRemoved += removed
 	if err != nil {
 		return result, err
@@ -70,9 +77,10 @@ func (s *Scanner) Scan(ctx context.Context, managedFiles map[string]state.Manage
 	return result, err
 }
 
-// scanOwnedDir removes any file in a picolet-owned directory that is absent from managedFiles.
+// scanOwnedDir removes any file in a picolet-owned directory that is absent from managedFiles,
+// calling beforeRemove (if set) on each orphan first.
 // Uses WalkDir so nested data subdirectories are covered.
-func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]state.ManagedFile) (int, error) {
+func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]state.ManagedFile, beforeRemove func(path string)) (int, error) {
 	var removed int
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -88,6 +96,9 @@ func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]state.Managed
 			return nil
 		}
 		if _, managed := managedFiles[path]; !managed {
+			if beforeRemove != nil {
+				beforeRemove(path)
+			}
 			if s.removeOrphan(path) {
 				removed++
 			}
@@ -95,6 +106,37 @@ func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]state.Managed
 		return nil
 	})
 	return removed, err
+}
+
+// stopGeneratedUnit stops the service Podman generated from an orphaned Quadlet
+// file: removing the file and reloading only drops the unit definition and
+// leaves the service running. The agent's own unit is never stopped. Like the
+// applier's pre-delete stop, this is best-effort: a failure is logged and the
+// file is removed regardless, because StopUnit also fails for a unit systemd
+// never loaded, and keeping the file would make such an orphan permanent.
+func (s *Scanner) stopGeneratedUnit(ctx context.Context, path string) {
+	category, ok := config.CategoryForExtension(filepath.Ext(path))
+	if spec, _ := config.SpecFor(category); !ok || spec.Unit != config.GeneratedUnit {
+		return
+	}
+	unit, err := parser.ParseUnitFile(path)
+	if err != nil {
+		slog.Warn("orphan scan: cannot parse quadlet, its service is not stopped", "path", path, "error", err)
+		return
+	}
+	name, err := quadlet.GetUnitServiceName(unit)
+	if err != nil {
+		slog.Warn("orphan scan: cannot derive service name, not stopped", "path", path, "error", err)
+		return
+	}
+	service := name + ".service"
+	if applier.IsDefaultSelfUnit(service) {
+		return
+	}
+	slog.Warn("orphaned quadlet detected, stopping its service", "path", path, "unit", service)
+	if err := s.systemd.StopUnit(ctx, service); err != nil {
+		slog.Error("stopping orphaned service failed", "unit", service, "error", err)
+	}
 }
 
 // scanMarkedDir scans a shared directory (systemd) and removes only files that carry

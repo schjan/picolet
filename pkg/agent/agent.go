@@ -1199,7 +1199,7 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 		a.statusStore.SetOrphanScan(status.OrphanScan{Ran: true, Error: err.Error()})
 		return
 	}
-	scanner := orphan.New(a.writer, a.podman, quadletDir, systemdDir, dataDir)
+	scanner := orphan.New(a.writer, a.podman, a.systemd, quadletDir, systemdDir, dataDir)
 	result, err := scanner.Scan(ctx, st.ManagedFiles)
 	if err != nil {
 		slog.Warn("orphan scan error", "error", err)

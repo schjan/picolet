@@ -298,7 +298,7 @@ func TestE2EPipeline(t *testing.T) {
 		secretLabelsSupported := len(managedSecrets) > 0
 
 		// 5. Run the orphan scanner
-		scanner := orphan.New(applier.NewAtomicFileWriter(), podman, quadletDir, systemdDir, dataDir)
+		scanner := orphan.New(applier.NewAtomicFileWriter(), podman, systemd, quadletDir, systemdDir, dataDir)
 		scanResult, err := scanner.Scan(ctx, st.ManagedFiles)
 		require.NoError(t, err)
 		assert.True(t, scanResult.FilesRemoved > 0 || scanResult.SecretsRemoved > 0, "scanner should report removals")

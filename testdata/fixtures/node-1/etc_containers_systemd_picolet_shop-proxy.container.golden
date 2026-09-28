@@ -1,0 +1,3 @@
+[Container]
+Image=nginx:1.27
+Pod=shop.pod

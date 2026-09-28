@@ -13,9 +13,10 @@ import (
 
 // memFileWriter records operations for testing.
 type memFileWriter struct {
-	written map[string][]byte
-	dirs    []string
-	removed []string
+	written    map[string][]byte
+	writeOrder []string
+	dirs       []string
+	removed    []string
 }
 
 func newMemFileWriter() *memFileWriter {
@@ -24,6 +25,7 @@ func newMemFileWriter() *memFileWriter {
 
 func (w *memFileWriter) WriteFile(path string, content []byte) error {
 	w.written[path] = content
+	w.writeOrder = append(w.writeOrder, path)
 	return nil
 }
 
