@@ -42,7 +42,7 @@ type AssignmentGroup struct {
 
 // byCategory binds the typed lists of the assignments.yml schema to their
 // categories. The lists are the schema itself; #146/#148 replace them with
-// extension-derived paths:.
+// extension-derived `paths:` entries.
 func (g AssignmentGroup) byCategory() map[Category][]string {
 	return map[Category][]string{
 		CategoryNetwork:   g.Networks,
