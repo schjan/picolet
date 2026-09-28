@@ -133,7 +133,7 @@ func (s *Scanner) stopGeneratedUnit(ctx context.Context, path string, agentPods 
 		return
 	}
 	service := name + ".service"
-	if applier.IsDefaultSelfUnit(service) {
+	if config.IsDefaultSelfUnit(service) {
 		return
 	}
 	if _, joined := agentPods[filepath.Base(path)]; joined {
@@ -162,7 +162,7 @@ func (s *Scanner) agentJoinedPods() map[string]struct{} {
 			return nil //nolint:nilerr // an unparseable container joins no pod
 		}
 		pod, _ := unit.Lookup(quadlet.ContainerGroup, quadlet.KeyPod)
-		if name, err := quadlet.GetUnitServiceName(unit); err == nil && pod != "" && applier.IsDefaultSelfUnit(name+".service") {
+		if name, err := quadlet.GetUnitServiceName(unit); err == nil && pod != "" && config.IsDefaultSelfUnit(name+".service") {
 			pods[pod] = struct{}{}
 		}
 		return nil

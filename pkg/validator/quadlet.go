@@ -8,7 +8,6 @@ import (
 	"github.com/containers/podman/v5/pkg/systemd/parser"
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
 
-	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
 )
 
@@ -117,7 +116,7 @@ func rejectSelfPodMember(unit *parser.UnitFile) error {
 	if info == nil {
 		return nil
 	}
-	if service := info.ServiceFileName(); applier.IsDefaultSelfUnit(service) {
+	if service := info.ServiceFileName(); config.IsDefaultSelfUnit(service) {
 		return fmt.Errorf("%s: the agent's own unit %s must not join a pod (Pod=%s): "+
 			"restarting or stopping the pod would stop the agent before it saves state", unit.Filename, service, pod)
 	}

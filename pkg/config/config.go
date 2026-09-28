@@ -14,6 +14,19 @@ import (
 // PicoletMarker is the comment header prepended to systemd unit files managed by picolet.
 const PicoletMarker = "# Managed by picolet"
 
+// DefaultSelfUnits are the conventional units a picolet agent runs under when
+// deployed from its own fleet bundle: "picolet" under the user systemd
+// instance, "picolet-system" under the system instance. Stopping or restarting
+// one of them synchronously kills the agent before it saves state.
+func DefaultSelfUnits() []string {
+	return []string{"picolet.service", "picolet-system.service"}
+}
+
+// IsDefaultSelfUnit reports whether unit is one of DefaultSelfUnits.
+func IsDefaultSelfUnit(unit string) bool {
+	return slices.Contains(DefaultSelfUnits(), unit)
+}
+
 // Config holds all loaded configuration.
 type Config struct {
 	Fleet       *FleetConfig

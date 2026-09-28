@@ -234,28 +234,18 @@ func (r *ApplyResult) SkippedRestarts() []string {
 // Option configures an Applier.
 type Option func(*Applier)
 
-// defaultSelfUnits are the conventional units a picolet agent runs under when
-// deployed from its own fleet bundle: "picolet" under the user systemd
-// instance, "picolet-system" under the system instance. Stopping or restarting
-// one of them synchronously would kill the agent mid-apply, before state is
-// saved, so those operations are deferred (see restartUnits).
-var defaultSelfUnits = []string{"picolet.service", "picolet-system.service"}
-
-// IsDefaultSelfUnit reports whether unit is one of defaultSelfUnits. Callers
-// outside the Applier that stop units (the orphan scan) use it so they never
-// stop the running agent.
-func IsDefaultSelfUnit(unit string) bool {
-	return slices.Contains(defaultSelfUnits, unit)
-}
-
 // Applier applies a changeset to the system.
 type Applier struct {
-	systemd   SystemdManager
-	podman    PodmanClient
-	writer    FileWriter
-	dryRun    bool
-	hooks     []config.Hook
-	reloader  *HookReloader
+	systemd  SystemdManager
+	podman   PodmanClient
+	writer   FileWriter
+	dryRun   bool
+	hooks    []config.Hook
+	reloader *HookReloader
+	// selfUnits are the agent's own units (default config.DefaultSelfUnits).
+	// They are never stopped or restarted synchronously: that would kill the
+	// agent mid-apply, before state is saved, so those operations are deferred
+	// (see restartUnits).
 	selfUnits map[string]struct{}
 }
 
@@ -267,7 +257,7 @@ func New(systemd SystemdManager, podman PodmanClient, writer FileWriter, dryRun 
 		writer:    writer,
 		dryRun:    dryRun,
 		hooks:     hooks,
-		selfUnits: unitSet(defaultSelfUnits),
+		selfUnits: unitSet(config.DefaultSelfUnits()),
 	}
 	for _, opt := range opts {
 		opt(a)
