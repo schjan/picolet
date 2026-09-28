@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/schjan/picolet/pkg/applier"
+	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/state"
 	"github.com/schjan/picolet/pkg/status"
 )
@@ -187,7 +187,7 @@ func groupByCategory(files map[string]state.ManagedFile, services map[string]str
 		})
 	}
 	var out []CategoryGroup
-	for _, cat := range applier.CategoryOrder() {
+	for _, cat := range config.ApplyOrder() {
 		category := cat.String()
 		if rows, ok := buckets[category]; ok {
 			slices.SortFunc(rows, func(a, b UnitRow) int { return cmp.Compare(a.Basename, b.Basename) })
@@ -254,13 +254,13 @@ var mutedStatus = Status{Glyph: "·", Token: "—", Class: "muted"}
 
 // unitNameFor returns the systemd unit name for a managed file, or "" for
 // categories that legitimately have no associated unit (manifest, secret).
-// Mirrors applier.unitNameForDelete; kept private here to avoid exporting
-// applier internals just for the dashboard.
+// Follows the category table's unit naming, like applier.unitNameForDelete.
 func unitNameFor(category, path, mappedService string) string {
-	switch category {
-	case "container", "network", "volume", "kube":
+	spec, _ := config.SpecFor(config.Category(category))
+	switch spec.Unit {
+	case config.GeneratedUnit:
 		return mappedService
-	case "systemd":
+	case config.FileUnit:
 		if mappedService != "" {
 			return mappedService
 		}

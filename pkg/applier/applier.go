@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -239,32 +240,6 @@ type Option func(*Applier)
 // saved, so those operations are deferred (see restartUnits).
 var defaultSelfUnits = []string{"picolet.service", "picolet-system.service"}
 
-// categoryOrder is the canonical apply-phase ordering.
-var categoryOrder = []config.Category{
-	config.CategoryNetwork,
-	config.CategoryVolume,
-	config.CategorySecret,
-	config.CategorySystemd,
-	config.CategoryManifest,
-	config.CategoryFile,
-	config.CategoryContainer,
-	config.CategoryKube,
-}
-
-// CategoryOrder returns the canonical apply-phase ordering. The result is a
-// fresh copy so callers cannot mutate the package-level slice.
-func CategoryOrder() []config.Category {
-	return slices.Clone(categoryOrder)
-}
-
-var categoryRankMap = func() map[config.Category]int {
-	m := make(map[config.Category]int, len(categoryOrder))
-	for i, c := range categoryOrder {
-		m[c] = i
-	}
-	return m
-}()
-
 // Applier applies a changeset to the system.
 type Applier struct {
 	systemd   SystemdManager
@@ -383,11 +358,12 @@ func (a *Applier) ApplyWithoutRestarts(ctx context.Context, cs *reconciler.Chang
 	return result, a.reloadIfNeeded(ctx, phase.NeedsReload)
 }
 
-// sortedByCategory orders changes by the canonical apply-phase category order.
+// sortedByCategory orders changes by the category table's ApplyRank. Categories
+// missing from the table sort last.
 func sortedByCategory(changes []reconciler.Change) []reconciler.Change {
 	sorted := slices.Clone(changes)
 	slices.SortFunc(sorted, func(x, y reconciler.Change) int {
-		return cmp.Compare(categoryRank(x.Category), categoryRank(y.Category))
+		return cmp.Compare(applyRank(x.Category), applyRank(y.Category))
 	})
 	return sorted
 }
@@ -412,12 +388,18 @@ func (a *Applier) ApplyWithPending(ctx context.Context, cs *reconciler.Changeset
 	return result, a.restartUnits(ctx, phase, result)
 }
 
-func categoryRank(category config.Category) int {
-	rank, ok := categoryRankMap[category]
+func applyRank(category config.Category) int {
+	spec, ok := config.SpecFor(category)
 	if !ok {
-		return len(categoryOrder)
+		return math.MaxInt
 	}
-	return rank
+	return spec.ApplyRank
+}
+
+// destination returns where the category's files are deployed (0 if unknown).
+func destination(category config.Category) config.Destination {
+	spec, _ := config.SpecFor(category)
+	return spec.Dest
 }
 
 //nolint:cyclop // multiple early-continues are clearer than restructuring
@@ -442,14 +424,14 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			result.Applied++
 			continue
 		}
-		if change.Action == reconciler.ActionDelete && change.Category != config.CategorySecret {
+		if change.Action == reconciler.ActionDelete {
 			a.stopUnitForDelete(ctx, change, result)
 		}
 		if err := a.applyChange(ctx, change); err != nil {
 			return nil, fmt.Errorf("applying %s (%s): %w", change.DestPath, change.Action, err)
 		}
 		result.Applied++
-		if change.Category == config.CategorySecret {
+		if destination(change.Category) == config.DestSecret {
 			if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
 				p.ChangedSecrets[reconciler.SecretNameFromPath(change.DestPath)] = struct{}{}
 			}
@@ -469,10 +451,14 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		// Raw systemd units are enabled/started/restarted via dedicated phase sets
 		// (see classifySystemdActivation); they must not enter the quadlet restart
 		// path even though they now carry a ServiceName.
-		if change.Category == config.CategorySystemd {
+		switch spec, _ := config.SpecFor(change.Category); spec.Restart {
+		case config.RestartActivate:
 			a.classifySystemdActivation(change, p)
-		} else if change.ServiceName != "" {
-			recordChangedUnit(change, p)
+		case config.RestartChanged:
+			if change.ServiceName != "" {
+				recordChangedUnit(change, p)
+			}
+		case config.RestartNone:
 		}
 		if a.isSelfContainer(change.DestPath) {
 			result.NeedsSelfRestart = true
@@ -637,7 +623,7 @@ func (a *Applier) stopUnitForDelete(ctx context.Context, change reconciler.Chang
 	// file is still on disk, before applyChange removes it. This runs even for a
 	// self unit — disabling only removes the boot symlink, it does not stop the
 	// running process, so it is safe before the deferred stop.
-	if change.Category == config.CategorySystemd {
+	if spec, _ := config.SpecFor(change.Category); spec.Restart == config.RestartActivate {
 		a.runSystemdOp(ctx, unitName, SystemdOpDisable, result)
 	}
 	if a.isSelfUnit(unitName) {
@@ -650,14 +636,15 @@ func (a *Applier) stopUnitForDelete(ctx context.Context, change reconciler.Chang
 }
 
 // unitNameForDelete returns the systemd unit name to stop before a file is removed.
-// Quadlet categories use the pre-computed ServiceName from state.
-// Systemd category: the filename IS the unit name (no parse needed).
-// Secrets, manifests, and files have no associated unit.
+// GeneratedUnit categories use the pre-computed ServiceName from state; for
+// FileUnit categories the filename IS the unit name (no parse needed); NoUnit
+// categories (secrets, manifests, files) have no associated unit.
 func unitNameForDelete(change reconciler.Change) string {
-	switch change.Category {
-	case config.CategoryContainer, config.CategoryNetwork, config.CategoryVolume, config.CategoryKube:
+	spec, _ := config.SpecFor(change.Category)
+	switch spec.Unit {
+	case config.GeneratedUnit:
 		return change.ServiceName // from state.ServiceNames; "" if unknown
-	case config.CategorySystemd:
+	case config.FileUnit:
 		return filepath.Base(change.DestPath) // e.g. "foo.service"
 	default:
 		return ""
@@ -1001,7 +988,7 @@ func hookMatchesChange(hook config.Hook, changedSecrets map[string]struct{}, cha
 }
 
 func (a *Applier) applyCreateOrUpdate(ctx context.Context, change reconciler.Change) error {
-	if change.Category == config.CategorySecret {
+	if destination(change.Category) == config.DestSecret {
 		name := reconciler.SecretNameFromPath(change.DestPath)
 		replace := change.Action == reconciler.ActionUpdate
 		return a.podman.SecretCreate(ctx, name, []byte(change.NewContent), replace)
@@ -1016,7 +1003,7 @@ func (a *Applier) applyCreateOrUpdate(ctx context.Context, change reconciler.Cha
 }
 
 func (a *Applier) applyDelete(ctx context.Context, change reconciler.Change) error {
-	if change.Category == config.CategorySecret {
+	if destination(change.Category) == config.DestSecret {
 		name := reconciler.SecretNameFromPath(change.DestPath)
 		return a.podman.SecretRemove(ctx, name)
 	}

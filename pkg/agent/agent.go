@@ -383,7 +383,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 
 	// Seed managed-files metrics from state on every tick
 	metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
-	managedByCategory := make(map[string]float64, len(reconciler.Categories()))
+	managedByCategory := make(map[string]float64, len(config.Deployable()))
 	for _, mf := range st.ManagedFiles {
 		managedByCategory[mf.Category.String()]++
 	}

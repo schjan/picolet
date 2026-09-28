@@ -8,7 +8,6 @@ import (
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
-	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/status"
 )
@@ -77,11 +76,11 @@ func RecordTimerJobRuns(store *status.Store, hr *health.CheckResult) {
 	store.PruneRuns(hr.Managed)
 }
 
-// setFilesManagedMetric overwrites FilesManagedTotal for every known category.
+// setFilesManagedMetric overwrites FilesManagedTotal for every deployable category.
 // Because the label set is fixed, each call is a pure Set — no Reset() needed,
 // so a concurrent Prometheus scrape never sees zero or partial values.
 func setFilesManagedMetric(counts map[string]float64) {
-	for _, cat := range reconciler.Categories() {
+	for _, cat := range config.Deployable() {
 		category := cat.String()
 		metrics.FilesManagedTotal.WithLabelValues(category).Set(counts[category])
 	}

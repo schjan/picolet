@@ -19,28 +19,14 @@ type bundleSubdir struct {
 
 func (b bundleSubdir) AllowNesting() bool { return b.Category.UsesRelPath() }
 
-var bundleSubdirs = func() []bundleSubdir {
-	cats := []config.Category{
-		config.CategoryContainer,
-		config.CategoryVolume,
-		config.CategoryNetwork,
-		config.CategoryKube,
-		config.CategorySystemd,
-		config.CategorySecret,
-		config.CategoryManifest,
-		config.CategoryFile,
-	}
-	out := make([]bundleSubdir, 0, len(cats))
-	for _, c := range cats {
-		out = append(out, bundleSubdir{Subdir: c.BundleSubdir(), Category: c})
-	}
-	return out
-}()
-
+// bundleSubdirsByName maps each selectable category's Service Bundle
+// subdirectory to its category.
 var bundleSubdirsByName = func() map[string]bundleSubdir {
-	byName := make(map[string]bundleSubdir, len(bundleSubdirs))
-	for _, subdir := range bundleSubdirs {
-		byName[subdir.Subdir] = subdir
+	byName := make(map[string]bundleSubdir)
+	for _, spec := range config.Specs() {
+		if spec.Subdir != "" {
+			byName[spec.Subdir] = bundleSubdir{Subdir: spec.Subdir, Category: spec.Category}
+		}
 	}
 	return byName
 }()
@@ -58,12 +44,7 @@ type hookRef struct {
 }
 
 type expandedBundles struct {
-	Networks   []string
-	Systemd    []string
-	Volumes    []string
-	Containers []string
-	Kube       []string
-	Secrets    []string
+	Paths      map[config.Category][]string // flat (non-data) category sources
 	NestedRefs []bundleFileRef
 	Hooks      []hookRef
 }
@@ -103,12 +84,9 @@ func expandServiceBundles(fsys fs.FS, services []string) (*expandedBundles, erro
 		expanded.append(bundle)
 	}
 
-	expanded.Networks = sortedUnique(expanded.Networks)
-	expanded.Systemd = sortedUnique(expanded.Systemd)
-	expanded.Volumes = sortedUnique(expanded.Volumes)
-	expanded.Containers = sortedUnique(expanded.Containers)
-	expanded.Kube = sortedUnique(expanded.Kube)
-	expanded.Secrets = sortedUnique(expanded.Secrets)
+	for category, paths := range expanded.Paths {
+		expanded.Paths[category] = sortedUnique(paths)
+	}
 	slices.SortFunc(expanded.NestedRefs, func(a, b bundleFileRef) int {
 		if diff := cmp.Compare(a.LogicalPath, b.LogicalPath); diff != 0 {
 			return diff
@@ -237,39 +215,36 @@ func isHookMetadataFile(name string) bool {
 }
 
 func (b *expandedBundles) append(other *expandedBundles) {
-	b.Networks = append(b.Networks, other.Networks...)
-	b.Systemd = append(b.Systemd, other.Systemd...)
-	b.Volumes = append(b.Volumes, other.Volumes...)
-	b.Containers = append(b.Containers, other.Containers...)
-	b.Kube = append(b.Kube, other.Kube...)
-	b.Secrets = append(b.Secrets, other.Secrets...)
+	for category, paths := range other.Paths {
+		b.addPaths(category, paths...)
+	}
 	b.NestedRefs = append(b.NestedRefs, other.NestedRefs...)
 	b.Hooks = append(b.Hooks, other.Hooks...)
 }
 
+func (b *expandedBundles) addPaths(category config.Category, srcPaths ...string) {
+	if b.Paths == nil {
+		b.Paths = make(map[config.Category][]string)
+	}
+	b.Paths[category] = append(b.Paths[category], srcPaths...)
+}
+
+// addPath records a flat bundle file; only selectable non-data categories are
+// flat (data categories are nested refs).
 func (b *expandedBundles) addPath(category config.Category, srcPath string) error {
-	switch category {
-	case config.CategoryNetwork:
-		b.Networks = append(b.Networks, srcPath)
-	case config.CategorySystemd:
-		b.Systemd = append(b.Systemd, srcPath)
-	case config.CategoryVolume:
-		b.Volumes = append(b.Volumes, srcPath)
-	case config.CategoryContainer:
-		b.Containers = append(b.Containers, srcPath)
-	case config.CategoryKube:
-		b.Kube = append(b.Kube, srcPath)
-	case config.CategorySecret:
-		b.Secrets = append(b.Secrets, srcPath)
-	default:
+	if spec, ok := config.SpecFor(category); !ok || spec.Subdir == "" || category.UsesRelPath() {
 		return fmt.Errorf("resolver: unknown bundle category %q", category)
 	}
+	b.addPaths(category, srcPath)
 	return nil
 }
 
 func (b *expandedBundles) fileCount() int {
-	return len(b.Networks) + len(b.Systemd) + len(b.Volumes) +
-		len(b.Containers) + len(b.Kube) + len(b.Secrets) + len(b.NestedRefs)
+	n := len(b.NestedRefs)
+	for _, paths := range b.Paths {
+		n += len(paths)
+	}
+	return n
 }
 
 func (b *expandedBundles) readSubdir(fsys fs.FS, service string, subdir bundleSubdir) error {
