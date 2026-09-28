@@ -293,12 +293,15 @@ func TestScan_StalePodWithAgentMemberIsNotStopped(t *testing.T) {
 // If a container's settings cannot be fully read, the scan cannot tell whether
 // it is the agent's own container joining a stale pod, so no pod is stopped.
 // The pod file is still removed, and other stale units are still stopped.
+//
+//nolint:funlen // table of filesystem setups
 func TestScan_UnreadableContainerSettingsSkipAllPodStops(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
 		// setup writes the obscuring entry and returns its paths (kept managed).
-		setup func(t *testing.T, dir string) []string
+		setup      func(t *testing.T, dir string) []string
+		podStopped bool
 	}{
 		{name: "unparseable container", setup: func(t *testing.T, dir string) []string {
 			t.Helper()
@@ -321,6 +324,21 @@ func TestScan_UnreadableContainerSettingsSkipAllPodStops(t *testing.T) {
 			require.NoError(t, os.WriteFile(dropIn, []byte("[Container]\nPod=web.pod\n"), 0o600))
 			return []string{unit, dropIn}
 		}},
+		{name: "symlinked drop-in directory (Podman follows it)", setup: func(t *testing.T, dir string) []string {
+			t.Helper()
+			unit := filepath.Join(dir, "picolet.container")
+			target := t.TempDir()
+			link := filepath.Join(dir, "picolet.container.d")
+			require.NoError(t, os.WriteFile(unit, []byte("[Container]\nImage=picolet\n"), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(target, "10-pod.conf"), []byte("[Container]\nPod=web.pod\n"), 0o600))
+			require.NoError(t, os.Symlink(target, link))
+			return []string{unit, link}
+		}},
+		{name: "empty leftover drop-in directory changes nothing", podStopped: true, setup: func(t *testing.T, dir string) []string {
+			t.Helper()
+			require.NoError(t, os.Mkdir(filepath.Join(dir, "picolet.container.d"), 0o700))
+			return nil
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -337,6 +355,9 @@ func TestScan_UnreadableContainerSettingsSkipAllPodStops(t *testing.T) {
 
 			sys := appliermocks.NewMockSystemdManager(t)
 			sys.EXPECT().StopUnit(mock.Anything, "lan-network.service").Return(nil).Once()
+			if tt.podStopped {
+				sys.EXPECT().StopUnit(mock.Anything, "web-pod.service").Return(nil).Once()
+			}
 			fw := appliermocks.NewMockFileWriter(t)
 			fw.EXPECT().Remove(podPath).Return(nil).Once()
 			fw.EXPECT().Remove(netPath).Return(nil).Once()
@@ -348,4 +369,24 @@ func TestScan_UnreadableContainerSettingsSkipAllPodStops(t *testing.T) {
 			assert.Equal(t, 2, result.FilesRemoved)
 		})
 	}
+}
+
+// A symlinked owned directory is not walked (WalkDir does not follow it), so
+// the scan would otherwise take the link itself for an orphaned file and
+// delete it. It reports an error and removes nothing instead.
+func TestScan_SymlinkedQuadletDirIsNotRemoved(t *testing.T) {
+	t.Parallel()
+	target := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(target, "web.pod"), []byte("[Pod]\n"), 0o600))
+	link := filepath.Join(t.TempDir(), "picolet")
+	require.NoError(t, os.Symlink(target, link))
+
+	sys := appliermocks.NewMockSystemdManager(t) // nothing stopped
+	fw := appliermocks.NewMockFileWriter(t)      // nothing removed
+	pod := appliermocks.NewMockPodmanClient(t)
+
+	result, err := orphan.New(fw, pod, sys, link, t.TempDir(), t.TempDir()).
+		Scan(context.Background(), map[string]state.ManagedFile{})
+	require.ErrorContains(t, err, "is a symlink")
+	assert.Zero(t, result.FilesRemoved)
 }

@@ -94,6 +94,11 @@ func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]state.Managed
 			}
 			return fmt.Errorf("scanning %s: %w", dir, err)
 		}
+		if path == dir && !d.IsDir() {
+			// WalkDir does not follow a symlinked root; without this the link
+			// itself would be taken for an orphaned file and removed.
+			return fmt.Errorf("scanning %s: is a symlink or not a directory, orphans in it are not removed", dir)
+		}
 		if d.IsDir() {
 			return nil
 		}
@@ -151,8 +156,9 @@ func (s *Scanner) stopGeneratedUnit(ctx context.Context, path string, guard podG
 type podGuard struct {
 	// agentPods are the pod files ("web.pod") an agent container names in Pod=.
 	agentPods map[string]struct{}
-	// blind is set when some .container could not be read or parsed: any pod
-	// might then be the agent's, so none is stopped.
+	// blind is set when the container settings could not all be read (an
+	// unreadable entry, or a drop-in the guard does not merge): any pod might
+	// then be the agent's, so none is stopped.
 	blind bool
 }
 
@@ -166,9 +172,9 @@ func (g podGuard) protects(podFile string) bool {
 // orphan is removed, so a stale agent container still protects its pod. The
 // validator rejects such a Fleet; this guards files deployed before that check
 // or after a state reset. It fails closed: only a missing Quadlet directory is
-// harmless. Any entry that cannot be read, and any drop-in directory (whose
-// .conf files Podman merges into the unit, possibly adding Pod=), make the
-// guard blind. Drop-ins in Podman's other search directories are not seen.
+// harmless. Any entry that cannot be read, and any drop-in (whose settings
+// Podman merges into the unit, possibly adding Pod=), make the guard blind.
+// Drop-ins in Podman's other search directories are not seen.
 func (s *Scanner) readPodGuard() podGuard {
 	guard := podGuard{agentPods: make(map[string]struct{})}
 	err := filepath.WalkDir(s.quadletDir, func(path string, d fs.DirEntry, err error) error {
@@ -179,10 +185,10 @@ func (s *Scanner) readPodGuard() podGuard {
 			return err
 		}
 		if d.IsDir() {
-			if path != s.quadletDir && strings.HasSuffix(d.Name(), ".d") {
-				return fmt.Errorf("%s: drop-in directory, its settings are not read", path)
-			}
 			return nil
+		}
+		if path != s.quadletDir && isDropIn(path) {
+			return fmt.Errorf("%s: drop-in, its settings are not read", path)
 		}
 		if category, _ := config.CategoryForExtension(filepath.Ext(path)); category != config.CategoryContainer {
 			return nil
@@ -198,6 +204,16 @@ func (s *Scanner) readPodGuard() podGuard {
 		guard.blind = true
 	}
 	return guard
+}
+
+// isDropIn reports whether a non-directory entry can feed Podman a drop-in: a
+// .conf file in a *.d directory, or a *.d entry that is not a plain directory
+// (a symlink Podman follows). An empty leftover *.d directory is not one.
+func isDropIn(path string) bool {
+	if strings.HasSuffix(filepath.Base(path), ".d") {
+		return true
+	}
+	return filepath.Ext(path) == ".conf" && strings.HasSuffix(filepath.Base(filepath.Dir(path)), ".d")
 }
 
 // agentPod returns the pod ("web.pod") the container Quadlet at path joins if
