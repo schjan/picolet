@@ -205,9 +205,9 @@ func TestScan_CountsFilesAndSecretsSeparately(t *testing.T) {
 	assert.Equal(t, 1, result.SecretsRemoved)
 }
 
-// A stale Quadlet's generated service keeps running after daemon-reload drops
+// An orphaned Quadlet's generated service keeps running after daemon-reload drops
 // its definition, so it is stopped before the file is removed.
-func TestScan_StaleQuadletStopsItsGeneratedService(t *testing.T) {
+func TestScan_OrphanedQuadletStopsItsGeneratedService(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name     string
@@ -250,20 +250,20 @@ func TestScan_StaleQuadletStopsItsGeneratedService(t *testing.T) {
 	}
 }
 
-// Stopping a pod stops its members (BindsTo=). A stale pod the agent's own
+// Stopping a pod stops its members (BindsTo=). An orphaned pod the agent's own
 // container joins must therefore not be stopped, whether that container is
-// still managed or stale itself (e.g. after a state reset).
-func TestScan_StalePodWithAgentMemberIsNotStopped(t *testing.T) {
+// still managed or orphaned itself (e.g. after a state reset).
+func TestScan_OrphanedPodWithAgentMemberIsNotStopped(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name         string
-		agentFile    string
-		agentContent string
-		agentIsStale bool
+		name          string
+		agentFile     string
+		agentContent  string
+		agentIsOrphan bool
 	}{
 		{name: "managed agent container", agentFile: "picolet.container", agentContent: "[Container]\nImage=picolet\nPod=web.pod\n"},
-		{name: "stale agent container", agentFile: "picolet.container", agentContent: "[Container]\nImage=picolet\nPod=web.pod\n", agentIsStale: true},
-		{name: "agent unit via ServiceName=", agentFile: "agent.container", agentContent: "[Container]\nImage=picolet\nServiceName=picolet-system\nPod=web.pod\n", agentIsStale: true},
+		{name: "orphaned agent container", agentFile: "picolet.container", agentContent: "[Container]\nImage=picolet\nPod=web.pod\n", agentIsOrphan: true},
+		{name: "agent unit via ServiceName=", agentFile: "agent.container", agentContent: "[Container]\nImage=picolet\nServiceName=picolet-system\nPod=web.pod\n", agentIsOrphan: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -278,7 +278,7 @@ func TestScan_StalePodWithAgentMemberIsNotStopped(t *testing.T) {
 			fw := appliermocks.NewMockFileWriter(t)
 			fw.EXPECT().Remove(podPath).Return(nil).Once()
 			managed := map[string]state.ManagedFile{agentPath: {Hash: "sha256:abc", Category: "container"}}
-			if tt.agentIsStale {
+			if tt.agentIsOrphan {
 				fw.EXPECT().Remove(agentPath).Return(nil).Once()
 				managed = map[string]state.ManagedFile{}
 			}
@@ -299,13 +299,13 @@ func writeFile(t *testing.T, path, content string) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 }
 
-// Whether a stale pod is stopped depends on the settings of every agent
+// Whether an orphaned pod is stopped depends on the settings of every agent
 // container file (shadowed ones included): each unit merged with its drop-ins
 // from every unit directory. If those cannot be read, no pod is stopped. Either way the pod
-// file is removed and other stale units are still stopped.
+// file is removed and other orphaned units are still stopped.
 //
 //nolint:funlen // table of filesystem setups
-func TestScan_StalePodStopFollowsAgentContainerSettings(t *testing.T) {
+func TestScan_OrphanedPodStopFollowsAgentContainerSettings(t *testing.T) {
 	t.Parallel()
 	const agentUnit = "[Container]\nImage=picolet\n"
 	tests := []struct {
@@ -399,16 +399,16 @@ func TestScan_StalePodStopFollowsAgentContainerSettings(t *testing.T) {
 			t.Parallel()
 			quadletDir, otherUnitDir := t.TempDir(), t.TempDir()
 			podPath := filepath.Join(quadletDir, "web.pod")
-			otherPath := filepath.Join(quadletDir, "stale.container")
+			otherPath := filepath.Join(quadletDir, "orphan.container")
 			writeFile(t, podPath, "[Pod]\n")
-			writeFile(t, otherPath, "[Container]\nImage=stale\n")
+			writeFile(t, otherPath, "[Container]\nImage=orphan\n")
 			managed := map[string]state.ManagedFile{}
 			for _, path := range tt.setup(t, quadletDir, otherUnitDir) {
 				managed[path] = state.ManagedFile{Hash: "sha256:abc", Category: "container"}
 			}
 
 			sys := appliermocks.NewMockSystemdManager(t)
-			sys.EXPECT().StopUnit(mock.Anything, "stale.service").Return(nil).Once()
+			sys.EXPECT().StopUnit(mock.Anything, "orphan.service").Return(nil).Once()
 			if tt.podStopped {
 				sys.EXPECT().StopUnit(mock.Anything, "web-pod.service").Return(nil).Once()
 			}
@@ -468,20 +468,20 @@ func TestScan_SymlinkedOwnedDirIsNotRemoved(t *testing.T) {
 	}
 }
 
-// Which service a stale unit's cleanup stops follows Podman's view of that
+// Which service an orphan's cleanup stops follows Podman's view of that
 // unit: its drop-ins, and whether it is the file Podman generates the unit
 // from at all (cmd/quadlet: first file of a name that parses, unit dirs in
 // order).
 //
 //nolint:funlen // table of filesystem setups
-func TestScan_StaleQuadletStopFollowsPodmanUnitView(t *testing.T) {
+func TestScan_OrphanedQuadletStopFollowsPodmanUnitView(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
 		// setup writes into the second Podman unit dir (searched first) or next
-		// to stale, the stale web.pod in the Quadlet dir, and returns any other
-		// stale Quadlet-dir files the scan removes.
-		setup    func(t *testing.T, otherUnitDir, stale string) []string
+		// to orphan, the orphaned web.pod in the Quadlet dir, and returns any other
+		// orphaned Quadlet-dir files the scan removes.
+		setup    func(t *testing.T, otherUnitDir, orphan string) []string
 		wantStop string // "" = nothing stopped
 	}{
 		{name: "drop-in renames the service", wantStop: "shop.service", setup: func(t *testing.T, other, _ string) []string {
@@ -499,27 +499,27 @@ func TestScan_StaleQuadletStopFollowsPodmanUnitView(t *testing.T) {
 			writeFile(t, filepath.Join(other, "web.pod"), "[Pod]\n")
 			return nil
 		}},
-		{name: "a malformed higher-priority file loses to the stale one", wantStop: "web-pod.service", setup: func(t *testing.T, other, _ string) []string {
+		{name: "a malformed higher-priority file loses to the orphan", wantStop: "web-pod.service", setup: func(t *testing.T, other, _ string) []string {
 			t.Helper()
 			writeFile(t, filepath.Join(other, "web.pod"), "[Pod\n")
 			return nil
 		}},
-		{name: "a hard link in a higher-priority dir is a separate file to Podman", setup: func(t *testing.T, other, stale string) []string {
+		{name: "a hard link in a higher-priority dir is a separate file to Podman", setup: func(t *testing.T, other, orphan string) []string {
 			t.Helper()
-			require.NoError(t, os.Link(stale, filepath.Join(other, "web.pod")))
+			require.NoError(t, os.Link(orphan, filepath.Join(other, "web.pod")))
 			return nil
 		}},
-		{name: "a stale symlink to a higher-priority file is not that file", setup: func(t *testing.T, other, stale string) []string {
+		{name: "an orphaned symlink to a higher-priority file is not that file", setup: func(t *testing.T, other, orphan string) []string {
 			t.Helper()
 			target := filepath.Join(other, "web.pod")
 			writeFile(t, target, "[Pod]\nServiceName=foreign\n")
-			require.NoError(t, os.Remove(stale))
-			require.NoError(t, os.Symlink(target, stale))
+			require.NoError(t, os.Remove(orphan))
+			require.NoError(t, os.Symlink(target, orphan))
 			return nil
 		}},
-		{name: "a malformed neighbour does not block the stop", wantStop: "web-pod.service", setup: func(t *testing.T, _, stale string) []string {
+		{name: "a malformed neighbour does not block the stop", wantStop: "web-pod.service", setup: func(t *testing.T, _, orphan string) []string {
 			t.Helper()
-			bad := filepath.Join(filepath.Dir(stale), "bad.network")
+			bad := filepath.Join(filepath.Dir(orphan), "bad.network")
 			writeFile(t, bad, "[Network\n")
 			return []string{bad}
 		}},

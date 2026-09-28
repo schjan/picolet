@@ -139,10 +139,9 @@ func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]state.Managed
 }
 
 // stopGeneratedUnit stops the service Podman generated from an orphaned Quadlet
-// file whose category has StopStale (pods, containers, kube): removing the file
-// and reloading only drops the unit definition and leaves the service running.
-// Networks and volumes are only removed, since stopping one stops the units
-// that Requires= it. Nothing is stopped unless the file is the one Podman
+// file whose category has StopOrphan: removing the file and reloading only
+// drops the unit definition and leaves the service running. Nothing is stopped
+// unless the file is the one Podman
 // generates its unit from (see readQuadletView), nor the agent's own unit, nor
 // a pod the agent's own container may join: stopping a pod stops its members
 // (BindsTo=), the agent included. Like the applier's pre-delete stop, this is
@@ -165,11 +164,11 @@ func (s *Scanner) stopGeneratedUnit(ctx context.Context, path string, view quadl
 }
 
 // generatedService returns the service Podman generates from the Quadlet at
-// path and its category, or false if its category is not stopped when stale,
+// path and its category, or false if its category is not stopped as an Orphan,
 // path is not the file Podman generates its unit from, or it cannot be read.
 func (s *Scanner) generatedService(path string, view quadletView) (string, config.Category, bool) {
 	category, _ := config.CategoryForExtension(filepath.Ext(path))
-	if spec, _ := config.SpecFor(category); !spec.StopStale {
+	if spec, _ := config.SpecFor(category); !spec.StopOrphan {
 		return "", "", false
 	}
 	if selected := view.units[filepath.Base(path)]; !sameEntry(selected, path) {
@@ -205,8 +204,9 @@ func sameEntry(a, b string) bool {
 // quadletView is read once before any orphan is removed: units is the unit
 // set as Podman's generator sees it, agentPods covers every container file.
 type quadletView struct {
-	// units maps each unit filename ("web.pod") to the file Podman generates
-	// it from: the first file of that name that parses, unit dirs in order.
+	// units maps each unit filename of a StopOrphan category ("web.pod") to the
+	// file Podman generates it from: the first file of that name that parses,
+	// unit dirs in order.
 	units map[string]string
 	// agentPods are the pod files ("web.pod") an agent container names in Pod=.
 	agentPods map[string]struct{}
@@ -227,7 +227,7 @@ func (v quadletView) protectsPod(podFile string) bool {
 // parses. Every container file, even one shadowed by a same-named file, is
 // merged with its drop-ins (they may set ServiceName= or Pod=) and checked
 // for being the agent's: the running agent may come from any of them, since
-// files can change after the generator last ran. A stale agent container
+// files can change after the generator last ran. An orphaned agent container
 // still protects its pod, since this runs before any orphan is removed. The
 // validator rejects such a Fleet; this guards files deployed before that
 // check, placed by hand, or left after a state reset. It fails closed on
@@ -249,16 +249,21 @@ func (s *Scanner) readQuadletView() quadletView {
 	return view
 }
 
-// readUnitEntry adds the unit file at path to view: it claims its name if
-// still free and it parses, and a container is checked for being the agent's.
-// The error covers containers only; other unparseable units are just logged.
+// readUnitEntry adds the unit file at path to view: a unit of a StopOrphan
+// category claims its name if still free and it parses, and a container is
+// checked for being the agent's. The error covers containers only; other
+// unparseable units are just logged.
 func (s *Scanner) readUnitEntry(path string, view *quadletView) error {
 	name := filepath.Base(path)
 	if !quadlet.IsExtSupported(name) {
 		return nil
 	}
+	category, _ := config.CategoryForExtension(filepath.Ext(name))
+	if spec, _ := config.SpecFor(category); !spec.StopOrphan {
+		return nil
+	}
 	_, claimed := view.units[name]
-	if category, _ := config.CategoryForExtension(filepath.Ext(name)); category != config.CategoryContainer {
+	if category != config.CategoryContainer {
 		if claimed {
 			return nil
 		}
