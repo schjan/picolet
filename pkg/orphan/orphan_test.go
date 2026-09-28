@@ -289,3 +289,31 @@ func TestScan_StalePodWithAgentMemberIsNotStopped(t *testing.T) {
 		})
 	}
 }
+
+// If a .container cannot be read, the scan cannot tell whether it is the
+// agent's own container joining a stale pod, so no pod is stopped. The pod
+// file is still removed, and other stale units are still stopped.
+func TestScan_UnreadableContainerSkipsAllPodStops(t *testing.T) {
+	t.Parallel()
+	quadletDir := t.TempDir()
+	podPath := filepath.Join(quadletDir, "web.pod")
+	netPath := filepath.Join(quadletDir, "lan.network")
+	brokenPath := filepath.Join(quadletDir, "agent.container")
+	require.NoError(t, os.WriteFile(podPath, []byte("[Pod]\n"), 0o600))
+	require.NoError(t, os.WriteFile(netPath, []byte("[Network]\n"), 0o600))
+	require.NoError(t, os.WriteFile(brokenPath, []byte("[Container\nPod=web.pod\n"), 0o600))
+
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().StopUnit(mock.Anything, "lan-network.service").Return(nil).Once()
+	fw := appliermocks.NewMockFileWriter(t)
+	for _, path := range []string{podPath, netPath, brokenPath} {
+		fw.EXPECT().Remove(path).Return(nil).Once()
+	}
+	pod := appliermocks.NewMockPodmanClient(t)
+	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
+
+	result, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir()).
+		Scan(context.Background(), map[string]state.ManagedFile{})
+	require.NoError(t, err)
+	assert.Equal(t, 3, result.FilesRemoved)
+}

@@ -112,11 +112,11 @@ func rejectSelfPodMember(unit *parser.UnitFile) error {
 	if pod == "" {
 		return nil
 	}
-	info := buildUnitInfo(unit)
-	if info == nil {
-		return nil
+	name, err := quadlet.GetUnitServiceName(unit)
+	if err != nil {
+		return nil //nolint:nilerr // conversion already rejected a unit Podman cannot name
 	}
-	if service := info.ServiceFileName(); config.IsDefaultSelfUnit(service) {
+	if service := name + ".service"; config.IsDefaultSelfUnit(service) {
 		return fmt.Errorf("%s: the agent's own unit %s must not join a pod (Pod=%s): "+
 			"restarting or stopping the pod would stop the agent before it saves state", unit.Filename, service, pod)
 	}
