@@ -174,7 +174,7 @@ func applyPodStackDelete(t *testing.T, files []resolver.ResolvedFile, deployed *
 		shopAPIPath:   "shop-api.service",
 		shopProxyPath: "shop-proxy.service",
 	} {
-		assert.Equal(t, unit, findChange(t, cs, path).ServiceName)
+		require.Equal(t, unit, findChange(t, cs, path).ServiceName)
 		stop := sys.EXPECT().StopUnit(mock.Anything, unit).Return(nil).Once()
 		fw.EXPECT().Remove(path).Return(nil).Once().NotBefore(stop)
 	}
