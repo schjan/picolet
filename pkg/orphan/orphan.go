@@ -170,7 +170,7 @@ func (s *Scanner) generatedService(path string, view quadletView) (string, confi
 	if spec, _ := config.SpecFor(category); !ok || spec.Unit != config.GeneratedUnit {
 		return "", "", false
 	}
-	if selected := view.units[filepath.Base(path)]; !samePath(selected, path) {
+	if selected := view.units[filepath.Base(path)]; !sameEntry(selected, path) {
 		slog.Warn("orphaned quadlet is not the file Podman generates this unit from, its service is not stopped",
 			"path", path, "selected", selected)
 		return "", "", false
@@ -187,11 +187,11 @@ func (s *Scanner) generatedService(path string, view quadletView) (string, confi
 	return loaded.service, category, true
 }
 
-// samePath reports whether a and b are the same directory entry: same name in
+// sameEntry reports whether a and b are the same directory entry: same name in
 // the same directory once the directories' symlinks are resolved. The entries
 // themselves are not resolved: to Podman a symlink or hard link in another
 // directory is a separate unit file.
-func samePath(a, b string) bool {
+func sameEntry(a, b string) bool {
 	if filepath.Base(a) != filepath.Base(b) {
 		return false
 	}
@@ -200,8 +200,8 @@ func samePath(a, b string) bool {
 	return errA == nil && errB == nil && da == db
 }
 
-// quadletView is the Quadlet unit set as Podman's generator sees it, read
-// once before any orphan is removed.
+// quadletView is read once before any orphan is removed: units is the unit
+// set as Podman's generator sees it, agentPods covers every container file.
 type quadletView struct {
 	// units maps each unit filename ("web.pod") to the file Podman generates
 	// it from: the first file of that name that parses, unit dirs in order.
@@ -354,12 +354,9 @@ func mergeDropIns(unit *parser.UnitFile, unitDirs []string) error {
 // scanMarkedDir scans a shared directory (systemd) and removes only files that carry
 // the picolet marker and are absent from managedFiles. Non-picolet files are untouched.
 func (s *Scanner) scanMarkedDir(dir string, managedFiles map[string]state.ManagedFile) (int, error) {
-	entries, err := os.ReadDir(dir)
+	entries, err := readDirIfExists(dir)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("reading systemd dir %s: %w", dir, err)
+		return 0, err
 	}
 	var removed int
 	for _, entry := range entries {

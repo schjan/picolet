@@ -297,9 +297,9 @@ func writeFile(t *testing.T, path, content string) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 }
 
-// Whether a stale pod is stopped depends on the agent container's settings as
-// Podman sees them: the unit merged with its drop-ins from every unit
-// directory. If those cannot be read, no pod is stopped. Either way the pod
+// Whether a stale pod is stopped depends on the settings of every agent
+// container file (shadowed ones included): each unit merged with its drop-ins
+// from every unit directory. If those cannot be read, no pod is stopped. Either way the pod
 // file is removed and other stale units are still stopped.
 //
 //nolint:funlen // table of filesystem setups
