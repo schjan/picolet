@@ -105,7 +105,7 @@ func convertQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.Unit
 
 // rejectSelfPodMember rejects the agent's own container joining a pod. The
 // member is BindsTo= the pod's service, so restarting the pod on a change, or
-// stopping it on delete or orphan cleanup, would stop the agent before it
+// stopping it when the pod file is deleted, would stop the agent before it
 // saves state.
 func rejectSelfPodMember(unit *parser.UnitFile) error {
 	pod, _ := unit.Lookup(quadlet.ContainerGroup, quadlet.KeyPod)

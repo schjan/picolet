@@ -129,7 +129,8 @@ type Spec struct {
 }
 
 // categories is the category table: adding a Quadlet or systemd unit type is
-// one row here plus, for Quadlets, its converter wiring in pkg/validator.
+// one row here plus, for Quadlets, its converter wiring in pkg/validator, and
+// for selectable ones a Subdir and a typed list in AssignmentGroup.
 //
 // Two orderings are kept apart on purpose:
 //   - ConvertOrder mirrors quadlet.SupportedExtensions: .pod converts last

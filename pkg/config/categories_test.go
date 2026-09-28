@@ -8,7 +8,7 @@ import (
 )
 
 // ApplyRank orders file writes: a pod is written before the containers that
-// join it, so a first deploy of a pod stack comes up in one reconciliation.
+// join it, so a partial apply never leaves a member without its pod file.
 func TestApplyOrderOfDeployableCategories(t *testing.T) {
 	t.Parallel()
 	deployable := Deployable()
