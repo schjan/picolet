@@ -290,30 +290,62 @@ func TestScan_StalePodWithAgentMemberIsNotStopped(t *testing.T) {
 	}
 }
 
-// If a .container cannot be read, the scan cannot tell whether it is the
-// agent's own container joining a stale pod, so no pod is stopped. The pod
-// file is still removed, and other stale units are still stopped.
-func TestScan_UnreadableContainerSkipsAllPodStops(t *testing.T) {
+// If a container's settings cannot be fully read, the scan cannot tell whether
+// it is the agent's own container joining a stale pod, so no pod is stopped.
+// The pod file is still removed, and other stale units are still stopped.
+func TestScan_UnreadableContainerSettingsSkipAllPodStops(t *testing.T) {
 	t.Parallel()
-	quadletDir := t.TempDir()
-	podPath := filepath.Join(quadletDir, "web.pod")
-	netPath := filepath.Join(quadletDir, "lan.network")
-	brokenPath := filepath.Join(quadletDir, "agent.container")
-	require.NoError(t, os.WriteFile(podPath, []byte("[Pod]\n"), 0o600))
-	require.NoError(t, os.WriteFile(netPath, []byte("[Network]\n"), 0o600))
-	require.NoError(t, os.WriteFile(brokenPath, []byte("[Container\nPod=web.pod\n"), 0o600))
-
-	sys := appliermocks.NewMockSystemdManager(t)
-	sys.EXPECT().StopUnit(mock.Anything, "lan-network.service").Return(nil).Once()
-	fw := appliermocks.NewMockFileWriter(t)
-	for _, path := range []string{podPath, netPath, brokenPath} {
-		fw.EXPECT().Remove(path).Return(nil).Once()
+	tests := []struct {
+		name string
+		// setup writes the obscuring entry and returns its paths (kept managed).
+		setup func(t *testing.T, dir string) []string
+	}{
+		{name: "unparseable container", setup: func(t *testing.T, dir string) []string {
+			t.Helper()
+			path := filepath.Join(dir, "agent.container")
+			require.NoError(t, os.WriteFile(path, []byte("[Container\nPod=web.pod\n"), 0o600))
+			return []string{path}
+		}},
+		{name: "container vanished (dangling symlink)", setup: func(t *testing.T, dir string) []string {
+			t.Helper()
+			path := filepath.Join(dir, "agent.container")
+			require.NoError(t, os.Symlink(filepath.Join(dir, "gone"), path))
+			return []string{path}
+		}},
+		{name: "drop-in may add Pod=", setup: func(t *testing.T, dir string) []string {
+			t.Helper()
+			unit := filepath.Join(dir, "picolet.container")
+			dropIn := filepath.Join(dir, "picolet.container.d", "10-pod.conf")
+			require.NoError(t, os.WriteFile(unit, []byte("[Container]\nImage=picolet\n"), 0o600))
+			require.NoError(t, os.MkdirAll(filepath.Dir(dropIn), 0o700))
+			require.NoError(t, os.WriteFile(dropIn, []byte("[Container]\nPod=web.pod\n"), 0o600))
+			return []string{unit, dropIn}
+		}},
 	}
-	pod := appliermocks.NewMockPodmanClient(t)
-	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			quadletDir := t.TempDir()
+			podPath := filepath.Join(quadletDir, "web.pod")
+			netPath := filepath.Join(quadletDir, "lan.network")
+			require.NoError(t, os.WriteFile(podPath, []byte("[Pod]\n"), 0o600))
+			require.NoError(t, os.WriteFile(netPath, []byte("[Network]\n"), 0o600))
+			managed := map[string]state.ManagedFile{}
+			for _, path := range tt.setup(t, quadletDir) {
+				managed[path] = state.ManagedFile{Hash: "sha256:abc", Category: "container"}
+			}
 
-	result, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir()).
-		Scan(context.Background(), map[string]state.ManagedFile{})
-	require.NoError(t, err)
-	assert.Equal(t, 3, result.FilesRemoved)
+			sys := appliermocks.NewMockSystemdManager(t)
+			sys.EXPECT().StopUnit(mock.Anything, "lan-network.service").Return(nil).Once()
+			fw := appliermocks.NewMockFileWriter(t)
+			fw.EXPECT().Remove(podPath).Return(nil).Once()
+			fw.EXPECT().Remove(netPath).Return(nil).Once()
+			pod := appliermocks.NewMockPodmanClient(t)
+			pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
+
+			result, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir()).Scan(context.Background(), managed)
+			require.NoError(t, err)
+			assert.Equal(t, 2, result.FilesRemoved)
+		})
+	}
 }

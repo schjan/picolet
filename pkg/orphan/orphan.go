@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
@@ -164,35 +165,57 @@ func (g podGuard) protects(podFile string) bool {
 // or not, for the pods the agent's own container joins. It runs before any
 // orphan is removed, so a stale agent container still protects its pod. The
 // validator rejects such a Fleet; this guards files deployed before that check
-// or after a state reset. It fails closed: an unreadable directory entry or
-// container makes the guard blind.
+// or after a state reset. It fails closed: only a missing Quadlet directory is
+// harmless. Any entry that cannot be read, and any drop-in directory (whose
+// .conf files Podman merges into the unit, possibly adding Pod=), make the
+// guard blind. Drop-ins in Podman's other search directories are not seen.
 func (s *Scanner) readPodGuard() podGuard {
 	guard := podGuard{agentPods: make(map[string]struct{})}
 	err := filepath.WalkDir(s.quadletDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if path == s.quadletDir && errors.Is(err, fs.ErrNotExist) {
+				return filepath.SkipAll
+			}
 			return err
 		}
-		if category, _ := config.CategoryForExtension(filepath.Ext(path)); d.IsDir() || category != config.CategoryContainer {
+		if d.IsDir() {
+			if path != s.quadletDir && strings.HasSuffix(d.Name(), ".d") {
+				return fmt.Errorf("%s: drop-in directory, its settings are not read", path)
+			}
 			return nil
 		}
-		unit, err := parser.ParseUnitFile(path)
-		if err != nil {
-			return err
+		if category, _ := config.CategoryForExtension(filepath.Ext(path)); category != config.CategoryContainer {
+			return nil
 		}
-		name, err := quadlet.GetUnitServiceName(unit)
-		if err != nil {
-			return err
-		}
-		if pod, _ := unit.Lookup(quadlet.ContainerGroup, quadlet.KeyPod); pod != "" && config.IsDefaultSelfUnit(name+".service") {
+		pod, err := agentPod(path)
+		if pod != "" {
 			guard.agentPods[pod] = struct{}{}
 		}
-		return nil
+		return err
 	})
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err != nil {
 		slog.Warn("orphan scan: cannot read every container quadlet, no pod will be stopped", "error", err)
 		guard.blind = true
 	}
 	return guard
+}
+
+// agentPod returns the pod ("web.pod") the container Quadlet at path joins if
+// its generated service is the agent's own, else "".
+func agentPod(path string) (string, error) {
+	unit, err := parser.ParseUnitFile(path)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	name, err := quadlet.GetUnitServiceName(unit)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	if !config.IsDefaultSelfUnit(name + ".service") {
+		return "", nil
+	}
+	pod, _ := unit.Lookup(quadlet.ContainerGroup, quadlet.KeyPod)
+	return pod, nil
 }
 
 // scanMarkedDir scans a shared directory (systemd) and removes only files that carry
