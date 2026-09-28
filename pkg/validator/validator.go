@@ -115,7 +115,7 @@ func analyzeQuadlet(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitI
 // buildUnitsInfoFromFiles builds a UnitInfo map from resolved files for cross-reference resolution.
 // It mirrors Podman's two-phase generateUnitsInfoMap + Convert* flow:
 //  1. Pre-populate all unit entries (with ServiceName; ResourceName for Prefill categories).
-//  2. Convert the units of Quadlet categories without Prefill, in ConvertOrder, to
+//  2. Convert the units of PreConvert categories, in ConvertOrder, to
 //     populate their ResourceName so that units referencing them (e.g. a
 //     container's Network=/Volume=) resolve the cross-reference.
 func buildUnitsInfoFromFiles(files []resolver.ResolvedFile, rootless bool) map[string]*quadlet.UnitInfo {
@@ -149,12 +149,12 @@ func buildUnitsInfoFromFiles(files []resolver.ResolvedFile, rootless bool) map[s
 }
 
 // preConvertFiles selects the parsed units whose category is converted by
-// Podman and not prefilled, stably ordered by the category's ConvertOrder.
+// Podman and marked PreConvert, stably ordered by the category's ConvertOrder.
 func preConvertFiles(files []resolver.ResolvedFile) []resolver.ResolvedFile {
 	var selected []resolver.ResolvedFile
 	for _, f := range files {
 		spec, _ := config.SpecFor(f.Category)
-		if f.ParsedUnit != nil && spec.Check == config.CheckQuadlet && !spec.Prefill {
+		if f.ParsedUnit != nil && spec.Check == config.CheckQuadlet && spec.PreConvert {
 			selected = append(selected, f)
 		}
 	}

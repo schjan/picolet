@@ -119,10 +119,13 @@ type Spec struct {
 	Health       HealthClass
 	Restart      RestartPolicy
 	// Prefill: the Quadlet resource name is derived from the unit before any
-	// conversion. Otherwise the category's converter sets it, so the validator
-	// pre-converts these units ahead of the units that reference them.
+	// conversion (Podman's generateUnitsInfoMap rule).
 	Prefill bool
-	Unit    UnitNaming
+	// PreConvert: the validator converts these units in a pass ahead of
+	// per-file validation, so the side effects of conversion (e.g. a network's
+	// ResourceName) are visible to the units that reference them.
+	PreConvert bool
+	Unit       UnitNaming
 }
 
 // categories is the category table: adding a Quadlet or systemd unit type is
@@ -139,7 +142,7 @@ type Spec struct {
 var categories = []Spec{
 	{
 		Category: CategoryNetwork, Dest: DestQuadlet, Subdir: "networks", Check: CheckQuadlet,
-		ApplyRank: 10, ConvertOrder: 2, Health: HealthDaemon, Restart: RestartChanged, Unit: GeneratedUnit,
+		ApplyRank: 10, ConvertOrder: 2, Health: HealthDaemon, Restart: RestartChanged, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
 		Category: CategorySystemd, Dest: DestSystemd, Subdir: "systemd", Check: CheckSystemd,
@@ -147,7 +150,7 @@ var categories = []Spec{
 	},
 	{
 		Category: CategoryVolume, Dest: DestQuadlet, Subdir: "volumes", Check: CheckQuadlet,
-		ApplyRank: 20, ConvertOrder: 2, Health: HealthDaemon, Restart: RestartChanged, Unit: GeneratedUnit,
+		ApplyRank: 20, ConvertOrder: 2, Health: HealthDaemon, Restart: RestartChanged, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
 		Category: CategoryContainer, Dest: DestQuadlet, Subdir: "containers", Check: CheckQuadlet,
@@ -155,7 +158,7 @@ var categories = []Spec{
 	},
 	{
 		Category: CategoryKube, Dest: DestQuadlet, Subdir: "kube", Check: CheckQuadlet,
-		ApplyRank: 110, ConvertOrder: 4, Health: HealthDaemon, Restart: RestartChanged, Unit: GeneratedUnit,
+		ApplyRank: 110, ConvertOrder: 4, Health: HealthDaemon, Restart: RestartChanged, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
 		Category: CategoryManifest, Dest: DestData, Subdir: "manifests", PathHelper: "manifestPath", Check: CheckManifest,
@@ -171,19 +174,19 @@ var categories = []Spec{
 	},
 	// Known to Podman, not deployable yet: not selectable, rejected by the validator.
 	{
-		Category: CategoryImage, Dest: DestQuadlet,
+		Category: CategoryImage, Dest: DestQuadlet, Check: CheckUnsupported,
 		ApplyRank: 30, ConvertOrder: 1, Health: HealthDaemon, Restart: RestartChanged, Unit: GeneratedUnit,
 	},
 	{
-		Category: CategoryArtifact, Dest: DestQuadlet,
+		Category: CategoryArtifact, Dest: DestQuadlet, Check: CheckUnsupported,
 		ApplyRank: 35, ConvertOrder: 1, Health: HealthDaemon, Restart: RestartChanged, Unit: GeneratedUnit,
 	},
 	{
-		Category: CategoryBuild, Dest: DestQuadlet,
+		Category: CategoryBuild, Dest: DestQuadlet, Check: CheckUnsupported,
 		ApplyRank: 40, ConvertOrder: 3, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, Unit: GeneratedUnit,
 	},
 	{
-		Category: CategoryPod, Dest: DestQuadlet,
+		Category: CategoryPod, Dest: DestQuadlet, Check: CheckUnsupported,
 		ApplyRank: 90, ConvertOrder: 5, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, Unit: GeneratedUnit,
 	},
 }
