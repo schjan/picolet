@@ -14,8 +14,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/containers/podman/v5/pkg/systemd/quadlet"
-
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
@@ -1201,8 +1199,7 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 		a.statusStore.SetOrphanScan(status.OrphanScan{Ran: true, Error: err.Error()})
 		return
 	}
-	scanner := orphan.New(a.writer, a.podman, a.systemd, quadletDir, systemdDir, dataDir,
-		orphan.WithUnitDirs(quadlet.GetUnitDirs(a.cfg.Rootless)...))
+	scanner := orphan.New(a.writer, a.podman, quadletDir, systemdDir, dataDir)
 	result, err := scanner.Scan(ctx, st.ManagedFiles)
 	if err != nil {
 		slog.Warn("orphan scan error", "error", err)

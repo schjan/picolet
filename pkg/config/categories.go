@@ -126,10 +126,6 @@ type Spec struct {
 	// ResourceName) are visible to the units that reference them.
 	PreConvert bool
 	Unit       UnitNaming
-	// StopOrphan: the orphan scan stops the generated service of an Orphan
-	// before removing it. Off for resources other units Requires= (networks,
-	// volumes): stopping one would stop its dependents too.
-	StopOrphan bool
 }
 
 // categories is the category table: adding a Quadlet or systemd unit type is
@@ -158,15 +154,15 @@ var categories = []Spec{
 	},
 	{
 		Category: CategoryContainer, Dest: DestQuadlet, Subdir: "containers", Check: CheckQuadlet,
-		ApplyRank: 100, ConvertOrder: 4, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, PreConvert: true, Unit: GeneratedUnit, StopOrphan: true,
+		ApplyRank: 100, ConvertOrder: 4, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
 		Category: CategoryKube, Dest: DestQuadlet, Subdir: "kube", Check: CheckQuadlet,
-		ApplyRank: 110, ConvertOrder: 4, Health: HealthDaemon, Restart: RestartChanged, PreConvert: true, Unit: GeneratedUnit, StopOrphan: true,
+		ApplyRank: 110, ConvertOrder: 4, Health: HealthDaemon, Restart: RestartChanged, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
 		Category: CategoryPod, Dest: DestQuadlet, Subdir: "pods", Check: CheckQuadlet,
-		ApplyRank: 90, ConvertOrder: 5, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, PreConvert: true, Unit: GeneratedUnit, StopOrphan: true,
+		ApplyRank: 90, ConvertOrder: 5, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
 		Category: CategoryManifest, Dest: DestData, Subdir: "manifests", PathHelper: "manifestPath", Check: CheckManifest,

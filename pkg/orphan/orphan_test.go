@@ -2,7 +2,6 @@ package orphan_test
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -34,9 +33,7 @@ func TestScanOwnedDir_RemovesOrphans(t *testing.T) {
 	pod := appliermocks.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
-	sys := appliermocks.NewMockSystemdManager(t)
-	sys.EXPECT().StopUnit(mock.Anything, "old.service").Return(nil)
-	s := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir())
+	s := orphan.New(fw, pod, quadletDir, t.TempDir(), t.TempDir())
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{
 		managedPath: {Hash: "sha256:abc", Category: "container"},
 	})
@@ -52,7 +49,7 @@ func TestScanOwnedDir_DirNotExist(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
 	nonExistent := filepath.Join(t.TempDir(), "does-not-exist")
-	s := orphan.New(fw, pod, appliermocks.NewMockSystemdManager(t), nonExistent, t.TempDir(), t.TempDir())
+	s := orphan.New(fw, pod, nonExistent, t.TempDir(), t.TempDir())
 	// Should return zero — non-existent dir means no orphans
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{})
 	require.NoError(t, err)
@@ -76,7 +73,7 @@ func TestScanFilesDir_RemovesOnlyOrphanedFiles(t *testing.T) {
 	pod := appliermocks.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
-	s := orphan.New(fw, pod, appliermocks.NewMockSystemdManager(t), t.TempDir(), t.TempDir(), dataDir)
+	s := orphan.New(fw, pod, t.TempDir(), t.TempDir(), dataDir)
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{
 		managedPath: {Hash: "sha256:abc", Category: "file"},
 	})
@@ -99,7 +96,7 @@ func TestScanMarkedDir_RemovesOrphans(t *testing.T) {
 	pod := appliermocks.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
-	s := orphan.New(fw, pod, appliermocks.NewMockSystemdManager(t), t.TempDir(), systemdDir, t.TempDir())
+	s := orphan.New(fw, pod, t.TempDir(), systemdDir, t.TempDir())
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.FilesRemoved)
@@ -121,7 +118,7 @@ func TestScanMarkedDir_IgnoresUnmarkedFiles(t *testing.T) {
 	pod := appliermocks.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
-	s := orphan.New(fw, pod, appliermocks.NewMockSystemdManager(t), t.TempDir(), systemdDir, t.TempDir())
+	s := orphan.New(fw, pod, t.TempDir(), systemdDir, t.TempDir())
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{})
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.FilesRemoved)
@@ -140,7 +137,7 @@ func TestScanMarkedDir_KeepsManagedFiles(t *testing.T) {
 	pod := appliermocks.NewMockPodmanClient(t)
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
-	s := orphan.New(fw, pod, appliermocks.NewMockSystemdManager(t), t.TempDir(), systemdDir, t.TempDir())
+	s := orphan.New(fw, pod, t.TempDir(), systemdDir, t.TempDir())
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{
 		managedPath: {Hash: "sha256:abc", Category: "systemd"},
 	})
@@ -156,7 +153,7 @@ func TestScanSecrets_RemovesOrphans(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return([]string{"kept", "orphan"}, nil)
 	pod.EXPECT().SecretRemove(mock.Anything, "orphan").Return(nil)
 
-	s := orphan.New(fw, pod, appliermocks.NewMockSystemdManager(t), t.TempDir(), t.TempDir(), t.TempDir())
+	s := orphan.New(fw, pod, t.TempDir(), t.TempDir(), t.TempDir())
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{
 		"secret:kept": {Hash: "sha256:abc", Category: "secret"},
 	})
@@ -171,7 +168,7 @@ func TestScanSecrets_KeepsAllManaged(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return([]string{"db-pass", "api-key"}, nil)
 	// No SecretRemove calls expected
 
-	s := orphan.New(fw, pod, appliermocks.NewMockSystemdManager(t), t.TempDir(), t.TempDir(), t.TempDir())
+	s := orphan.New(fw, pod, t.TempDir(), t.TempDir(), t.TempDir())
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{
 		"secret:db-pass": {Hash: "sha256:abc", Category: "secret"},
 		"secret:api-key": {Hash: "sha256:def", Category: "secret"},
@@ -195,235 +192,11 @@ func TestScan_CountsFilesAndSecretsSeparately(t *testing.T) {
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return([]string{"orphan-secret"}, nil)
 	pod.EXPECT().SecretRemove(mock.Anything, "orphan-secret").Return(nil)
 
-	sys := appliermocks.NewMockSystemdManager(t)
-	sys.EXPECT().StopUnit(mock.Anything, "a.service").Return(nil)
-	sys.EXPECT().StopUnit(mock.Anything, "b.service").Return(nil)
-	s := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir())
+	s := orphan.New(fw, pod, quadletDir, t.TempDir(), t.TempDir())
 	result, err := s.Scan(context.Background(), map[string]state.ManagedFile{})
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.FilesRemoved)
 	assert.Equal(t, 1, result.SecretsRemoved)
-}
-
-// An orphaned Quadlet's generated service keeps running after daemon-reload drops
-// its definition, so it is stopped before the file is removed.
-func TestScan_OrphanedQuadletStopsItsGeneratedService(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name     string
-		file     string
-		content  string
-		wantStop string // "" = no stop expected
-		stopErr  error
-	}{
-		{name: "pod", file: "web.pod", content: "[Pod]\nPublishPort=8080:80\n", wantStop: "web-pod.service"},
-		{name: "ServiceName= override", file: "web.pod", content: "[Pod]\nServiceName=shop\n", wantStop: "shop.service"},
-		{name: "kube", file: "stack.kube", content: "[Kube]\nYaml=/x.yml\n", wantStop: "stack.service"},
-		// Stopping a network or volume would stop the units that Requires= it.
-		{name: "network is only removed", file: "lan.network", content: "[Network]\n"},
-		{name: "failed stop still removes the file", file: "web.pod", content: "[Pod]\n", wantStop: "web-pod.service", stopErr: errors.New("unit web-pod.service not loaded")},
-		{name: "agent's own user unit is not stopped", file: "picolet.container", content: "[Container]\nImage=picolet\n"},
-		{name: "agent's own system unit is not stopped", file: "picolet-system.container", content: "[Container]\nImage=picolet\n"},
-		{name: "unparseable file is still removed", file: "broken.container", content: "[Container\n"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			quadletDir := t.TempDir()
-			path := filepath.Join(quadletDir, tt.file)
-			require.NoError(t, os.WriteFile(path, []byte(tt.content), 0o600))
-
-			sys := appliermocks.NewMockSystemdManager(t)
-			fw := appliermocks.NewMockFileWriter(t)
-			remove := fw.EXPECT().Remove(path).Return(nil).Once()
-			if tt.wantStop != "" {
-				remove.NotBefore(sys.EXPECT().StopUnit(mock.Anything, tt.wantStop).Return(tt.stopErr).Once())
-			}
-			pod := appliermocks.NewMockPodmanClient(t)
-			pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
-
-			result, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir()).
-				Scan(context.Background(), map[string]state.ManagedFile{})
-			require.NoError(t, err)
-			assert.Equal(t, 1, result.FilesRemoved)
-		})
-	}
-}
-
-// Stopping a pod stops its members (BindsTo=). An orphaned pod the agent's own
-// container joins must therefore not be stopped, whether that container is
-// still managed or orphaned itself (e.g. after a state reset).
-func TestScan_OrphanedPodWithAgentMemberIsNotStopped(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name          string
-		agentFile     string
-		agentContent  string
-		agentIsOrphan bool
-	}{
-		{name: "managed agent container", agentFile: "picolet.container", agentContent: "[Container]\nImage=picolet\nPod=web.pod\n"},
-		{name: "orphaned agent container", agentFile: "picolet.container", agentContent: "[Container]\nImage=picolet\nPod=web.pod\n", agentIsOrphan: true},
-		{name: "agent unit via ServiceName=", agentFile: "agent.container", agentContent: "[Container]\nImage=picolet\nServiceName=picolet-system\nPod=web.pod\n", agentIsOrphan: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			quadletDir := t.TempDir()
-			podPath := filepath.Join(quadletDir, "web.pod")
-			agentPath := filepath.Join(quadletDir, tt.agentFile)
-			require.NoError(t, os.WriteFile(podPath, []byte("[Pod]\n"), 0o600))
-			require.NoError(t, os.WriteFile(agentPath, []byte(tt.agentContent), 0o600))
-
-			sys := appliermocks.NewMockSystemdManager(t) // no StopUnit expected
-			fw := appliermocks.NewMockFileWriter(t)
-			fw.EXPECT().Remove(podPath).Return(nil).Once()
-			managed := map[string]state.ManagedFile{agentPath: {Hash: "sha256:abc", Category: "container"}}
-			if tt.agentIsOrphan {
-				fw.EXPECT().Remove(agentPath).Return(nil).Once()
-				managed = map[string]state.ManagedFile{}
-			}
-			pod := appliermocks.NewMockPodmanClient(t)
-			pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
-
-			_, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir()).
-				Scan(context.Background(), managed)
-			require.NoError(t, err)
-		})
-	}
-}
-
-// writeFile creates path (and its parent directories) with content.
-func writeFile(t *testing.T, path, content string) {
-	t.Helper()
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
-}
-
-// Whether an orphaned pod is stopped depends on the settings of every agent
-// container file (shadowed ones included): each unit merged with its drop-ins
-// from every unit directory. If those cannot be read, no pod is stopped. Either way the pod
-// file is removed and other orphaned units are still stopped.
-//
-//nolint:funlen // table of filesystem setups
-func TestScan_OrphanedPodStopFollowsAgentContainerSettings(t *testing.T) {
-	t.Parallel()
-	const agentUnit = "[Container]\nImage=picolet\n"
-	tests := []struct {
-		name string
-		// setup writes into the Quadlet dir and a second Podman unit dir, and
-		// returns the Quadlet-dir paths to keep managed (not orphans).
-		setup      func(t *testing.T, quadletDir, otherUnitDir string) []string
-		podStopped bool
-	}{
-		{name: "unparseable container", setup: func(t *testing.T, _, other string) []string {
-			t.Helper()
-			writeFile(t, filepath.Join(other, "agent.container"), "[Container\nPod=web.pod\n")
-			return nil
-		}},
-		{name: "container vanished (dangling symlink)", setup: func(t *testing.T, _, other string) []string {
-			t.Helper()
-			require.NoError(t, os.Symlink(filepath.Join(other, "gone"), filepath.Join(other, "agent.container")))
-			return nil
-		}},
-		{name: "drop-in next to the unit adds Pod=", setup: func(t *testing.T, dir, _ string) []string {
-			t.Helper()
-			writeFile(t, filepath.Join(dir, "picolet.container"), agentUnit)
-			writeFile(t, filepath.Join(dir, "picolet.container.d", "10-pod.conf"), "[Container]\nPod=web.pod\n")
-			return []string{filepath.Join(dir, "picolet.container"), filepath.Join(dir, "picolet.container.d", "10-pod.conf")}
-		}},
-		{name: "drop-in in another unit dir adds Pod=", setup: func(t *testing.T, dir, other string) []string {
-			t.Helper()
-			writeFile(t, filepath.Join(dir, "picolet.container"), agentUnit)
-			writeFile(t, filepath.Join(other, "picolet.container.d", "10-pod.conf"), "[Container]\nPod=web.pod\n")
-			return []string{filepath.Join(dir, "picolet.container")}
-		}},
-		{name: "top-level container.d adds Pod= to every container", setup: func(t *testing.T, dir, other string) []string {
-			t.Helper()
-			writeFile(t, filepath.Join(dir, "picolet.container"), agentUnit)
-			writeFile(t, filepath.Join(other, "container.d", "10-pod.conf"), "[Container]\nPod=web.pod\n")
-			return []string{filepath.Join(dir, "picolet.container")}
-		}},
-		{name: "drop-in makes another container the agent via ServiceName=", setup: func(t *testing.T, dir, other string) []string {
-			t.Helper()
-			writeFile(t, filepath.Join(dir, "agent.container"), "[Container]\nImage=picolet\nPod=web.pod\n")
-			writeFile(t, filepath.Join(other, "agent.container.d", "10-name.conf"), "[Container]\nServiceName=picolet\n")
-			return []string{filepath.Join(dir, "agent.container")}
-		}},
-		{name: "symlinked drop-in directory (Podman follows it)", setup: func(t *testing.T, dir, _ string) []string {
-			t.Helper()
-			target := t.TempDir()
-			writeFile(t, filepath.Join(dir, "picolet.container"), agentUnit)
-			writeFile(t, filepath.Join(target, "10-pod.conf"), "[Container]\nPod=web.pod\n")
-			require.NoError(t, os.Symlink(target, filepath.Join(dir, "picolet.container.d")))
-			return []string{filepath.Join(dir, "picolet.container"), filepath.Join(dir, "picolet.container.d")}
-		}},
-		{name: "unparseable drop-in", setup: func(t *testing.T, dir, other string) []string {
-			t.Helper()
-			writeFile(t, filepath.Join(dir, "picolet.container"), agentUnit)
-			writeFile(t, filepath.Join(other, "picolet.container.d", "10-pod.conf"), "[Container\n")
-			return []string{filepath.Join(dir, "picolet.container")}
-		}},
-		{name: "empty leftover drop-in directory", podStopped: true, setup: func(t *testing.T, dir, _ string) []string {
-			t.Helper()
-			writeFile(t, filepath.Join(dir, "picolet.container"), agentUnit)
-			require.NoError(t, os.Mkdir(filepath.Join(dir, "picolet.container.d"), 0o700))
-			return []string{filepath.Join(dir, "picolet.container")}
-		}},
-		{name: "plain file named like a drop-in directory", podStopped: true, setup: func(t *testing.T, dir, _ string) []string {
-			t.Helper()
-			writeFile(t, filepath.Join(dir, "junk.d"), "x")
-			return []string{filepath.Join(dir, "junk.d")}
-		}},
-		{name: "drop-in for another container adds Pod=", podStopped: true, setup: func(t *testing.T, dir, other string) []string {
-			t.Helper()
-			writeFile(t, filepath.Join(dir, "picolet.container"), agentUnit)
-			writeFile(t, filepath.Join(other, "api.container.d", "10-pod.conf"), "[Container]\nPod=web.pod\n")
-			return []string{filepath.Join(dir, "picolet.container")}
-		}},
-		{name: "agent container lives only in another unit dir", setup: func(t *testing.T, _, other string) []string {
-			t.Helper()
-			writeFile(t, filepath.Join(other, "picolet.container"), "[Container]\nImage=picolet\nPod=web.pod\n")
-			return nil
-		}},
-		// Files may change after Podman's generator last ran: the agent can
-		// still be running from a container another file now shadows.
-		{name: "a shadowed agent container still protects its pod", setup: func(t *testing.T, dir, other string) []string {
-			t.Helper()
-			writeFile(t, filepath.Join(dir, "picolet.container"), "[Container]\nImage=picolet\nPod=web.pod\n")
-			writeFile(t, filepath.Join(other, "picolet.container"), agentUnit)
-			return []string{filepath.Join(dir, "picolet.container")}
-		}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			quadletDir, otherUnitDir := t.TempDir(), t.TempDir()
-			podPath := filepath.Join(quadletDir, "web.pod")
-			otherPath := filepath.Join(quadletDir, "orphan.container")
-			writeFile(t, podPath, "[Pod]\n")
-			writeFile(t, otherPath, "[Container]\nImage=orphan\n")
-			managed := map[string]state.ManagedFile{}
-			for _, path := range tt.setup(t, quadletDir, otherUnitDir) {
-				managed[path] = state.ManagedFile{Hash: "sha256:abc", Category: "container"}
-			}
-
-			sys := appliermocks.NewMockSystemdManager(t)
-			sys.EXPECT().StopUnit(mock.Anything, "orphan.service").Return(nil).Once()
-			if tt.podStopped {
-				sys.EXPECT().StopUnit(mock.Anything, "web-pod.service").Return(nil).Once()
-			}
-			fw := appliermocks.NewMockFileWriter(t)
-			fw.EXPECT().Remove(podPath).Return(nil).Once()
-			fw.EXPECT().Remove(otherPath).Return(nil).Once()
-			pod := appliermocks.NewMockPodmanClient(t)
-			pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
-
-			result, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir(), orphan.WithUnitDirs(otherUnitDir)).
-				Scan(context.Background(), managed)
-			require.NoError(t, err)
-			assert.Equal(t, 2, result.FilesRemoved)
-		})
-	}
 }
 
 // A symlinked owned directory is not walked (WalkDir does not follow it), so
@@ -453,100 +226,16 @@ func TestScan_SymlinkedOwnedDirIsNotRemoved(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			target := t.TempDir()
-			writeFile(t, filepath.Join(target, "web.pod"), "[Pod]\n")
+			require.NoError(t, os.WriteFile(filepath.Join(target, "web.pod"), []byte("[Pod]\n"), 0o600))
 			quadletDir, dataDir := tt.link(t, target)
 
-			sys := appliermocks.NewMockSystemdManager(t) // nothing stopped
-			fw := appliermocks.NewMockFileWriter(t)      // nothing removed
+			fw := appliermocks.NewMockFileWriter(t) // nothing removed
 			pod := appliermocks.NewMockPodmanClient(t)
 
-			result, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), dataDir).
+			result, err := orphan.New(fw, pod, quadletDir, t.TempDir(), dataDir).
 				Scan(context.Background(), map[string]state.ManagedFile{})
 			require.ErrorContains(t, err, "is a symlink")
 			assert.Zero(t, result.FilesRemoved)
-		})
-	}
-}
-
-// Which service an orphan's cleanup stops follows Podman's view of that
-// unit: its drop-ins, and whether it is the file Podman generates the unit
-// from at all (cmd/quadlet: first file of a name that parses, unit dirs in
-// order).
-//
-//nolint:funlen // table of filesystem setups
-func TestScan_OrphanedQuadletStopFollowsPodmanUnitView(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		// setup writes into the second Podman unit dir (searched first) or next
-		// to orphanPath, the orphaned web.pod in the Quadlet dir, and returns any other
-		// orphaned Quadlet-dir files the scan removes.
-		setup    func(t *testing.T, otherUnitDir, orphanPath string) []string
-		wantStop string // "" = nothing stopped
-	}{
-		{name: "drop-in renames the service", wantStop: "shop.service", setup: func(t *testing.T, other, _ string) []string {
-			t.Helper()
-			writeFile(t, filepath.Join(other, "web.pod.d", "10-name.conf"), "[Pod]\nServiceName=shop\n")
-			return nil
-		}},
-		{name: "malformed drop-in still stops the service Podman generates anyway", wantStop: "web-pod.service", setup: func(t *testing.T, other, _ string) []string {
-			t.Helper()
-			writeFile(t, filepath.Join(other, "pod.d", "10-bad.conf"), "[Pod\n")
-			return nil
-		}},
-		{name: "a higher-priority same-named file is the one Podman uses", setup: func(t *testing.T, other, _ string) []string {
-			t.Helper()
-			writeFile(t, filepath.Join(other, "web.pod"), "[Pod]\n")
-			return nil
-		}},
-		{name: "a malformed higher-priority file loses to the orphan", wantStop: "web-pod.service", setup: func(t *testing.T, other, _ string) []string {
-			t.Helper()
-			writeFile(t, filepath.Join(other, "web.pod"), "[Pod\n")
-			return nil
-		}},
-		{name: "a hard link in a higher-priority dir is a separate file to Podman", setup: func(t *testing.T, other, orphanPath string) []string {
-			t.Helper()
-			require.NoError(t, os.Link(orphanPath, filepath.Join(other, "web.pod")))
-			return nil
-		}},
-		{name: "an orphaned symlink to a higher-priority file is not that file", setup: func(t *testing.T, other, orphanPath string) []string {
-			t.Helper()
-			target := filepath.Join(other, "web.pod")
-			writeFile(t, target, "[Pod]\nServiceName=foreign\n")
-			require.NoError(t, os.Remove(orphanPath))
-			require.NoError(t, os.Symlink(target, orphanPath))
-			return nil
-		}},
-		{name: "a malformed neighbour does not block the stop", wantStop: "web-pod.service", setup: func(t *testing.T, _, orphanPath string) []string {
-			t.Helper()
-			bad := filepath.Join(filepath.Dir(orphanPath), "bad.kube")
-			writeFile(t, bad, "[Kube\n")
-			return []string{bad}
-		}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			quadletDir, otherUnitDir := t.TempDir(), t.TempDir()
-			podPath := filepath.Join(quadletDir, "web.pod")
-			writeFile(t, podPath, "[Pod]\n")
-			alsoRemoved := tt.setup(t, otherUnitDir, podPath)
-
-			sys := appliermocks.NewMockSystemdManager(t)
-			fw := appliermocks.NewMockFileWriter(t)
-			remove := fw.EXPECT().Remove(podPath).Return(nil).Once()
-			if tt.wantStop != "" {
-				remove.NotBefore(sys.EXPECT().StopUnit(mock.Anything, tt.wantStop).Return(nil).Once())
-			}
-			for _, path := range alsoRemoved {
-				fw.EXPECT().Remove(path).Return(nil).Once()
-			}
-			pod := appliermocks.NewMockPodmanClient(t)
-			pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
-
-			_, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir(), orphan.WithUnitDirs(otherUnitDir)).
-				Scan(context.Background(), map[string]state.ManagedFile{})
-			require.NoError(t, err)
 		})
 	}
 }
