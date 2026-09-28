@@ -109,8 +109,9 @@ schedule, so write the threshold per unit (or per schedule class, with a regex
 The staleness expression evaluates only while a last-success series exists. Pair
 it with an `absent_over_time()` companion over the same window, so a series that
 vanished or never appeared also fires: the one-shot has never succeeded; the
-Agent restarted after a run that did not succeed (last-success lives in memory,
-so it is re-derived only from systemd's current `Result=`) and none has
+Agent restarted after a run that did not succeed or was still in flight
+(last-success lives in memory; after a restart it is re-derived only from a run
+systemd reports as finished with `Result=success`) and none has
 succeeded since; the Machine rebooted and the one-shot has not succeeded since
 (see below); or picolet is not being scraped. Removing only the `.timer` from the
 Fleet does not make the series vanish — the `.service` is still managed, so its
