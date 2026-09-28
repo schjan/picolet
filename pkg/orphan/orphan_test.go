@@ -313,16 +313,18 @@ func TestScan_StalePodStopFollowsAgentContainerSettings(t *testing.T) {
 		setup      func(t *testing.T, quadletDir, otherUnitDir string) []string
 		podStopped bool
 	}{
-		{name: "unparseable container", setup: func(t *testing.T, dir, _ string) []string {
+		// Broken containers sit in the other unit dir: in the Quadlet dir they
+		// would also stop Podman generating its other units (see
+		// TestScan_StaleQuadletStopFollowsPodmanUnitView).
+		{name: "unparseable container", setup: func(t *testing.T, _, other string) []string {
 			t.Helper()
-			writeFile(t, filepath.Join(dir, "agent.container"), "[Container\nPod=web.pod\n")
-			return []string{filepath.Join(dir, "agent.container")}
+			writeFile(t, filepath.Join(other, "agent.container"), "[Container\nPod=web.pod\n")
+			return nil
 		}},
-		{name: "container vanished (dangling symlink)", setup: func(t *testing.T, dir, _ string) []string {
+		{name: "container vanished (dangling symlink)", setup: func(t *testing.T, _, other string) []string {
 			t.Helper()
-			path := filepath.Join(dir, "agent.container")
-			require.NoError(t, os.Symlink(filepath.Join(dir, "gone"), path))
-			return []string{path}
+			require.NoError(t, os.Symlink(filepath.Join(other, "gone"), filepath.Join(other, "agent.container")))
+			return nil
 		}},
 		{name: "drop-in next to the unit adds Pod=", setup: func(t *testing.T, dir, _ string) []string {
 			t.Helper()
@@ -466,26 +468,42 @@ func TestScan_SymlinkedOwnedDirIsNotRemoved(t *testing.T) {
 }
 
 // Which service a stale unit's cleanup stops follows Podman's view of that
-// unit: its drop-ins, and whether it is the file Podman uses at all.
+// unit: its drop-ins, and whether it is the file Podman generates the unit
+// from at all (cmd/quadlet: first file of a name that parses, per unit dir in
+// order; a dir with a file that fails to parse generates none of its units).
 func TestScan_StaleQuadletStopFollowsPodmanUnitView(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		// setup writes into the second Podman unit dir (searched first).
-		setup    func(t *testing.T, otherUnitDir string)
+		// setup writes into the second Podman unit dir (searched first); stale
+		// is the stale web.pod in the Quadlet dir.
+		setup    func(t *testing.T, otherUnitDir, stale string)
 		wantStop string // "" = nothing stopped
 	}{
-		{name: "drop-in renames the service", wantStop: "shop.service", setup: func(t *testing.T, other string) {
+		{name: "drop-in renames the service", wantStop: "shop.service", setup: func(t *testing.T, other, _ string) {
 			t.Helper()
 			writeFile(t, filepath.Join(other, "web.pod.d", "10-name.conf"), "[Pod]\nServiceName=shop\n")
 		}},
-		{name: "unreadable drop-in still stops the service Podman generates anyway", wantStop: "web-pod.service", setup: func(t *testing.T, other string) {
+		{name: "malformed drop-in still stops the service Podman generates anyway", wantStop: "web-pod.service", setup: func(t *testing.T, other, _ string) {
 			t.Helper()
 			writeFile(t, filepath.Join(other, "pod.d", "10-bad.conf"), "[Pod\n")
 		}},
-		{name: "a higher-priority same-named file is the one Podman uses", setup: func(t *testing.T, other string) {
+		{name: "a higher-priority same-named file is the one Podman uses", setup: func(t *testing.T, other, _ string) {
 			t.Helper()
 			writeFile(t, filepath.Join(other, "web.pod"), "[Pod]\n")
+		}},
+		{name: "a malformed higher-priority file loses to the stale one", wantStop: "web-pod.service", setup: func(t *testing.T, other, _ string) {
+			t.Helper()
+			writeFile(t, filepath.Join(other, "web.pod"), "[Pod\n")
+		}},
+		{name: "a hard link in a higher-priority dir is a separate file to Podman", setup: func(t *testing.T, other, stale string) {
+			t.Helper()
+			require.NoError(t, os.Link(stale, filepath.Join(other, "web.pod")))
+		}},
+		{name: "higher-priority dir with a broken file claims the name but generates nothing", setup: func(t *testing.T, other, _ string) {
+			t.Helper()
+			writeFile(t, filepath.Join(other, "web.pod"), "[Pod]\n")
+			writeFile(t, filepath.Join(other, "lan.network"), "[Network\n")
 		}},
 	}
 	for _, tt := range tests {
@@ -494,7 +512,7 @@ func TestScan_StaleQuadletStopFollowsPodmanUnitView(t *testing.T) {
 			quadletDir, otherUnitDir := t.TempDir(), t.TempDir()
 			podPath := filepath.Join(quadletDir, "web.pod")
 			writeFile(t, podPath, "[Pod]\n")
-			tt.setup(t, otherUnitDir)
+			tt.setup(t, otherUnitDir, podPath)
 
 			sys := appliermocks.NewMockSystemdManager(t)
 			fw := appliermocks.NewMockFileWriter(t)

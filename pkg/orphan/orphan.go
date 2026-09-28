@@ -140,20 +140,19 @@ func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]state.Managed
 
 // stopGeneratedUnit stops the service Podman generated from an orphaned Quadlet
 // file: removing the file and reloading only drops the unit definition and
-// leaves the service running. Nothing is stopped when another unit directory
-// holds a same-named file that Podman uses instead (the running service is
-// that file's), nor the agent's own unit, nor a pod the agent's own container
-// may join: stopping a pod stops its members (BindsTo=), the agent included.
-// Like the applier's pre-delete stop, this is best-effort: a failure is logged
-// and the file is removed regardless, because StopUnit also fails for a unit
-// systemd never loaded, and keeping the file would make such an orphan
-// permanent.
+// leaves the service running. Nothing is stopped unless the file is the one
+// Podman generates its unit from (see selectUnits), nor the agent's own unit,
+// nor a pod the agent's own container may join: stopping a pod stops its
+// members (BindsTo=), the agent included. Like the applier's pre-delete stop,
+// this is best-effort: a failure is logged and the file is removed regardless,
+// because StopUnit also fails for a unit systemd never loaded, and keeping the
+// file would make such an orphan permanent.
 func (s *Scanner) stopGeneratedUnit(ctx context.Context, path string, view quadletView) {
-	service, ok := s.generatedService(path, view)
+	service, category, ok := s.generatedService(path, view)
 	if !ok || config.IsDefaultSelfUnit(service) {
 		return
 	}
-	if category, _ := config.CategoryForExtension(filepath.Ext(path)); category == config.CategoryPod && view.protectsPod(filepath.Base(path)) {
+	if category == config.CategoryPod && view.protectsPod(filepath.Base(path)) {
 		slog.Warn("orphaned pod may be joined by the agent's own container, not stopping it", "path", path, "unit", service)
 		return
 	}
@@ -163,47 +162,59 @@ func (s *Scanner) stopGeneratedUnit(ctx context.Context, path string, view quadl
 	}
 }
 
-// generatedService returns the service Podman generated from the Quadlet at
-// path, or false if path generates none, is not the file Podman uses for its
-// unit, or cannot be read.
-func (s *Scanner) generatedService(path string, view quadletView) (string, bool) {
+// generatedService returns the service Podman generates from the Quadlet at
+// path and its category, or false if path generates none, is not the file
+// Podman generates its unit from, or cannot be read.
+func (s *Scanner) generatedService(path string, view quadletView) (string, config.Category, bool) {
 	category, ok := config.CategoryForExtension(filepath.Ext(path))
 	if spec, _ := config.SpecFor(category); !ok || spec.Unit != config.GeneratedUnit {
-		return "", false
+		return "", "", false
 	}
-	if selected, found := view.units[filepath.Base(path)]; !found || !sameFile(selected, path) {
-		slog.Warn("orphaned quadlet is not the file Podman uses for this unit, its service is not stopped",
-			"path", path, "used", selected)
-		return "", false
+	if src, found := view.units[filepath.Base(path)]; !found || !src.generated || !samePath(src.path, path) {
+		slog.Warn("orphaned quadlet is not the file Podman generates this unit from, its service is not stopped",
+			"path", path, "selected", src.path)
+		return "", "", false
 	}
-	unit, service, err := s.loadUnit(path)
-	if unit == nil {
-		slog.Warn("orphan scan: cannot read quadlet, its service is not stopped", "path", path, "error", err)
-		return "", false
-	}
+	loaded, err := s.loadUnit(path)
 	if err != nil {
-		// Podman generates the unit anyway, from the drop-ins it could read.
-		slog.Warn("orphan scan: some drop-ins could not be read", "path", path, "error", err)
+		slog.Warn("orphan scan: cannot read quadlet, its service is not stopped", "path", path, "error", err)
+		return "", "", false
 	}
-	return service, true
+	if loaded.dropInErr != nil {
+		// Podman generates the unit anyway, from the drop-ins it could read.
+		slog.Warn("orphan scan: some drop-ins could not be read", "path", path, "error", loaded.dropInErr)
+	}
+	return loaded.service, category, true
 }
 
-// sameFile reports whether a and b are the same file; false if either can't be read.
-func sameFile(a, b string) bool {
-	fa, errA := os.Stat(a)
-	fb, errB := os.Stat(b)
-	return errA == nil && errB == nil && os.SameFile(fa, fb)
+// samePath reports whether a and b name the same file once symlinks are
+// resolved; false if either cannot be resolved. Not inode identity: to Podman
+// two hard links are two unit files.
+func samePath(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
+}
+
+// unitSource is the file a unit name is claimed by.
+type unitSource struct {
+	path string
+	// generated is false when another unit file in the same directory failed
+	// to parse: Podman then keeps the directory's names claimed but generates
+	// none of its units.
+	generated bool
 }
 
 // quadletView is the Quadlet unit set as Podman's generator sees it, read
 // once before any orphan is removed.
 type quadletView struct {
-	// units maps each unit filename ("web.pod") to the file Podman uses for it.
-	units map[string]string
+	// units maps each unit filename ("web.pod") to the file claiming it.
+	units map[string]unitSource
 	// agentPods are the pod files ("web.pod") the agent's own container names in Pod=.
 	agentPods map[string]struct{}
-	// blind is set when some unit or drop-in could not be read: any pod might
-	// then be the agent's, so none is stopped.
+	// blind is set when a container's settings (the unit or one of its
+	// drop-ins) or a unit directory could not be read: any pod might then be
+	// the agent's, so none is stopped.
 	blind bool
 }
 
@@ -212,30 +223,29 @@ func (v quadletView) protectsPod(podFile string) bool {
 	return joined || v.blind
 }
 
-// readQuadletView reads the units the way Podman's generator does (cmd/quadlet
-// loadUnitsFromDir): every unit directory in order, not recursively (the list
-// already holds subdirectories), the first file of a name winning. Each
-// container is merged with its drop-ins, since they may set ServiceName= or
-// Pod=, to find the pods the agent's own container joins, wherever it lives.
-// A stale agent container still protects its pod, since this runs before any
+// readQuadletView selects the units as Podman's generator does and merges
+// each container with its drop-ins, since they may set ServiceName= or Pod=,
+// to find the pods the agent's own container joins, wherever it lives. A
+// stale agent container still protects its pod, since this runs before any
 // orphan is removed. The validator rejects such a Fleet; this guards files
 // deployed before that check, placed by hand, or left after a state reset. It
-// fails closed: a missing unit directory is harmless, any other unit or
-// drop-in that cannot be read makes the view blind.
+// fails closed on anything that could hide the agent's container.
 func (s *Scanner) readQuadletView() quadletView {
-	units, err := firstByName(s.unitDirs, quadlet.IsExtSupported)
+	units, err := selectUnits(s.unitDirs)
 	view := quadletView{units: units, agentPods: make(map[string]struct{})}
 	errs := []error{err}
-	for name, path := range units {
+	for name, src := range units {
 		if category, _ := config.CategoryForExtension(filepath.Ext(name)); category != config.CategoryContainer {
 			continue
 		}
-		unit, service, err := s.loadUnit(path)
-		errs = append(errs, err)
-		if unit == nil || !config.IsDefaultSelfUnit(service) {
+		// Read even if not generated now: the agent may still run from an
+		// earlier generation.
+		loaded, err := s.loadUnit(src.path)
+		errs = append(errs, err, loaded.dropInErr)
+		if err != nil || !config.IsDefaultSelfUnit(loaded.service) {
 			continue
 		}
-		if pod, _ := unit.Lookup(quadlet.ContainerGroup, quadlet.KeyPod); pod != "" {
+		if pod, _ := loaded.unit.Lookup(quadlet.ContainerGroup, quadlet.KeyPod); pod != "" {
 			view.agentPods[pod] = struct{}{}
 		}
 	}
@@ -246,57 +256,15 @@ func (s *Scanner) readQuadletView() quadletView {
 	return view
 }
 
-// loadUnit parses the Quadlet at path, merges its drop-ins as Podman does, and
-// returns it with the service it generates ("web-pod.service"). The unit is
-// nil if the file itself cannot be read or named; drop-in errors are returned
-// alongside the unit merged from the drop-ins that could be read.
-func (s *Scanner) loadUnit(path string) (*parser.UnitFile, string, error) {
-	unit, err := parser.ParseUnitFile(path)
-	if err != nil {
-		return nil, "", fmt.Errorf("%s: %w", path, err)
-	}
-	dropInErr := mergeDropIns(unit, s.unitDirs)
-	if dropInErr != nil {
-		dropInErr = fmt.Errorf("%s: %w", path, dropInErr)
-	}
-	name, err := quadlet.GetUnitServiceName(unit)
-	if err != nil {
-		return nil, "", errors.Join(fmt.Errorf("%s: %w", path, err), dropInErr)
-	}
-	return unit, name + ".service", dropInErr
-}
-
-// mergeDropIns merges the unit's drop-ins into it the way Podman's generator
-// does (cmd/quadlet loadUnitDropins): every drop-in directory name that applies
-// to the unit (GetUnitDropinPaths, most specific first) is looked up in every
-// unit directory, the first .conf of each name wins, and they merge in name
-// order. Like Podman it merges what it can read and reports the rest.
-func mergeDropIns(unit *parser.UnitFile, unitDirs []string) error {
-	var dirs []string
-	for _, dropInDir := range unit.GetUnitDropinPaths() {
-		for _, unitDir := range unitDirs {
-			dirs = append(dirs, filepath.Join(unitDir, dropInDir))
-		}
-	}
-	byName, err := firstByName(dirs, func(name string) bool { return filepath.Ext(name) == ".conf" })
-	errs := []error{err}
-	for _, name := range slices.Sorted(maps.Keys(byName)) {
-		dropIn, err := parser.ParseUnitFile(byName[name])
-		if err != nil {
-			errs = append(errs, fmt.Errorf("drop-in %s: %w", byName[name], err))
-			continue
-		}
-		unit.Merge(dropIn)
-	}
-	return errors.Join(errs...)
-}
-
-// firstByName lists dirs in order and maps every entry name keep accepts to
-// its path in the first directory holding it (Podman's first-file-wins).
-// Missing directories are skipped; other read errors are returned after the
-// remaining directories are listed.
-func firstByName(dirs []string, keep func(name string) bool) (map[string]string, error) {
-	byName := make(map[string]string)
+// selectUnits picks the file each unit name is claimed by, as Podman's
+// generator does (cmd/quadlet loadUnitsFromDir and its caller): unit
+// directories in order, not recursively (the list already holds
+// subdirectories); a name is claimed by the first file of that name that
+// parses; a directory in which any unit file fails to parse keeps its names
+// claimed but generates none of them. The returned error covers what could
+// hide a container: unreadable directories and unparseable containers.
+func selectUnits(dirs []string) (map[string]unitSource, error) {
+	units := make(map[string]unitSource)
 	var errs []error
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
@@ -307,13 +275,105 @@ func firstByName(dirs []string, keep func(name string) bool) (map[string]string,
 			errs = append(errs, fmt.Errorf("reading %s: %w", dir, err))
 			continue
 		}
-		for _, entry := range entries {
-			if _, seen := byName[entry.Name()]; !seen && keep(entry.Name()) {
-				byName[entry.Name()] = filepath.Join(dir, entry.Name())
+		claimed, failed, err := claimUnits(dir, entries, units)
+		errs = append(errs, err)
+		for _, name := range claimed {
+			units[name] = unitSource{path: filepath.Join(dir, name), generated: !failed}
+		}
+	}
+	return units, errors.Join(errs...)
+}
+
+// claimUnits returns the unit names in dir not yet claimed whose file parses,
+// and whether any unit file in dir failed to parse; the error covers the
+// containers among the failures.
+func claimUnits(dir string, entries []fs.DirEntry, units map[string]unitSource) ([]string, bool, error) {
+	var claimed []string
+	var failed bool
+	var errs []error
+	for _, entry := range entries {
+		name := entry.Name()
+		if _, taken := units[name]; taken || !quadlet.IsExtSupported(name) {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if _, err := parser.ParseUnitFile(path); err != nil {
+			failed = true
+			if category, _ := config.CategoryForExtension(filepath.Ext(name)); category == config.CategoryContainer {
+				errs = append(errs, fmt.Errorf("%s: %w", path, err))
+			} else {
+				slog.Warn("orphan scan: cannot parse quadlet", "path", path, "error", err)
+			}
+			continue
+		}
+		claimed = append(claimed, name)
+	}
+	return claimed, failed, errors.Join(errs...)
+}
+
+// loadedUnit is a Quadlet merged with its drop-ins.
+type loadedUnit struct {
+	unit    *parser.UnitFile
+	service string // the generated service, e.g. "web-pod.service"
+	// dropInErr reports drop-ins that could not be read; like Podman, the
+	// unit is still merged from the others.
+	dropInErr error
+}
+
+// loadUnit parses the Quadlet at path and merges its drop-ins as Podman does.
+// The error is set only if the file itself cannot be read or named.
+func (s *Scanner) loadUnit(path string) (loadedUnit, error) {
+	unit, err := parser.ParseUnitFile(path)
+	if err != nil {
+		return loadedUnit{}, fmt.Errorf("%s: %w", path, err)
+	}
+	dropInErr := mergeDropIns(unit, s.unitDirs)
+	if dropInErr != nil {
+		dropInErr = fmt.Errorf("%s: %w", path, dropInErr)
+	}
+	name, err := quadlet.GetUnitServiceName(unit)
+	if err != nil {
+		return loadedUnit{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return loadedUnit{unit: unit, service: name + ".service", dropInErr: dropInErr}, nil
+}
+
+// mergeDropIns merges the unit's drop-ins into it the way Podman's generator
+// does (cmd/quadlet loadUnitDropins): every drop-in directory name that applies
+// to the unit (GetUnitDropinPaths, most specific first) is looked up in every
+// unit directory, the first .conf of each name wins (before parsing), and they
+// merge in name order. Like Podman it merges what it can read and reports the
+// rest.
+func mergeDropIns(unit *parser.UnitFile, unitDirs []string) error {
+	byName := make(map[string]string)
+	var errs []error
+	for _, dropInDir := range unit.GetUnitDropinPaths() {
+		for _, unitDir := range unitDirs {
+			dir := filepath.Join(unitDir, dropInDir)
+			entries, err := os.ReadDir(dir)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				errs = append(errs, fmt.Errorf("reading %s: %w", dir, err))
+				continue
+			}
+			for _, entry := range entries {
+				if _, seen := byName[entry.Name()]; !seen && filepath.Ext(entry.Name()) == ".conf" {
+					byName[entry.Name()] = filepath.Join(dir, entry.Name())
+				}
 			}
 		}
 	}
-	return byName, errors.Join(errs...)
+	for _, name := range slices.Sorted(maps.Keys(byName)) {
+		dropIn, err := parser.ParseUnitFile(byName[name])
+		if err != nil {
+			errs = append(errs, fmt.Errorf("drop-in %s: %w", byName[name], err))
+			continue
+		}
+		unit.Merge(dropIn)
+	}
+	return errors.Join(errs...)
 }
 
 // scanMarkedDir scans a shared directory (systemd) and removes only files that carry
