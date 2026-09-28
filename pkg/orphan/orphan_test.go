@@ -479,9 +479,9 @@ func TestScan_OrphanedQuadletStopFollowsPodmanUnitView(t *testing.T) {
 	tests := []struct {
 		name string
 		// setup writes into the second Podman unit dir (searched first) or next
-		// to orphan, the orphaned web.pod in the Quadlet dir, and returns any other
+		// to orphanPath, the orphaned web.pod in the Quadlet dir, and returns any other
 		// orphaned Quadlet-dir files the scan removes.
-		setup    func(t *testing.T, otherUnitDir, orphan string) []string
+		setup    func(t *testing.T, otherUnitDir, orphanPath string) []string
 		wantStop string // "" = nothing stopped
 	}{
 		{name: "drop-in renames the service", wantStop: "shop.service", setup: func(t *testing.T, other, _ string) []string {
@@ -504,23 +504,23 @@ func TestScan_OrphanedQuadletStopFollowsPodmanUnitView(t *testing.T) {
 			writeFile(t, filepath.Join(other, "web.pod"), "[Pod\n")
 			return nil
 		}},
-		{name: "a hard link in a higher-priority dir is a separate file to Podman", setup: func(t *testing.T, other, orphan string) []string {
+		{name: "a hard link in a higher-priority dir is a separate file to Podman", setup: func(t *testing.T, other, orphanPath string) []string {
 			t.Helper()
-			require.NoError(t, os.Link(orphan, filepath.Join(other, "web.pod")))
+			require.NoError(t, os.Link(orphanPath, filepath.Join(other, "web.pod")))
 			return nil
 		}},
-		{name: "an orphaned symlink to a higher-priority file is not that file", setup: func(t *testing.T, other, orphan string) []string {
+		{name: "an orphaned symlink to a higher-priority file is not that file", setup: func(t *testing.T, other, orphanPath string) []string {
 			t.Helper()
 			target := filepath.Join(other, "web.pod")
 			writeFile(t, target, "[Pod]\nServiceName=foreign\n")
-			require.NoError(t, os.Remove(orphan))
-			require.NoError(t, os.Symlink(target, orphan))
+			require.NoError(t, os.Remove(orphanPath))
+			require.NoError(t, os.Symlink(target, orphanPath))
 			return nil
 		}},
-		{name: "a malformed neighbour does not block the stop", wantStop: "web-pod.service", setup: func(t *testing.T, _, orphan string) []string {
+		{name: "a malformed neighbour does not block the stop", wantStop: "web-pod.service", setup: func(t *testing.T, _, orphanPath string) []string {
 			t.Helper()
-			bad := filepath.Join(filepath.Dir(orphan), "bad.network")
-			writeFile(t, bad, "[Network\n")
+			bad := filepath.Join(filepath.Dir(orphanPath), "bad.kube")
+			writeFile(t, bad, "[Kube\n")
 			return []string{bad}
 		}},
 	}

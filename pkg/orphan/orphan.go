@@ -141,10 +141,10 @@ func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]state.Managed
 // stopGeneratedUnit stops the service Podman generated from an orphaned Quadlet
 // file whose category has StopOrphan: removing the file and reloading only
 // drops the unit definition and leaves the service running. Nothing is stopped
-// unless the file is the one Podman
-// generates its unit from (see readQuadletView), nor the agent's own unit, nor
-// a pod the agent's own container may join: stopping a pod stops its members
-// (BindsTo=), the agent included. Like the applier's pre-delete stop, this is
+// unless the file is the one Podman generates its unit from (see
+// readQuadletView), nor the agent's own unit, nor a pod the agent's own
+// container may join: stopping a pod stops its members (BindsTo=), the agent
+// included. Like the applier's pre-delete stop, this is
 // best-effort: a failure is logged and the file is removed regardless, because
 // StopUnit also fails for a unit systemd never loaded, and keeping the file
 // would make such an orphan permanent.
@@ -201,8 +201,9 @@ func sameEntry(a, b string) bool {
 	return errA == nil && errB == nil && da == db
 }
 
-// quadletView is read once before any orphan is removed: units is the unit
-// set as Podman's generator sees it, agentPods covers every container file.
+// quadletView is read once before any orphan is removed: units holds the
+// StopOrphan units as Podman's generator selects them, agentPods covers every
+// container file.
 type quadletView struct {
 	// units maps each unit filename of a StopOrphan category ("web.pod") to the
 	// file Podman generates it from: the first file of that name that parses,
@@ -249,37 +250,41 @@ func (s *Scanner) readQuadletView() quadletView {
 	return view
 }
 
-// readUnitEntry adds the unit file at path to view: a unit of a StopOrphan
-// category claims its name if still free and it parses, and a container is
-// checked for being the agent's. The error covers containers only; other
-// unparseable units are just logged.
+// readUnitEntry adds the unit file at path to view: every container is checked
+// for being the agent's, whatever its StopOrphan flag, and a unit of a
+// StopOrphan category claims its name if still free and it parses. The error
+// covers containers only; other unparseable units are just logged.
 func (s *Scanner) readUnitEntry(path string, view *quadletView) error {
 	name := filepath.Base(path)
 	if !quadlet.IsExtSupported(name) {
 		return nil
 	}
 	category, _ := config.CategoryForExtension(filepath.Ext(name))
-	if spec, _ := config.SpecFor(category); !spec.StopOrphan {
-		return nil
-	}
+	spec, _ := config.SpecFor(category)
 	_, claimed := view.units[name]
-	if category != config.CategoryContainer {
-		if claimed {
-			return nil
-		}
-		if _, err := parser.ParseUnitFile(path); err != nil {
-			slog.Warn("orphan scan: cannot parse quadlet", "path", path, "error", err)
-			return nil
-		}
-		view.units[name] = path
+	if category == config.CategoryContainer {
+		return s.readContainerEntry(path, !claimed && spec.StopOrphan, view)
+	}
+	if claimed || !spec.StopOrphan {
 		return nil
 	}
+	if _, err := parser.ParseUnitFile(path); err != nil {
+		slog.Warn("orphan scan: cannot parse quadlet", "path", path, "error", err)
+		return nil
+	}
+	view.units[name] = path
+	return nil
+}
+
+// readContainerEntry loads the container at path, records the pod it joins if
+// it is the agent's, and claims its name if claim is set.
+func (s *Scanner) readContainerEntry(path string, claim bool, view *quadletView) error {
 	loaded, err := s.loadUnit(path)
 	if err != nil {
 		return err
 	}
-	if !claimed {
-		view.units[name] = path
+	if claim {
+		view.units[filepath.Base(path)] = path
 	}
 	if pod, _ := loaded.unit.Lookup(quadlet.ContainerGroup, quadlet.KeyPod); pod != "" && config.IsDefaultSelfUnit(loaded.service) {
 		view.agentPods[pod] = struct{}{}
