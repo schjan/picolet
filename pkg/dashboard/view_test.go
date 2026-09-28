@@ -147,7 +147,7 @@ func fixtureBuildViewModel() (HeaderInput, map[string]state.ManagedFile, map[str
 func TestBuildViewModel_Header(t *testing.T) {
 	t.Parallel()
 	in, files, services, statuses := fixtureBuildViewModel()
-	vm := buildViewModel(in, files, services, statuses, nil, status.OrphanScan{}, nil, fixtureNow, true)
+	vm := buildViewModel(in, files, services, statuses, nil, nil, status.OrphanScan{}, nil, fixtureNow, true)
 
 	if vm.Header.Hostname != "pi-edge-01" {
 		t.Errorf("hostname = %q", vm.Header.Hostname)
@@ -166,7 +166,7 @@ func TestBuildViewModel_Header(t *testing.T) {
 func TestBuildViewModel_BannerActive(t *testing.T) {
 	t.Parallel()
 	in, files, services, statuses := fixtureBuildViewModel()
-	vm := buildViewModel(in, files, services, statuses, nil, status.OrphanScan{}, nil, fixtureNow, true)
+	vm := buildViewModel(in, files, services, statuses, nil, nil, status.OrphanScan{}, nil, fixtureNow, true)
 
 	if vm.Banner == nil || !vm.Banner.Active {
 		t.Fatal("banner should be active when FailedCount >= 3 within failure window")
@@ -180,7 +180,7 @@ func TestBuildViewModel_BannerSuppressedBelowThreshold(t *testing.T) {
 	t.Parallel()
 	in, files, services, statuses := fixtureBuildViewModel()
 	in.FailedCount = 2
-	vm := buildViewModel(in, files, services, statuses, nil, status.OrphanScan{}, nil, fixtureNow, true)
+	vm := buildViewModel(in, files, services, statuses, nil, nil, status.OrphanScan{}, nil, fixtureNow, true)
 	if vm.Banner != nil && vm.Banner.Active {
 		t.Error("banner should be inactive when FailedCount < 3")
 	}
@@ -191,7 +191,7 @@ func TestBuildViewModel_BannerSuppressedAfterExpiry(t *testing.T) {
 	in, files, services, statuses := fixtureBuildViewModel()
 	in.FailedCount = 5
 	in.FailedAt = fixtureNow.Add(-2 * time.Hour) // mirrors agent failure-gate expiry
-	vm := buildViewModel(in, files, services, statuses, nil, status.OrphanScan{}, nil, fixtureNow, true)
+	vm := buildViewModel(in, files, services, statuses, nil, nil, status.OrphanScan{}, nil, fixtureNow, true)
 	if vm.Banner != nil && vm.Banner.Active {
 		t.Error("banner should be inactive when FailedAt > 1h ago")
 	}
@@ -200,7 +200,7 @@ func TestBuildViewModel_BannerSuppressedAfterExpiry(t *testing.T) {
 func TestBuildViewModel_Rows(t *testing.T) {
 	t.Parallel()
 	in, files, services, statuses := fixtureBuildViewModel()
-	vm := buildViewModel(in, files, services, statuses, nil, status.OrphanScan{}, nil, fixtureNow, true)
+	vm := buildViewModel(in, files, services, statuses, nil, nil, status.OrphanScan{}, nil, fixtureNow, true)
 
 	var web, manifest UnitRow
 	for _, g := range vm.Groups {
@@ -232,7 +232,7 @@ func TestBuildViewModel_SystemdBasenameDerivation(t *testing.T) {
 	statuses := map[string]status.UnitRuntimeStatus{
 		"custom.timer": {ActiveState: "active", SubState: "running"},
 	}
-	vm := buildViewModel(in, files, nil, statuses, nil, status.OrphanScan{}, nil, fixtureNow, true)
+	vm := buildViewModel(in, files, nil, statuses, nil, nil, status.OrphanScan{}, nil, fixtureNow, true)
 	row := vm.Groups[0].Rows[0]
 	if row.Status.Token != "active" {
 		t.Errorf("systemd basename derivation failed (status): %+v", row)
@@ -250,7 +250,7 @@ func TestBuildViewModel_Dependencies(t *testing.T) {
 			Requires: []string{"internal-network.service"},
 			After:    []string{"network-online.target"},
 		},
-	}, status.OrphanScan{}, nil, fixtureNow, true)
+	}, nil, status.OrphanScan{}, nil, fixtureNow, true)
 
 	var web UnitRow
 	for _, g := range vm.Groups {
@@ -265,5 +265,53 @@ func TestBuildViewModel_Dependencies(t *testing.T) {
 	}
 	if web.Dependencies[0].Relation != "requires" {
 		t.Errorf("first relation = %q", web.Dependencies[0].Relation)
+	}
+}
+
+func TestBuildViewModel_LastRun(t *testing.T) {
+	t.Parallel()
+	in, _, _, _ := fixtureBuildViewModel()
+	files := map[string]state.ManagedFile{
+		"/etc/systemd/system/backup.service":         {Hash: "sha256:bbbb1111", Category: "systemd"},
+		"/etc/systemd/system/restore-verify.service": {Hash: "sha256:rrrr2222", Category: "systemd"},
+		"/etc/systemd/system/fresh.service":          {Hash: "sha256:ffff3333", Category: "systemd"},
+	}
+	runs := map[string]status.UnitRun{
+		"backup.service": {
+			RunObservation: status.RunObservation{
+				StartedAt:  fixtureNow.Add(-3*time.Hour - time.Minute),
+				FinishedAt: fixtureNow.Add(-3 * time.Hour),
+				Result:     "success",
+			},
+			SucceededAt: fixtureNow.Add(-3 * time.Hour),
+		},
+		"restore-verify.service": {
+			RunObservation: status.RunObservation{
+				StartedAt:  fixtureNow.Add(-10 * time.Minute),
+				FinishedAt: fixtureNow.Add(-5 * time.Minute),
+				Result:     "exit-code",
+			},
+			SucceededAt: fixtureNow.Add(-26 * time.Hour),
+		},
+	}
+	vm := buildViewModel(in, files, nil, nil, nil, runs, status.OrphanScan{}, nil, fixtureNow, true)
+
+	rows := map[string]UnitRow{}
+	for _, g := range vm.Groups {
+		for _, r := range g.Rows {
+			rows[r.Service] = r
+		}
+	}
+	cases := map[string]struct{ lastSuccessAgo, lastResult string }{
+		"backup.service":         {"3 hours ago", ""},
+		"restore-verify.service": {"1 day ago", "exit-code"},
+		"fresh.service":          {"", ""},
+	}
+	for unit, want := range cases {
+		row := rows[unit]
+		if row.LastSuccessAgo != want.lastSuccessAgo || row.LastResult != want.lastResult {
+			t.Errorf("%s: last success %q result %q, want %q %q",
+				unit, row.LastSuccessAgo, row.LastResult, want.lastSuccessAgo, want.lastResult)
+		}
 	}
 }

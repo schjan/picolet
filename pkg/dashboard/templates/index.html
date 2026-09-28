@@ -78,7 +78,7 @@
           <tbody>
             {{- range .Rows }}
             <tr data-row-key="{{ .Path }}">
-              <td class="status status--{{ .Status.Class }}"><span class="glyph">{{ .Status.Glyph }}</span> {{ .Status.Token }}{{ if .SubState }}<span class="substate">· {{ .SubState }}</span>{{ end }}</td>
+              <td class="status status--{{ .Status.Class }}"><span class="glyph">{{ .Status.Glyph }}</span> {{ .Status.Token }}{{ if .SubState }}<span class="substate">· {{ .SubState }}</span>{{ end }}{{ if .LastSuccessAgo }}<span class="last-run">last success {{ .LastSuccessAgo }}</span>{{ end }}{{ if .LastResult }}<span class="last-run last-run--bad">last result {{ .LastResult }}</span>{{ end }}</td>
               <td title="{{ .Path }} · sha256: {{ .HashShort }}">{{ .Basename }}</td>
               <td>{{ if .Service }}{{ .Service }}{{ else }}—{{ end }}{{ if .Dependencies }}
                 <details class="dependencies">

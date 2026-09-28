@@ -105,6 +105,7 @@ func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request) {
 		st.ServiceNames,
 		snap.Units,
 		snap.Dependencies,
+		snap.Runs,
 		snap.OrphanScan,
 		snap.Events,
 		h.now(),
