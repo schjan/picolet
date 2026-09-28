@@ -290,66 +290,106 @@ func TestScan_StalePodWithAgentMemberIsNotStopped(t *testing.T) {
 	}
 }
 
-// If a container's settings cannot be fully read, the scan cannot tell whether
-// it is the agent's own container joining a stale pod, so no pod is stopped.
-// The pod file is still removed, and other stale units are still stopped.
+// writeFile creates path (and its parent directories) with content.
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+}
+
+// Whether a stale pod is stopped depends on the agent container's settings as
+// Podman sees them: the unit merged with its drop-ins from every unit
+// directory. If those cannot be read, no pod is stopped. Either way the pod
+// file is removed and other stale units are still stopped.
 //
 //nolint:funlen // table of filesystem setups
-func TestScan_UnreadableContainerSettingsSkipAllPodStops(t *testing.T) {
+func TestScan_StalePodStopFollowsAgentContainerSettings(t *testing.T) {
 	t.Parallel()
+	const agentUnit = "[Container]\nImage=picolet\n"
 	tests := []struct {
 		name string
-		// setup writes the obscuring entry and returns its paths (kept managed).
-		setup      func(t *testing.T, dir string) []string
+		// setup writes into the Quadlet dir and a second Podman unit dir, and
+		// returns the Quadlet-dir paths to keep managed (not orphans).
+		setup      func(t *testing.T, quadletDir, otherUnitDir string) []string
 		podStopped bool
 	}{
-		{name: "unparseable container", setup: func(t *testing.T, dir string) []string {
+		{name: "unparseable container", setup: func(t *testing.T, dir, _ string) []string {
 			t.Helper()
-			path := filepath.Join(dir, "agent.container")
-			require.NoError(t, os.WriteFile(path, []byte("[Container\nPod=web.pod\n"), 0o600))
-			return []string{path}
+			writeFile(t, filepath.Join(dir, "agent.container"), "[Container\nPod=web.pod\n")
+			return []string{filepath.Join(dir, "agent.container")}
 		}},
-		{name: "container vanished (dangling symlink)", setup: func(t *testing.T, dir string) []string {
+		{name: "container vanished (dangling symlink)", setup: func(t *testing.T, dir, _ string) []string {
 			t.Helper()
 			path := filepath.Join(dir, "agent.container")
 			require.NoError(t, os.Symlink(filepath.Join(dir, "gone"), path))
 			return []string{path}
 		}},
-		{name: "drop-in may add Pod=", setup: func(t *testing.T, dir string) []string {
+		{name: "drop-in next to the unit adds Pod=", setup: func(t *testing.T, dir, _ string) []string {
 			t.Helper()
-			unit := filepath.Join(dir, "picolet.container")
-			dropIn := filepath.Join(dir, "picolet.container.d", "10-pod.conf")
-			require.NoError(t, os.WriteFile(unit, []byte("[Container]\nImage=picolet\n"), 0o600))
-			require.NoError(t, os.MkdirAll(filepath.Dir(dropIn), 0o700))
-			require.NoError(t, os.WriteFile(dropIn, []byte("[Container]\nPod=web.pod\n"), 0o600))
-			return []string{unit, dropIn}
+			writeFile(t, filepath.Join(dir, "picolet.container"), agentUnit)
+			writeFile(t, filepath.Join(dir, "picolet.container.d", "10-pod.conf"), "[Container]\nPod=web.pod\n")
+			return []string{filepath.Join(dir, "picolet.container"), filepath.Join(dir, "picolet.container.d", "10-pod.conf")}
 		}},
-		{name: "symlinked drop-in directory (Podman follows it)", setup: func(t *testing.T, dir string) []string {
+		{name: "drop-in in another unit dir adds Pod=", setup: func(t *testing.T, dir, other string) []string {
 			t.Helper()
-			unit := filepath.Join(dir, "picolet.container")
+			writeFile(t, filepath.Join(dir, "picolet.container"), agentUnit)
+			writeFile(t, filepath.Join(other, "picolet.container.d", "10-pod.conf"), "[Container]\nPod=web.pod\n")
+			return []string{filepath.Join(dir, "picolet.container")}
+		}},
+		{name: "top-level container.d adds Pod= to every container", setup: func(t *testing.T, dir, other string) []string {
+			t.Helper()
+			writeFile(t, filepath.Join(dir, "picolet.container"), agentUnit)
+			writeFile(t, filepath.Join(other, "container.d", "10-pod.conf"), "[Container]\nPod=web.pod\n")
+			return []string{filepath.Join(dir, "picolet.container")}
+		}},
+		{name: "drop-in makes another container the agent via ServiceName=", setup: func(t *testing.T, dir, other string) []string {
+			t.Helper()
+			writeFile(t, filepath.Join(dir, "agent.container"), "[Container]\nImage=picolet\nPod=web.pod\n")
+			writeFile(t, filepath.Join(other, "agent.container.d", "10-name.conf"), "[Container]\nServiceName=picolet\n")
+			return []string{filepath.Join(dir, "agent.container")}
+		}},
+		{name: "symlinked drop-in directory (Podman follows it)", setup: func(t *testing.T, dir, _ string) []string {
+			t.Helper()
 			target := t.TempDir()
-			link := filepath.Join(dir, "picolet.container.d")
-			require.NoError(t, os.WriteFile(unit, []byte("[Container]\nImage=picolet\n"), 0o600))
-			require.NoError(t, os.WriteFile(filepath.Join(target, "10-pod.conf"), []byte("[Container]\nPod=web.pod\n"), 0o600))
-			require.NoError(t, os.Symlink(target, link))
-			return []string{unit, link}
+			writeFile(t, filepath.Join(dir, "picolet.container"), agentUnit)
+			writeFile(t, filepath.Join(target, "10-pod.conf"), "[Container]\nPod=web.pod\n")
+			require.NoError(t, os.Symlink(target, filepath.Join(dir, "picolet.container.d")))
+			return []string{filepath.Join(dir, "picolet.container"), filepath.Join(dir, "picolet.container.d")}
 		}},
-		{name: "empty leftover drop-in directory changes nothing", podStopped: true, setup: func(t *testing.T, dir string) []string {
+		{name: "unparseable drop-in", setup: func(t *testing.T, dir, other string) []string {
 			t.Helper()
+			writeFile(t, filepath.Join(dir, "picolet.container"), agentUnit)
+			writeFile(t, filepath.Join(other, "picolet.container.d", "10-pod.conf"), "[Container\n")
+			return []string{filepath.Join(dir, "picolet.container")}
+		}},
+		{name: "empty leftover drop-in directory", podStopped: true, setup: func(t *testing.T, dir, _ string) []string {
+			t.Helper()
+			writeFile(t, filepath.Join(dir, "picolet.container"), agentUnit)
 			require.NoError(t, os.Mkdir(filepath.Join(dir, "picolet.container.d"), 0o700))
-			return nil
+			return []string{filepath.Join(dir, "picolet.container")}
+		}},
+		{name: "plain file named like a drop-in directory", podStopped: true, setup: func(t *testing.T, dir, _ string) []string {
+			t.Helper()
+			writeFile(t, filepath.Join(dir, "junk.d"), "x")
+			return []string{filepath.Join(dir, "junk.d")}
+		}},
+		{name: "drop-in for another container adds Pod=", podStopped: true, setup: func(t *testing.T, dir, other string) []string {
+			t.Helper()
+			writeFile(t, filepath.Join(dir, "picolet.container"), agentUnit)
+			writeFile(t, filepath.Join(other, "api.container.d", "10-pod.conf"), "[Container]\nPod=web.pod\n")
+			return []string{filepath.Join(dir, "picolet.container")}
 		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			quadletDir := t.TempDir()
+			quadletDir, otherUnitDir := t.TempDir(), t.TempDir()
 			podPath := filepath.Join(quadletDir, "web.pod")
 			netPath := filepath.Join(quadletDir, "lan.network")
-			require.NoError(t, os.WriteFile(podPath, []byte("[Pod]\n"), 0o600))
-			require.NoError(t, os.WriteFile(netPath, []byte("[Network]\n"), 0o600))
+			writeFile(t, podPath, "[Pod]\n")
+			writeFile(t, netPath, "[Network]\n")
 			managed := map[string]state.ManagedFile{}
-			for _, path := range tt.setup(t, quadletDir) {
+			for _, path := range tt.setup(t, quadletDir, otherUnitDir) {
 				managed[path] = state.ManagedFile{Hash: "sha256:abc", Category: "container"}
 			}
 
@@ -364,7 +404,8 @@ func TestScan_UnreadableContainerSettingsSkipAllPodStops(t *testing.T) {
 			pod := appliermocks.NewMockPodmanClient(t)
 			pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
-			result, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir()).Scan(context.Background(), managed)
+			result, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), t.TempDir(), orphan.WithUnitDirs(otherUnitDir)).
+				Scan(context.Background(), managed)
 			require.NoError(t, err)
 			assert.Equal(t, 2, result.FilesRemoved)
 		})
@@ -374,19 +415,41 @@ func TestScan_UnreadableContainerSettingsSkipAllPodStops(t *testing.T) {
 // A symlinked owned directory is not walked (WalkDir does not follow it), so
 // the scan would otherwise take the link itself for an orphaned file and
 // delete it. It reports an error and removes nothing instead.
-func TestScan_SymlinkedQuadletDirIsNotRemoved(t *testing.T) {
+func TestScan_SymlinkedOwnedDirIsNotRemoved(t *testing.T) {
 	t.Parallel()
-	target := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(target, "web.pod"), []byte("[Pod]\n"), 0o600))
-	link := filepath.Join(t.TempDir(), "picolet")
-	require.NoError(t, os.Symlink(target, link))
+	tests := []struct {
+		name string
+		// link returns the quadletDir and dataDir to scan, one of them symlinked.
+		link func(t *testing.T, target string) (quadletDir, dataDir string)
+	}{
+		{name: "Quadlet directory", link: func(t *testing.T, target string) (string, string) {
+			t.Helper()
+			link := filepath.Join(t.TempDir(), "picolet")
+			require.NoError(t, os.Symlink(target, link))
+			return link, t.TempDir()
+		}},
+		{name: "data subdirectory", link: func(t *testing.T, target string) (string, string) {
+			t.Helper()
+			dataDir := t.TempDir()
+			require.NoError(t, os.Symlink(target, filepath.Join(dataDir, "files")))
+			return t.TempDir(), dataDir
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			target := t.TempDir()
+			writeFile(t, filepath.Join(target, "web.pod"), "[Pod]\n")
+			quadletDir, dataDir := tt.link(t, target)
 
-	sys := appliermocks.NewMockSystemdManager(t) // nothing stopped
-	fw := appliermocks.NewMockFileWriter(t)      // nothing removed
-	pod := appliermocks.NewMockPodmanClient(t)
+			sys := appliermocks.NewMockSystemdManager(t) // nothing stopped
+			fw := appliermocks.NewMockFileWriter(t)      // nothing removed
+			pod := appliermocks.NewMockPodmanClient(t)
 
-	result, err := orphan.New(fw, pod, sys, link, t.TempDir(), t.TempDir()).
-		Scan(context.Background(), map[string]state.ManagedFile{})
-	require.ErrorContains(t, err, "is a symlink")
-	assert.Zero(t, result.FilesRemoved)
+			result, err := orphan.New(fw, pod, sys, quadletDir, t.TempDir(), dataDir).
+				Scan(context.Background(), map[string]state.ManagedFile{})
+			require.ErrorContains(t, err, "is a symlink")
+			assert.Zero(t, result.FilesRemoved)
+		})
+	}
 }

@@ -60,7 +60,7 @@ The agent runs a timer-based loop (`pkg/agent`). Each tick:
 
 ### Orphan Detection & Ownership Markers
 
-Quadlet files are written to `/etc/containers/systemd/picolet/` (picolet-owned subdir). Systemd files get `# Managed by picolet` prepended (`config.PicoletMarker`). Secrets are labeled `managed-by=picolet`. At startup, `pkg/orphan` scans for and removes stale managed files/secrets, stopping the generated service of a stale Quadlet first. It never stops the agent's own unit (`config.DefaultSelfUnits`), nor a pod that the agent's own container joins; if any `.container` can't be read, or a drop-in sits in the Quadlet dir (a `.conf` in a `*.d` dir, or a symlinked `*.d`), it stops no pod at all. A symlinked owned directory is reported as an error and left untouched. The validator rejects the agent's own container declaring `Pod=`.
+Quadlet files are written to `/etc/containers/systemd/picolet/` (picolet-owned subdir). Systemd files get `# Managed by picolet` prepended (`config.PicoletMarker`). Secrets are labeled `managed-by=picolet`. At startup, `pkg/orphan` scans for and removes stale managed files/secrets, stopping the generated service of a stale Quadlet first. It never stops the agent's own unit (`config.DefaultSelfUnits`), nor a pod that the agent's own container joins, judged from the container merged with its drop-ins from all Podman unit dirs (`quadlet.GetUnitDirs`), as Podman's generator does; if any container or drop-in can't be read, it stops no pod at all. A symlinked owned directory is reported as an error and left untouched. The validator rejects the agent's own container declaring `Pod=`.
 
 ### Interface Ownership
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/containers/podman/v5/pkg/bindings"
 	"github.com/containers/podman/v5/pkg/bindings/containers"
+	"github.com/containers/podman/v5/pkg/systemd/quadlet"
 	"github.com/coreos/go-systemd/v22/dbus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -298,7 +299,8 @@ func TestE2EPipeline(t *testing.T) {
 		secretLabelsSupported := len(managedSecrets) > 0
 
 		// 5. Run the orphan scanner
-		scanner := orphan.New(applier.NewAtomicFileWriter(), podman, systemd, quadletDir, systemdDir, dataDir)
+		scanner := orphan.New(applier.NewAtomicFileWriter(), podman, systemd, quadletDir, systemdDir, dataDir,
+			orphan.WithUnitDirs(quadlet.GetUnitDirs(true)...))
 		scanResult, err := scanner.Scan(ctx, st.ManagedFiles)
 		require.NoError(t, err)
 		assert.True(t, scanResult.FilesRemoved > 0 || scanResult.SecretsRemoved > 0, "scanner should report removals")
