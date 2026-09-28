@@ -139,14 +139,16 @@ func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]state.Managed
 }
 
 // stopGeneratedUnit stops the service Podman generated from an orphaned Quadlet
-// file: removing the file and reloading only drops the unit definition and
-// leaves the service running. Nothing is stopped unless the file is the one
-// Podman generates its unit from (see readQuadletView), nor the agent's own unit,
-// nor a pod the agent's own container may join: stopping a pod stops its
-// members (BindsTo=), the agent included. Like the applier's pre-delete stop,
-// this is best-effort: a failure is logged and the file is removed regardless,
-// because StopUnit also fails for a unit systemd never loaded, and keeping the
-// file would make such an orphan permanent.
+// file whose category has StopStale (pods, containers, kube): removing the file
+// and reloading only drops the unit definition and leaves the service running.
+// Networks and volumes are only removed, since stopping one stops the units
+// that Requires= it. Nothing is stopped unless the file is the one Podman
+// generates its unit from (see readQuadletView), nor the agent's own unit, nor
+// a pod the agent's own container may join: stopping a pod stops its members
+// (BindsTo=), the agent included. Like the applier's pre-delete stop, this is
+// best-effort: a failure is logged and the file is removed regardless, because
+// StopUnit also fails for a unit systemd never loaded, and keeping the file
+// would make such an orphan permanent.
 func (s *Scanner) stopGeneratedUnit(ctx context.Context, path string, view quadletView) {
 	service, category, ok := s.generatedService(path, view)
 	if !ok || config.IsDefaultSelfUnit(service) {
@@ -163,11 +165,11 @@ func (s *Scanner) stopGeneratedUnit(ctx context.Context, path string, view quadl
 }
 
 // generatedService returns the service Podman generates from the Quadlet at
-// path and its category, or false if path generates none, is not the file
-// Podman generates its unit from, or cannot be read.
+// path and its category, or false if its category is not stopped when stale,
+// path is not the file Podman generates its unit from, or it cannot be read.
 func (s *Scanner) generatedService(path string, view quadletView) (string, config.Category, bool) {
-	category, ok := config.CategoryForExtension(filepath.Ext(path))
-	if spec, _ := config.SpecFor(category); !ok || spec.Unit != config.GeneratedUnit {
+	category, _ := config.CategoryForExtension(filepath.Ext(path))
+	if spec, _ := config.SpecFor(category); !spec.StopStale {
 		return "", "", false
 	}
 	if selected := view.units[filepath.Base(path)]; !sameEntry(selected, path) {

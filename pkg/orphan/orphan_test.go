@@ -218,7 +218,9 @@ func TestScan_StaleQuadletStopsItsGeneratedService(t *testing.T) {
 	}{
 		{name: "pod", file: "web.pod", content: "[Pod]\nPublishPort=8080:80\n", wantStop: "web-pod.service"},
 		{name: "ServiceName= override", file: "web.pod", content: "[Pod]\nServiceName=shop\n", wantStop: "shop.service"},
-		{name: "network", file: "lan.network", content: "[Network]\n", wantStop: "lan-network.service"},
+		{name: "kube", file: "stack.kube", content: "[Kube]\nYaml=/x.yml\n", wantStop: "stack.service"},
+		// Stopping a network or volume would stop the units that Requires= it.
+		{name: "network is only removed", file: "lan.network", content: "[Network]\n"},
 		{name: "failed stop still removes the file", file: "web.pod", content: "[Pod]\n", wantStop: "web-pod.service", stopErr: errors.New("unit web-pod.service not loaded")},
 		{name: "agent's own user unit is not stopped", file: "picolet.container", content: "[Container]\nImage=picolet\n"},
 		{name: "agent's own system unit is not stopped", file: "picolet-system.container", content: "[Container]\nImage=picolet\n"},
@@ -397,22 +399,22 @@ func TestScan_StalePodStopFollowsAgentContainerSettings(t *testing.T) {
 			t.Parallel()
 			quadletDir, otherUnitDir := t.TempDir(), t.TempDir()
 			podPath := filepath.Join(quadletDir, "web.pod")
-			netPath := filepath.Join(quadletDir, "lan.network")
+			otherPath := filepath.Join(quadletDir, "stale.container")
 			writeFile(t, podPath, "[Pod]\n")
-			writeFile(t, netPath, "[Network]\n")
+			writeFile(t, otherPath, "[Container]\nImage=stale\n")
 			managed := map[string]state.ManagedFile{}
 			for _, path := range tt.setup(t, quadletDir, otherUnitDir) {
 				managed[path] = state.ManagedFile{Hash: "sha256:abc", Category: "container"}
 			}
 
 			sys := appliermocks.NewMockSystemdManager(t)
-			sys.EXPECT().StopUnit(mock.Anything, "lan-network.service").Return(nil).Once()
+			sys.EXPECT().StopUnit(mock.Anything, "stale.service").Return(nil).Once()
 			if tt.podStopped {
 				sys.EXPECT().StopUnit(mock.Anything, "web-pod.service").Return(nil).Once()
 			}
 			fw := appliermocks.NewMockFileWriter(t)
 			fw.EXPECT().Remove(podPath).Return(nil).Once()
-			fw.EXPECT().Remove(netPath).Return(nil).Once()
+			fw.EXPECT().Remove(otherPath).Return(nil).Once()
 			pod := appliermocks.NewMockPodmanClient(t)
 			pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 
