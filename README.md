@@ -63,7 +63,7 @@ Use `deploy/fleet-repo/` as a starting point. Your fleet repo needs:
 - `fleet.yml` — image versions and ports
 - `assignments.yml` — which files go to which hosts
 - `hosts/<hostname>/host.yml` — per-host config
-- `quadlets/containers/picolet.container.tmpl` — picolet's own Quadlet
+- `services/picolet-system/` (rootful) or `services/picolet/` (rootless) — picolet's own Service Bundle: its Quadlet and its config secret
 
 See `deploy/fleet-repo/` for a complete example.
 
@@ -247,8 +247,8 @@ Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a co
 | File | Purpose |
 |------|---------|
 | `fleet.yml` | Image versions and ports (Renovate-managed) |
-| `assignments.yml` | Maps role + features to file sets per host |
-| `hosts/<name>/host.yml` | Per-host config: hostname, role, features, machine, user, listen_port |
+| `assignments.yml` | Assigns files (`paths:`), Podman secrets (`secrets:`) and Service Bundles (`services:`) to hosts: `base`, then per role, then per feature |
+| `hosts/<name>/host.yml` | Per-host config: hostname, external hostname, role, features, machine, user, listen_port |
 
 ### Machines, users and ports
 
@@ -318,19 +318,24 @@ commit it right after step 2 completes.
 
 ### File Categories
 
-| Directory | Extension | Deploys to |
-|-----------|-----------|------------|
-| `quadlets/networks/` | `.network` | `/etc/containers/systemd/picolet/` |
-| `quadlets/volumes/` | `.volume` | `/etc/containers/systemd/picolet/` |
-| `quadlets/containers/` | `.container` | `/etc/containers/systemd/picolet/` |
-| `quadlets/kube/` | `.kube` | `/etc/containers/systemd/picolet/` |
-| `quadlets/pods/` | `.pod` | `/etc/containers/systemd/picolet/` |
-| `quadlets/images/` | `.image` | `/etc/containers/systemd/picolet/` |
-| `quadlets/builds/` | `.build` | `/etc/containers/systemd/picolet/` |
-| `manifests/<app>/` | `.yml` (Kubernetes resources only) | `/var/lib/picolet/manifests/<app>/` |
-| `files/<app>/` | any | `/var/lib/picolet/files/<app>/` |
-| `secrets/` | `.yml` | Podman secrets |
-| `systemd/` | `.service` `.timer` `.socket` `.target` `.path` | `/etc/systemd/system/` (rootful) or `~/.config/systemd/user/` (rootless) |
+Picolet derives each file's category from its path (the full rule is under
+[`paths:` entries](#paths-entries)): a first-level `manifests/`, `files/` or `secrets/`
+directory wins, otherwise the extension decides. Outside those three, which directory
+a unit sits in is up to you.
+
+| Path or extension | Category | Deploys to |
+|-------------------|----------|------------|
+| any, below a first-level `manifests/` | Kubernetes manifest (`.yml`, Kubernetes resources only) | `/var/lib/picolet/manifests/<path below manifests/>` (rootful) or `~/.local/share/picolet/manifests/…` (rootless) |
+| any, below a first-level `files/` | opaque File | `/var/lib/picolet/files/<path below files/>` (rootful) or `~/.local/share/picolet/files/…` (rootless) |
+| any, below a first-level `secrets/`, or listed under `secrets:` | Podman secret | Podman secrets |
+| `.network` `.volume` `.container` `.kube` `.pod` `.image` `.build` | Quadlet unit | `/etc/containers/systemd/picolet/` (rootful) or `~/.config/containers/systemd/picolet/` (rootless) |
+| `.service` `.timer` `.socket` `.target` `.path` | systemd unit | `/etc/systemd/system/` (rootful) or `~/.config/systemd/user/` (rootless) |
+
+`.artifact` is known to Podman but not deployable yet: `validate` rejects it.
+
+A new Quadlet type is a table row in `pkg/config/categories.go`, never an
+`assignments.yml` schema change — see
+[ADR 0001: Quadlet is the config](docs/adr/0001-quadlet-is-the-config.md).
 
 A `.pod` generates `<name>-pod.service` (hooks may target it as `unit: <name>.pod`).
 Containers join it with `Pod=<name>.pod`; the pod must be deployed to the same host.
@@ -378,20 +383,22 @@ roles:
       - quadlets/pods/shop.pod.tmpl  # one pod
 ```
 
-`paths:` and the per-category lists coexist: a file reached twice in one category
-deploys once; two sources for one destination are an error. When a list and `paths:`
-put one file in different categories, it deploys to both destinations if they differ
-(e.g. `secrets: [files/token]` with `paths: [files/token]`), and is an error if they
-coincide (e.g. `files: [manifests/x.yml]` with `paths: [manifests/]`).
+A group accepts exactly `paths:`, `secrets:` and `services:`. `secrets:` lists files
+(or `op://`/`pass://` refs, see [Secret Providers](#secret-providers)) deployed as
+Podman secrets whatever their path; `services:` lists [Service Bundles](#service-bundles).
+A file reached twice in one category deploys once; two sources for one destination
+are an error. A file listed under `secrets:` that `paths:` also reaches as another
+category deploys to both destinations (e.g. `secrets: [files/token]` with
+`paths: [files/token]`).
 
 ### Service Bundles
 
 Use `services:` in `assignments.yml` when one logical service spans several file
 categories. A bundle `services/<name>/` is a plain directory, expanded exactly like
 a directory listed under [`paths:`](#paths-entries) with paths taken relative to the
-bundle: a unit's extension decides its category, and `manifests/`, `files/` and
-`secrets/` must be first-level directories of the bundle. Arrange everything else
-however you like. Bundles, `paths:` and the per-category lists coexist in one repo.
+bundle: a unit's extension decides its category, and the bundle's `manifests/`,
+`files/` and `secrets/` hold its manifests, Files and Podman secrets. Arrange
+everything else however you like. Bundles and `paths:` coexist in one repo.
 
 ```text
 services/<name>/
@@ -406,20 +413,9 @@ services/<name>/
 ```
 
 `picolet.yml` is optional service metadata ([Hooks](#hooks)), read only at the bundle
-root. It does not deploy a resource by itself; the bundle still needs at least one
-normal resource file.
-
-Bundle rules:
-
-| Rule | Behavior |
-|------|----------|
-| missing `services/<name>/` | error |
-| `services/<name>/` exists but is not a directory | error |
-| no deployable file (empty, or only `picolet.yml` and empty directories) | error |
-| a file the `paths:` rules reject (`README.md`, `Containerfile`, `.gitkeep`, `app/manifests/x.yml`) | error |
-| two sources resolving to the same destination | error |
-
-Keep a `Containerfile` or documentation under the bundle's `files/`, or outside the bundle.
+root; it deploys no resource by itself. A bundle without a deployable file is an
+error, as is a missing `services/<name>/` or one that is not a directory. Keep a
+`Containerfile` or documentation under the bundle's `files/`, or outside the bundle.
 
 Bundled manifests and files keep their real repo path for template rendering, but Picolet
 strips the `services/<name>/` prefix when deriving the deployed destination. For
@@ -434,20 +430,12 @@ Collision detection happens during `resolve` / `validate`. Picolet rejects:
 - secrets that normalize to the same `secret:<name>` destination, such as
   `foo.yml` and `foo.yaml`
 
-To migrate an explicit service, move its files into `services/<name>/` without
-renaming them (manifests, files and secrets into the bundle's `manifests/`, `files/`
-and `secrets/`; units anywhere), and replace the per-category lists in
-`assignments.yml` with `services: [<name>]`.
-
-**The cutover must be atomic per service.** The same file listed under both the
-legacy paths and a `services:` bundle resolves to the same on-disk destination,
-so Picolet fails the reconciliation with a destination collision. Remove the
-legacy paths in the same commit that introduces `services: [<name>]`.
-
 ### Raw systemd units (timers, sockets, services)
 
-Files under `systemd/` are hand-written systemd units deployed verbatim (templated
-if they end in `.tmpl`). The unit name is the filename with any `.tmpl` stripped, so
+Files with a systemd unit extension (`.service`, `.timer`, `.socket`, `.target`,
+`.path`) outside a first-level `manifests/`, `files/` or `secrets/` directory
+are hand-written systemd units deployed verbatim (templated if they end in
+`.tmpl`). The unit name is the filename with any `.tmpl` stripped, so
 `systemd/maintenance.timer` becomes the unit `maintenance.timer`. Picolet prepends a
 `# Managed by picolet` marker, then on apply:
 
@@ -528,7 +516,7 @@ ExecStart=/usr/bin/podman image prune -af
 
 ```yaml
 base:
-  systemd:
+  paths:
     - systemd/maintenance.timer
     - systemd/maintenance.service
 ```
@@ -693,7 +681,7 @@ Picolet integrates with two secret managers so cleartext credentials never live 
 
 Refs can appear in two places:
 
-- **Direct Podman secrets** in `assignments.yml` or `hosts/<name>/host.yml` under `secrets:` — Picolet resolves the value and creates a Podman secret named after the URI components (e.g. `vault_item_field` or `share_item_field`).
+- **Direct Podman secrets** in `assignments.yml` under `secrets:` — Picolet resolves the value and creates a Podman secret named after the URI components (e.g. `vault_item_field` or `share_item_field`).
 - **Inside templates** via `{{ readOpSecret "op://..." }}` or `{{ readProtonPassSecret "pass://..." }}` — Picolet collects all calls in a first render pass, batches them per provider, then renders again with the resolved values.
 
 ### 1Password setup
