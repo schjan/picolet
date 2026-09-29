@@ -30,10 +30,12 @@ const (
 	e2eBuildContainer = "picolet-e2e-build"
 	e2eBuildService   = "e2e-build-build.service"
 	e2eBuildLabel     = "io.picolet.e2e"
+	e2eBuildContext   = "delivered build context\n"
 )
 
 // setupBuildFleet creates a fleet whose container runs an image built by a
-// .build unit from a Containerfile delivered under files/.
+// .build unit from a Containerfile delivered under files/, whose build
+// context (the Containerfile's directory) holds a second delivered file.
 func setupBuildFleet(t *testing.T, fleetDir string) {
 	t.Helper()
 	files := map[string]string{
@@ -44,7 +46,7 @@ roles:
     paths:
       - quadlets/builds/e2e-build.build.tmpl
       - quadlets/containers/e2e-build.container
-      - files/e2e-build/Containerfile
+      - files/e2e-build
       - files/e2e-other/notes.txt
 `,
 		"hosts/build-host/host.yml": "hostname: build-host\nrole: build\nfeatures: []\n",
@@ -60,7 +62,8 @@ ContainerName=` + e2eBuildContainer + `
 [Install]
 WantedBy=default.target
 `,
-		"files/e2e-build/Containerfile": buildContainerfile("build", ""),
+		"files/e2e-build/Containerfile": buildContainerfile("build", "COPY context.txt /context.txt\n"),
+		"files/e2e-build/context.txt":   e2eBuildContext,
 		"files/e2e-other/notes.txt":     "unrelated to the build\n",
 	}
 	for name, content := range files {
@@ -148,6 +151,9 @@ func TestE2EBuild(t *testing.T) {
 		img, err := images.GetImage(connCtx, e2eBuildImage, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "build", img.Labels[e2eBuildLabel], "image must come from the delivered Containerfile")
+		out, err := exec.Command("podman", "exec", e2eBuildContainer, "cat", "/context.txt").CombinedOutput()
+		require.NoError(t, err, "podman exec: %s", out)
+		assert.Equal(t, e2eBuildContext, string(out), "the build context must be the delivered files/ directory")
 	})
 
 	t.Run("build_service_finished", func(t *testing.T) {

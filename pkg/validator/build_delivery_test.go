@@ -1,0 +1,141 @@
+package validator
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/schjan/picolet/pkg/config"
+	"github.com/schjan/picolet/pkg/resolver"
+)
+
+// The Host sees the data dir at testHostDataDir while picolet writes to
+// testDataDir (containerized Agent): references use the host-visible path.
+const (
+	testDataDir     = "/var/lib/picolet"
+	testHostDataDir = "/srv/picolet"
+)
+
+// deliveredFile returns a files/ category file delivered at relPath.
+func deliveredFile(relPath string) resolver.ResolvedFile {
+	return resolver.ResolvedFile{
+		SrcPath:  "services/app/files/" + relPath,
+		DestPath: testDataDir + "/files/" + relPath,
+		Content:  "FROM docker.io/library/alpine:3.23\n",
+		Category: config.CategoryFile,
+		RelPath:  relPath,
+	}
+}
+
+//nolint:funlen // table-driven test
+func TestAnalyzeFilesBuildReferencesDeliveredFiles(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		build   string
+		files   []resolver.ResolvedFile
+		wantErr string
+	}{
+		{
+			name:    "Containerfile the Fleet does not deliver",
+			build:   "File=" + testHostDataDir + "/files/app/Containerfile\nSetWorkingDirectory=file\n",
+			files:   []resolver.ResolvedFile{deliveredFile("app/Containerfle")},
+			wantErr: "app.build: File=" + testHostDataDir + "/files/app/Containerfile is not delivered by the Fleet",
+		},
+		{
+			name:  "delivered Containerfile",
+			build: "File=" + testHostDataDir + "/files/app/Containerfile\nSetWorkingDirectory=file\n",
+			files: []resolver.ResolvedFile{deliveredFile("app/Containerfile")},
+		},
+		{
+			name:  "Containerfile the operator manages outside the delivered directories",
+			build: "File=/opt/app/Containerfile\nSetWorkingDirectory=file\n",
+		},
+		{
+			name:  "Containerfile in the data dir's unmanaged part (the repo clone)",
+			build: "File=" + testHostDataDir + "/repo/app/Containerfile\nSetWorkingDirectory=file\n",
+		},
+		{
+			name:  "delivered build context",
+			build: "File=Containerfile\nSetWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files: []resolver.ResolvedFile{deliveredFile("app/Containerfile"), deliveredFile("app/src/main.go")},
+		},
+		{
+			name:    "build context the Fleet delivers nothing to",
+			build:   "File=/opt/app/Containerfile\nSetWorkingDirectory=" + testHostDataDir + "/files/ap\n",
+			files:   []resolver.ResolvedFile{deliveredFile("app/Containerfile")},
+			wantErr: "app.build: SetWorkingDirectory=" + testHostDataDir + "/files/ap is not delivered by the Fleet",
+		},
+		{
+			name:    "working directory the Fleet delivers nothing to",
+			build:   "\n[Service]\nWorkingDirectory=" + testHostDataDir + "/files/ap\n",
+			files:   []resolver.ResolvedFile{deliveredFile("app/Containerfile")},
+			wantErr: "app.build: WorkingDirectory=" + testHostDataDir + "/files/ap is not delivered by the Fleet",
+		},
+		{
+			name:    "relative Containerfile the Fleet does not deliver to the working directory",
+			build:   "File=Containerfile.prod\n\n[Service]\nWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files:   []resolver.ResolvedFile{deliveredFile("app/Containerfile")},
+			wantErr: "app.build: File=Containerfile.prod (" + testHostDataDir + "/files/app/Containerfile.prod) is not delivered by the Fleet",
+		},
+		{
+			// systemd fails to chdir into a missing WorkingDirectory=, even
+			// when podman build uses the absolute Containerfile's directory.
+			name:    "absolute Containerfile beside an undelivered working directory",
+			build:   "File=" + testHostDataDir + "/files/app/Containerfile\nSetWorkingDirectory=file\n\n[Service]\nWorkingDirectory=" + testHostDataDir + "/files/ap\n",
+			files:   []resolver.ResolvedFile{deliveredFile("app/Containerfile")},
+			wantErr: "app.build: WorkingDirectory=" + testHostDataDir + "/files/ap is not delivered by the Fleet",
+		},
+		{
+			// Podman's URL pattern matches any File= starting with "http".
+			name:  "File= Podman takes for a URL",
+			build: "File=http-app/Containerfile\n\n[Service]\nWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files: []resolver.ResolvedFile{deliveredFile("app/Containerfile")},
+		},
+		{
+			name:    "SetWorkingDirectory=unit keeps an explicit working directory as the context",
+			build:   "SetWorkingDirectory=unit\n\n[Service]\nWorkingDirectory=" + testHostDataDir + "/files/ap\n",
+			files:   []resolver.ResolvedFile{deliveredFile("app/Containerfile")},
+			wantErr: "app.build: WorkingDirectory=" + testHostDataDir + "/files/ap is not delivered by the Fleet",
+		},
+		{
+			// Podman looks for a relative File= in the working directory,
+			// then in the context: either may hold it.
+			name: "relative Containerfile with a context apart from the working directory",
+			build: "File=Containerfile\nSetWorkingDirectory=" + testHostDataDir + "/files/app\n\n" +
+				"[Service]\nWorkingDirectory=" + testHostDataDir + "/files/tools\n",
+			files: []resolver.ResolvedFile{deliveredFile("app/Containerfile"), deliveredFile("tools/lint.sh")},
+		},
+		{
+			name:  "URL build context",
+			build: "SetWorkingDirectory=https://github.com/example/app.git\n",
+		},
+		{
+			name:  "systemd specifier in the Containerfile path",
+			build: "File=" + testHostDataDir + "/files/%i/Containerfile\nSetWorkingDirectory=file\n",
+		},
+		{
+			name:  "build context relative to the unit file",
+			build: "File=Containerfile\nSetWorkingDirectory=app\n",
+		},
+		{
+			name:  "relative Containerfile without a working directory",
+			build: "File=Containerfile\nSetWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files: []resolver.ResolvedFile{deliveredFile("app/src/main.go")},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			build := newParsedFile(t, config.CategoryBuild, testQuadletDir+"app.build",
+				"[Build]\nImageTag=localhost/app:latest\n"+tt.build)
+			files := append([]resolver.ResolvedFile{build}, tt.files...)
+			_, err := AnalyzeFiles(files, Target{HostDataDir: testHostDataDir})
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.EqualError(t, err, tt.wantErr)
+		})
+	}
+}

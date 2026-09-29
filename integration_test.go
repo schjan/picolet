@@ -171,7 +171,7 @@ func applyDeletes(t *testing.T, files []resolver.ResolvedFile, deployed *state.S
 		_, ok := units[f.DestPath]
 		return ok
 	})
-	require.NoError(t, validator.ValidateFiles(remaining, false))
+	require.NoError(t, validator.ValidateFiles(remaining, validator.Target{}))
 	cs := reconciler.Diff(remaining, deployed)
 	require.Equal(t, len(units), cs.Summary[reconciler.ActionDelete])
 	sys := appliermocks.NewMockSystemdManager(t)
@@ -426,7 +426,7 @@ func TestIntegrationAggregatedSecretFragmentChangeTriggersUpdate(t *testing.T) {
 	require.NoError(t, err)
 	resolvedV1, err := rV1.ResolveHost(t.Context(), "test-host")
 	require.NoError(t, err)
-	require.NoError(t, validator.ValidateFiles(resolvedV1.Files, false))
+	require.NoError(t, validator.ValidateFiles(resolvedV1.Files, validator.Target{}))
 
 	initialState := state.NewState()
 	csV1 := reconciler.Diff(resolvedV1.Files, initialState)
@@ -445,7 +445,7 @@ func TestIntegrationAggregatedSecretFragmentChangeTriggersUpdate(t *testing.T) {
 	require.NoError(t, err)
 	resolvedV2, err := rV2.ResolveHost(t.Context(), "test-host")
 	require.NoError(t, err)
-	require.NoError(t, validator.ValidateFiles(resolvedV2.Files, false))
+	require.NoError(t, validator.ValidateFiles(resolvedV2.Files, validator.Target{}))
 
 	v1Secret := filesByDest(resolvedV1.Files)["secret:alerts"]
 	v2Secret := filesByDest(resolvedV2.Files)["secret:alerts"]
@@ -498,7 +498,7 @@ func TestIntegrationSystemdUnitsTemplate(t *testing.T) {
 
 	resolved, err := r.ResolveHost(t.Context(), "mon-host")
 	require.NoError(t, err)
-	require.NoError(t, validator.ValidateFiles(resolved.Files, false))
+	require.NoError(t, validator.ValidateFiles(resolved.Files, validator.Target{}))
 
 	exporter := filesByDest(resolved.Files)["/etc/containers/systemd/picolet/node-exporter.container"]
 	require.NotEmpty(t, exporter.Content, "node-exporter.container should be resolved")
@@ -538,7 +538,7 @@ features: []
 	resolved, err := r.ResolveHost(t.Context(), "test-host")
 	require.NoError(t, err)
 
-	err = validator.ValidateFiles(resolved.Files, false)
+	err = validator.ValidateFiles(resolved.Files, validator.Target{})
 	require.Error(t, err)
 	require.ErrorContains(t, err, "secret:alerts")
 	require.ErrorContains(t, err, "YAML parse error")

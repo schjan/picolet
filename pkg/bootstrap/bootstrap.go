@@ -119,7 +119,7 @@ func Run(ctx context.Context, cfg RunConfig) error { //nolint:cyclop,funlen // o
 	if err != nil {
 		return err
 	}
-	if err := validator.ValidateFiles(resolved.Files, cfg.Rootless); err != nil {
+	if err := validator.ValidateFiles(resolved.Files, validator.Target{Rootless: cfg.Rootless, HostDataDir: resolved.HostDataDir}); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 	if err := verifyUnitResolved(resolved.Files, tgt); err != nil {

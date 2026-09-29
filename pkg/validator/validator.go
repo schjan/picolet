@@ -21,27 +21,41 @@ import (
 
 const unresolvedSecretPlaceholder = "<secret>"
 
+// Target is the Host the validated files deploy to.
+type Target struct {
+	// Rootless must match the Host's Podman mode so that quadlet conversion
+	// generates correct systemd unit dependencies (user vs system session).
+	Rootless bool
+	// HostDataDir is the host-visible data directory the delivered data
+	// files live under (resolver.ResolvedHost.HostDataDir). Empty skips the
+	// checks that compare references against delivered data files.
+	HostDataDir string
+}
+
 // ValidateFiles validates a set of already-resolved files.
-// rootless must match the target host's Podman mode so that quadlet conversion
-// generates correct systemd unit dependencies (user vs system session).
-func ValidateFiles(files []resolver.ResolvedFile, rootless bool) error {
-	_, err := AnalyzeFiles(files, rootless)
+func ValidateFiles(files []resolver.ResolvedFile, target Target) error {
+	_, err := AnalyzeFiles(files, target)
 	return err
 }
 
 // AnalyzeFiles validates resolved files and returns the generated systemd
 // dependency map keyed by unit name. If validation fails, the returned map
 // is partial and the error describes all validation failures.
-func AnalyzeFiles(files []resolver.ResolvedFile, rootless bool) (map[string]status.UnitDependencies, error) {
-	unitsInfo := buildUnitsInfoFromFiles(files, rootless)
+func AnalyzeFiles(files []resolver.ResolvedFile, target Target) (map[string]status.UnitDependencies, error) {
+	unitsInfo := buildUnitsInfoFromFiles(files, target.Rootless)
+	delivered := newDelivery(files, target.HostDataDir)
 	deps := make(map[string]status.UnitDependencies)
 	var errs []error
 	for _, f := range files {
-		d, err := analyzeFile(f, unitsInfo, rootless)
+		d, err := analyzeFile(f, unitsInfo, target.Rootless)
 		if !d.IsEmpty() {
 			if unit := unitNameForAnalysis(f); unit != "" {
 				deps[unit] = d
 			}
+		}
+		// Podman accepted the unit, so its references are well-formed.
+		if err == nil && f.Category == config.CategoryBuild {
+			err = delivered.checkBuild(f.ParsedUnit)
 		}
 		if err != nil {
 			errs = append(errs, err)
@@ -57,7 +71,7 @@ func ValidateHost(ctx context.Context, r *resolver.Resolver, hostname string) er
 	if err != nil {
 		return fmt.Errorf("host %s: resolve: %w", hostname, err)
 	}
-	if err := ValidateFiles(resolved.Files, r.Rootless()); err != nil {
+	if err := ValidateFiles(resolved.Files, Target{Rootless: r.Rootless(), HostDataDir: resolved.HostDataDir}); err != nil {
 		return fmt.Errorf("host %s: %w", hostname, err)
 	}
 	slog.Info("host validated", "host", hostname, "files", len(resolved.Files))

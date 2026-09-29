@@ -365,10 +365,17 @@ target them as `unit: <name>.image` / `unit: <name>.build`). Containers use them
 `Image=<name>.image` / `Image=<name>.build`; the unit must be deployed to the same host.
 Deliver a build's Containerfile under `files/` and point at it with
 `File={{ filePath "<app>/Containerfile" }}` plus `SetWorkingDirectory=file` (build context =
-the Containerfile's directory). Both generated services are one-shots their consumers
-pull in: reported; the health loop never restarts one that fails on its own, but retries
-an apply-time restart of a `.image` that failed (a changed `.image` is pulled again; if
-the pull fails, it is pending like any failed unit restart, see [Hooks](#hooks)).
+the Containerfile's directory). `validate` (and the agent, before applying) rejects a
+`.build` whose Containerfile (`File=`, a relative one resolved against
+`[Service] WorkingDirectory=`), build context (`SetWorkingDirectory=` path) or working
+directory (`[Service] WorkingDirectory=`) lies in the host's `files/` or `manifests/` data
+directory but is not delivered by the host's assignments; a directory counts as delivered
+when any delivered file lies below it. Absolute paths elsewhere (managed on the host), URLs,
+systemd specifiers and paths relative to the unit file are not checked. Both generated
+services are one-shots their consumers pull in: reported; the health loop never restarts
+one that fails on its own, but retries an apply-time restart of a `.image` that failed (a
+changed `.image` is pulled again; if the pull fails, it is pending like any failed unit
+restart, see [Hooks](#hooks)).
 
 #### Rebuild trigger
 

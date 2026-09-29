@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -352,4 +353,11 @@ func Deployable() []Category {
 func (c Category) UsesRelPath() bool {
 	s, ok := SpecFor(c)
 	return ok && s.Dest == DestData
+}
+
+// DataPath returns where a DestData file with relPath (slash-separated,
+// relative to Subdir) lives under dataDir: the layout the filePath and
+// manifestPath template helpers emit.
+func (s Spec) DataPath(dataDir, relPath string) string {
+	return filepath.Join(dataDir, s.Subdir, filepath.FromSlash(relPath))
 }

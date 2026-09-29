@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"maps"
-	"path/filepath"
 	"slices"
 	"strings"
 	"text/template"
@@ -28,7 +27,7 @@ func bundleFilePathFunc(dataDir string, spec config.Spec) func(string) (string, 
 		if err != nil {
 			return "", fmt.Errorf("%s %q: %w", spec.PathHelper, relPath, err)
 		}
-		return filepath.Join(dataDir, spec.Subdir, filepath.FromSlash(cleaned)), nil
+		return spec.DataPath(dataDir, cleaned), nil
 	}
 }
 

@@ -26,7 +26,7 @@ func TestAnalyzeFilesPodListsMemberContainers(t *testing.T) {
 		newParsedFile(t, config.CategoryContainer, testQuadletDir+"solo.container", "[Container]\nImage=docker.io/library/solo:1\n"),
 	}
 
-	depsByUnit, err := AnalyzeFiles(files, false)
+	depsByUnit, err := AnalyzeFiles(files, Target{})
 	require.NoError(t, err)
 
 	pod := depsByUnit["web-pod.service"]
@@ -94,7 +94,7 @@ func TestValidateFilesPodErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			require.ErrorContains(t, ValidateFiles(tt.files(t), false), tt.wantErr)
+			require.ErrorContains(t, ValidateFiles(tt.files(t), Target{}), tt.wantErr)
 		})
 	}
 }
