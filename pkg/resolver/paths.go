@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/schjan/picolet/pkg/config"
@@ -16,8 +17,10 @@ func expandPathEntries(fsys fs.FS, entries []string) (*expandedBundles, error) {
 	expanded := &expandedBundles{}
 	var errs []error
 	for _, entry := range entries {
+		// Reject ".." before Clean would fold it away ("units/../files");
+		// Clean only drops "./" and a trailing slash.
 		root := path.Clean(entry)
-		if !fs.ValidPath(root) {
+		if slices.Contains(strings.Split(entry, "/"), "..") || !fs.ValidPath(root) {
 			errs = append(errs, fmt.Errorf("paths entry %q: must be relative to the Fleet root", entry))
 			continue
 		}

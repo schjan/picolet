@@ -298,6 +298,10 @@ path. Directories are expanded recursively.
    `.gitkeep`) — is an error: move it under `files/` or remove it from the listed
    directory. `picolet.yml`/`picolet.yml.tmpl` are skipped.
 
+Entries are Fleet-root-relative; `..` is rejected. A symlink below a listed directory
+is an error (directories are walked without following links); a symlinked file listed
+directly is read like any source. No symlink may point outside the Fleet repo.
+
 ```yaml
 roles:
   worker:

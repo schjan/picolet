@@ -264,9 +264,10 @@ func TestResolveHostPathsDestinationCollision(t *testing.T) {
 func TestResolveHostPathsEntryMustExistUnderFleetRoot(t *testing.T) {
 	t.Parallel()
 	for entry, want := range map[string]string{
-		"/etc/units":  `paths entry "/etc/units": must be relative to the Fleet root`,
-		"../units":    `paths entry "../units": must be relative to the Fleet root`,
-		"units/ghost": "units/ghost",
+		"/etc/units":     `paths entry "/etc/units": must be relative to the Fleet root`,
+		"../units":       `paths entry "../units": must be relative to the Fleet root`,
+		"units/../units": `paths entry "units/../units": must be relative to the Fleet root`,
+		"units/ghost":    "units/ghost",
 	} {
 		t.Run(entry, func(t *testing.T) {
 			t.Parallel()
