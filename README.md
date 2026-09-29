@@ -250,11 +250,16 @@ Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a co
 
 ### File Categories
 
-Picolet derives each file's category from its name (the full rule is under
-[`paths:` entries](#paths-entries)); which directory a unit sits in is up to you.
+Picolet derives each file's category from its path (the full rule is under
+[`paths:` entries](#paths-entries)): a first-level `manifests/`, `files/` or `secrets/`
+directory wins, otherwise the extension decides. Outside those three, which directory
+a unit sits in is up to you.
 
-| Extension | Category | Deploys to |
-|-----------|----------|------------|
+| Path or extension | Category | Deploys to |
+|-------------------|----------|------------|
+| any, below a first-level `manifests/` | Kubernetes manifest (`.yml`, Kubernetes resources only) | `/var/lib/picolet/manifests/<path below manifests/>` |
+| any, below a first-level `files/` | opaque File | `/var/lib/picolet/files/<path below files/>` |
+| any, below a first-level `secrets/`, or listed under `secrets:` | Podman secret | Podman secrets |
 | `.network` | Quadlet network | `/etc/containers/systemd/picolet/` |
 | `.volume` | Quadlet volume | `/etc/containers/systemd/picolet/` |
 | `.container` | Quadlet container | `/etc/containers/systemd/picolet/` |
@@ -263,17 +268,11 @@ Picolet derives each file's category from its name (the full rule is under
 | `.image` | Quadlet image | `/etc/containers/systemd/picolet/` |
 | `.build` | Quadlet build | `/etc/containers/systemd/picolet/` |
 | `.service` `.timer` `.socket` `.target` `.path` | systemd unit | `/etc/systemd/system/` (rootful) or `~/.config/systemd/user/` (rootless) |
-| any, below a first-level `manifests/` | Kubernetes manifest (`.yml`, Kubernetes resources only) | `/var/lib/picolet/manifests/<path below manifests/>` |
-| any, below a first-level `files/` | opaque File | `/var/lib/picolet/files/<path below files/>` |
-| any, below a first-level `secrets/`, or listed under `secrets:` | Podman secret | Podman secrets |
 
-A final `.tmpl` is ignored for the lookup (`web.container.tmpl` is a container
-template). `.artifact` is known to Podman but not deployable yet: `validate` rejects it.
+`.artifact` is known to Podman but not deployable yet: `validate` rejects it.
 
-A new Quadlet type is a table row: every category is one row of the category table in
-`pkg/config/categories.go` (destination, validator, apply order, health and restart
-behaviour), so supporting a type Podman adds costs that row plus its converter, never
-an `assignments.yml` schema change — see
+A new Quadlet type is a table row in `pkg/config/categories.go`, never an
+`assignments.yml` schema change — see
 [ADR 0001: Quadlet is the config](docs/adr/0001-quadlet-is-the-config.md).
 
 A `.pod` generates `<name>-pod.service` (hooks may target it as `unit: <name>.pod`).
@@ -352,9 +351,9 @@ services/<name>/
 ```
 
 `picolet.yml` is optional service metadata ([Hooks](#hooks)), read only at the bundle
-root. It does not deploy a resource by itself: a missing bundle, or one without a
-deployable file, is an error. Keep a `Containerfile` or documentation under the
-bundle's `files/`, or outside the bundle.
+root; it deploys no resource by itself. A bundle without a deployable file is an
+error, as is a missing `services/<name>/` or one that is not a directory. Keep a
+`Containerfile` or documentation under the bundle's `files/`, or outside the bundle.
 
 Bundled manifests and files keep their real repo path for template rendering, but Picolet
 strips the `services/<name>/` prefix when deriving the deployed destination. For
@@ -372,7 +371,8 @@ Collision detection happens during `resolve` / `validate`. Picolet rejects:
 ### Raw systemd units (timers, sockets, services)
 
 Files with a systemd unit extension (`.service`, `.timer`, `.socket`, `.target`,
-`.path`) are hand-written systemd units deployed verbatim (templated if they end in
+`.path`) outside a first-level `manifests/`, `files/` or `secrets/` directory
+are hand-written systemd units deployed verbatim (templated if they end in
 `.tmpl`). The unit name is the filename with any `.tmpl` stripped, so
 `systemd/maintenance.timer` becomes the unit `maintenance.timer`. Picolet prepends a
 `# Managed by picolet` marker, then on apply:
