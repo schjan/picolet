@@ -33,10 +33,9 @@ func expandPathEntries(fsys fs.FS, entries []string) (*expandedBundles, error) {
 
 // expandTree walks root (a file or a directory, recursively, in lexical order)
 // and categorizes every regular file by its logical path: the source path with
-// prefix stripped. `paths:` entries use prefix ""; #147 moves Service Bundles
-// onto this function with prefix "services/<name>/" (bundles still expand
-// through readSubdir today). Bundle metadata (picolet.yml, picolet.yml.tmpl)
-// is skipped at any depth.
+// prefix stripped. `paths:` entries use prefix "", Service Bundles
+// "services/<name>/". Bundle metadata (picolet.yml, picolet.yml.tmpl) is
+// skipped at any depth.
 func (b *expandedBundles) expandTree(fsys fs.FS, root, prefix string) error {
 	var errs []error
 	walkErr := fs.WalkDir(fsys, root, func(srcPath string, d fs.DirEntry, err error) error {

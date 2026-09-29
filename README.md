@@ -319,48 +319,39 @@ coincide (e.g. `files: [manifests/x.yml]` with `paths: [manifests/]`).
 ### Service Bundles
 
 Use `services:` in `assignments.yml` when one logical service spans several file
-categories. A bundle expands into the same per-category files Picolet already
-understands, so bundles and legacy explicit lists can coexist in the same repo.
-
-Bundle layout is typed by directory name. Only create the category directories a
-service actually uses.
+categories. A bundle `services/<name>/` is a plain directory, expanded exactly like
+a directory listed under [`paths:`](#paths-entries) with paths taken relative to the
+bundle: a unit's extension decides its category, and `manifests/`, `files/` and
+`secrets/` must be first-level directories of the bundle. Arrange everything else
+however you like. Bundles, `paths:` and the per-category lists coexist in one repo.
 
 ```text
 services/<name>/
-  containers/
-  volumes/
-  networks/
-  kube/
-  pods/
-  images/
-  builds/
-  systemd/
-  secrets/
+  web.network
+  app/
+    web.container.tmpl
+    worker/worker.container
+  secrets/      # Podman secrets
   manifests/    # K8s YAML only — validated against k8s.io/api types
   files/        # opaque, container-mounted files; validated only as YAML if .yml/.yaml
   picolet.yml
 ```
 
-`manifests/` and `files/` may contain nested directories. The other nine category directories
-must contain files directly.
+`picolet.yml` is optional service metadata ([Hooks](#hooks)), read only at the bundle
+root. It does not deploy a resource by itself; the bundle still needs at least one
+normal resource file.
 
-`picolet.yml` is optional service metadata. It does not deploy a resource by
-itself; the bundle still needs at least one normal resource file.
-
-Strict bundle rules:
+Bundle rules:
 
 | Rule | Behavior |
 |------|----------|
 | missing `services/<name>/` | error |
 | `services/<name>/` exists but is not a directory | error |
-| empty bundle | error |
-| unknown entry at bundle root | error |
-| category-named file at bundle root | error |
-| nested directory under any category except `manifests/` and `files/` | error |
+| no deployable file (empty, or only `picolet.yml` and empty directories) | error |
+| a file the `paths:` rules reject (`README.md`, `Containerfile`, `.gitkeep`, `app/manifests/x.yml`) | error |
 | two sources resolving to the same destination | error |
 
-Dotfiles and loose files are not special-cased. Keep the bundle directory clean
-or ignore those files at the repo level before they land in the fleet repo.
+Keep a `Containerfile` or documentation under the bundle's `files/`, or outside the bundle.
 
 Bundled manifests and files keep their real repo path for template rendering, but Picolet
 strips the `services/<name>/` prefix when deriving the deployed destination. For
@@ -375,8 +366,9 @@ Collision detection happens during `resolve` / `validate`. Picolet rejects:
 - secrets that normalize to the same `secret:<name>` destination, such as
   `foo.yml` and `foo.yaml`
 
-To migrate an explicit service, create `services/<name>/<category>/` directories,
-move the files without renaming them, and replace the per-category lists in
+To migrate an explicit service, move its files into `services/<name>/` without
+renaming them (manifests, files and secrets into the bundle's `manifests/`, `files/`
+and `secrets/`; units anywhere), and replace the per-category lists in
 `assignments.yml` with `services: [<name>]`.
 
 **The cutover must be atomic per service.** The same file listed under both the

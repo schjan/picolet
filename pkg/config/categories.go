@@ -113,9 +113,10 @@ const (
 type Spec struct {
 	Category Category
 	Dest     Destination
-	// Subdir names the assignment list and Service Bundle subdirectory the
-	// category is selected from; for DestData it is also the directory under
-	// the data dir. Empty: not selectable yet.
+	// Subdir names the typed assignment list the category is selected from;
+	// for DestData and DestSecret it is also the first path segment selecting
+	// it (CategoryForPath), and for DestData the directory under the data
+	// dir. Empty: not selectable by a typed list.
 	Subdir string
 	// PathHelper is the template function resolving a RelPath to its deployed
 	// path (DestData only).
@@ -140,9 +141,10 @@ type Spec struct {
 
 // categories is the category table: adding a Quadlet or systemd unit type is
 // one row here plus, for Quadlets, its converter wiring in pkg/validator.
-// `paths:` entries select every row by path (CategoryForPath: first segment
-// for data and secret rows, extension otherwise); a Subdir and a typed list in
-// AssignmentGroup serve the typed lists and bundle subdirectories.
+// `paths:` entries and Service Bundles select every row by path
+// (CategoryForPath: first segment for data and secret rows, extension
+// otherwise); a Subdir and a typed list in AssignmentGroup serve the typed
+// lists.
 //
 // Two orderings are kept apart on purpose:
 //   - ConvertOrder mirrors quadlet.SupportedExtensions: .pod converts last
@@ -264,7 +266,7 @@ func CategoryForExtension(ext string) (Category, bool) {
 
 // CategoryForPath derives the category of a Fleet file from its logical path:
 // Fleet-root-relative for a `paths:` entry, bundle-relative (services/<name>/
-// stripped) for a Service Bundle once #147 lands. A first directory segment
+// stripped) for a Service Bundle. A first directory segment
 // manifests/, files/ or secrets/ selects that category (at any other depth, or
 // two of them, it is an error); otherwise the extension before any final .tmpl
 // decides. Errors do not name the file; callers prefix the source path.

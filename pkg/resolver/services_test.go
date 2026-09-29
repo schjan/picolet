@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"io/fs"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -109,7 +110,7 @@ func TestExpandServiceBundlesEmptyBundle(t *testing.T) {
 	assert.ErrorContains(t, err, "services/web: empty service bundle")
 }
 
-func TestExpandServiceBundlesEmptySubdirIsFine(t *testing.T) {
+func TestExpandServiceBundlesIgnoresEmptyDirectory(t *testing.T) {
 	t.Parallel()
 
 	fsys := fstest.MapFS{
@@ -119,88 +120,9 @@ func TestExpandServiceBundlesEmptySubdirIsFine(t *testing.T) {
 
 	expanded, err := expandServiceBundles(fsys, []string{"web"})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"services/web/networks/internal.network"}, expanded.Paths[config.CategoryNetwork])
-	assert.Empty(t, expanded.Paths[config.CategoryContainer])
-}
-
-func TestExpandServiceBundlesUnknownRootEntry(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		fsys fstest.MapFS
-	}{
-		{
-			name: "unknown directory",
-			fsys: fstest.MapFS{
-				"services/web/random":                   &fstest.MapFile{Mode: fs.ModeDir},
-				"services/web/containers/web.container": &fstest.MapFile{Data: []byte("container")},
-			},
-		},
-		{
-			name: "unknown file",
-			fsys: fstest.MapFS{
-				"services/web/README.md":                &fstest.MapFile{Data: []byte("docs")},
-				"services/web/containers/web.container": &fstest.MapFile{Data: []byte("container")},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			_, err := expandServiceBundles(tt.fsys, []string{"web"})
-			require.ErrorContains(t, err, "unknown entry")
-			// With only junk at the root, the "empty bundle" error is suppressed —
-			// the unknown-entry error already explains why nothing was loaded.
-			assert.NotContains(t, err.Error(), "empty service bundle")
-		})
-	}
-}
-
-func TestExpandServiceBundlesCategoryNameAsFile(t *testing.T) {
-	t.Parallel()
-
-	fsys := fstest.MapFS{
-		"services/web/containers":                &fstest.MapFile{Data: []byte("not a dir")},
-		"services/web/networks/internal.network": &fstest.MapFile{Data: []byte("network")},
-	}
-
-	_, err := expandServiceBundles(fsys, []string{"web"})
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "services/web/containers: expected directory")
-}
-
-func TestExpandServiceBundlesNestedNonManifest(t *testing.T) {
-	t.Parallel()
-
-	fsys := fstest.MapFS{
-		"services/web/containers/nested":               &fstest.MapFile{Mode: fs.ModeDir},
-		"services/web/containers/nested/web.container": &fstest.MapFile{Data: []byte("container")},
-	}
-
-	_, err := expandServiceBundles(fsys, []string{"web"})
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "unsupported nesting")
-}
-
-func TestExpandServiceBundlesManifestNestingAllowed(t *testing.T) {
-	t.Parallel()
-
-	fsys := fstest.MapFS{
-		"services/web/manifests/app/config/settings.yml": &fstest.MapFile{Data: []byte("settings")},
-	}
-
-	expanded, err := expandServiceBundles(fsys, []string{"web"})
-	require.NoError(t, err)
-	assert.Equal(t, []bundleFileRef{
-		{
-			SrcPath:     "services/web/manifests/app/config/settings.yml",
-			LogicalPath: "manifests/app/config/settings.yml",
-			Category:    "manifest",
-			RelPath:     "app/config/settings.yml",
-		},
-	}, expanded.NestedRefs)
+	assert.Equal(t, map[config.Category][]string{
+		config.CategoryNetwork: {"services/web/networks/internal.network"},
+	}, expanded.Paths)
 }
 
 func TestExpandServiceBundlesRejectsSymlink(t *testing.T) {
@@ -212,7 +134,7 @@ func TestExpandServiceBundlesRejectsSymlink(t *testing.T) {
 		want string
 	}{
 		{
-			name: "flat subdir symlink",
+			name: "unit symlink",
 			fsys: fstest.MapFS{
 				"services/web/containers/web.container": &fstest.MapFile{Mode: fs.ModeSymlink},
 			},
@@ -283,42 +205,16 @@ func TestExpandServiceBundlesRejectsBothHookMetadataFiles(t *testing.T) {
 	assert.ErrorContains(t, err, "services/web: cannot define both picolet.yml and picolet.yml.tmpl")
 }
 
-func TestExpandServiceBundlesHookMetadataAsDirectoryReportsOneError(t *testing.T) {
+func TestExpandServiceBundlesRejectsHookMetadataDirectory(t *testing.T) {
 	t.Parallel()
 
-	// A directory accidentally named picolet.yml previously surfaced both
-	// "unknown entry" (from collectBundleSubdirs) and "expected regular file"
-	// (from collectBundleHookRefs). Now collectBundleSubdirs skips hook metadata
-	// names unconditionally, so only the regular-file error remains.
 	fsys := fstest.MapFS{
-		"services/web/picolet.yml/something":    &fstest.MapFile{Data: []byte("oops")},
-		"services/web/containers/web.container": &fstest.MapFile{Data: []byte("[Container]\nImage=a\n")},
+		"services/web/picolet.yml/something.network": &fstest.MapFile{Data: []byte("[Network]\n")},
+		"services/web/containers/web.container":      &fstest.MapFile{Data: []byte("[Container]\nImage=a\n")},
 	}
 
 	_, err := expandServiceBundles(fsys, []string{"web"})
 	require.ErrorContains(t, err, "services/web/picolet.yml: expected regular file")
-	assert.NotContains(t, err.Error(), "unknown entry")
-}
-
-func TestAddPathUnknownCategory(t *testing.T) {
-	t.Parallel()
-
-	b := &expandedBundles{}
-	err := b.addPath("nonsense", "services/web/nonsense/x.yml")
-	require.ErrorContains(t, err, `unknown bundle category "nonsense"`)
-
-	// Valid category still works after an invalid one.
-	require.NoError(t, b.addPath("container", "services/web/containers/x.container"))
-	assert.Equal(t, []string{"services/web/containers/x.container"}, b.Paths[config.CategoryContainer])
-}
-
-func TestStripServicePrefix(t *testing.T) {
-	t.Parallel()
-
-	assert.Equal(t, "manifests/app/deployment.yml.tmpl",
-		stripServicePrefix("services/web/manifests/app/deployment.yml.tmpl", "web"))
-	assert.Equal(t, "containers/web.container",
-		stripServicePrefix("services/web/containers/web.container", "web"))
 }
 
 func TestExpandServiceBundlesIncludesFilesCategory(t *testing.T) {
@@ -345,4 +241,167 @@ func TestExpandServiceBundlesIncludesFilesCategory(t *testing.T) {
 		Category:    "file",
 		RelPath:     "scrape.yml",
 	}, expanded.NestedRefs[1])
+}
+
+// bundleTree is a nested, category-free Service Bundle layout; keys are
+// bundle-relative.
+var bundleTree = map[string]string{
+	"web.network":                "[Network]\n",
+	"app/web/web.container.tmpl": "[Container]\nImage=app:v1\nEnvironment=HOST={{ .Host.Hostname }}\n",
+	"app/backup.timer":           "[Timer]\nOnCalendar=daily\n",
+	"app/backup.service":         "[Service]\nExecStart=/bin/true\n",
+	"manifests/app/cm.yml":       "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app\n",
+	"files/conf/app.conf.tmpl":   "host={{ .Host.Hostname }}\n",
+	"secrets/db.yml":             "password: x\n",
+}
+
+// bundleFiles places tree under services/<service>/.
+func bundleFiles(service string, tree map[string]string) map[string]string {
+	out := make(map[string]string, len(tree))
+	for p, content := range tree {
+		out["services/"+service+"/"+p] = content
+	}
+	return out
+}
+
+type bundleDeployment struct {
+	SrcPath     string
+	DestPath    string
+	Content     string
+	Category    config.Category
+	ServiceName string
+	RelPath     string
+}
+
+// bundleDeployments strips prefix from every SrcPath so a bundle and a
+// Fleet-root layout compare equal.
+func bundleDeployments(files []ResolvedFile, prefix string) []bundleDeployment {
+	out := make([]bundleDeployment, 0, len(files))
+	for _, f := range files {
+		out = append(out, bundleDeployment{
+			SrcPath: strings.TrimPrefix(f.SrcPath, prefix), DestPath: f.DestPath, Content: f.Content,
+			Category: f.Category, ServiceName: f.ServiceName, RelPath: f.RelPath,
+		})
+	}
+	return out
+}
+
+func TestResolveHostBundleMatchesPathsDirectory(t *testing.T) {
+	t.Parallel()
+	withMetadata := bundleFiles("web", bundleTree)
+	withMetadata["services/web/picolet.yml"] = "hooks: []\n"
+	fromBundle, err := resolvePaths(t, "  services: [web]\n", withMetadata)
+	require.NoError(t, err)
+	fromPaths, err := resolvePaths(t, "  paths: [web.network, app/, manifests/, files/, secrets/]\n", bundleTree)
+	require.NoError(t, err)
+
+	assert.ElementsMatch(t, bundleDeployments(fromPaths.Files, ""), bundleDeployments(fromBundle.Files, "services/web/"))
+	assert.Len(t, fromBundle.Files, len(bundleTree))
+}
+
+// Units deploy from any directory at any depth; a directory named after a
+// category does not select it.
+func TestResolveHostBundleAcceptsCategoryFreeLayout(t *testing.T) {
+	t.Parallel()
+	resolved, err := resolvePaths(t, "  services: [web]\n", bundleFiles("web", map[string]string{
+		"web.container":              pathsUnit,
+		"stack/db/deep/db.network":   "[Network]\n",
+		"containers/nested/a.volume": "[Volume]\n",
+	}))
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []pathsDeployment{
+		{SrcPath: "services/web/web.container", DestPath: "/etc/containers/systemd/picolet/web.container", Category: config.CategoryContainer},
+		{SrcPath: "services/web/stack/db/deep/db.network", DestPath: "/etc/containers/systemd/picolet/db.network", Category: config.CategoryNetwork},
+		{SrcPath: "services/web/containers/nested/a.volume", DestPath: "/etc/containers/systemd/picolet/a.volume", Category: config.CategoryVolume},
+	}, pathsDeployments(resolved.Files))
+}
+
+func TestResolveHostBundleAppliesPathRules(t *testing.T) {
+	t.Parallel()
+	for file, want := range map[string]string{
+		"app/manifests/cm.yml":   `services/web/app/manifests/cm.yml: "manifests/" must be the first path segment`,
+		"manifests/files/cm.yml": `services/web/manifests/files/cm.yml: path has both "manifests/" and "files/"`,
+		"README.md":              `services/web/README.md: unknown extension ".md"; move it under files/ or remove it from the listed directory`,
+	} {
+		t.Run(file, func(t *testing.T) {
+			t.Parallel()
+			_, err := resolvePaths(t, "  services: [web]\n", bundleFiles("web", map[string]string{
+				file:          "x: 1\n",
+				"web.network": "[Network]\n",
+			}))
+			require.ErrorContains(t, err, want)
+		})
+	}
+}
+
+func TestResolveHostBundleGenericErrors(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		base  string
+		files map[string]string
+		want  string
+	}{
+		{
+			name:  "metadata only",
+			base:  "  services: [web]\n",
+			files: map[string]string{"services/web/picolet.yml": "hooks: []\n", "services/web/app/picolet.yml": "hooks: []\n"},
+			want:  "services/web: empty service bundle",
+		},
+		{
+			name:  "collision inside the bundle",
+			base:  "  services: [web]\n",
+			files: map[string]string{"services/web/a/web.container": pathsUnit, "services/web/b/web.container.tmpl": pathsUnit},
+			want:  "destination collision for /etc/containers/systemd/picolet/web.container: services/web/a/web.container, services/web/b/web.container.tmpl",
+		},
+		{
+			name:  "collision with a paths: entry",
+			base:  "  services: [web]\n  paths: [units/]\n",
+			files: map[string]string{"services/web/app/web.container": pathsUnit, "units/web.container": pathsUnit},
+			want:  "destination collision for /etc/containers/systemd/picolet/web.container: services/web/app/web.container, units/web.container",
+		},
+		{
+			name: "collision across bundles",
+			base: "  services: [web, api]\n",
+			files: map[string]string{
+				"services/web/manifests/app/cm.yml": "kind: ConfigMap\n",
+				"services/api/manifests/app/cm.yml": "kind: ConfigMap\n",
+			},
+			want: "destination collision for /var/lib/picolet/manifests/app/cm.yml: services/api/manifests/app/cm.yml, services/web/manifests/app/cm.yml",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := resolvePaths(t, tt.base, tt.files)
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+}
+
+func TestResolveHostBundleNestedQuadletNamesServiceAndHookUnit(t *testing.T) {
+	t.Parallel()
+	resolved, err := resolvePaths(t, "  services: [app]\n", bundleFiles("app", map[string]string{
+		"stack/app/deep/app.container.tmpl": "[Container]\nImage=app:v1\nServiceName=app-main\n",
+		"secrets/cfg.yml":                   "a: 1\n",
+		"picolet.yml": `hooks:
+  - name: app-reload
+    secrets: [cfg]
+    unit: app.container
+    action: restart
+`,
+	}))
+	require.NoError(t, err)
+
+	var container *ResolvedFile
+	for i := range resolved.Files {
+		if resolved.Files[i].Category == config.CategoryContainer {
+			container = &resolved.Files[i]
+		}
+	}
+	require.NotNil(t, container)
+	assert.Equal(t, "/etc/containers/systemd/picolet/app.container", container.DestPath)
+	assert.Equal(t, "app-main.service", container.ServiceName)
+	require.Len(t, resolved.Hooks, 1)
+	assert.Equal(t, "app-main.service", resolved.Hooks[0].Unit)
 }
