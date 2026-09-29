@@ -45,6 +45,7 @@ roles:
       - quadlets/builds/e2e-build.build.tmpl
       - quadlets/containers/e2e-build.container
       - files/e2e-build/Containerfile
+      - files/e2e-other/notes.txt
 `,
 		"hosts/build-host/host.yml": "hostname: build-host\nrole: build\nfeatures: []\n",
 		"quadlets/builds/e2e-build.build.tmpl": `[Build]
@@ -59,13 +60,20 @@ ContainerName=` + e2eBuildContainer + `
 [Install]
 WantedBy=default.target
 `,
-		"files/e2e-build/Containerfile": "FROM " + e2eBuildBase + "\nLABEL " + e2eBuildLabel + "=build\nCMD [\"sleep\", \"infinity\"]\n",
+		"files/e2e-build/Containerfile": buildContainerfile("build", ""),
+		"files/e2e-other/notes.txt":     "unrelated to the build\n",
 	}
 	for name, content := range files {
 		path := filepath.Join(fleetDir, name)
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 	}
+}
+
+// buildContainerfile returns the e2e Containerfile, labelled label, with an
+// optional extra instruction (e.g. a failing RUN).
+func buildContainerfile(label, extra string) string {
+	return "FROM " + e2eBuildBase + "\n" + extra + "LABEL " + e2eBuildLabel + "=" + label + "\nCMD [\"sleep\", \"infinity\"]\n"
 }
 
 // removeBuildArtifacts removes the test container and the built image.
@@ -82,7 +90,7 @@ func removeBuildArtifacts() {
 // Runs serially (no t.Parallel): runCLI mutates slog's default logger, and a
 // concurrent `image prune -a` (TestE2EImagePrune) could remove the image mid-build.
 //
-//nolint:paralleltest,funlen // serial for the reasons above; sequential sub-tests
+//nolint:paralleltest,funlen,cyclop // serial for the reasons above; sequential sub-tests sharing helper closures
 func TestE2EBuild(t *testing.T) {
 	requirePodmanAtLeast(t, 5, 2) // Quadlet .build support landed in Podman 5.2.0
 	socketPath := podmanSocketPath(t)
@@ -165,6 +173,94 @@ func TestE2EBuild(t *testing.T) {
 			}
 		}
 		assert.True(t, found, "the Containerfile is a managed file: %v", st.ManagedFiles)
+	})
+
+	connCtx, err := bindings.NewConnection(t.Context(), "unix:"+socketPath)
+	require.NoError(t, err)
+	// consumer returns when the consumer container started and its image ID.
+	consumer := func(t *testing.T) (time.Time, string) {
+		t.Helper()
+		data, err := containers.Inspect(connCtx, e2eBuildContainer, nil)
+		require.NoError(t, err)
+		require.Equal(t, "running", data.State.Status)
+		return data.State.StartedAt, data.Image
+	}
+	// buildRun identifies the build service's last run.
+	buildRun := func(t *testing.T) string {
+		t.Helper()
+		out, err := exec.Command("systemctl", "--user", "show", "-p", "InvocationID", "--value", e2eBuildService).Output()
+		require.NoError(t, err)
+		return strings.TrimSpace(string(out))
+	}
+	imageLabel := func(t *testing.T) string {
+		t.Helper()
+		img, err := images.GetImage(connCtx, e2eBuildImage, nil)
+		require.NoError(t, err)
+		return img.Labels[e2eBuildLabel]
+	}
+	writeFleetAndApply := func(t *testing.T, rel, content string) error {
+		t.Helper()
+		require.NoError(t, os.WriteFile(filepath.Join(fleetDir, rel), []byte(content), 0o600))
+		return runCLI(t, "apply", "--host", "build-host", "--repo-dir", fleetDir, "--config", configPath)
+	}
+
+	t.Run("unrelated_change_rebuilds_nothing", func(t *testing.T) {
+		defer dumpBuildDiagnostics(t)
+		started, image := consumer(t)
+		run := buildRun(t)
+		require.NoError(t, writeFleetAndApply(t, "files/e2e-other/notes.txt", "changed\n"))
+		gotStarted, gotImage := consumer(t)
+		assert.Equal(t, started, gotStarted, "consumer must not restart")
+		assert.Equal(t, image, gotImage)
+		assert.Equal(t, run, buildRun(t), "build must not run")
+	})
+
+	t.Run("containerfile_change_rebuilds_and_restarts_consumer", func(t *testing.T) {
+		defer dumpBuildDiagnostics(t)
+		started, image := consumer(t)
+		run := buildRun(t)
+		require.NoError(t, writeFleetAndApply(t, "files/e2e-build/Containerfile", buildContainerfile("rebuilt", "")))
+		assert.NotEqual(t, run, buildRun(t), "build must run")
+		assert.Equal(t, "rebuilt", imageLabel(t))
+		require.Eventually(t, func() bool {
+			data, err := containers.Inspect(connCtx, e2eBuildContainer, nil)
+			return err == nil && data.State.Status == "running" && data.Image != image && data.State.StartedAt.After(started)
+		}, 60*time.Second, 2*time.Second, "consumer should run the rebuilt image")
+	})
+
+	t.Run("failing_build_leaves_consumer_running", func(t *testing.T) {
+		defer dumpBuildDiagnostics(t)
+		started, image := consumer(t)
+		require.Error(t, writeFleetAndApply(t, "files/e2e-build/Containerfile", buildContainerfile("broken", "RUN false\n")))
+		assert.Equal(t, "rebuilt", imageLabel(t), "the previously built image keeps its tag")
+		gotStarted, gotImage := consumer(t)
+		assert.Equal(t, started, gotStarted, "consumer must not restart")
+		assert.Equal(t, image, gotImage)
+		st, err := state.NewStore(filepath.Join(dataDir, "state.json")).Load()
+		require.NoError(t, err)
+		found := false
+		for path := range st.ManagedFiles {
+			if strings.HasSuffix(path, "/files/e2e-build/Containerfile") {
+				found = true
+				content, err := os.ReadFile(path)
+				require.NoError(t, err)
+				assert.Equal(t, buildContainerfile("rebuilt", ""), string(content), "the deployed Containerfile is rolled back")
+			}
+		}
+		assert.True(t, found, "the Containerfile is a managed file")
+	})
+
+	// A consumer down since a failed build is started by the fixing commit.
+	t.Run("fixed_build_starts_stopped_consumer", func(t *testing.T) {
+		defer dumpBuildDiagnostics(t)
+		out, err := exec.Command("systemctl", "--user", "stop", "e2e-build.service").CombinedOutput()
+		require.NoError(t, err, "%s", out)
+		require.NoError(t, writeFleetAndApply(t, "files/e2e-build/Containerfile", buildContainerfile("fixed", "")))
+		assert.Equal(t, "fixed", imageLabel(t))
+		require.Eventually(t, func() bool {
+			data, err := containers.Inspect(connCtx, e2eBuildContainer, nil)
+			return err == nil && data.State.Status == "running" && data.Config.Labels[e2eBuildLabel] == "fixed"
+		}, 60*time.Second, 2*time.Second, "consumer should run the fixed image")
 	})
 
 	t.Run("down", func(t *testing.T) {

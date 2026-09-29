@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/coreos/go-systemd/v22/dbus"
@@ -31,6 +32,13 @@ const (
 // If D-Bus dies between a successful unit operation and the job signal, the channel
 // hangs forever. This timeout lets the tick fail so the next tick can reconnect.
 const jobTimeout = 30 * time.Second
+
+// buildJobTimeout bounds the start job of a .build unit, which lasts as long
+// as the image build (minutes on a Raspberry Pi, far beyond jobTimeout).
+const buildJobTimeout = 30 * time.Minute
+
+// errJobTimeout: no job result arrived within the wait's timeout.
+var errJobTimeout = errors.New("timeout waiting for job result")
 
 // reconnectCooldown prevents rapid reconnect attempts when D-Bus is persistently down.
 const reconnectCooldown = 30 * time.Second
@@ -209,6 +217,43 @@ func (m *DBusSystemdManager) RestartUnit(ctx context.Context, name string) error
 	})
 }
 
+// RunBuildUnit starts a .build unit's service and waits, up to
+// buildJobTimeout, for the build to finish. A start (not a restart): systemd
+// propagates a restart of a Requires= dependency to the units requiring it.
+// A build given up on (timeout, cancelled ctx) is killed, so it cannot tag an
+// image from inputs the failed apply rolls back; killing its processes fails
+// the start job without stopping the units that require it.
+func (m *DBusSystemdManager) RunBuildUnit(ctx context.Context, name string) error {
+	return m.withReconnect(ctx, func(c *dbus.Conn) error {
+		ch := make(chan string, 1)
+		if _, err := c.StartUnitContext(ctx, name, "replace", ch); err != nil {
+			return fmt.Errorf("building %s: %w", name, err)
+		}
+		err := waitJobResult(ctx, ch, "building", name, buildJobTimeout, systemdJobDone)
+		if errors.Is(err, errJobTimeout) || ctx.Err() != nil {
+			killCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobTimeout)
+			defer cancel()
+			if killErr := c.KillUnitWithTarget(killCtx, name, dbus.All, int32(syscall.SIGTERM)); killErr != nil {
+				err = errors.Join(err, fmt.Errorf("killing abandoned build %s: %w", name, killErr))
+			}
+		}
+		return err
+	})
+}
+
+// RestartUnitIgnoringDependencies restarts a unit, or starts it when
+// inactive, without touching its dependencies: its Requires= units are not
+// started again.
+func (m *DBusSystemdManager) RestartUnitIgnoringDependencies(ctx context.Context, name string) error {
+	return m.withReconnect(ctx, func(c *dbus.Conn) error {
+		ch := make(chan string, 1)
+		if _, err := c.RestartUnitContext(ctx, name, "ignore-dependencies", ch); err != nil {
+			return fmt.Errorf("restarting %s: %w", name, err)
+		}
+		return waitJobDone(ctx, ch, "restarting", name)
+	})
+}
+
 // EnableUnit links the unit's [Install] symlinks. It is synchronous (no systemd
 // job is queued), so unlike Start/Restart there is no job channel to wait on.
 // Callers run DaemonReload before this so the manager already knows the unit file.
@@ -235,29 +280,29 @@ func (m *DBusSystemdManager) DisableUnit(ctx context.Context, name string) error
 
 // waitJobDone waits for a systemd job to complete with "done".
 func waitJobDone(ctx context.Context, ch <-chan string, verb, unit string) error {
-	return waitJobResult(ctx, ch, verb, unit, systemdJobDone)
+	return waitJobResult(ctx, ch, verb, unit, jobTimeout, systemdJobDone)
 }
 
 // waitJobDoneOrSkipped waits for a systemd job to complete with "done" or "skipped".
 // Stop operations return "skipped" when the unit is already inactive, which is a
 // valid outcome.
 func waitJobDoneOrSkipped(ctx context.Context, ch <-chan string, verb, unit string) error {
-	return waitJobResult(ctx, ch, verb, unit, systemdJobDone, systemdJobSkipped)
+	return waitJobResult(ctx, ch, verb, unit, jobTimeout, systemdJobDone, systemdJobSkipped)
 }
 
 // waitJobResult waits for a systemd job result, context cancellation, or timeout.
 // The result must match one of the accepted values; any other result is an error.
 // The timeout prevents hanging forever if D-Bus dies between the unit operation
 // and the job signal arriving (the channel is caller-owned and won't be closed).
-func waitJobResult(ctx context.Context, ch <-chan string, verb, unit string, accepted ...string) error {
+func waitJobResult(ctx context.Context, ch <-chan string, verb, unit string, timeout time.Duration, accepted ...string) error {
 	select {
 	case result := <-ch:
 		if slices.Contains(accepted, result) {
 			return nil
 		}
 		return fmt.Errorf("%s %s: job result %q", verb, unit, result)
-	case <-time.After(jobTimeout):
-		return fmt.Errorf("%s %s: timeout waiting for job result", verb, unit)
+	case <-time.After(timeout):
+		return fmt.Errorf("%s %s: %w", verb, unit, errJobTimeout)
 	case <-ctx.Done():
 		return fmt.Errorf("%s %s: %w", verb, unit, ctx.Err())
 	}

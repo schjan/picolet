@@ -171,7 +171,7 @@ func TestApplyWithRollbackReturnsRetryableHookErrorsWithoutRollback(t *testing.T
 		Container: "app",
 		Signal:    "HUP",
 		OnFailure: config.HookOnFailureKeepRunning,
-	}}, nil)
+	}}, nil, nil)
 
 	require.ErrorIs(t, err, applier.ErrApplyIncomplete)
 	require.NotNil(t, result)
@@ -415,13 +415,45 @@ func TestApplyWithRollbackReturnsIncompleteOnFailedUnitRestart(t *testing.T) {
 			ServiceName: "app.service",
 		}},
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
-	}, nil, nil)
+	}, nil, nil, nil)
 
 	// A failed unit restart yields ErrApplyIncomplete with a non-nil result;
 	// a rollback would instead return (nil, errRollbackPerformed).
 	require.ErrorIs(t, err, applier.ErrApplyIncomplete)
 	require.NotNil(t, result)
 	assert.Equal(t, []string{"app.service"}, result.FailedRestartUnits)
+}
+
+// A failing build is a failed apply, not a pending restart: the deployed
+// inputs are rolled back through the existing path and the error counts
+// toward the failed-commit gate.
+func TestApplyWithRollbackRollsBackFailedBuild(t *testing.T) {
+	t.Parallel()
+	containerfile := filepath.Join(t.TempDir(), "Containerfile")
+	require.NoError(t, os.WriteFile(containerfile, []byte("FROM alpine:old\n"), 0o600))
+	sys, pod, fw := newBareMocks(t)
+	fw.EXPECT().MkdirAll(mock.Anything).Return(nil)
+	fw.EXPECT().WriteFile(containerfile, []byte("FROM alpine:new\n")).Return(nil).Once()
+	sys.EXPECT().RunBuildUnit(mock.Anything, "app-build.service").Return(assert.AnError)
+	fw.EXPECT().WriteFile(containerfile, []byte("FROM alpine:old\n")).Return(nil).Once()
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+
+	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
+	result, err := a.applyWithRollback(t.Context(), "sha", &reconciler.Changeset{
+		Changes: []reconciler.Change{
+			{
+				DestPath: "/etc/containers/systemd/picolet/app.build", Category: config.CategoryBuild, Action: reconciler.ActionNoop,
+				NewContent:  "[Build]\nImageTag=localhost/app\nFile=" + containerfile + "\nSetWorkingDirectory=file\n",
+				ServiceName: "app-build.service",
+			},
+			{DestPath: containerfile, Category: config.CategoryFile, Action: reconciler.ActionUpdate, NewContent: "FROM alpine:new\n", RelPath: "app/Containerfile"},
+		},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1, reconciler.ActionNoop: 1},
+	}, nil, nil, map[string]status.UnitDependencies{"app.service": {Requires: []string{"app-build.service"}}})
+
+	require.ErrorIs(t, err, errRollbackPerformed)
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Nil(t, result)
 }
 
 func TestApplyWithRollbackCompletesWhenUnmanagedHookUnitRestartFails(t *testing.T) {
@@ -444,7 +476,7 @@ func TestApplyWithRollbackCompletesWhenUnmanagedHookUnitRestartFails(t *testing.
 		Secrets: []string{"app_config"},
 		Unit:    "nginx.service",
 		Action:  config.HookActionRestart,
-	}}, nil)
+	}}, nil, nil)
 
 	// nginx.service is not a picolet-managed quadlet — it is absent from the
 	// changeset's ServiceNames, so health-enforce could never retry it. Its
@@ -1920,7 +1952,7 @@ func TestApplyWithRollbackRunsPendingHooksAlongsideChangeset(t *testing.T) {
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
 	}
 
-	result, err := a.applyWithRollback(t.Context(), "head-sha", changeset, hooks, []string{"stale-pending"})
+	result, err := a.applyWithRollback(t.Context(), "head-sha", changeset, hooks, []string{"stale-pending"}, nil)
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"stale-pending"}, result.AttemptedHookNames,
 		"pending hook ran even though its trigger was not in the changeset")

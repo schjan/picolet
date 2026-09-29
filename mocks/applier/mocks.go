@@ -17,10 +17,19 @@ func NewMockSystemdManager(t interface {
 	mock.TestingT
 	Cleanup(func())
 }) *MockSystemdManager {
+	if helper, ok := t.(interface{ Helper() }); ok {
+		helper.Helper()
+	}
+
 	mock := &MockSystemdManager{}
 	mock.Mock.Test(t)
 
-	t.Cleanup(func() { mock.AssertExpectations(t) })
+	t.Cleanup(func() {
+		if helper, ok := t.(interface{ Helper() }); ok {
+			helper.Helper()
+		}
+		mock.AssertExpectations(t)
+	})
 
 	return mock
 }
@@ -359,6 +368,120 @@ func (_c *MockSystemdManager_RestartUnit_Call) RunAndReturn(run func(ctx context
 	return _c
 }
 
+// RestartUnitIgnoringDependencies provides a mock function for the type MockSystemdManager
+func (_mock *MockSystemdManager) RestartUnitIgnoringDependencies(ctx context.Context, name string) error {
+	ret := _mock.Called(ctx, name)
+
+	if len(ret) == 0 {
+		panic("no return value specified for RestartUnitIgnoringDependencies")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) error); ok {
+		r0 = returnFunc(ctx, name)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockSystemdManager_RestartUnitIgnoringDependencies_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RestartUnitIgnoringDependencies'
+type MockSystemdManager_RestartUnitIgnoringDependencies_Call struct {
+	*mock.Call
+}
+
+// RestartUnitIgnoringDependencies is a helper method to define mock.On call
+//   - ctx context.Context
+//   - name string
+func (_e *MockSystemdManager_Expecter) RestartUnitIgnoringDependencies(ctx any, name any) *MockSystemdManager_RestartUnitIgnoringDependencies_Call {
+	return &MockSystemdManager_RestartUnitIgnoringDependencies_Call{Call: _e.mock.On("RestartUnitIgnoringDependencies", ctx, name)}
+}
+
+func (_c *MockSystemdManager_RestartUnitIgnoringDependencies_Call) Run(run func(ctx context.Context, name string)) *MockSystemdManager_RestartUnitIgnoringDependencies_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockSystemdManager_RestartUnitIgnoringDependencies_Call) Return(err error) *MockSystemdManager_RestartUnitIgnoringDependencies_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockSystemdManager_RestartUnitIgnoringDependencies_Call) RunAndReturn(run func(ctx context.Context, name string) error) *MockSystemdManager_RestartUnitIgnoringDependencies_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// RunBuildUnit provides a mock function for the type MockSystemdManager
+func (_mock *MockSystemdManager) RunBuildUnit(ctx context.Context, name string) error {
+	ret := _mock.Called(ctx, name)
+
+	if len(ret) == 0 {
+		panic("no return value specified for RunBuildUnit")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) error); ok {
+		r0 = returnFunc(ctx, name)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockSystemdManager_RunBuildUnit_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RunBuildUnit'
+type MockSystemdManager_RunBuildUnit_Call struct {
+	*mock.Call
+}
+
+// RunBuildUnit is a helper method to define mock.On call
+//   - ctx context.Context
+//   - name string
+func (_e *MockSystemdManager_Expecter) RunBuildUnit(ctx any, name any) *MockSystemdManager_RunBuildUnit_Call {
+	return &MockSystemdManager_RunBuildUnit_Call{Call: _e.mock.On("RunBuildUnit", ctx, name)}
+}
+
+func (_c *MockSystemdManager_RunBuildUnit_Call) Run(run func(ctx context.Context, name string)) *MockSystemdManager_RunBuildUnit_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockSystemdManager_RunBuildUnit_Call) Return(err error) *MockSystemdManager_RunBuildUnit_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockSystemdManager_RunBuildUnit_Call) RunAndReturn(run func(ctx context.Context, name string) error) *MockSystemdManager_RunBuildUnit_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // StartUnit provides a mock function for the type MockSystemdManager
 func (_mock *MockSystemdManager) StartUnit(ctx context.Context, name string) error {
 	ret := _mock.Called(ctx, name)
@@ -479,10 +602,19 @@ func NewMockPodmanClient(t interface {
 	mock.TestingT
 	Cleanup(func())
 }) *MockPodmanClient {
+	if helper, ok := t.(interface{ Helper() }); ok {
+		helper.Helper()
+	}
+
 	mock := &MockPodmanClient{}
 	mock.Mock.Test(t)
 
-	t.Cleanup(func() { mock.AssertExpectations(t) })
+	t.Cleanup(func() {
+		if helper, ok := t.(interface{ Helper() }); ok {
+			helper.Helper()
+		}
+		mock.AssertExpectations(t)
+	})
 
 	return mock
 }
@@ -1084,10 +1216,19 @@ func NewMockFileWriter(t interface {
 	mock.TestingT
 	Cleanup(func())
 }) *MockFileWriter {
+	if helper, ok := t.(interface{ Helper() }); ok {
+		helper.Helper()
+	}
+
 	mock := &MockFileWriter{}
 	mock.Mock.Test(t)
 
-	t.Cleanup(func() { mock.AssertExpectations(t) })
+	t.Cleanup(func() {
+		if helper, ok := t.(interface{ Helper() }); ok {
+			helper.Helper()
+		}
+		mock.AssertExpectations(t)
+	})
 
 	return mock
 }

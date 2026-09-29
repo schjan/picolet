@@ -444,6 +444,7 @@ func applyWithRollback(
 	systemd applier.SystemdManager,
 	podman applier.PodmanClient,
 	hooks []config.Hook,
+	deps map[string]status.UnitDependencies,
 ) (*applier.ApplyResult, error) {
 	writer := applier.NewAtomicFileWriter()
 	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile)
@@ -451,7 +452,7 @@ func applyWithRollback(
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
-	app := applier.New(systemd, podman, writer, false, hooks)
+	app := applier.New(systemd, podman, writer, false, hooks, applier.WithDependencies(deps))
 	result, err := app.Apply(ctx, changeset)
 	if err != nil {
 		slog.Error("apply failed, rolling back", "error", err)
@@ -526,7 +527,8 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		return nil
 	}
 
-	if err := validator.ValidateFiles(files, cfg.Rootless); err != nil {
+	deps, err := validator.AnalyzeFiles(files, cfg.Rootless)
+	if err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -547,7 +549,7 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		return fmt.Errorf("connecting to podman: %w", err)
 	}
 
-	result, err := applyWithRollback(ctx, changeset, systemd, podman, resolved.Hooks)
+	result, err := applyWithRollback(ctx, changeset, systemd, podman, resolved.Hooks, deps)
 	if err != nil {
 		return err
 	}
