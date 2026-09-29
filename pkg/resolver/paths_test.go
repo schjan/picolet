@@ -17,7 +17,7 @@ const pathsUnit = "[Container]\nImage=app:v1\n\n[Install]\nWantedBy=default.targ
 // assignments.yml body; extra maps Fleet-root-relative paths to content.
 func pathsFleetFS(base string, extra map[string]string) fstest.MapFS {
 	fsys := fstest.MapFS{
-		"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml":          &fstest.MapFile{Data: []byte("base:\n" + base + "roles: {}\nfeatures: {}\n")},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte("hostname: test-host\nexternal_hostname: test-host.example.net\nrole: node\nfeatures: []\n")},
 	}

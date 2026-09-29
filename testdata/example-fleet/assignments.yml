@@ -40,6 +40,11 @@ roles:
     secrets:
       - secrets/e2e_secret.txt
       - secrets/static_alert_rules.yml.tmpl
+  # The three Hosts of Machine vps-1 (see hosts/vps-1*); agent-scrape renders
+  # each Host's view of the Machine's Agents via the siblings helper.
+  vps:
+    services:
+      - agent-scrape
 features:
   app-a:
     paths:

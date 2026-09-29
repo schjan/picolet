@@ -39,6 +39,7 @@ func setupApplyDownFleet(t *testing.T, fleetDir string) {
 	files := map[string]string{
 		"fleet.yml": `images:
   apply: "docker.io/library/alpine:3.23"
+ports: {picolet_system_metrics: 9418}
 `,
 		"assignments.yml": `base: {}
 roles:

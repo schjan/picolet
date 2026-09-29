@@ -46,6 +46,7 @@ func initTestRepo(t *testing.T) string {
   traefik: "traefik:v3"
 ports:
   alloy_http: 12345
+  picolet_system_metrics: 9418
 `)
 
 	// Create assignments.yml
@@ -93,7 +94,7 @@ func initTestRepoWithHook(t *testing.T) string {
 	require.NoError(t, err)
 
 	writeTestFile(t, workDir, "fleet.yml", `images: {}
-ports: {}
+ports: {picolet_system_metrics: 9418}
 `)
 	writeTestFile(t, workDir, "assignments.yml", `base:
   services:
@@ -182,7 +183,7 @@ func TestReconcileOnceSavesPartialStateOnApplyIncomplete(t *testing.T) {
 	t.Parallel()
 	repoDir := t.TempDir()
 	writeTestFile(t, repoDir, "fleet.yml", `images: {}
-ports: {}
+ports: {picolet_system_metrics: 9418}
 `)
 	writeTestFile(t, repoDir, "assignments.yml", `base:
   services:
@@ -512,7 +513,7 @@ func TestApplyIncompleteError(t *testing.T) {
 func TestReconcileOnceSavesPendingUnitsOnFailedRestart(t *testing.T) {
 	t.Parallel()
 	repoDir := t.TempDir()
-	writeTestFile(t, repoDir, "fleet.yml", "images: {}\nports: {}\n")
+	writeTestFile(t, repoDir, "fleet.yml", "images: {}\nports: {picolet_system_metrics: 9418}\n")
 	writeTestFile(t, repoDir, "assignments.yml", `base:
   paths:
     - quadlets/networks/internal.network
@@ -1021,7 +1022,7 @@ func TestReconcileNoChangesNewSHAMarksApplied(t *testing.T) {
 	t.Parallel()
 	repoDir := t.TempDir()
 	writeTestFile(t, repoDir, "fleet.yml", `images: {}
-ports: {}
+ports: {picolet_system_metrics: 9418}
 `)
 	writeTestFile(t, repoDir, "assignments.yml", `base:
   paths:
@@ -1367,6 +1368,7 @@ func TestLoadAndResolveWithSubDir(t *testing.T) {
   traefik: "traefik:v3"
 ports:
   app: 8080
+  picolet_system_metrics: 9418
 `)
 	writeTestFile(t, repoDir, filepath.Join(subDir, "assignments.yml"), `base:
   paths:
@@ -1404,7 +1406,7 @@ func TestRefreshResolvedSnapshot_ValidationFailure(t *testing.T) {
 	// failure path: parsing succeeds but quadlet rejects an unspecified Image.
 	repoDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "hosts/test-host"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "fleet.yml"), []byte("images: {}\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "fleet.yml"), []byte("images: {}\nports: {picolet_system_metrics: 9418}\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "assignments.yml"), []byte(`base:
   paths:
     - quadlets/broken.container

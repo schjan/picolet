@@ -43,7 +43,7 @@ func TestLoadAndResolveHostRejectsSymlinksEscapingTheRepo(t *testing.T) {
 			outside := t.TempDir()
 			writeTestFile(t, outside, "leak.conf", secret)
 			repo := t.TempDir()
-			writeTestFile(t, repo, "fleet.yml", "images: {}\nports: {}\n")
+			writeTestFile(t, repo, "fleet.yml", "images: {}\nports: {picolet_system_metrics: 9418}\n")
 			writeTestFile(t, repo, "assignments.yml", "base:\n"+tt.base+"roles: {}\nfeatures: {}\n")
 			writeTestFile(t, repo, "hosts/h1/host.yml", "hostname: h1\nexternal_hostname: h1.example.net\nrole: node\nfeatures: []\n")
 			for p, content := range tt.files {
