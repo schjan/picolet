@@ -8,3 +8,7 @@ ports:
   http: 8080
   metrics: 9090
   app: 3000
+  # The Agents' listen ports: a Host without listen_port: in host.yml takes
+  # picolet_metrics (user Hosts) or picolet_system_metrics (the rootful Host).
+  picolet_metrics: 9417
+  picolet_system_metrics: 9418

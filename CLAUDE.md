@@ -85,16 +85,16 @@ type SecretReader func(path string) (string, error)
 ### Configuration Layers
 
 - **Agent config** (`/etc/picolet/config.yml`) — hostname, repo URL, poll interval. Loaded by `pkg/agentcfg`.
-- **Fleet config** (in git repo) — `fleet.yml` (images, ports), `assignments.yml` (file mappings per role/feature), `hosts/<name>/host.yml` (per-host settings). Loaded by `pkg/config`. Production code opens the repo with `config.OpenRepo` (an `os.Root`-backed FS), never `os.DirFS`: `DirFS` follows symlinks out of the tree, which would let a Fleet deploy any host file (the agent runs as root). Host secrets go through `resolver.DirSecretReader`. Tests may use `fstest.MapFS`/`os.DirFS`.
+- **Fleet config** (in git repo) — `fleet.yml` (images, ports), `assignments.yml` (file mappings per role/feature), `hosts/<name>/host.yml` (per-host settings incl. `machine:`/`user:`/`listen_port:`). Loaded by `pkg/config`. Production code opens the repo with `config.OpenRepo` (an `os.Root`-backed FS), never `os.DirFS`: `DirFS` follows symlinks out of the tree, which would let a Fleet deploy any host file (the agent runs as root). Host secrets go through `resolver.DirSecretReader`. Tests may use `fstest.MapFS`/`os.DirFS`. Loading is strict; only the Agent's reconciliation passes `config.LenientHosts()` (via `ResolveParams.LenientHosts`), so an unknown `host.yml` key only warns there (older Agents must keep loading a Fleet that adopts a new key) and fails everywhere else. Every Host needs an Agent listen port: `listen_port:` or `fleet.yml` `ports.picolet_metrics` (user Hosts) / `ports.picolet_system_metrics` (rootful), so test fleets carry `picolet_system_metrics`.
 - **Secrets** — read from local filesystem (`cfg.SecretsDir`), not from git.
 
 ### Template System
 
 Files ending in `.tmpl` are rendered with Go `text/template` (`missingkey=error`). All templates share a single `template.Template` registry enabling cross-references.
 
-Custom functions: `readFile`, `renderTemplate`, `indent`, `readSecretFile`, `has` (slices.Contains for feature checks).
+Custom functions: `readFile`, `renderTemplate`, `indent`, `readSecretFile`, `siblings` (other Hosts on this Host's Machine, sorted by hostname), `has` (slices.Contains for feature checks).
 
-Template data root: `.Host` (hostname, role, features, services, systemd_units), `.Fleet` (full config + all hosts), `.Images`, `.Ports`. `.Host.SystemdUnits` is populated by a first render pass — see `prepareTemplateData` in `pkg/resolver/resolver.go`.
+Template data root: `.Host` (hostname, role, features, machine, user, rootful, listen_port, services, systemd_units), `.Fleet` (full config + all hosts), `.Images`, `.Ports`. `.Host.SystemdUnits` is populated by a first render pass — see `prepareTemplateData` in `pkg/resolver/resolver.go`.
 
 ### Error Patterns
 

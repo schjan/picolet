@@ -3,3 +3,6 @@
 hostname: example-host-dev
 role: test
 features: []
+# Rootless: the Agent runs as this Linux user and listens on
+# fleet.yml ports.picolet_metrics (see README "Machines, users and ports").
+user: pi

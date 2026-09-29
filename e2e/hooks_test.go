@@ -144,7 +144,7 @@ WantedBy=default.target
 		SecretFile: "hook_cfg.txt",
 		FleetYAML: `images:
   hook-restart: "docker.io/library/alpine:3.23"
-ports: {}
+ports: {picolet_system_metrics: 9418}
 `,
 		PicoletFile: "picolet.yml",
 		PicoletContent: `hooks:
@@ -320,7 +320,7 @@ WantedBy=default.target
 		SecretFile: "hook_http_cfg.txt",
 		FleetYAML: `images:
   hook-http: "docker.io/library/alpine:3.23"
-ports: {}
+ports: {picolet_system_metrics: 9418}
 `,
 		PicoletFile: "picolet.yml",
 		PicoletContent: fmt.Sprintf(`hooks:

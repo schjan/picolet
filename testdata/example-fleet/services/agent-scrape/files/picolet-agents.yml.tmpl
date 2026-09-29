@@ -1,0 +1,16 @@
+# Prometheus scrape targets for the picolet Agents on Machine {{ .Host.Machine }}.
+# Every Agent binds 127.0.0.1:<listen_port> with Network=host, so this Host's
+# own Agent and its siblings on the Machine are all reachable over loopback.
+scrape_configs:
+  - job_name: picolet
+    static_configs:
+      - targets: ["127.0.0.1:{{ .Host.ListenPort }}"]
+        labels:
+          host: {{ .Host.Hostname }}
+          user: {{ if .Host.Rootful }}root{{ else }}{{ .Host.User }}{{ end }}
+{{- range siblings }}
+      - targets: ["127.0.0.1:{{ .ListenPort }}"]
+        labels:
+          host: {{ .Hostname }}
+          user: {{ if .Rootful }}root{{ else }}{{ .User }}{{ end }}
+{{- end }}

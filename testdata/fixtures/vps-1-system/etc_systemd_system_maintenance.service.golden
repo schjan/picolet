@@ -1,0 +1,7 @@
+# Managed by picolet
+[Unit]
+Description=Picolet maintenance job (podman image prune)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true

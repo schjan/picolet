@@ -69,7 +69,7 @@ WantedBy=timers.target
 	}
 
 	files := map[string]string{
-		"fleet.yml": "images: {}\n",
+		"fleet.yml": "images: {}\nports: {picolet_system_metrics: 9418}\n",
 		"assignments.yml": `base:
   paths:
     - systemd/e2e-job-ok.service

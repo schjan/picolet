@@ -195,7 +195,7 @@ func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host
 	// hostDataDir (not dataDir) drives filePath/manifestPath: those helpers emit
 	// path strings baked into rendered quadlets, which the host's podman must
 	// resolve. dataDir remains the write path (dataDestPath).
-	registry, caches, err := buildRegistry(ctx, r.fsys, r.secretReader, providers, r.hostDataDir, prefixFilter(templatePrefixes))
+	registry, caches, err := buildRegistry(ctx, r.fsys, r.secretReader, providers, r.hostDataDir, prefixFilter(templatePrefixes), siblings(tmplData))
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}

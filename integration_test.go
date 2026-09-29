@@ -2,6 +2,7 @@ package picolet_test
 
 import (
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -267,7 +268,21 @@ func TestIntegrationMultiHostConsistency(t *testing.T) {
 	// node-1 (worker) should NOT have these
 	assert.NotContains(t, node1, "/etc/containers/systemd/picolet/app-stack.kube")
 	assert.NotContains(t, node1, "/var/lib/picolet/manifests/app/deployment.yml")
+
+	// Machine vps-1: each of its three Hosts renders its own Agent plus its
+	// siblings, so every Host sees the same set of Agents — one per port, and
+	// nothing from another Machine.
+	const agentScrapePath = "/var/lib/picolet/files/picolet-agents.yml"
+	for _, host := range []string{"vps-1", "vps-1-runner", "vps-1-system"} {
+		scrape, ok := filesByDest(allResolved[host].Files)[agentScrapePath]
+		require.True(t, ok, "%s should have %s", host, agentScrapePath)
+		assert.ElementsMatch(t, []string{"127.0.0.1:9417", "127.0.0.1:9418", "127.0.0.1:9419"},
+			loopbackTarget.FindAllString(scrape.Content, -1), host)
+	}
+	assert.NotContains(t, node1, agentScrapePath)
 }
+
+var loopbackTarget = regexp.MustCompile(`127\.0\.0\.1:\d+`)
 
 func filesByDest(files []resolver.ResolvedFile) map[string]resolver.ResolvedFile {
 	m := make(map[string]resolver.ResolvedFile, len(files))
@@ -341,7 +356,7 @@ func TestIntegrationErrorPathsRetiredTypedLists(t *testing.T) {
 		t.Run("typed list "+key, func(t *testing.T) {
 			t.Parallel()
 			repoFS := fstest.MapFS{
-				"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+				"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 				"assignments.yml":          &fstest.MapFile{Data: []byte("base: {}\nroles:\n  node:\n    " + key + ":\n      - app/x\nfeatures: {}\n")},
 				"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte("hostname: test-host\nrole: node\nfeatures: []\n")},
 			}
@@ -357,7 +372,7 @@ func TestIntegrationErrorPathsRetiredTypedLists(t *testing.T) {
 func validatePathsFleet(t *testing.T, files map[string]string) error {
 	t.Helper()
 	repoFS := fstest.MapFS{
-		"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml":          &fstest.MapFile{Data: []byte("base:\n  paths: [app/]\nroles: {}\nfeatures: {}\n")},
 		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte("hostname: test-host\nexternal_hostname: test-host.ts.net\nrole: node\nfeatures: []\n")},
 	}
@@ -373,7 +388,7 @@ func validatePathsFleet(t *testing.T, files map[string]string) error {
 
 func newAggregatedSecretFleetFS(ruleExpr string) fstest.MapFS {
 	return fstest.MapFS{
-		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`base:
   secrets:
     - secrets/alerts.yml.tmpl
@@ -442,7 +457,7 @@ func TestIntegrationAggregatedSecretFragmentChangeTriggersUpdate(t *testing.T) {
 
 func newSystemdUnitsFleetFS() fstest.MapFS {
 	return fstest.MapFS{
-		"fleet.yml": &fstest.MapFile{Data: []byte("images:\n  node_exporter: \"prom/node-exporter:v1.8\"\n  web: \"nginx:1.27\"\nports: {}\n")},
+		"fleet.yml": &fstest.MapFile{Data: []byte("images:\n  node_exporter: \"prom/node-exporter:v1.8\"\n  web: \"nginx:1.27\"\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`base:
   paths:
     - quadlets/internal.network
@@ -500,7 +515,7 @@ func TestIntegrationAggregatedSecretMalformedFragmentFailsValidation(t *testing.
 	t.Parallel()
 
 	fsys := fstest.MapFS{
-		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`base:
   secrets:
     - secrets/alerts.yml.tmpl

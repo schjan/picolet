@@ -601,6 +601,10 @@ type ResolveParams struct {
 	// HostDataDir is the host-visible data path emitted by the filePath/
 	// manifestPath template helpers. Empty falls back to the internal data dir.
 	HostDataDir string
+
+	// LenientHosts ignores unknown host.yml keys with a warning (see
+	// config.LenientHosts). Set only by the Agent's own reconciliation.
+	LenientHosts bool
 }
 
 // LoadAndResolve loads fleet config from repoPath and resolves the desired state for the given host.
@@ -616,7 +620,11 @@ func LoadAndResolve(ctx context.Context, params ResolveParams) ([]resolver.Resol
 // LoadAndResolveHost loads fleet config from repoPath and resolves the desired state plus host metadata.
 func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.ResolvedHost, error) {
 	slog.Debug("loading fleet config", "repo", params.RepoPath)
-	repo, err := config.OpenRepo(params.RepoPath)
+	var loadOpts []config.LoadOption
+	if params.LenientHosts {
+		loadOpts = append(loadOpts, config.LenientHosts())
+	}
+	repo, err := config.OpenRepo(params.RepoPath, loadOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -662,6 +670,7 @@ func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, err
 		Rootless:       a.cfg.Rootless,
 		OpSecretReader: a.opReader,
 		PPSecretReader: a.ppReader,
+		LenientHosts:   true,
 		// Override fields are passed raw; resolver.New applies the
 		// ResolveDirs fallback for any field left empty.
 		QuadletDir:  a.quadletDirOverride,

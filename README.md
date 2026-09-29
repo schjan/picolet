@@ -175,7 +175,9 @@ curl http://127.0.0.1:9417/health
 ```
 
 A Prometheus (or VictoriaMetrics) instance on the same Machine scrapes loopback;
-two Agents on one Machine differ only in port:
+two Agents on one Machine differ only in port (a Fleet template can generate
+this list with the `siblings` helper, see
+[Machines, users and ports](#machines-users-and-ports)):
 
 ```yaml
 scrape_configs:
@@ -246,7 +248,73 @@ Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a co
 |------|---------|
 | `fleet.yml` | Image versions and ports (Renovate-managed) |
 | `assignments.yml` | Assigns files (`paths:`), Podman secrets (`secrets:`) and Service Bundles (`services:`) to hosts: `base`, then per role, then per feature |
-| `hosts/<name>/host.yml` | Per-host config: hostname, external hostname, role, features |
+| `hosts/<name>/host.yml` | Per-host config: hostname, external hostname, role, features, machine, user, listen_port |
+
+### Machines, users and ports
+
+A **Machine** runs one or more **Hosts**, each served by its own Agent under its
+own Linux user. `host.yml` says where a Host runs:
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `machine:` | the `hostname` | The Machine this Host runs on; a hostname label, compared case-insensitively (`VPS-1` and `vps-1` are one Machine) |
+| `user:` | absent = rootful | The Linux user the Agent runs as; omit it for the rootful Host (`user: root` is rejected) |
+| `listen_port:` | `fleet.yml` `ports.picolet_metrics` when `user:` is set, `ports.picolet_system_metrics` for the rootful Host | The port the Agent listens on |
+
+```yaml
+# hosts/vps-1-runner/host.yml
+hostname: vps-1-runner
+role: runner
+machine: vps-1
+user: runner
+listen_port: 9419
+```
+
+The Fleet is the sole owner of the Agent's listen address: the reference Agent
+config templates render `listen_addr: 127.0.0.1:{{ .Host.ListenPort }}`, and a
+Host with no `listen_port:` whose default `ports` key is missing fails to load.
+
+Loading the Fleet rejects (a collision names both Hosts):
+
+- two host directories declaring the same `hostname`;
+- two Hosts on one Machine with the same `user:` (including two rootful Hosts);
+- two Hosts on one Machine with the same effective listen port;
+- an invalid `user:` (lowercase letters, digits, `_`, `-`; not starting with a
+  digit or `-`; at most 32 characters), a `machine:` — declared or defaulted from
+  the hostname — that is not a hostname label, or a `listen_port:`
+  outside 1–65535.
+
+Host names follow a convention — `<machine>` for the Machine's default user,
+`<machine>-system` for the rootful Host, `<machine>-<user>` for further users —
+that picolet never parses; only `machine:` and `user:` count.
+
+Templates see the topology on `.Host` and every `.Fleet.Hosts` entry (see
+[Templates](#templates)); `siblings` lists the other Hosts on the same Machine,
+e.g. to scrape their Agents over loopback
+(`testdata/example-fleet/services/agent-scrape/`):
+
+```yaml
+      - targets: ["127.0.0.1:{{ .Host.ListenPort }}"]
+{{- range siblings }}
+      - targets: ["127.0.0.1:{{ .ListenPort }}"]
+{{- end }}
+```
+
+**Upgrading.** Every Agent parses every `host.yml`. Agents from this release on
+log a warning for a key they do not know and carry on (`picolet validate` still
+fails on it, so typos break CI), but older Agents stop loading the whole Fleet
+on any new key. Roll out in this order:
+
+1. Add `picolet_metrics` / `picolet_system_metrics` to `fleet.yml` `ports` — the
+   only change that is safe for older Agents, and required by new ones.
+2. Upgrade the picolet image on **all** Hosts.
+3. Only then add `machine:`, `user:` or `listen_port:` to any `host.yml`.
+
+Two cases in step 3 are required, not optional: a rootless Host needs `user:`
+(without it the Host counts as rootful and takes `picolet_system_metrics`), and
+a Host whose `hostname` is not a hostname label (e.g. contains `.` or `_`) needs
+`machine:` — until it has one, upgraded Agents refuse to load the Fleet, so
+commit it right after step 2 completes.
 
 ### File Categories
 
@@ -544,7 +612,7 @@ If not, use `action: restart`.
 
 Files ending in `.tmpl` are rendered with Go `text/template` (`missingkey=error`) plus Sprig's hermetic text helpers. Static files are deployed as-is.
 
-The template data root exposes `.Images`, `.Ports`, `.Fleet` (all hosts + full config), and `.Host`:
+The template data root exposes `.Images`, `.Ports`, `.Fleet` (all hosts + full config), and `.Host`. Every entry of `.Fleet.Hosts` carries the same fields as `.Host` except `Services` and `SystemdUnits`:
 
 | Field | Contents |
 |-------|----------|
@@ -552,6 +620,10 @@ The template data root exposes `.Images`, `.Ports`, `.Fleet` (all hosts + full c
 | `.Host.ExternalHostname` | The host's external hostname |
 | `.Host.Role` | The host's `role` |
 | `.Host.Features` | The host's enabled features |
+| `.Host.Machine` | The Machine the host runs on (`machine:`, defaults to the hostname) |
+| `.Host.User` | The Linux user the host's Agent runs as; empty for the rootful host |
+| `.Host.Rootful` | `true` for the rootful host (no `user:`) |
+| `.Host.ListenPort` | The port the host's Agent listens on (`listen_port:` or its `fleet.yml` default) |
 | `.Host.Services` | Resolved service-bundle names for this host (sorted, deduplicated) |
 | `.Host.SystemdUnits` | Systemd unit names picolet manages on this host — quadlet-derived (`.container`/`.kube`/`.network`/`.volume`/`.pod`/`.image`/`.build`) plus raw systemd files, sorted and deduplicated. See [Two-pass rendering](#two-pass-rendering) |
 
@@ -569,6 +641,7 @@ The template data root exposes `.Images`, `.Ports`, `.Fleet` (all hosts + full c
 | `manifestPath(relPath)` | Return the absolute deployed path for a manifest file (handles rootless/rootful, and `host_data_dir` for containerized picolet). `relPath` is relative to the service's `manifests/` dir |
 | `filePath(relPath)` | Return the absolute deployed path for a file (handles rootless/rootful, and `host_data_dir` for containerized picolet). `relPath` is relative to the service's `files/` dir |
 | `has(item, slice)` | Sprig: check if a value is present in a list |
+| `siblings` | The other hosts on this host's Machine (same entries as `.Fleet.Hosts`), sorted by hostname |
 
 Use this when runtime expects one file but you want many repo fragments. Example:
 

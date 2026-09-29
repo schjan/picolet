@@ -1,0 +1,9 @@
+# An isolated user on Machine vps-1 (a CI runner must not share a UID with the
+# rest). A second non-root Agent on the Machine needs its own listen_port:.
+hostname: vps-1-runner
+external_hostname: vps-1.example.net
+role: vps
+features: []
+machine: vps-1
+user: runner
+listen_port: 9419
