@@ -60,15 +60,12 @@ func Create(ctx context.Context, cfg CreateConfig) error {
 // buildCreateScriptData resolves the host's picolet bundle (with placeholder
 // secrets) and derives everything the rendered script needs from it.
 func buildCreateScriptData(ctx context.Context, cfg CreateConfig) (createScriptData, error) {
-	fleetRoot, err := os.OpenRoot(cfg.FleetDir)
+	repo, err := config.OpenRepo(cfg.FleetDir)
 	if err != nil {
-		return createScriptData{}, fmt.Errorf("opening fleet dir: %w", err)
+		return createScriptData{}, err
 	}
-	defer fleetRoot.Close()
-	fleetCfg, err := config.LoadAll(fleetRoot.FS())
-	if err != nil {
-		return createScriptData{}, fmt.Errorf("loading config: %w", err)
-	}
+	defer repo.Close()
+	fleetCfg := repo.Config
 	host, ok := fleetCfg.FindHost(cfg.Hostname)
 	if !ok {
 		return createScriptData{}, fmt.Errorf("host not found: %s", cfg.Hostname)
@@ -83,7 +80,6 @@ func buildCreateScriptData(ctx context.Context, cfg CreateConfig) (createScriptD
 
 	resolved, err := resolveBootstrapHost(ctx, resolveConfig{
 		RepoDir:    cfg.FleetDir,
-		Config:     fleetCfg,
 		Hostname:   cfg.Hostname,
 		Service:    service,
 		Rootless:   false,

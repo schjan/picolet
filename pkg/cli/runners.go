@@ -235,18 +235,13 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 
 // dryRunResolveBasic resolves files without agent config (no secrets, default state path).
 func dryRunResolveBasic(ctx context.Context, repoDir, hostname string) ([]resolver.ResolvedFile, *state.Store, error) {
-	repoRoot, err := os.OpenRoot(repoDir)
+	repo, err := config.OpenRepo(repoDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("opening repo: %w", err)
+		return nil, nil, err
 	}
-	defer repoRoot.Close()
-	repoFS := repoRoot.FS()
-	cfg, err := config.LoadAll(repoFS)
-	if err != nil {
-		return nil, nil, fmt.Errorf("loading config: %w", err)
-	}
+	defer repo.Close()
 
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	r, err := resolver.New(resolver.Config{FS: repo.FS, Config: repo.Config})
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating resolver: %w", err)
 	}
@@ -312,35 +307,25 @@ func runDryRun(ctx context.Context, repoDir, hostname, configPath string) error 
 }
 
 func runValidate(ctx context.Context, repoDir string) error {
-	repoRoot, err := os.OpenRoot(repoDir)
+	repo, err := config.OpenRepo(repoDir)
 	if err != nil {
-		return fmt.Errorf("opening repo: %w", err)
+		return err
 	}
-	defer repoRoot.Close()
-	repoFS := repoRoot.FS()
-	cfg, err := config.LoadAll(repoFS)
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	defer repo.Close()
+	r, err := resolver.New(resolver.Config{FS: repo.FS, Config: repo.Config})
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)
 	}
-	return validator.ValidateAll(ctx, r, cfg)
+	return validator.ValidateAll(ctx, r, repo.Config)
 }
 
 func runResolve(ctx context.Context, repoDir, host string) error {
-	repoRoot, err := os.OpenRoot(repoDir)
+	repo, err := config.OpenRepo(repoDir)
 	if err != nil {
-		return fmt.Errorf("opening repo: %w", err)
+		return err
 	}
-	defer repoRoot.Close()
-	repoFS := repoRoot.FS()
-	cfg, err := config.LoadAll(repoFS)
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	defer repo.Close()
+	r, err := resolver.New(resolver.Config{FS: repo.FS, Config: repo.Config})
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)
 	}
