@@ -10,7 +10,7 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
@@ -79,7 +79,7 @@ jobs:
         run: go test -tags "e2e,$BUILD_TAGS" -race -count=1 -v -timeout 300s ./e2e/...
 
   test-onepassword:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 5
     # Only run on main branch pushes and PRs from the same repo (not forks)
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
@@ -98,7 +98,7 @@ jobs:
         run: go test -tags "$BUILD_TAGS,onepassword_integration" ./pkg/onepassword/... -race -count=1 -v
 
   test-protonpass:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 5
     # Only run on main branch pushes and PRs from the same repo (not forks)
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
@@ -116,7 +116,7 @@ jobs:
         run: go test -tags "$BUILD_TAGS,protonpass_integration" ./pkg/protonpass/... -race -count=1 -v
 
   lint:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     steps:
       - uses: actions/checkout@v7
 
