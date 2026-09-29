@@ -246,7 +246,7 @@ Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a co
 |------|---------|
 | `fleet.yml` | Image versions and ports (Renovate-managed) |
 | `assignments.yml` | Assigns files (`paths:`), Podman secrets (`secrets:`) and Service Bundles (`services:`) to hosts: `base`, then per role, then per feature |
-| `hosts/<name>/host.yml` | Per-host config: hostname, role, features, secrets |
+| `hosts/<name>/host.yml` | Per-host config: hostname, external hostname, role, features |
 
 ### File Categories
 
@@ -268,6 +268,9 @@ a unit sits in is up to you.
 | `.image` | Quadlet image | `/etc/containers/systemd/picolet/` |
 | `.build` | Quadlet build | `/etc/containers/systemd/picolet/` |
 | `.service` `.timer` `.socket` `.target` `.path` | systemd unit | `/etc/systemd/system/` (rootful) or `~/.config/systemd/user/` (rootless) |
+
+Rootless agents use `~/.config/containers/systemd/picolet/` for Quadlets and
+`~/.local/share/picolet/` in place of `/var/lib/picolet/`.
 
 `.artifact` is known to Podman but not deployable yet: `validate` rejects it.
 
@@ -614,7 +617,7 @@ Picolet integrates with two secret managers so cleartext credentials never live 
 
 Refs can appear in two places:
 
-- **Direct Podman secrets** in `assignments.yml` or `hosts/<name>/host.yml` under `secrets:` — Picolet resolves the value and creates a Podman secret named after the URI components (e.g. `vault_item_field` or `share_item_field`).
+- **Direct Podman secrets** in `assignments.yml` under `secrets:` — Picolet resolves the value and creates a Podman secret named after the URI components (e.g. `vault_item_field` or `share_item_field`).
 - **Inside templates** via `{{ readOpSecret "op://..." }}` or `{{ readProtonPassSecret "pass://..." }}` — Picolet collects all calls in a first render pass, batches them per provider, then renders again with the resolved values.
 
 ### 1Password setup
