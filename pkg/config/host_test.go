@@ -78,7 +78,7 @@ func TestLoadAllRejectsMissingDefaultListenPort(t *testing.T) {
 			name:    "Fleet default out of range",
 			ports:   "ports:\n  picolet_system_metrics: 0\n",
 			host:    "hostname: vps\nrole: node\n",
-			wantErr: "host vps: listen_port: is not set and fleet.yml ports.picolet_system_metrics must be between 1 and 65535: 0",
+			wantErr: "host vps: fleet.yml ports.picolet_system_metrics (the default listen_port) must be between 1 and 65535: 0",
 		},
 	}
 	for _, tt := range tests {
@@ -243,7 +243,7 @@ func TestLoadAllHostUnknownKey(t *testing.T) {
 		var logs bytes.Buffer
 		logger := slog.New(slog.NewTextHandler(&logs, nil))
 
-		cfg, err := LoadAll(fleet(), WithLogger(logger))
+		cfg, err := LoadAll(fleet(), LenientHosts(), WithLogger(logger))
 		require.NoError(t, err)
 		assert.Equal(t, "node", cfg.Hosts["vps"].Role)
 		assert.Contains(t, logs.String(), "level=WARN")
@@ -251,9 +251,9 @@ func TestLoadAllHostUnknownKey(t *testing.T) {
 		assert.Contains(t, logs.String(), "future_key")
 	})
 
-	t.Run("validate rejects it", func(t *testing.T) {
+	t.Run("every other caller rejects it", func(t *testing.T) {
 		t.Parallel()
-		_, err := LoadAll(fleet(), StrictHosts())
+		_, err := LoadAll(fleet())
 		require.ErrorContains(t, err, "future_key")
 	})
 
@@ -262,7 +262,7 @@ func TestLoadAllHostUnknownKey(t *testing.T) {
 		fsys := topologyFleet(agentPorts, map[string]string{
 			"vps": "hostname: vps\nrole: node\nfuture_key: 1\nlisten_port: nine\n",
 		})
-		_, err := LoadAll(fsys)
+		_, err := LoadAll(fsys, LenientHosts())
 		require.ErrorContains(t, err, "hosts/vps/host.yml")
 	})
 }

@@ -131,7 +131,7 @@ func (h *HostConfig) applyDefaults(ports map[string]int) error {
 		return fmt.Errorf("listen_port: is not set and fleet.yml ports has no %s key", key)
 	}
 	if !validPort(port) {
-		return fmt.Errorf("listen_port: is not set and fleet.yml ports.%s must be between 1 and %d: %d", key, maxPort, port)
+		return fmt.Errorf("fleet.yml ports.%s (the default listen_port) must be between 1 and %d: %d", key, maxPort, port)
 	}
 	h.ListenPort = port
 	return nil

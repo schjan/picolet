@@ -38,16 +38,17 @@ type Config struct {
 type LoadOption func(*loadOptions)
 
 type loadOptions struct {
-	strictHosts bool
-	logger      *slog.Logger
+	lenientHosts bool
+	logger       *slog.Logger
 }
 
-// StrictHosts makes an unknown key in a host.yml a load error. Without it an
-// unknown key is logged and ignored, so an Agent still on an older image keeps
-// reconciling when the Fleet adopts a host.yml key only newer Agents know.
-// `picolet validate` loads strictly so that typos still fail CI.
-func StrictHosts() LoadOption {
-	return func(o *loadOptions) { o.strictHosts = true }
+// LenientHosts logs and ignores an unknown key in a host.yml instead of
+// failing the load, so an Agent still on an older image keeps reconciling
+// when the Fleet adopts a host.yml key only newer Agents know. Only the
+// Agent's reconciliation uses it; every other caller (validate, resolve,
+// bootstrap) stays strict so typos fail loudly.
+func LenientHosts() LoadOption {
+	return func(o *loadOptions) { o.lenientHosts = true }
 }
 
 // WithLogger sets the logger for load warnings; the default is slog.Default().
@@ -146,15 +147,15 @@ func loadHosts(fsys fs.FS, ports map[string]int, o loadOptions) (map[string]*Hos
 	return hosts, nil
 }
 
-// loadHostYAML parses one host.yml. Unless strictHosts is set, a file that
-// fails only because of unknown keys is loaded without them and the strict
-// error is logged as a warning; any other error still fails.
+// loadHostYAML parses one host.yml. With lenientHosts, a file that fails only
+// because of unknown keys is loaded without them and the strict error is
+// logged as a warning; any other error still fails.
 func loadHostYAML(fsys fs.FS, path string, o loadOptions) (*HostConfig, error) {
 	host, strictErr := loadYAML[HostConfig](fsys, path)
 	if strictErr == nil {
 		return host, nil
 	}
-	if o.strictHosts {
+	if !o.lenientHosts {
 		return nil, fmt.Errorf("loading %s: %w", path, strictErr)
 	}
 	data, err := fs.ReadFile(fsys, path)
