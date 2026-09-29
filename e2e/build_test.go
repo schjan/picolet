@@ -86,6 +86,7 @@ func removeBuildArtifacts() {
 //
 //nolint:paralleltest,funlen // serial for the reasons above; sequential sub-tests
 func TestE2EBuild(t *testing.T) {
+	requirePodmanAtLeast(t, 5, 2) // Quadlet .build support landed in Podman 5.2.0
 	socketPath := podmanSocketPath(t)
 	dataDir := t.TempDir()
 	fleetDir := filepath.Join(t.TempDir(), "fleet")
@@ -113,11 +114,21 @@ func TestE2EBuild(t *testing.T) {
 	})
 
 	// Everything below depends on the apply; stop instead of cascading timeouts.
+	// `picolet apply` logs a failed restart as non-fatal and still succeeds, so
+	// the consumer's unit state is checked here too.
 	require.True(t, t.Run("apply", func(t *testing.T) {
+		defer dumpBuildDiagnostics(t)
 		require.NoError(t, runCLI(t, "apply", "--host", "build-host", "--repo-dir", fleetDir, "--config", configPath))
+		systemd, err := applier.NewDBusSystemdManager(t.Context(), true)
+		require.NoError(t, err)
+		defer systemd.Close()
+		st, err := systemd.GetUnitStatus(t.Context(), "e2e-build.service")
+		require.NoError(t, err)
+		require.NotEqual(t, "failed", st.ActiveState, "e2e-build.service failed to start (see diagnostics)")
 	}), "apply failed")
 
 	t.Run("container_runs_built_image", func(t *testing.T) {
+		defer dumpBuildDiagnostics(t)
 		connCtx, err := bindings.NewConnection(t.Context(), "unix:"+socketPath)
 		require.NoError(t, err)
 		require.Eventually(t, func() bool {
@@ -169,4 +180,37 @@ func TestE2EBuild(t *testing.T) {
 		assert.NoFileExists(t, filepath.Join(quadletDir, "e2e-build.build"))
 		assert.NoFileExists(t, filepath.Join(quadletDir, "e2e-build.container"))
 	})
+}
+
+// requirePodmanAtLeast fails the test when the host's Podman is older than
+// major.minor, naming the version, instead of letting a missing Quadlet
+// feature surface as a timeout.
+func requirePodmanAtLeast(t *testing.T, major, minor int) {
+	t.Helper()
+	out, err := exec.Command("podman", "version", "--format", "{{.Client.Version}}").Output()
+	require.NoError(t, err, "podman version")
+	version := strings.TrimSpace(string(out))
+	var gotMajor, gotMinor int
+	_, err = fmt.Sscanf(version, "%d.%d", &gotMajor, &gotMinor)
+	require.NoError(t, err, "parsing podman version %q", version)
+	require.Truef(t, gotMajor > major || (gotMajor == major && gotMinor >= minor),
+		"needs Podman >= %d.%d, host has %s", major, minor, version)
+}
+
+// dumpBuildDiagnostics logs the Podman version and the build and consumer
+// units' status and journal when t has failed; call it deferred while the
+// units still exist.
+func dumpBuildDiagnostics(t *testing.T) {
+	t.Helper()
+	if !t.Failed() {
+		return
+	}
+	for _, args := range [][]string{
+		{"podman", "--version"},
+		{"systemctl", "--user", "status", "--no-pager", "e2e-build.service", e2eBuildService},
+		{"journalctl", "--user", "--no-pager", "-n", "50", "-u", "e2e-build.service", "-u", e2eBuildService},
+	} {
+		out, err := exec.Command(args[0], args[1:]...).CombinedOutput() //nolint:gosec // fixed diagnostic commands
+		t.Logf("$ %s (err: %v)\n%s", strings.Join(args, " "), err, out)
+	}
 }

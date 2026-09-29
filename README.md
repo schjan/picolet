@@ -279,8 +279,8 @@ Deliver a build's Containerfile under `files/` and point at it with
 the Containerfile's directory). Both generated services are one-shots their consumers
 pull in: reported; the health loop never restarts one that fails on its own, but retries
 an apply-time restart that failed (a changed `.image` is pulled again; if the pull fails,
-it is pending like any failed unit restart, see [Hooks](#hooks)). A `.build` is not
-restarted at apply; it runs when a consumer starts. Rebuild-on-change is #127.
+it is pending like any failed unit restart, see [Hooks](#hooks)). A build runs when a
+consumer starts it (Podman sets no `RemainAfterExit` for builds); rebuild-on-change is #127.
 
 ### Service Bundles
 
