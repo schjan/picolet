@@ -306,8 +306,10 @@ roles:
       - quadlets/pods/shop.pod.tmpl  # one pod
 ```
 
-`paths:` and the per-category lists coexist: a file reached twice deploys once, two
-sources for one destination are an error.
+`paths:` and the per-category lists coexist: a file reached twice in one category
+deploys once; two sources for one destination are an error, and so is one file that
+a list and `paths:` put in different categories at the same destination (e.g.
+`files: [manifests/x.yml]` with `paths: [manifests/]`).
 
 ### Service Bundles
 
