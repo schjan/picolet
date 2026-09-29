@@ -257,20 +257,11 @@ a unit sits in is up to you.
 
 | Path or extension | Category | Deploys to |
 |-------------------|----------|------------|
-| any, below a first-level `manifests/` | Kubernetes manifest (`.yml`, Kubernetes resources only) | `/var/lib/picolet/manifests/<path below manifests/>` |
-| any, below a first-level `files/` | opaque File | `/var/lib/picolet/files/<path below files/>` |
+| any, below a first-level `manifests/` | Kubernetes manifest (`.yml`, Kubernetes resources only) | `/var/lib/picolet/manifests/<path below manifests/>` (rootful) or `~/.local/share/picolet/manifests/…` (rootless) |
+| any, below a first-level `files/` | opaque File | `/var/lib/picolet/files/<path below files/>` (rootful) or `~/.local/share/picolet/files/…` (rootless) |
 | any, below a first-level `secrets/`, or listed under `secrets:` | Podman secret | Podman secrets |
-| `.network` | Quadlet network | `/etc/containers/systemd/picolet/` |
-| `.volume` | Quadlet volume | `/etc/containers/systemd/picolet/` |
-| `.container` | Quadlet container | `/etc/containers/systemd/picolet/` |
-| `.kube` | Quadlet kube | `/etc/containers/systemd/picolet/` |
-| `.pod` | Quadlet pod | `/etc/containers/systemd/picolet/` |
-| `.image` | Quadlet image | `/etc/containers/systemd/picolet/` |
-| `.build` | Quadlet build | `/etc/containers/systemd/picolet/` |
+| `.network` `.volume` `.container` `.kube` `.pod` `.image` `.build` | Quadlet unit | `/etc/containers/systemd/picolet/` (rootful) or `~/.config/containers/systemd/picolet/` (rootless) |
 | `.service` `.timer` `.socket` `.target` `.path` | systemd unit | `/etc/systemd/system/` (rootful) or `~/.config/systemd/user/` (rootless) |
-
-Rootless agents use `~/.config/containers/systemd/picolet/` for Quadlets and
-`~/.local/share/picolet/` in place of `/var/lib/picolet/`.
 
 `.artifact` is known to Podman but not deployable yet: `validate` rejects it.
 
