@@ -84,6 +84,11 @@ func (s *Scanner) scanOwnedDir(dir string, managedFiles map[string]state.Managed
 			}
 			return fmt.Errorf("scanning %s: %w", dir, err)
 		}
+		if path == dir && !d.IsDir() {
+			// WalkDir does not follow a symlinked root; without this the link
+			// itself would be taken for an orphaned file and removed.
+			return fmt.Errorf("scanning %s: is a symlink or not a directory, orphans in it are not removed", dir)
+		}
 		if d.IsDir() {
 			return nil
 		}

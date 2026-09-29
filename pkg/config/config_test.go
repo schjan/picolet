@@ -91,6 +91,7 @@ func TestAssignmentsResolve(t *testing.T) {
 		Features: map[string]AssignmentGroup{
 			"mosquitto": {
 				Kube:     []string{"mosquitto-stack"},
+				Pods:     []string{"mosquitto.pod", "mosquitto.pod"},
 				Services: []string{"feature-service", "base-service"},
 			},
 		},
@@ -103,6 +104,7 @@ func TestAssignmentsResolve(t *testing.T) {
 		wantConts int
 		wantKubes int
 		wantVols  int
+		wantPods  int
 		wantSvcs  []string
 	}{
 		{
@@ -111,6 +113,7 @@ func TestAssignmentsResolve(t *testing.T) {
 			wantNets:  1,
 			wantConts: 1,
 			wantKubes: 1,
+			wantPods:  1,
 			wantSvcs:  []string{"base-service", "feature-service"},
 		},
 		{
@@ -138,6 +141,7 @@ func TestAssignmentsResolve(t *testing.T) {
 			assert.Len(t, result.Paths[CategoryContainer], tt.wantConts)
 			assert.Len(t, result.Paths[CategoryKube], tt.wantKubes)
 			assert.Len(t, result.Paths[CategoryVolume], tt.wantVols)
+			assert.Len(t, result.Paths[CategoryPod], tt.wantPods)
 			assert.Equal(t, tt.wantSvcs, result.Services)
 		})
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
+	"github.com/containers/podman/v5/pkg/systemd/quadlet"
 
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/reconciler"
@@ -233,21 +234,18 @@ func (r *ApplyResult) SkippedRestarts() []string {
 // Option configures an Applier.
 type Option func(*Applier)
 
-// defaultSelfUnits are the conventional units a picolet agent runs under when
-// deployed from its own fleet bundle: "picolet" under the user systemd
-// instance, "picolet-system" under the system instance. Stopping or restarting
-// one of them synchronously would kill the agent mid-apply, before state is
-// saved, so those operations are deferred (see restartUnits).
-var defaultSelfUnits = []string{"picolet.service", "picolet-system.service"}
-
 // Applier applies a changeset to the system.
 type Applier struct {
-	systemd   SystemdManager
-	podman    PodmanClient
-	writer    FileWriter
-	dryRun    bool
-	hooks     []config.Hook
-	reloader  *HookReloader
+	systemd  SystemdManager
+	podman   PodmanClient
+	writer   FileWriter
+	dryRun   bool
+	hooks    []config.Hook
+	reloader *HookReloader
+	// selfUnits are the agent's own units (default config.DefaultSelfUnits).
+	// They are never stopped or restarted synchronously: that would kill the
+	// agent mid-apply, before state is saved, so those operations are deferred
+	// (see restartUnits).
 	selfUnits map[string]struct{}
 }
 
@@ -259,7 +257,7 @@ func New(systemd SystemdManager, podman PodmanClient, writer FileWriter, dryRun 
 		writer:    writer,
 		dryRun:    dryRun,
 		hooks:     hooks,
-		selfUnits: unitSet(defaultSelfUnits),
+		selfUnits: unitSet(config.DefaultSelfUnits()),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -332,7 +330,13 @@ type applyPhaseResult struct {
 	// TriggeredBy before restarting, so a timer-driven job is not re-run on a
 	// content edit (defect 2). Content-derived, so hook-merged units never enter it.
 	OneshotUnits map[string]struct{}
-	NeedsReload  bool
+	// ChangedPods maps the Quadlet filename of each changed pod ("web.pod") to
+	// its service; PodMembers maps each changed container the pod starts
+	// (Pod=, StartWithPod= not false) to its pod's filename. restartUnits drops
+	// the members of a restarting pod (see dropPodMemberRestarts).
+	ChangedPods map[string]string
+	PodMembers  map[string]string
+	NeedsReload bool
 }
 
 // Apply applies the changeset in phased order. Equivalent to ApplyWithPending
@@ -409,6 +413,8 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		ChangedSecrets: make(map[string]struct{}),
 		ChangedRels:    make(map[config.Category]map[string]struct{}),
 		OneshotUnits:   make(map[string]struct{}),
+		ChangedPods:    make(map[string]string),
+		PodMembers:     make(map[string]string),
 	}
 	for _, change := range sorted {
 		if change.Action == reconciler.ActionNoop {
@@ -588,11 +594,46 @@ func isOneshotUnit(u *parser.UnitFile) bool {
 
 // recordChangedUnit adds a quadlet unit to the restart set and, when it is a
 // one-shot, to the one-shot set so restartUnits gates its restart on a live
-// timer-trigger check (defect 2).
+// timer-trigger check (defect 2). Pods and the containers they start are
+// recorded for dropPodMemberRestarts.
 func recordChangedUnit(change reconciler.Change, p *applyPhaseResult) {
 	p.ChangedUnits[change.ServiceName] = struct{}{}
-	if isOneshotUnit(parseUnitFile(filepath.Base(change.DestPath), change.NewContent)) {
+	filename := filepath.Base(change.DestPath)
+	unit := parseUnitFile(filename, change.NewContent)
+	if isOneshotUnit(unit) {
 		p.OneshotUnits[change.ServiceName] = struct{}{}
+	}
+	if change.Category == config.CategoryPod {
+		p.ChangedPods[filename] = change.ServiceName
+	}
+	if pod := startingPod(unit); pod != "" {
+		p.PodMembers[change.ServiceName] = pod
+	}
+}
+
+// startingPod returns the pod a container joins and is started by (Pod= with
+// StartWithPod= not false, so the pod's service Wants= it), or "".
+func startingPod(u *parser.UnitFile) string {
+	if u == nil {
+		return ""
+	}
+	pod, _ := u.Lookup(quadlet.ContainerGroup, quadlet.KeyPod)
+	if pod == "" || !u.LookupBooleanWithDefault(quadlet.ContainerGroup, quadlet.KeyStartWithPod, true) {
+		return ""
+	}
+	return pod
+}
+
+// dropPodMemberRestarts removes the member containers of a restarting pod from
+// the restart set: restarting the pod service stops them (their BindsTo=) and
+// starts them again (its Wants=), so restarting them as well would bounce them
+// twice.
+func dropPodMemberRestarts(p *applyPhaseResult) {
+	for member, pod := range p.PodMembers {
+		if podService, ok := p.ChangedPods[pod]; ok {
+			slog.Info("member restart covered by pod restart", "unit", member, "pod", podService)
+			delete(p.ChangedUnits, member)
+		}
 	}
 }
 
@@ -672,6 +713,7 @@ func (a *Applier) restartUnits(ctx context.Context, phase *applyPhaseResult, res
 		return err
 	}
 	a.activateSystemdUnits(ctx, phase, result)
+	dropPodMemberRestarts(phase)
 	var selfRestarts []string
 	for _, unit := range slices.Sorted(maps.Keys(phase.ChangedUnits)) {
 		if a.isSelfUnit(unit) {

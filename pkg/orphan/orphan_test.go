@@ -198,3 +198,44 @@ func TestScan_CountsFilesAndSecretsSeparately(t *testing.T) {
 	assert.Equal(t, 2, result.FilesRemoved)
 	assert.Equal(t, 1, result.SecretsRemoved)
 }
+
+// A symlinked owned directory is not walked (WalkDir does not follow it), so
+// the scan would otherwise take the link itself for an orphaned file and
+// delete it. It reports an error and removes nothing instead.
+func TestScan_SymlinkedOwnedDirIsNotRemoved(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		// link returns the quadletDir and dataDir to scan, one of them symlinked.
+		link func(t *testing.T, target string) (quadletDir, dataDir string)
+	}{
+		{name: "Quadlet directory", link: func(t *testing.T, target string) (string, string) {
+			t.Helper()
+			link := filepath.Join(t.TempDir(), "picolet")
+			require.NoError(t, os.Symlink(target, link))
+			return link, t.TempDir()
+		}},
+		{name: "data subdirectory", link: func(t *testing.T, target string) (string, string) {
+			t.Helper()
+			dataDir := t.TempDir()
+			require.NoError(t, os.Symlink(target, filepath.Join(dataDir, "files")))
+			return t.TempDir(), dataDir
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			target := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(target, "web.pod"), []byte("[Pod]\n"), 0o600))
+			quadletDir, dataDir := tt.link(t, target)
+
+			fw := appliermocks.NewMockFileWriter(t) // nothing removed
+			pod := appliermocks.NewMockPodmanClient(t)
+
+			result, err := orphan.New(fw, pod, quadletDir, t.TempDir(), dataDir).
+				Scan(context.Background(), map[string]state.ManagedFile{})
+			require.ErrorContains(t, err, "is a symlink")
+			assert.Zero(t, result.FilesRemoved)
+		})
+	}
+}

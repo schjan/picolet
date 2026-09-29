@@ -256,10 +256,18 @@ Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a co
 | `quadlets/volumes/` | `.volume` | `/etc/containers/systemd/picolet/` |
 | `quadlets/containers/` | `.container` | `/etc/containers/systemd/picolet/` |
 | `quadlets/kube/` | `.kube` | `/etc/containers/systemd/picolet/` |
+| `quadlets/pods/` | `.pod` | `/etc/containers/systemd/picolet/` |
 | `manifests/<app>/` | `.yml` (Kubernetes resources only) | `/var/lib/picolet/manifests/<app>/` |
 | `files/<app>/` | any | `/var/lib/picolet/files/<app>/` |
 | `secrets/` | `.yml` | Podman secrets |
 | `systemd/` | `.service` `.timer` `.socket` `.target` `.path` | `/etc/systemd/system/` (rootful) or `~/.config/systemd/user/` (rootless) |
+
+A `.pod` generates `<name>-pod.service` (hooks may target it as `unit: <name>.pod`).
+Containers join it with `Pod=<name>.pod`; the pod must be deployed to the same host.
+The pod service starts its members (unless `StartWithPod=false`), so when a pod
+changes in the same reconciliation as its members, only the pod service is restarted.
+The agent's own container (`picolet.service`/`picolet-system.service`) must not join a
+pod: `validate` rejects it, because restarting or stopping the pod would stop the agent.
 
 ### Service Bundles
 
@@ -276,6 +284,7 @@ services/<name>/
   volumes/
   networks/
   kube/
+  pods/
   systemd/
   secrets/
   manifests/    # K8s YAML only — validated against k8s.io/api types
@@ -283,7 +292,7 @@ services/<name>/
   picolet.yml
 ```
 
-`manifests/` and `files/` may contain nested directories. The other six category directories
+`manifests/` and `files/` may contain nested directories. The other seven category directories
 must contain files directly.
 
 `picolet.yml` is optional service metadata. It does not deploy a resource by
@@ -515,7 +524,7 @@ The template data root exposes `.Images`, `.Ports`, `.Fleet` (all hosts + full c
 | `.Host.Role` | The host's `role` |
 | `.Host.Features` | The host's enabled features |
 | `.Host.Services` | Resolved service-bundle names for this host (sorted, deduplicated) |
-| `.Host.SystemdUnits` | Systemd unit names picolet manages on this host — quadlet-derived (`.container`/`.kube`/`.network`/`.volume`) plus raw systemd files, sorted and deduplicated. See [Two-pass rendering](#two-pass-rendering) |
+| `.Host.SystemdUnits` | Systemd unit names picolet manages on this host — quadlet-derived (`.container`/`.kube`/`.network`/`.volume`/`.pod`) plus raw systemd files, sorted and deduplicated. See [Two-pass rendering](#two-pass-rendering) |
 
 | Function | Purpose |
 |----------|---------|

@@ -28,6 +28,10 @@ var quadletConverters = map[config.Category]quadletConverter{
 		resourceName: quadlet.GetContainerResourceName,
 	},
 	config.CategoryKube: {convert: withoutWarning(quadlet.ConvertKube)},
+	config.CategoryPod: {
+		convert:      quadlet.ConvertPod,
+		resourceName: quadlet.GetPodResourceName,
+	},
 }
 
 func withoutWarning(convert func(*parser.UnitFile, map[string]*quadlet.UnitInfo, bool) (*parser.UnitFile, error)) func(*parser.UnitFile, map[string]*quadlet.UnitInfo, bool) (*parser.UnitFile, error, error) {
@@ -97,6 +101,26 @@ func convertQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.Unit
 		return nil, fmt.Errorf("%s: %w", unit.Filename, convertErr)
 	}
 	return service, nil
+}
+
+// rejectSelfPodMember rejects the agent's own container joining a pod. The
+// member is BindsTo= the pod's service, so restarting the pod on a change, or
+// stopping it when the pod file is deleted, would stop the agent before it
+// saves state.
+func rejectSelfPodMember(unit *parser.UnitFile) error {
+	pod, _ := unit.Lookup(quadlet.ContainerGroup, quadlet.KeyPod)
+	if pod == "" {
+		return nil
+	}
+	name, err := quadlet.GetUnitServiceName(unit)
+	if err != nil {
+		return nil //nolint:nilerr // conversion already rejected a unit Podman cannot name
+	}
+	if service := name + ".service"; config.IsDefaultSelfUnit(service) {
+		return fmt.Errorf("%s: the agent's own unit %s must not join a pod (Pod=%s): "+
+			"restarting or stopping the pod would stop the agent before it saves state", unit.Filename, service, pod)
+	}
+	return nil
 }
 
 func unsupportedError(path, ext string) error {

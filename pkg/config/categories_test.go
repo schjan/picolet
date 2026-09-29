@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// ApplyRank orders file writes; the deployable categories keep the order
-// picolet has always applied them in.
+// ApplyRank orders file writes: a pod is written before the containers that
+// join it, so a partial apply never leaves a member without its pod file.
 func TestApplyOrderOfDeployableCategories(t *testing.T) {
 	t.Parallel()
 	deployable := Deployable()
@@ -20,6 +20,6 @@ func TestApplyOrderOfDeployableCategories(t *testing.T) {
 	}
 	assert.Equal(t, []Category{
 		CategoryNetwork, CategoryVolume, CategorySecret, CategorySystemd,
-		CategoryManifest, CategoryFile, CategoryContainer, CategoryKube,
+		CategoryManifest, CategoryFile, CategoryPod, CategoryContainer, CategoryKube,
 	}, got)
 }
