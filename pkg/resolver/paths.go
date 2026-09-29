@@ -70,3 +70,28 @@ func (b *expandedBundles) addTreeFile(srcPath, logical string) error {
 	b.NestedRefs = append(b.NestedRefs, newDataFileRef(srcPath, logical, spec))
 	return nil
 }
+
+// checkTypedCategories rejects a source that a typed list and `paths:` put in
+// different categories: both would deploy it to one destination, and the
+// source-keyed collision check sees a single source. Typed lists alone keep
+// their behavior; this only fires when a `paths:` entry is involved.
+func (b *expandedBundles) checkTypedCategories(typed map[config.Category][]string) error {
+	derived := make(map[string]config.Category)
+	for category, srcs := range b.Paths {
+		for _, src := range srcs {
+			derived[src] = category
+		}
+	}
+	for _, ref := range b.NestedRefs {
+		derived[ref.SrcPath] = ref.Category
+	}
+	var errs []error
+	for _, spec := range config.Specs() {
+		for _, src := range typed[spec.Category] {
+			if c, ok := derived[src]; ok && c != spec.Category {
+				errs = append(errs, fmt.Errorf("%s: a typed list selects it as %s, a paths: entry as %s", src, spec.Category, c))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}

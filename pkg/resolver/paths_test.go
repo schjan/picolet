@@ -226,10 +226,10 @@ func TestResolveHostPathsDestinationCollision(t *testing.T) {
 			want:  "destination collision for /etc/containers/systemd/picolet/web.container: quadlets/web.container, units/web.container.tmpl",
 		},
 		{
-			name:  "one source in two categories",
+			name:  "typed list and paths disagree on the category",
 			base:  "  files: [manifests/deploy.yml]\n  paths: [manifests/]\n",
 			files: map[string]string{"manifests/deploy.yml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app\n"},
-			want:  "destination collision for /var/lib/picolet/manifests/deploy.yml: manifests/deploy.yml (file), manifests/deploy.yml (manifest)",
+			want:  "manifests/deploy.yml: a typed list selects it as file, a paths: entry as manifest",
 		},
 	}
 	for _, tt := range tests {

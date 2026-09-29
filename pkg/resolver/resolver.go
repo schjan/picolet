@@ -379,6 +379,9 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.Resol
 	if err := errors.Join(bundleErr, pathsErr); err != nil {
 		return nil, nil, nil, err
 	}
+	if err := fromPaths.checkTypedCategories(fileSet.Paths); err != nil {
+		return nil, nil, nil, err
+	}
 	expanded.append(fromPaths)
 
 	merged := &config.ResolvedFileSet{Paths: make(map[config.Category][]string)}
@@ -588,44 +591,25 @@ func (r *Resolver) buildSecretFiles(
 	return files, nil
 }
 
-// detectCollisions reports every destination that two deployments share. A
-// deployment is a source in a category: the same source reached twice in one
-// category is one deployment, in two categories it is a collision.
 func detectCollisions(files []ResolvedFile) error {
-	type deployment struct {
-		src      string
-		category config.Category
-	}
-	byDest := make(map[string][]deployment)
+	collisions := make(map[string][]string)
 	for _, file := range files {
-		byDest[file.DestPath] = append(byDest[file.DestPath], deployment{file.SrcPath, file.Category})
+		collisions[file.DestPath] = append(collisions[file.DestPath], file.SrcPath)
 	}
 
+	destPaths := make([]string, 0, len(collisions))
+	for destPath := range collisions {
+		destPaths = append(destPaths, destPath)
+	}
+	slices.Sort(destPaths)
+
 	var errs []error
-	for _, destPath := range slices.Sorted(maps.Keys(byDest)) {
-		deployments := slices.SortedFunc(slices.Values(byDest[destPath]), func(a, b deployment) int {
-			if diff := strings.Compare(a.src, b.src); diff != 0 {
-				return diff
-			}
-			return strings.Compare(a.category.String(), b.category.String())
-		})
-		deployments = slices.Compact(deployments)
-		if len(deployments) < 2 {
+	for _, destPath := range destPaths {
+		uniquePaths := sortedUnique(collisions[destPath])
+		if len(uniquePaths) < 2 {
 			continue
 		}
-		// Name the categories only when they are what tells the sources apart.
-		qualify := false
-		for i := 1; i < len(deployments); i++ {
-			qualify = qualify || deployments[i].src == deployments[i-1].src
-		}
-		names := make([]string, len(deployments))
-		for i, d := range deployments {
-			names[i] = d.src
-			if qualify {
-				names[i] += " (" + d.category.String() + ")"
-			}
-		}
-		errs = append(errs, fmt.Errorf("destination collision for %s: %s", destPath, strings.Join(names, ", ")))
+		errs = append(errs, fmt.Errorf("destination collision for %s: %s", destPath, strings.Join(uniquePaths, ", ")))
 	}
 	return errors.Join(errs...)
 }
