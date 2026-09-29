@@ -153,27 +153,30 @@ func TestIntegrationReconcilePipelinePod(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"shop-pod.service"}, result.RestartedUnits)
 
-	applyPodStackDelete(t, resolved.Files, deployed)
-}
-
-// applyPodStackDelete removes the shop stack from the desired files and applies
-// the resulting deletes: each generated service, named from state (the pod's as
-// shop-pod.service), is stopped before its file is removed.
-func applyPodStackDelete(t *testing.T, files []resolver.ResolvedFile, deployed *state.State) {
-	t.Helper()
-	remaining := slices.DeleteFunc(slices.Clone(files), func(f resolver.ResolvedFile) bool {
-		return f.DestPath == shopPodPath || f.DestPath == shopAPIPath || f.DestPath == shopProxyPath
-	})
-	cs := reconciler.Diff(remaining, deployed)
-	require.Equal(t, 3, cs.Summary[reconciler.ActionDelete])
-	sys := appliermocks.NewMockSystemdManager(t)
-	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
-	fw := appliermocks.NewMockFileWriter(t)
-	for path, unit := range map[string]string{
+	applyDeletes(t, resolved.Files, deployed, map[string]string{
 		shopPodPath:   "shop-pod.service",
 		shopAPIPath:   "shop-api.service",
 		shopProxyPath: "shop-proxy.service",
-	} {
+	})
+}
+
+// applyDeletes removes the files keyed in units (DestPath → generated service)
+// from the desired files, checks that what remains still validates, and
+// applies the resulting deletes: each service, named from state, is stopped
+// before its file is removed.
+func applyDeletes(t *testing.T, files []resolver.ResolvedFile, deployed *state.State, units map[string]string) {
+	t.Helper()
+	remaining := slices.DeleteFunc(slices.Clone(files), func(f resolver.ResolvedFile) bool {
+		_, ok := units[f.DestPath]
+		return ok
+	})
+	require.NoError(t, validator.ValidateFiles(remaining, false))
+	cs := reconciler.Diff(remaining, deployed)
+	require.Equal(t, len(units), cs.Summary[reconciler.ActionDelete])
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	fw := appliermocks.NewMockFileWriter(t)
+	for path, unit := range units {
 		require.Equal(t, unit, findChange(t, cs, path).ServiceName)
 		stop := sys.EXPECT().StopUnit(mock.Anything, unit).Return(nil).Once()
 		fw.EXPECT().Remove(path).Return(nil).Once().NotBefore(stop)
@@ -197,8 +200,8 @@ const (
 // TestIntegrationReconcilePipelineBuildAndImage drives node-1's .build and
 // .image through create and delete: each is tracked under its generated
 // <name>-build.service / <name>-image.service, the build's File= names the
-// Containerfile deployed from files/, and removing them stops those services
-// before their files are removed.
+// Containerfile deployed from files/, and removing them together with their
+// consumers stops those services before their files are removed.
 func TestIntegrationReconcilePipelineBuildAndImage(t *testing.T) {
 	t.Parallel()
 	repoFS := os.DirFS(testdataDir)
@@ -222,23 +225,13 @@ func TestIntegrationReconcilePipelineBuildAndImage(t *testing.T) {
 	require.GreaterOrEqual(t, i, 0, "Containerfile not deployed")
 	assert.Contains(t, build.NewContent, "File="+created.Changes[i].DestPath+"\n")
 
-	remaining := slices.DeleteFunc(slices.Clone(resolved.Files), func(f resolver.ResolvedFile) bool {
-		return f.DestPath == shopAPIBuildPath || f.DestPath == nginxImagePath
-	})
-	cs := reconciler.Diff(remaining, stateAfter(created))
-	require.Equal(t, 2, cs.Summary[reconciler.ActionDelete])
-	sys := appliermocks.NewMockSystemdManager(t)
-	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
-	fw := appliermocks.NewMockFileWriter(t)
-	for path, unit := range map[string]string{
+	// The consumers go too: a container naming an absent build/image fails validation.
+	applyDeletes(t, resolved.Files, stateAfter(created), map[string]string{
 		shopAPIBuildPath: "shop-api-build.service",
 		nginxImagePath:   "nginx-image.service",
-	} {
-		stop := sys.EXPECT().StopUnit(mock.Anything, unit).Return(nil).Once()
-		fw.EXPECT().Remove(path).Return(nil).Once().NotBefore(stop)
-	}
-	_, err = applier.New(sys, appliermocks.NewMockPodmanClient(t), fw, false, nil).Apply(t.Context(), cs)
-	require.NoError(t, err)
+		shopAPIPath:      "shop-api.service",
+		shopProxyPath:    "shop-proxy.service",
+	})
 }
 
 func TestIntegrationMultiHostConsistency(t *testing.T) {

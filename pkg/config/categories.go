@@ -83,7 +83,7 @@ const (
 	// HealthDaemon: long-running; a failed unit is restarted (subject to the
 	// cooldown and the externally-activated one-shot exemption).
 	HealthDaemon
-	// HealthReportOnly: a one-shot job its consumers pull in (Requires=); its
+	// HealthReportOnly: a one-shot unit its consumers pull in (Requires=); its
 	// status is reported, but a failed unit is never restarted by the health
 	// loop — re-running it belongs to whatever activates it.
 	HealthReportOnly
