@@ -37,7 +37,7 @@ const (
 func setupBuildFleet(t *testing.T, fleetDir string) {
 	t.Helper()
 	files := map[string]string{
-		"fleet.yml": "images: {}\nports: {}\n",
+		"fleet.yml": "images: {}\nports: {picolet_system_metrics: 9418}\n",
 		"assignments.yml": `base: {}
 roles:
   build:

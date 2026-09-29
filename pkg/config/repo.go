@@ -17,12 +17,12 @@ type Repo struct {
 
 // OpenRepo opens dir as a Fleet repository and loads its config. FS is valid
 // until Close.
-func OpenRepo(dir string) (*Repo, error) {
+func OpenRepo(dir string, opts ...LoadOption) (*Repo, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, fmt.Errorf("opening fleet repo: %w", err)
 	}
-	cfg, err := LoadAll(root.FS())
+	cfg, err := LoadAll(root.FS(), opts...)
 	if err != nil {
 		_ = root.Close()
 		return nil, fmt.Errorf("loading config: %w", err)

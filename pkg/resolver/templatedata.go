@@ -1,6 +1,9 @@
 package resolver
 
 import (
+	"cmp"
+	"slices"
+
 	"github.com/schjan/picolet/pkg/config"
 )
 
@@ -18,6 +21,15 @@ type HostTemplateData struct {
 	ExternalHostname string
 	Role             string
 	Features         []string
+
+	// Machine is the Machine the Host runs on (defaults to Hostname).
+	Machine string
+	// User is the Linux user the Host's Agent runs as; empty when Rootful.
+	User string
+	// Rootful is true for the Host whose Agent runs as root (no user:).
+	Rootful bool
+	// ListenPort is the port the Host's Agent listens on.
+	ListenPort int
 
 	// Services is the resolved bundle name list for this host, merged from
 	// assignments.yml (base + role + features). Sorted and deduplicated.
@@ -78,7 +90,26 @@ func buildHostData(host *config.HostConfig) HostTemplateData {
 		ExternalHostname: host.ExternalHostname,
 		Role:             host.Role,
 		Features:         host.Features,
+		Machine:          host.Machine,
+		User:             host.User,
+		Rootful:          host.Rootful(),
+		ListenPort:       host.ListenPort,
 	}
+}
+
+// siblings returns the other Hosts on the current Host's Machine (compared by
+// config.MachineKey), sorted by hostname. It backs the zero-argument
+// `siblings` template helper.
+func siblings(data *TemplateData) []HostTemplateData {
+	machine := config.MachineKey(data.Host.Machine)
+	var out []HostTemplateData
+	for _, h := range data.Fleet.Hosts {
+		if config.MachineKey(h.Machine) == machine && h.Hostname != data.Host.Hostname {
+			out = append(out, h)
+		}
+	}
+	slices.SortFunc(out, func(a, b HostTemplateData) int { return cmp.Compare(a.Hostname, b.Hostname) })
+	return out
 }
 
 // HostNotFoundError is returned when a hostname is not in the config.

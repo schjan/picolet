@@ -1,0 +1,8 @@
+# Machine vps-1 runs three Hosts. This one is the Machine's default user; with
+# no machine: it is on the Machine named after its hostname, and with no
+# listen_port: it takes fleet.yml ports.picolet_metrics.
+hostname: vps-1
+external_hostname: vps-1.example.net
+role: vps
+features: []
+user: pi

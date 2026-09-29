@@ -1,0 +1,18 @@
+# Prometheus scrape targets for the picolet Agents on Machine vps-1.
+# Every Agent binds 127.0.0.1:<listen_port> with Network=host, so this Host's
+# own Agent and its siblings on the Machine are all reachable over loopback.
+scrape_configs:
+  - job_name: picolet
+    static_configs:
+      - targets: ["127.0.0.1:9418"]
+        labels:
+          host: vps-1-system
+          user: root
+      - targets: ["127.0.0.1:9417"]
+        labels:
+          host: vps-1
+          user: pi
+      - targets: ["127.0.0.1:9419"]
+        labels:
+          host: vps-1-runner
+          user: runner

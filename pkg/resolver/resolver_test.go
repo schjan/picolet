@@ -33,6 +33,7 @@ ports:
   alloy_http: 12345
   alloy_prometheus: 9090
   alloy_otlp_grpc: 4317
+  picolet_system_metrics: 9418
   alloy_otlp_http: 4318
   prometheus: 9090
 `)},
@@ -212,7 +213,7 @@ func TestTemplateDataServices(t *testing.T) {
 // body of assignments.yml; extra maps source paths to file content.
 func systemdUnitsFS(assignments string, extra map[string]string) fstest.MapFS {
 	fsys := fstest.MapFS{
-		"fleet.yml":         &fstest.MapFile{Data: []byte("images:\n  app: \"img:v1\"\nports:\n  http: 8080\n")},
+		"fleet.yml":         &fstest.MapFile{Data: []byte("images:\n  app: \"img:v1\"\nports:\n  http: 8080\n  picolet_system_metrics: 9418\n")},
 		"assignments.yml":   &fstest.MapFile{Data: []byte(assignments)},
 		"hosts/h1/host.yml": &fstest.MapFile{Data: []byte("hostname: h1\nexternal_hostname: h1.ts.net\nrole: server\nfeatures: []\n")},
 	}
@@ -517,7 +518,7 @@ func TestNewConfigDirOverrides(t *testing.T) {
 // for host_data_dir coverage.
 func newHostDataDirFleetFS() fstest.MapFS {
 	return fstest.MapFS{
-		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:
   paths:
@@ -621,6 +622,7 @@ images:
   app: "app:v1"
 ports:
   http: 8080
+  picolet_system_metrics: 9418
 `)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base: {}
@@ -707,6 +709,7 @@ func TestResolveHostRendersServiceSecretHooks(t *testing.T) {
 images: {}
 ports:
   app: 1234
+  picolet_system_metrics: 9418
 `)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base: {}
@@ -763,7 +766,7 @@ func TestResolveHostRejectsInvalidSecretHook(t *testing.T) {
 	t.Parallel()
 
 	fsys := fstest.MapFS{
-		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base: {}
 roles:
@@ -802,7 +805,7 @@ func TestResolveHostBatchesOpRefsFromHookTemplates(t *testing.T) {
 	hookOpRef := "op://vault/app/reload-token"
 
 	fsys := fstest.MapFS{
-		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base: {}
 roles:
@@ -852,7 +855,7 @@ func TestResolveHostHookNameUniquenessErrorIncludesService(t *testing.T) {
 	t.Parallel()
 
 	fsys := fstest.MapFS{
-		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base: {}
 roles:
@@ -984,7 +987,7 @@ func TestResolveHostHookUnitResolution(t *testing.T) {
 // a pod, a build and an image, plus a hook targeting hookUnit.
 func hookUnitFleetFS(hookUnit string) fstest.MapFS {
 	return fstest.MapFS{
-		"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\nroles:\n  server:\n    services: [app]\nfeatures: {}\n")},
 		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: server
@@ -1009,7 +1012,7 @@ func TestResolveHostHookUnitQuadletNotFoundErrors(t *testing.T) {
 	t.Parallel()
 
 	fsys := fstest.MapFS{
-		"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\nroles:\n  server:\n    services: [app]\nfeatures: {}\n")},
 		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: server
@@ -1089,7 +1092,7 @@ func TestBuildHooksValidatesSignalContainerName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			fsys := fstest.MapFS{
-				"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+				"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 				"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\nroles:\n  server:\n    services: [app]\nfeatures: {}\n")},
 				"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: server
@@ -1123,6 +1126,7 @@ images:
   app: "app:v2"
 ports:
   http: 8080
+  picolet_system_metrics: 9418
 `)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:
@@ -1167,6 +1171,7 @@ func TestResolveHostBundleFileTemplateUsesDeployedRelPath(t *testing.T) {
 images: {}
 ports:
   http: 8080
+  picolet_system_metrics: 9418
 `)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:
@@ -1204,7 +1209,7 @@ func TestResolveHostBundleManifestNormalizesPath(t *testing.T) {
 	t.Parallel()
 
 	fsys := fstest.MapFS{
-		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:
   services:
@@ -1241,7 +1246,7 @@ func TestResolveHostBundleAndLegacyMixed(t *testing.T) {
 		"fleet.yml": &fstest.MapFile{Data: []byte(`
 images:
   app: "app:v1"
-ports: {}
+ports: {picolet_system_metrics: 9418}
 `)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:
@@ -1472,7 +1477,7 @@ features: {}
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			fsys := fstest.MapFS{
-				"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+				"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 				"assignments.yml": &fstest.MapFile{Data: []byte(tt.assignmentsYAML)},
 				"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(`
 hostname: test-host
@@ -1506,7 +1511,7 @@ func TestResolveHostCollisionFastFail(t *testing.T) {
 	t.Parallel()
 
 	fsys := fstest.MapFS{
-		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:
   services:
@@ -1583,7 +1588,7 @@ func TestResolveHostBundledManifestCollectsOpSecrets(t *testing.T) {
 
 	const ref = "op://vault/item/password"
 	fsys := fstest.MapFS{
-		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:
   services:
@@ -1678,6 +1683,7 @@ images:
   app: "app:v1"
 ports:
   app: 8080
+  picolet_system_metrics: 9418
 `)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:
@@ -1812,7 +1818,7 @@ features: {}
 func TestResolveServicesForHostRendersOnlyRequestedService(t *testing.T) {
 	t.Parallel()
 	fsys := fstest.MapFS{
-		"fleet.yml": &fstest.MapFile{Data: []byte(`images: {picolet: "picolet:test"}`)},
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {picolet: \"picolet:test\"}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base: {}
 roles:
@@ -1839,7 +1845,7 @@ features: {}
 func TestResolveServicesForHostStrictProviderErrorsInRequestedService(t *testing.T) {
 	t.Parallel()
 	fsys := fstest.MapFS{
-		"fleet.yml": &fstest.MapFile{Data: []byte(`images: {picolet: "picolet:test"}`)},
+		"fleet.yml": &fstest.MapFile{Data: []byte("images: {picolet: \"picolet:test\"}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base: {}
 roles:
@@ -2037,6 +2043,7 @@ images:
   app: "app:v1"
 ports:
   app: 8080
+  picolet_system_metrics: 9418
 `)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:
@@ -2081,6 +2088,7 @@ images:
   app: "app:v1"
 ports:
   app: 8080
+  picolet_system_metrics: 9418
 `)},
 		"assignments.yml": &fstest.MapFile{Data: fmt.Appendf(nil, `
 base:
@@ -2180,6 +2188,7 @@ images:
   app: "app:v1"
 ports:
   app: 8080
+  picolet_system_metrics: 9418
 `)},
 			"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:

@@ -148,14 +148,16 @@ func (c *RefCache) Resolve(ctx context.Context) error {
 // Two-phase resolution: callers must run a collect pass, call cache.Resolve,
 // then run the real render pass.
 func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string) (*template.Template, ProviderCaches, error) {
-	return buildRegistry(ctx, fsys, secretReader, providers, dataDir, nil)
+	return buildRegistry(ctx, fsys, secretReader, providers, dataDir, nil, nil)
 }
 
-// buildRegistry is BuildRegistry with an optional source-path predicate.
-// A nil include function includes every template.
+// buildRegistry is BuildRegistry with an optional source-path predicate and
+// the current Host's siblings. A nil include function includes every
+// template. The registry is rebuilt per resolve, so the `siblings` helper is
+// a per-Host closure over hostSiblings.
 //
 //nolint:cyclop,funlen // funcmap registration is inherently branchy
-func buildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string, include func(string) bool) (*template.Template, ProviderCaches, error) {
+func buildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string, include func(string) bool, hostSiblings []HostTemplateData) (*template.Template, ProviderCaches, error) {
 	sources, err := loadTemplateSources(fsys, include)
 	if err != nil {
 		return nil, nil, err
@@ -196,6 +198,8 @@ func buildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, p
 			}
 			return secretReader(path)
 		},
+		// siblings lists the other Hosts on this Host's Machine, sorted by hostname.
+		"siblings": func() []HostTemplateData { return hostSiblings },
 		// renderTemplate uses a closure depth counter to prevent infinite recursion.
 		// Not goroutine-safe; template rendering must be serial.
 		"renderTemplate": func() any {

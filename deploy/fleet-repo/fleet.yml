@@ -2,7 +2,8 @@ images:
   picolet: "ghcr.io/schjan/picolet:v0.1.0"
 
 ports:
-  # Documents host port for firewall rules and Prometheus scrape config.
-  # Network=host means no actual port publishing is needed.
+  # The Agents' listen ports (Network=host, bound to 127.0.0.1). A Host
+  # without listen_port: in host.yml listens on picolet_metrics when it
+  # declares user:, on picolet_system_metrics when it is rootful.
   picolet_metrics: 9417
   picolet_system_metrics: 9418

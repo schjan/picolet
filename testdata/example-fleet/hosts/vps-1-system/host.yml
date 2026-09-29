@@ -1,0 +1,7 @@
+# The rootful Host on Machine vps-1: no user:, so its Agent runs as root and,
+# with no listen_port:, takes fleet.yml ports.picolet_system_metrics.
+hostname: vps-1-system
+external_hostname: vps-1.example.net
+role: vps
+features: []
+machine: vps-1

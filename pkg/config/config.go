@@ -34,9 +34,35 @@ type Config struct {
 	Assignments *Assignments
 }
 
+// LoadOption adjusts how LoadAll reads the Fleet.
+type LoadOption func(*loadOptions)
+
+type loadOptions struct {
+	strictHosts bool
+	logger      *slog.Logger
+}
+
+// StrictHosts makes an unknown key in a host.yml a load error. Without it an
+// unknown key is logged and ignored, so an Agent still on an older image keeps
+// reconciling when the Fleet adopts a host.yml key only newer Agents know.
+// `picolet validate` loads strictly so that typos still fail CI.
+func StrictHosts() LoadOption {
+	return func(o *loadOptions) { o.strictHosts = true }
+}
+
+// WithLogger sets the logger for load warnings; the default is slog.Default().
+func WithLogger(l *slog.Logger) LoadOption {
+	return func(o *loadOptions) { o.logger = l }
+}
+
 // LoadAll loads fleet.yml, assignments.yml, and all hosts/<name>/host.yml
 // from the given filesystem.
-func LoadAll(fsys fs.FS) (*Config, error) {
+func LoadAll(fsys fs.FS, opts ...LoadOption) (*Config, error) {
+	o := loadOptions{logger: slog.Default()}
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	fleet, err := loadYAML[FleetConfig](fsys, "fleet.yml")
 	if err != nil {
 		return nil, fmt.Errorf("loading fleet.yml: %w", err)
@@ -53,7 +79,7 @@ func LoadAll(fsys fs.FS) (*Config, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	hosts, err := loadHosts(fsys)
+	hosts, err := loadHosts(fsys, fleet.Ports, o)
 	if err != nil {
 		return nil, fmt.Errorf("loading hosts: %w", err)
 	}
@@ -83,7 +109,7 @@ func (c *Config) FindHost(name string) (*HostConfig, bool) {
 	return nil, false
 }
 
-func loadHosts(fsys fs.FS) (map[string]*HostConfig, error) {
+func loadHosts(fsys fs.FS, ports map[string]int, o loadOptions) (map[string]*HostConfig, error) {
 	hosts := make(map[string]*HostConfig)
 	entries, err := fs.ReadDir(fsys, "hosts")
 	if err != nil {
@@ -95,15 +121,18 @@ func loadHosts(fsys fs.FS) (map[string]*HostConfig, error) {
 		}
 		name := entry.Name()
 		hostPath := "hosts/" + name + "/host.yml"
-		host, err := loadYAML[HostConfig](fsys, hostPath)
+		host, err := loadHostYAML(fsys, hostPath, o)
 		if err != nil {
-			return nil, fmt.Errorf("loading %s: %w", hostPath, err)
+			return nil, err
 		}
 		if err := host.Validate(); err != nil {
 			return nil, fmt.Errorf("host %s: %w", name, err)
 		}
+		if err := host.applyDefaults(ports); err != nil {
+			return nil, fmt.Errorf("host %s: %w", name, err)
+		}
 		if host.Hostname != name {
-			slog.Warn("hostname in host.yml does not match directory name",
+			o.logger.Warn("hostname in host.yml does not match directory name",
 				"dir", name, "hostname", host.Hostname)
 		}
 		hosts[name] = host
@@ -111,7 +140,34 @@ func loadHosts(fsys fs.FS) (map[string]*HostConfig, error) {
 	if len(hosts) == 0 {
 		return nil, errors.New("no hosts found in hosts/ directory")
 	}
+	if err := validateTopology(hosts); err != nil {
+		return nil, err
+	}
 	return hosts, nil
+}
+
+// loadHostYAML parses one host.yml. Unless strictHosts is set, a file that
+// fails only because of unknown keys is loaded without them and the strict
+// error is logged as a warning; any other error still fails.
+func loadHostYAML(fsys fs.FS, path string, o loadOptions) (*HostConfig, error) {
+	host, strictErr := loadYAML[HostConfig](fsys, path)
+	if strictErr == nil {
+		return host, nil
+	}
+	if o.strictHosts {
+		return nil, fmt.Errorf("loading %s: %w", path, strictErr)
+	}
+	data, err := fs.ReadFile(fsys, path)
+	if err != nil {
+		return nil, fmt.Errorf("loading %s: %w", path, err)
+	}
+	var lenient HostConfig
+	if err := yaml.Load(data, &lenient); err != nil {
+		return nil, fmt.Errorf("loading %s: %w", path, strictErr)
+	}
+	o.logger.Warn("ignoring unknown keys in host.yml; upgrade this Agent's image",
+		"path", path, "error", strictErr)
+	return &lenient, nil
 }
 
 func loadYAML[T any](fsys fs.FS, path string) (*T, error) {

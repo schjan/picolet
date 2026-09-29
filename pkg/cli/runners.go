@@ -307,7 +307,9 @@ func runDryRun(ctx context.Context, repoDir, hostname, configPath string) error 
 }
 
 func runValidate(ctx context.Context, repoDir string) error {
-	repo, err := config.OpenRepo(repoDir)
+	// Strict: an unknown host.yml key is a typo here, even though the Agent
+	// only warns about it.
+	repo, err := config.OpenRepo(repoDir, config.StrictHosts())
 	if err != nil {
 		return err
 	}

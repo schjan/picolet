@@ -20,6 +20,7 @@ images:
 ports:
   alloy_http: 12345
   prometheus: 9090
+  picolet_system_metrics: 9418
 `)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:
@@ -264,7 +265,7 @@ func TestLoadAllRejectsRetiredKeys(t *testing.T) {
 	t.Parallel()
 
 	const (
-		goodFleet       = "images: {}\nports: {}\n"
+		goodFleet       = "images: {}\nports: {picolet_system_metrics: 9418}\n"
 		goodAssignments = "base: {}\nroles: {}\nfeatures: {}\n"
 		goodHost        = "hostname: host-a\nrole: server\nfeatures: []\n"
 	)
@@ -292,7 +293,7 @@ func TestLoadAllRejectsRetiredKeys(t *testing.T) {
 		},
 		{
 			name:        "prometheus in fleet.yml",
-			fleet:       "images: {}\nports: {}\nprometheus:\n  retention_time: \"35d\"\n",
+			fleet:       "images: {}\nports: {picolet_system_metrics: 9418}\nprometheus:\n  retention_time: \"35d\"\n",
 			assignments: goodAssignments,
 			host:        goodHost,
 			wantMessage: migratePrometheus,
@@ -324,7 +325,7 @@ func TestLoadAllRejectsRetiredKeys(t *testing.T) {
 func TestLoadAllAcceptsPortNamedPrometheus(t *testing.T) {
 	t.Parallel()
 	fsys := fstest.MapFS{
-		"fleet.yml":             &fstest.MapFile{Data: []byte("images: {}\nports:\n  prometheus: 9090\n")},
+		"fleet.yml":             &fstest.MapFile{Data: []byte("images: {}\nports:\n  prometheus: 9090\n  picolet_system_metrics: 9418\n")},
 		"assignments.yml":       &fstest.MapFile{Data: []byte("base: {}\nroles: {}\nfeatures: {}\n")},
 		"hosts/host-a/host.yml": &fstest.MapFile{Data: []byte("hostname: host-a\nrole: server\nfeatures: []\n")},
 	}

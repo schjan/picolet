@@ -1,0 +1,6 @@
+# Managed by picolet
+[Unit]
+Description=Backing service for custom.socket (e2e fixture)
+
+[Service]
+ExecStart=/bin/true
