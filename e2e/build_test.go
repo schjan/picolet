@@ -5,11 +5,9 @@ package e2e_test
 import (
 	"context"
 	"fmt"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -149,11 +147,15 @@ func TestE2EBuild(t *testing.T) {
 		st, err := state.NewStore(filepath.Join(dataDir, "state.json")).Load()
 		require.NoError(t, err)
 		assert.Equal(t, e2eBuildService, st.ServiceNames[filepath.Join(quadletDir, "e2e-build.build")])
-		// The data dir is the rootless default, not config's data_dir: match by suffix.
-		assert.True(t, slices.ContainsFunc(slices.Collect(maps.Keys(st.ManagedFiles)), func(p string) bool {
-			return strings.HasSuffix(p, "/files/e2e-build/Containerfile") &&
-				st.ManagedFiles[p].Category == config.CategoryFile
-		}), "the Containerfile is a managed file: %v", st.ManagedFiles)
+		// Managed files go to the rootless default data dir, not config's
+		// data_dir (picolet's runtime dir): match by suffix.
+		found := false
+		for path, mf := range st.ManagedFiles {
+			if strings.HasSuffix(path, "/files/e2e-build/Containerfile") && mf.Category == config.CategoryFile {
+				found = true
+			}
+		}
+		assert.True(t, found, "the Containerfile is a managed file: %v", st.ManagedFiles)
 	})
 
 	t.Run("down", func(t *testing.T) {
