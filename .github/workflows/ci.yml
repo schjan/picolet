@@ -23,7 +23,9 @@ jobs:
         run: go test -tags "$BUILD_TAGS" ./... -race -count=1 -timeout 120s
 
   e2e:
-    runs-on: ubuntu-24.04-arm
+    # Podman >= 5.2 for Quadlet .build: ubuntu-24.04 images ship 4.9.3 since
+    # actions/runner-images#14642; ubuntu-26.04 ships 5.7.0 (preview image).
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
@@ -66,6 +68,8 @@ jobs:
             echo "Podman failed to become ready after 15 seconds" >&2
             exit 1
           fi
+
+          podman version
 
       - name: Run E2E tests
         env:
