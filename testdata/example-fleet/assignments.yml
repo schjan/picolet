@@ -25,6 +25,12 @@ roles:
       - quadlets/containers/shop-proxy.container.tmpl
     pods:
       - quadlets/pods/shop.pod.tmpl
+    images:
+      - quadlets/images/nginx.image.tmpl
+    builds:
+      - quadlets/builds/shop-api.build.tmpl
+    files:
+      - files/shop-api/Containerfile
   web:
     services:
       - web-app

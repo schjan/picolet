@@ -955,6 +955,16 @@ func TestResolveHostHookUnitResolution(t *testing.T) {
 			wantUnit: "web-pod.service",
 		},
 		{
+			name:     "quadlet build resolves to its generated -build service",
+			hookUnit: "app.build",
+			wantUnit: "app-build.service",
+		},
+		{
+			name:     "quadlet image resolves to its generated -image service",
+			hookUnit: "redis.image",
+			wantUnit: "redis-image.service",
+		},
+		{
 			name:     "explicit service passes through unchanged",
 			hookUnit: "app.service",
 			wantUnit: "app.service",
@@ -965,25 +975,7 @@ func TestResolveHostHookUnitResolution(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fsys := fstest.MapFS{
-				"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
-				"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\nroles:\n  server:\n    services: [app]\nfeatures: {}\n")},
-				"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
-hostname: server
-role: server
-features: []
-`)},
-				"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\nContainerName=app\n")},
-				"services/app/pods/web.pod":             &fstest.MapFile{Data: []byte("[Pod]\n")},
-				"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
-hooks:
-  - name: app-reload
-    secrets: [cfg]
-    unit: ` + tt.hookUnit + `
-    action: restart
-`)},
-			}
-
+			fsys := hookUnitFleetFS(tt.hookUnit)
 			cfg, err := config.LoadAll(fsys)
 			require.NoError(t, err)
 			r, err := New(Config{FS: fsys, Config: cfg})
@@ -994,6 +986,31 @@ hooks:
 			require.Len(t, resolved.Hooks, 1)
 			assert.Equal(t, tt.wantUnit, resolved.Hooks[0].Unit)
 		})
+	}
+}
+
+// hookUnitFleetFS is a one-host fleet whose "app" bundle carries a container,
+// a pod, a build and an image, plus a hook targeting hookUnit.
+func hookUnitFleetFS(hookUnit string) fstest.MapFS {
+	return fstest.MapFS{
+		"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\nroles:\n  server:\n    services: [app]\nfeatures: {}\n")},
+		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
+hostname: server
+role: server
+features: []
+`)},
+		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\nContainerName=app\n")},
+		"services/app/pods/web.pod":             &fstest.MapFile{Data: []byte("[Pod]\n")},
+		"services/app/builds/app.build":         &fstest.MapFile{Data: []byte("[Build]\nImageTag=localhost/app\nFile=/srv/Containerfile\n")},
+		"services/app/images/redis.image":       &fstest.MapFile{Data: []byte("[Image]\nImage=docker.io/library/redis:7\n")},
+		"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
+hooks:
+  - name: app-reload
+    secrets: [cfg]
+    unit: ` + hookUnit + `
+    action: restart
+`)},
 	}
 }
 

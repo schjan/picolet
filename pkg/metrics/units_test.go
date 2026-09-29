@@ -66,14 +66,21 @@ picolet_unit_state_info{active_state="failed",sub_state="auto-restart",unit="foo
 	require.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(expected)))
 }
 
-func TestUnitHealthCollector_InactiveAbsent(t *testing.T) {
+// A finished one-shot (a completed .build, a timer job between runs) is
+// inactive: its state is reported, but picolet_unit_active stays absent so an
+// `== 0` alert only fires for failed units.
+func TestUnitHealthCollector_InactiveEmitsStateOnly(t *testing.T) {
 	t.Parallel()
 	store, reg := newTestRegistry(t)
-	store.SetUnit("foo.service", status.UnitRuntimeStatus{ActiveState: "inactive", SubState: "dead"})
+	store.SetUnit("app-build.service", status.UnitRuntimeStatus{ActiveState: "inactive", SubState: "dead"})
 
-	count, err := testutil.GatherAndCount(reg)
-	require.NoError(t, err)
-	assert.Equal(t, 0, count, "inactive unit should emit no metrics")
+	expected := `
+# HELP picolet_unit_state_info Info metric (value=1) for managed unit status. Join with picolet_unit_active via group_left.
+# TYPE picolet_unit_state_info gauge
+picolet_unit_state_info{active_state="inactive",sub_state="dead",unit="app-build.service"} 1
+`
+	require.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"picolet_unit_active", "picolet_unit_state_info"))
 }
 
 func TestUnitHealthCollector_DeleteRemovesMetrics(t *testing.T) {

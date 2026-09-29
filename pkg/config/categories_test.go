@@ -8,7 +8,9 @@ import (
 )
 
 // ApplyRank orders file writes: a pod is written before the containers that
-// join it, so a partial apply never leaves a member without its pod file.
+// join it, so a partial apply never leaves a member without its pod file; a
+// .image/.build likewise before the containers that name it (Image=), and
+// after the networks and volumes a build may use.
 func TestApplyOrderOfDeployableCategories(t *testing.T) {
 	t.Parallel()
 	deployable := Deployable()
@@ -19,7 +21,7 @@ func TestApplyOrderOfDeployableCategories(t *testing.T) {
 		}
 	}
 	assert.Equal(t, []Category{
-		CategoryNetwork, CategoryVolume, CategorySecret, CategorySystemd,
+		CategoryNetwork, CategoryVolume, CategoryImage, CategoryBuild, CategorySecret, CategorySystemd,
 		CategoryManifest, CategoryFile, CategoryPod, CategoryContainer, CategoryKube,
 	}, got)
 }

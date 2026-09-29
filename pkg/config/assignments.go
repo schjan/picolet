@@ -35,6 +35,8 @@ type AssignmentGroup struct {
 	Containers []string `yaml:"containers"`
 	Kube       []string `yaml:"kube"`
 	Pods       []string `yaml:"pods"`
+	Images     []string `yaml:"images"`
+	Builds     []string `yaml:"builds"`
 	Manifests  []string `yaml:"manifests"`
 	Files      []string `yaml:"files"`
 	Secrets    []string `yaml:"secrets"`
@@ -52,6 +54,8 @@ func (g AssignmentGroup) byCategory() map[Category][]string {
 		CategoryContainer: g.Containers,
 		CategoryKube:      g.Kube,
 		CategoryPod:       g.Pods,
+		CategoryImage:     g.Images,
+		CategoryBuild:     g.Builds,
 		CategoryManifest:  g.Manifests,
 		CategoryFile:      g.Files,
 		CategorySecret:    g.Secrets,

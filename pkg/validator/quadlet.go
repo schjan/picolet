@@ -32,6 +32,11 @@ var quadletConverters = map[config.Category]quadletConverter{
 		convert:      quadlet.ConvertPod,
 		resourceName: quadlet.GetPodResourceName,
 	},
+	config.CategoryImage: {convert: withoutWarning(quadlet.ConvertImage)},
+	config.CategoryBuild: {
+		convert:      quadlet.ConvertBuild,
+		resourceName: quadlet.GetBuiltImageName,
+	},
 }
 
 func withoutWarning(convert func(*parser.UnitFile, map[string]*quadlet.UnitInfo, bool) (*parser.UnitFile, error)) func(*parser.UnitFile, map[string]*quadlet.UnitInfo, bool) (*parser.UnitFile, error, error) {
