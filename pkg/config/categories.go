@@ -113,10 +113,9 @@ const (
 type Spec struct {
 	Category Category
 	Dest     Destination
-	// Subdir names the typed assignment list the category is selected from;
-	// for DestData and DestSecret it is also the first path segment selecting
-	// it (CategoryForPath), and for DestData the directory under the data
-	// dir. Empty: not selectable by a typed list.
+	// Subdir is the first path segment selecting a DestData or DestSecret
+	// category (CategoryForPath) and, for DestData, the directory under the
+	// data dir. Empty for categories selected by extension.
 	Subdir string
 	// PathHelper is the template function resolving a RelPath to its deployed
 	// path (DestData only).
@@ -143,8 +142,7 @@ type Spec struct {
 // one row here plus, for Quadlets, its converter wiring in pkg/validator.
 // `paths:` entries and Service Bundles select every row by path
 // (CategoryForPath: first segment for data and secret rows, extension
-// otherwise); a Subdir and a typed list in AssignmentGroup serve the typed
-// lists.
+// otherwise); the `secrets:` list selects the secret row.
 //
 // Two orderings are kept apart on purpose:
 //   - ConvertOrder mirrors quadlet.SupportedExtensions: .pod converts last
@@ -156,36 +154,36 @@ type Spec struct {
 // Row order is resolution order (the order resolved files are produced in).
 var categories = []Spec{
 	{
-		Category: CategoryNetwork, Dest: DestQuadlet, Subdir: "networks", Check: CheckQuadlet,
+		Category: CategoryNetwork, Dest: DestQuadlet, Check: CheckQuadlet,
 		ApplyRank: 10, ConvertOrder: 2, Health: HealthDaemon, Restart: RestartChanged, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
-		Category: CategorySystemd, Dest: DestSystemd, Subdir: "systemd", Check: CheckSystemd,
+		Category: CategorySystemd, Dest: DestSystemd, Check: CheckSystemd,
 		ApplyRank: 60, Health: HealthDaemon, Restart: RestartActivate, Unit: FileUnit,
 	},
 	{
-		Category: CategoryVolume, Dest: DestQuadlet, Subdir: "volumes", Check: CheckQuadlet,
+		Category: CategoryVolume, Dest: DestQuadlet, Check: CheckQuadlet,
 		ApplyRank: 20, ConvertOrder: 2, Health: HealthDaemon, Restart: RestartChanged, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
-		Category: CategoryImage, Dest: DestQuadlet, Subdir: "images", Check: CheckQuadlet,
+		Category: CategoryImage, Dest: DestQuadlet, Check: CheckQuadlet,
 		ApplyRank: 30, ConvertOrder: 1, Health: HealthReportOnly, Restart: RestartChanged, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
 		// RestartNone until #127 adds rebuild-on-input-change.
-		Category: CategoryBuild, Dest: DestQuadlet, Subdir: "builds", Check: CheckQuadlet,
+		Category: CategoryBuild, Dest: DestQuadlet, Check: CheckQuadlet,
 		ApplyRank: 40, ConvertOrder: 3, Health: HealthReportOnly, Restart: RestartNone, Prefill: true, Unit: GeneratedUnit,
 	},
 	{
-		Category: CategoryContainer, Dest: DestQuadlet, Subdir: "containers", Check: CheckQuadlet,
+		Category: CategoryContainer, Dest: DestQuadlet, Check: CheckQuadlet,
 		ApplyRank: 100, ConvertOrder: 4, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
-		Category: CategoryKube, Dest: DestQuadlet, Subdir: "kube", Check: CheckQuadlet,
+		Category: CategoryKube, Dest: DestQuadlet, Check: CheckQuadlet,
 		ApplyRank: 110, ConvertOrder: 4, Health: HealthDaemon, Restart: RestartChanged, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
-		Category: CategoryPod, Dest: DestQuadlet, Subdir: "pods", Check: CheckQuadlet,
+		Category: CategoryPod, Dest: DestQuadlet, Check: CheckQuadlet,
 		ApplyRank: 90, ConvertOrder: 5, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
@@ -200,7 +198,7 @@ var categories = []Spec{
 		Category: CategorySecret, Dest: DestSecret, Subdir: "secrets", Check: CheckSecret,
 		ApplyRank: 50,
 	},
-	// Known to Podman, not deployable yet: not selectable, rejected by the validator.
+	// Known to Podman, not deployable yet: rejected by the validator.
 	{
 		Category: CategoryArtifact, Dest: DestQuadlet, Check: CheckUnsupported,
 		ApplyRank: 35, ConvertOrder: 1, Health: HealthDaemon, Restart: RestartChanged, Unit: GeneratedUnit,
@@ -209,7 +207,7 @@ var categories = []Spec{
 
 // extensions maps Quadlet and systemd unit file extensions to their category.
 // Manifests, files and secrets have no extension of their own (all .yml) and
-// are selected by list or path instead.
+// are selected by path position or the `secrets:` list instead.
 var extensions = map[string]Category{
 	".network":   CategoryNetwork,
 	".volume":    CategoryVolume,

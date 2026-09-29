@@ -41,11 +41,9 @@ func setupBuildFleet(t *testing.T, fleetDir string) {
 		"assignments.yml": `base: {}
 roles:
   build:
-    builds:
+    paths:
       - quadlets/builds/e2e-build.build.tmpl
-    containers:
       - quadlets/containers/e2e-build.container
-    files:
       - files/e2e-build/Containerfile
 `,
 		"hosts/build-host/host.yml": "hostname: build-host\nrole: build\nfeatures: []\n",

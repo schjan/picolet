@@ -215,16 +215,16 @@ func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host
 	}
 
 	// Batch-resolve direct (non-template) secret refs in one call per provider.
-	resolvedDirect, err := r.batchResolveDirectSecrets(ctx, expanded.FileSet.Paths[config.CategorySecret])
+	resolvedDirect, err := r.batchResolveDirectSecrets(ctx, secretSources(expanded.Files))
 	if err != nil {
 		return nil, err
 	}
 
-	files, err := r.buildFiles(registry, tmplData, expanded.FileSet, expanded.BundleFileRefs, resolvedDirect)
+	files, err := r.buildFiles(registry, tmplData, expanded.Files, resolvedDirect)
 	if err != nil {
 		return nil, err
 	}
-	hooks, err := r.buildHooks(registry, tmplData, expanded.HookRefs, files)
+	hooks, err := r.buildHooks(registry, tmplData, expanded.Hooks, files)
 	if err != nil {
 		return nil, err
 	}
@@ -289,10 +289,10 @@ type preparedData struct {
 // unit names, collects secret refs for any configured providers, and resolves
 // each provider's cache. It populates tmplData.Host.SystemdUnits as a side
 // effect and also returns the result so the pass is testable in isolation.
-func (r *Resolver) prepareTemplateData(ctx context.Context, registry *template.Template, tmplData *TemplateData, expanded *expandedResult, caches ProviderCaches) (*preparedData, error) {
-	units := r.collectSystemdUnits(registry, tmplData, expanded.FileSet)
+func (r *Resolver) prepareTemplateData(ctx context.Context, registry *template.Template, tmplData *TemplateData, expanded *expansion, caches ProviderCaches) (*preparedData, error) {
+	units := r.collectSystemdUnits(registry, tmplData, expanded.Files)
 	if len(caches) > 0 {
-		r.collectTemplateRefs(registry, tmplData, expanded.FileSet, expanded.BundleFileRefs, expanded.HookRefs)
+		r.collectTemplateRefs(registry, tmplData, expanded)
 		if err := caches.ResolveAll(ctx); err != nil {
 			return nil, err
 		}
@@ -307,19 +307,19 @@ func (r *Resolver) prepareTemplateData(ctx context.Context, registry *template.T
 // ServiceName= overrides; FileUnit categories contribute their filename with
 // any .tmpl suffix stripped. Render and parse errors are swallowed here — the
 // final pass and the validator surface them with proper diagnostics.
-func (r *Resolver) collectSystemdUnits(registry *template.Template, tmplData *TemplateData, fileSet *config.ResolvedFileSet) []string {
+func (r *Resolver) collectSystemdUnits(registry *template.Template, tmplData *TemplateData, refs []fileRef) []string {
 	var units []string
-	for _, g := range unitCategoryPaths(fileSet) {
-		for _, srcPath := range g.Paths {
-			if g.Spec.Unit == config.FileUnit {
-				units = append(units, destFilename(srcPath))
-				continue
+	for _, ref := range refs {
+		spec, _ := config.SpecFor(ref.Category)
+		switch spec.Unit {
+		case config.FileUnit:
+			units = append(units, destFilename(ref.SrcPath))
+		case config.GeneratedUnit:
+			f, err := r.resolveFile(registry, tmplData, ref.SrcPath, spec, r.unitDestPath(spec, ref.SrcPath))
+			if err == nil && f.ServiceName != "" {
+				units = append(units, f.ServiceName)
 			}
-			f, err := r.resolveFile(registry, tmplData, srcPath, g.Spec, r.unitDestPath(g.Spec, srcPath))
-			if err != nil || f.ServiceName == "" {
-				continue
-			}
-			units = append(units, f.ServiceName)
+		case config.NoUnit:
 		}
 	}
 	return sortedUnique(units)
@@ -338,125 +338,64 @@ func (r *Resolver) ResolveAll(ctx context.Context) (map[string]*ResolvedHost, er
 	return results, nil
 }
 
-// expandedResult holds the outputs of bundle expansion and validation.
-type expandedResult struct {
-	FileSet        *config.ResolvedFileSet
-	BundleFileRefs []bundleFileRef
-	HookRefs       []hookRef
-}
-
-// expandAndValidate expands service bundles into the file set and fails fast
-// if any two sources resolve to the same destination path.
-func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*expandedResult, error) {
-	merged, bundleFileRefs, hookRefs, err := r.expandFileSet(fileSet)
+// expandAndValidate expands the host's assignment entries into categorized
+// files and fails fast if any two sources resolve to the same destination.
+func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*expansion, error) {
+	expanded, err := r.expandFileSet(fileSet)
 	if err != nil {
 		return nil, err
 	}
-	skeletons, err := r.buildFileSkeletons(merged, bundleFileRefs)
+	skeletons, err := r.buildFileSkeletons(expanded.Files)
 	if err != nil {
 		return nil, err
 	}
 	if err := detectCollisions(skeletons); err != nil {
 		return nil, err
 	}
-	return &expandedResult{
-		FileSet:        merged,
-		BundleFileRefs: bundleFileRefs,
-		HookRefs:       hookRefs,
-	}, nil
+	return expanded, nil
 }
 
-// expandFileSet returns a new ResolvedFileSet merged with any service bundles
-// and `paths:` entries, plus the full list of nested data refs (legacy,
-// bundled and from `paths:`). The input fileSet is not mutated. Data
-// categories (UsesRelPath), Entries and Services are left out of the returned
-// Paths: nested data paths flow through bundleFileRefs, and Entries and
-// Services are already flattened into the category paths.
-// Populating them would let a future caller miss bundle contents.
-func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []bundleFileRef, []hookRef, error) {
+// expandFileSet expands service bundles and `paths:` entries and adds the
+// `secrets:` entries, which are not expanded: they may name host-only
+// secrets or provider refs rather than repo files. Files are returned in
+// resolution order, each once.
+func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*expansion, error) {
 	expanded, bundleErr := expandServiceBundles(r.fsys, fileSet.Services)
-	fromPaths, pathsErr := expandPathEntries(r.fsys, fileSet.PathEntries)
+	fromPaths, pathsErr := expandPathEntries(r.fsys, fileSet.Paths)
 	if err := errors.Join(bundleErr, pathsErr); err != nil {
-		return nil, nil, nil, err
-	}
-	if err := r.checkTypedCategories(fileSet.Paths, fromPaths); err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	expanded.append(fromPaths)
-
-	merged := &config.ResolvedFileSet{Paths: make(map[config.Category][]string)}
-	bundleFileRefs := slices.Clone(expanded.NestedRefs)
-	for _, spec := range config.Specs() {
-		if spec.Dest == config.DestData {
-			for _, srcPath := range fileSet.Paths[spec.Category] {
-				bundleFileRefs = append(bundleFileRefs, newDataFileRef(srcPath, srcPath, spec))
-			}
-			continue
-		}
-		if paths := sortedUnique(slices.Concat(fileSet.Paths[spec.Category], expanded.Paths[spec.Category])); len(paths) > 0 {
-			merged.Paths[spec.Category] = paths
-		}
+	for _, src := range fileSet.Secrets {
+		expanded.Files = append(expanded.Files, fileRef{SrcPath: src, Category: config.CategorySecret})
 	}
-	return merged, uniqueBundleFileRefs(bundleFileRefs), expanded.Hooks, nil
+	expanded.Files = uniqueFileRefs(expanded.Files)
+	return expanded, nil
 }
 
-// newDataFileRef constructs the bundleFileRef of a data-category file. The
-// logical path decides the destination and RelPath; it equals srcPath for
-// typed lists and `paths:` entries.
-func newDataFileRef(srcPath, logical string, spec config.Spec) bundleFileRef {
-	return bundleFileRef{
-		SrcPath:     srcPath,
-		LogicalPath: logical,
-		Category:    spec.Category,
-		RelPath:     stripSubdirPrefix(deployedLogicalPath(logical), spec.Subdir),
-	}
-}
-
-// categoryPaths pairs a unit category's table row with its host source paths.
-type categoryPaths struct {
-	Spec  config.Spec
-	Paths []string
-}
-
-// unitCategoryPaths groups a host's unit sources (Quadlet and raw systemd
-// destinations) by category, in table order. Single source of truth for
-// buildFileSkeletons, buildStandardFiles, collectSystemdUnits and
-// collectTemplateRefs.
-func unitCategoryPaths(fileSet *config.ResolvedFileSet) []categoryPaths {
-	var groups []categoryPaths
-	for _, spec := range config.Specs() {
-		if spec.Dest == config.DestQuadlet || spec.Dest == config.DestSystemd {
-			groups = append(groups, categoryPaths{Spec: spec, Paths: fileSet.Paths[spec.Category]})
+// secretSources returns the source of every secret-category ref.
+func secretSources(refs []fileRef) []string {
+	var srcs []string
+	for _, ref := range refs {
+		if ref.Category == config.CategorySecret {
+			srcs = append(srcs, ref.SrcPath)
 		}
 	}
-	return groups
+	return srcs
 }
 
 // buildFileSkeletons returns SrcPath/Category/DestPath tuples for every file
 // the host will deploy. It does not render templates, read files, or call the
 // 1Password SDK, so it's safe (and cheap) to run before expensive operations.
-func (r *Resolver) buildFileSkeletons(fileSet *config.ResolvedFileSet, bundleFileRefs []bundleFileRef) ([]ResolvedFile, error) {
-	var skeletons []ResolvedFile
-	for _, g := range unitCategoryPaths(fileSet) {
-		for _, srcPath := range g.Paths {
-			skeletons = append(skeletons, ResolvedFile{
-				SrcPath: srcPath, Category: g.Spec.Category, DestPath: r.unitDestPath(g.Spec, srcPath),
-			})
-		}
-	}
-	for _, ref := range bundleFileRefs {
-		skeletons = append(skeletons, ResolvedFile{
-			SrcPath: ref.SrcPath, Category: ref.Category, DestPath: r.dataDestPath(ref.LogicalPath),
-			RelPath: ref.RelPath,
-		})
-	}
-	for _, srcPath := range fileSet.Paths[config.CategorySecret] {
-		dest, err := r.secretDestPath(srcPath)
+func (r *Resolver) buildFileSkeletons(refs []fileRef) ([]ResolvedFile, error) {
+	skeletons := make([]ResolvedFile, 0, len(refs))
+	for _, ref := range refs {
+		dest, err := r.destPath(ref)
 		if err != nil {
-			return nil, fmt.Errorf("resolving secret %s: %w", srcPath, err)
+			return nil, fmt.Errorf("resolving %s %s: %w", ref.Category, ref.SrcPath, err)
 		}
 		skeletons = append(skeletons, ResolvedFile{
-			SrcPath: srcPath, Category: config.CategorySecret, DestPath: dest,
+			SrcPath: ref.SrcPath, Category: ref.Category, DestPath: dest, RelPath: ref.RelPath,
 		})
 	}
 	return skeletons, nil
@@ -471,16 +410,16 @@ func (r *Resolver) unitDestPath(spec config.Spec, srcPath string) string {
 	return filepath.Join(dir, destFilename(srcPath))
 }
 
-// destPath returns where a source of the given category deploys; logical is
-// the path data categories derive their destination from.
-func (r *Resolver) destPath(spec config.Spec, srcPath, logical string) (string, error) {
+// destPath returns where ref deploys.
+func (r *Resolver) destPath(ref fileRef) (string, error) {
+	spec, _ := config.SpecFor(ref.Category)
 	switch spec.Dest {
 	case config.DestData:
-		return r.dataDestPath(logical), nil
+		return r.dataDestPath(ref.DataPath), nil
 	case config.DestSecret:
-		return r.secretDestPath(srcPath)
+		return r.secretDestPath(ref.SrcPath)
 	case config.DestQuadlet, config.DestSystemd:
-		return r.unitDestPath(spec, srcPath), nil
+		return r.unitDestPath(spec, ref.SrcPath), nil
 	}
 	return "", fmt.Errorf("category %s: unknown destination %d", spec.Category, spec.Dest)
 }
@@ -514,95 +453,48 @@ func (r *Resolver) secretDestPath(srcPath string) (string, error) {
 	return "secret:" + strings.TrimSuffix(filename, filepath.Ext(filename)), nil
 }
 
-func uniqueBundleFileRefs(refs []bundleFileRef) []bundleFileRef {
-	slices.SortFunc(refs, func(a, b bundleFileRef) int {
-		if diff := strings.Compare(a.LogicalPath, b.LogicalPath); diff != 0 {
-			return diff
-		}
-		return strings.Compare(a.SrcPath, b.SrcPath)
-	})
-	return slices.CompactFunc(refs, func(a, b bundleFileRef) bool {
-		return a == b
-	})
-}
-
+// buildFiles renders or reads every ref, in resolution order. A provider ref
+// whose provider is not configured is skipped (batchResolveDirectSecrets).
 func (r *Resolver) buildFiles(
 	registry *template.Template,
 	tmplData *TemplateData,
-	fileSet *config.ResolvedFileSet,
-	bundleFileRefs []bundleFileRef,
-	opResolved map[string]string,
-) ([]ResolvedFile, error) {
-	var files []ResolvedFile
-
-	standardFiles, err := r.buildStandardFiles(registry, tmplData, fileSet)
-	if err != nil {
-		return nil, err
-	}
-	files = append(files, standardFiles...)
-
-	for _, ref := range bundleFileRefs {
-		f, err := r.resolveNestedRef(registry, tmplData, ref)
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, *f)
-	}
-
-	secretFiles, err := r.buildSecretFiles(registry, tmplData, fileSet.Paths[config.CategorySecret], opResolved)
-	if err != nil {
-		return nil, err
-	}
-	files = append(files, secretFiles...)
-
-	return files, nil
-}
-
-func (r *Resolver) buildStandardFiles(
-	registry *template.Template,
-	tmplData *TemplateData,
-	fileSet *config.ResolvedFileSet,
-) ([]ResolvedFile, error) {
-	var files []ResolvedFile
-	for _, g := range unitCategoryPaths(fileSet) {
-		for _, srcPath := range g.Paths {
-			f, err := r.resolveFile(registry, tmplData, srcPath, g.Spec, r.unitDestPath(g.Spec, srcPath))
-			if err != nil {
-				return nil, err
-			}
-			files = append(files, *f)
-		}
-	}
-	return files, nil
-}
-
-func (r *Resolver) buildSecretFiles(
-	registry *template.Template,
-	tmplData *TemplateData,
-	secrets []string,
+	refs []fileRef,
 	resolvedDirect map[string]string,
 ) ([]ResolvedFile, error) {
-	var files []ResolvedFile
-	for _, srcPath := range secrets {
-		if op.IsRef(srcPath) || pp.IsRef(srcPath) {
-			if resolvedDirect == nil {
-				continue
+	files := make([]ResolvedFile, 0, len(refs))
+	for _, ref := range refs {
+		spec, _ := config.SpecFor(ref.Category)
+		var (
+			f   *ResolvedFile
+			err error
+		)
+		switch spec.Dest {
+		case config.DestQuadlet, config.DestSystemd:
+			f, err = r.resolveFile(registry, tmplData, ref.SrcPath, spec, r.unitDestPath(spec, ref.SrcPath))
+		case config.DestData:
+			f, err = r.resolveNestedRef(registry, tmplData, ref)
+		case config.DestSecret:
+			if isProviderRef(ref.SrcPath) {
+				if resolvedDirect == nil {
+					continue
+				}
+				f, err = r.buildDirectSecretFile(ref.SrcPath, resolvedDirect[ref.SrcPath])
+			} else {
+				f, err = r.resolveSecret(registry, tmplData, ref.SrcPath)
 			}
-			f, err := r.buildDirectSecretFile(srcPath, resolvedDirect[srcPath])
-			if err != nil {
-				return nil, err
-			}
-			files = append(files, *f)
-			continue
 		}
-
-		f, err := r.resolveSecret(registry, tmplData, srcPath)
 		if err != nil {
 			return nil, err
 		}
 		files = append(files, *f)
 	}
 	return files, nil
+}
+
+// isProviderRef reports whether a secrets entry is a provider ref (op://,
+// pass://) rather than a repo or host-only secret file.
+func isProviderRef(src string) bool {
+	return op.IsRef(src) || pp.IsRef(src)
 }
 
 func detectCollisions(files []ResolvedFile) error {
@@ -743,7 +635,7 @@ func destFilename(srcPath string) string {
 	return strings.TrimSuffix(path.Base(srcPath), ".tmpl")
 }
 
-func (r *Resolver) resolveNestedRef(registry *template.Template, tmplData *TemplateData, ref bundleFileRef) (*ResolvedFile, error) {
+func (r *Resolver) resolveNestedRef(registry *template.Template, tmplData *TemplateData, ref fileRef) (*ResolvedFile, error) {
 	content, err := r.renderOrRead(registry, tmplData, ref.SrcPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving %s %s: %w", ref.Category, ref.SrcPath, err)
@@ -751,7 +643,7 @@ func (r *Resolver) resolveNestedRef(registry *template.Template, tmplData *Templ
 
 	return &ResolvedFile{
 		SrcPath:  ref.SrcPath,
-		DestPath: r.dataDestPath(ref.LogicalPath),
+		DestPath: r.dataDestPath(ref.DataPath),
 		Content:  content,
 		Category: ref.Category,
 		RelPath:  ref.RelPath,
@@ -889,30 +781,17 @@ func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, re
 // collectTemplateRefs executes all .tmpl files in collect mode to discover
 // reader-function calls (readOpSecret, readProtonPassSecret, …). Output is
 // discarded — only the side effect of populating each provider's RefCache matters.
-func (r *Resolver) collectTemplateRefs(
-	registry *template.Template,
-	tmplData *TemplateData,
-	fileSet *config.ResolvedFileSet,
-	bundleFileRefs []bundleFileRef,
-	hookRefs []hookRef,
-) {
-	var allPaths []string
-	for _, g := range unitCategoryPaths(fileSet) {
-		allPaths = append(allPaths, g.Paths...)
-	}
-	for _, ref := range bundleFileRefs {
-		allPaths = append(allPaths, ref.SrcPath)
-	}
-	for _, ref := range hookRefs {
-		allPaths = append(allPaths, ref.SrcPath)
-	}
-	// Include secret entries that are templates — they may call provider
-	// reader functions. Direct provider refs (op://, pass://) are not
-	// templates and are skipped.
-	for _, path := range fileSet.Paths[config.CategorySecret] {
-		if !op.IsRef(path) && !pp.IsRef(path) {
-			allPaths = append(allPaths, path)
+// Secret templates are included: they may call provider reader functions;
+// direct provider refs (op://, pass://) are not templates and are skipped.
+func (r *Resolver) collectTemplateRefs(registry *template.Template, tmplData *TemplateData, expanded *expansion) {
+	allPaths := make([]string, 0, len(expanded.Files)+len(expanded.Hooks))
+	for _, ref := range expanded.Files {
+		if !isProviderRef(ref.SrcPath) {
+			allPaths = append(allPaths, ref.SrcPath)
 		}
+	}
+	for _, ref := range expanded.Hooks {
+		allPaths = append(allPaths, ref.SrcPath)
 	}
 	for _, path := range allPaths {
 		if !strings.HasSuffix(path, ".tmpl") {

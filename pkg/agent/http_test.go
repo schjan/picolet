@@ -226,9 +226,8 @@ func TestWebhookTriggersReconciliation(t *testing.T) {
 	// Push a new commit that adds hello.container
 	pushToTestRepo(t, bareDir, map[string]string{
 		"assignments.yml": `base:
-  networks:
+  paths:
     - quadlets/networks/internal.network
-  containers:
     - quadlets/containers/hello.container
 `,
 		"quadlets/containers/hello.container": `[Container]

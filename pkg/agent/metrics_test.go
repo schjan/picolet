@@ -12,7 +12,6 @@ import (
 
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
-	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/resolver"
@@ -105,25 +104,32 @@ func TestRecordHealthMetrics_RunRecordLifecycle(t *testing.T) {
 	assert.NotContains(t, a.statusStore.Snapshot().Runs, "job.service")
 }
 
+// picolet_files_managed_total carries one series per deployable category —
+// including pod, image and build — and none for the unsupported artifact row.
 func TestSetFilesManagedMetric(t *testing.T) {
 	t.Parallel()
 	metrics.Register(nil)
 
+	// Distinct non-zero counts: a missing label would read back as 0.
 	counts := map[string]float64{
-		"container": 3,
 		"network":   1,
-		"volume":    0,
-		"kube":      2,
-		"systemd":   0,
-		"manifest":  0,
-		"secret":    5,
+		"systemd":   2,
+		"volume":    3,
+		"image":     4,
+		"build":     5,
+		"container": 6,
+		"kube":      7,
+		"pod":       8,
+		"manifest":  9,
+		"file":      10,
+		"secret":    11,
 	}
 	setFilesManagedMetric(counts)
 
-	for _, cat := range config.Deployable() {
-		category := cat.String()
+	require.Equal(t, len(counts), testutil.CollectAndCount(metrics.FilesManagedTotal))
+	for category, want := range counts {
 		got := testutil.ToFloat64(metrics.FilesManagedTotal.WithLabelValues(category))
-		assert.InDelta(t, counts[category], got, 0.001, "category %s", category)
+		assert.InDelta(t, want, got, 0.001, "category %s", category)
 	}
 }
 

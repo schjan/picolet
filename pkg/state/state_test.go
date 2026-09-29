@@ -8,7 +8,41 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/schjan/picolet/pkg/config"
 )
+
+// A state.json written before the category table (#150) loads unchanged: its
+// category strings are still rows of the table, so deletes, health and the
+// managed-files metric keep working without operators deleting state.json.
+func TestLoadPreTableCategories(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "state.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+  "applied_sha": "abc123",
+  "managed_files": {
+    "/etc/containers/systemd/picolet/web.container": {"hash": "sha256:1", "category": "container"},
+    "/etc/containers/systemd/picolet/lan.network": {"hash": "sha256:2", "category": "network"},
+    "/etc/containers/systemd/picolet/data.volume": {"hash": "sha256:3", "category": "volume"},
+    "/etc/containers/systemd/picolet/stack.kube": {"hash": "sha256:4", "category": "kube"},
+    "/etc/systemd/system/backup.timer": {"hash": "sha256:5", "category": "systemd"},
+    "/var/lib/picolet/manifests/app/deploy.yml": {"hash": "sha256:6", "category": "manifest"},
+    "/var/lib/picolet/files/app.conf": {"hash": "sha256:7", "category": "file"},
+    "secret:db": {"hash": "sha256:8", "category": "secret"}
+  },
+  "service_names": {"/etc/containers/systemd/picolet/web.container": "web.service"}
+}`), 0o600))
+
+	st, err := NewStore(path).Load()
+	require.NoError(t, err)
+	assert.Equal(t, "abc123", st.AppliedSHA)
+	require.Len(t, st.ManagedFiles, 8)
+	for dest, mf := range st.ManagedFiles {
+		spec, ok := config.SpecFor(mf.Category)
+		require.True(t, ok, "%s: category %q is not in the category table", dest, mf.Category)
+		assert.NotEqual(t, config.CheckUnsupported, spec.Check, "%s: category %q", dest, mf.Category)
+	}
+}
 
 func TestLoadMissing(t *testing.T) {
 	t.Parallel()

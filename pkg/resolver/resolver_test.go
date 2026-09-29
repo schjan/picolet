@@ -38,11 +38,9 @@ ports:
 `)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:
-  networks:
+  paths:
     - quadlets/networks/internal.network
-  containers:
     - quadlets/containers/test.container.tmpl
-  manifests:
     - manifests/app/deployment.yml.tmpl
 roles: {}
 features: {}
@@ -248,13 +246,10 @@ func prepareUnits(t *testing.T, fsys fs.FS) []string {
 func TestTemplateDataSystemdUnits_QuadletDerived(t *testing.T) {
 	t.Parallel()
 	fsys := systemdUnitsFS(`base:
-  containers:
+  paths:
     - quadlets/app.container
-  kube:
     - quadlets/stack.kube
-  networks:
     - quadlets/net.network
-  volumes:
     - quadlets/data.volume
 roles: {}
 features: {}
@@ -272,7 +267,7 @@ features: {}
 func TestTemplateDataSystemdUnits_ServiceNameOverride(t *testing.T) {
 	t.Parallel()
 	fsys := systemdUnitsFS(`base:
-  containers:
+  paths:
     - quadlets/app.container
 roles: {}
 features: {}
@@ -285,7 +280,7 @@ features: {}
 func TestTemplateDataSystemdUnits_RawSystemd(t *testing.T) {
 	t.Parallel()
 	fsys := systemdUnitsFS(`base:
-  systemd:
+  paths:
     - systemd/foo.socket
     - systemd/bar.timer.tmpl
 roles: {}
@@ -300,7 +295,7 @@ features: {}
 func TestTemplateDataSystemdUnits_SortedAndUnique(t *testing.T) {
 	t.Parallel()
 	fsys := systemdUnitsFS(`base:
-  containers:
+  paths:
     - quadlets/z.container
     - quadlets/a.container
     - quadlets/m.container
@@ -317,7 +312,7 @@ features: {}
 func TestTemplateDataSystemdUnits_NonTemplateQuadlet(t *testing.T) {
 	t.Parallel()
 	fsys := systemdUnitsFS(`base:
-  containers:
+  paths:
     - quadlets/static.container
 roles: {}
 features: {}
@@ -330,7 +325,7 @@ features: {}
 func TestTemplateDataSystemdUnits_PlaceholderMode(t *testing.T) {
 	t.Parallel()
 	fsys := systemdUnitsFS(`base:
-  containers:
+  paths:
     - quadlets/app.container.tmpl
 roles: {}
 features: {}
@@ -345,7 +340,7 @@ features: {}
 func TestTemplateDataSystemdUnits_PassOneErrorsTolerated(t *testing.T) {
 	t.Parallel()
 	fsys := systemdUnitsFS(`base:
-  containers:
+  paths:
     - quadlets/bad.container.tmpl
     - quadlets/good.container
 roles: {}
@@ -369,7 +364,7 @@ func TestTemplateDataSystemdUnits_EmptyHost(t *testing.T) {
 func TestTemplateDataSystemdUnits_SelfReferencing(t *testing.T) {
 	t.Parallel()
 	fsys := systemdUnitsFS(`base:
-  containers:
+  paths:
     - quadlets/node-exporter.container.tmpl
     - quadlets/other.container
 roles: {}
@@ -525,11 +520,9 @@ func newHostDataDirFleetFS() fstest.MapFS {
 		"fleet.yml": &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:
-  containers:
+  paths:
     - quadlets/app.container.tmpl
-  files:
     - files/app.conf
-  manifests:
     - manifests/scrape.yml
 roles: {}
 features: {}
@@ -636,11 +629,9 @@ roles:
     services:
       - web
   explicit:
-    networks:
+    paths:
       - quadlets/networks/internal.network
-    containers:
       - quadlets/containers/web.container.tmpl
-    manifests:
       - manifests/app/deployment.yml.tmpl
 features: {}
 `)},
@@ -1256,7 +1247,7 @@ ports: {}
 base:
   services:
     - web
-  systemd:
+  paths:
     - systemd/http.socket
 roles: {}
 features: {}
@@ -1309,7 +1300,7 @@ func TestResolveHostCollision(t *testing.T) {
 base:
   services:
     - web
-  containers:
+  paths:
     - quadlets/containers/web.container.tmpl
 roles: {}
 features: {}
@@ -1342,7 +1333,7 @@ WantedBy=default.target
 base:
   services:
     - web
-  systemd:
+  paths:
     - systemd/http.socket
 roles: {}
 features: {}
@@ -1363,7 +1354,7 @@ features: {}
 base:
   services:
     - web
-  manifests:
+  paths:
     - manifests/app/deployment.yml.tmpl
 roles: {}
 features: {}

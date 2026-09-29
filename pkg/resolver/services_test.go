@@ -30,27 +30,27 @@ func TestExpandServiceBundlesHappyPath(t *testing.T) {
 	expanded, err := expandServiceBundles(fsys, []string{"web"})
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"services/web/networks/internal.network"}, expanded.Paths[config.CategoryNetwork])
-	assert.Equal(t, []string{"services/web/systemd/http.socket"}, expanded.Paths[config.CategorySystemd])
-	assert.Equal(t, []string{"services/web/volumes/data.volume"}, expanded.Paths[config.CategoryVolume])
-	assert.Equal(t, []string{"services/web/containers/web.container.tmpl"}, expanded.Paths[config.CategoryContainer])
-	assert.Equal(t, []string{"services/web/kube/app.kube.tmpl"}, expanded.Paths[config.CategoryKube])
-	assert.Equal(t, []string{"services/web/secrets/config.yml.tmpl"}, expanded.Paths[config.CategorySecret])
+	assert.ElementsMatch(t, []fileRef{
+		{SrcPath: "services/web/networks/internal.network", Category: config.CategoryNetwork},
+		{SrcPath: "services/web/systemd/http.socket", Category: config.CategorySystemd},
+		{SrcPath: "services/web/volumes/data.volume", Category: config.CategoryVolume},
+		{SrcPath: "services/web/containers/web.container.tmpl", Category: config.CategoryContainer},
+		{SrcPath: "services/web/kube/app.kube.tmpl", Category: config.CategoryKube},
+		{SrcPath: "services/web/secrets/config.yml.tmpl", Category: config.CategorySecret},
+		{
+			SrcPath:  "services/web/manifests/app/configs/app.conf",
+			Category: config.CategoryManifest,
+			DataPath: "manifests/app/configs/app.conf",
+			RelPath:  "app/configs/app.conf",
+		},
+		{
+			SrcPath:  "services/web/manifests/app/deployment.yml.tmpl",
+			Category: config.CategoryManifest,
+			DataPath: "manifests/app/deployment.yml.tmpl",
+			RelPath:  "app/deployment.yml",
+		},
+	}, expanded.Files)
 	assert.Equal(t, []hookRef{{Service: "web", SrcPath: "services/web/picolet.yml"}}, expanded.Hooks)
-	assert.Equal(t, []bundleFileRef{
-		{
-			SrcPath:     "services/web/manifests/app/configs/app.conf",
-			LogicalPath: "manifests/app/configs/app.conf",
-			Category:    "manifest",
-			RelPath:     "app/configs/app.conf",
-		},
-		{
-			SrcPath:     "services/web/manifests/app/deployment.yml.tmpl",
-			LogicalPath: "manifests/app/deployment.yml.tmpl",
-			Category:    "manifest",
-			RelPath:     "app/deployment.yml",
-		},
-	}, expanded.NestedRefs)
 }
 
 func TestExpandServiceBundlesMetadataOnlyIsEmpty(t *testing.T) {
@@ -120,9 +120,9 @@ func TestExpandServiceBundlesIgnoresEmptyDirectory(t *testing.T) {
 
 	expanded, err := expandServiceBundles(fsys, []string{"web"})
 	require.NoError(t, err)
-	assert.Equal(t, map[config.Category][]string{
-		config.CategoryNetwork: {"services/web/networks/internal.network"},
-	}, expanded.Paths)
+	assert.Equal(t, []fileRef{
+		{SrcPath: "services/web/networks/internal.network", Category: config.CategoryNetwork},
+	}, expanded.Files)
 }
 
 func TestExpandServiceBundlesRejectsSymlink(t *testing.T) {
@@ -228,19 +228,11 @@ func TestExpandServiceBundlesIncludesFilesCategory(t *testing.T) {
 
 	expanded, err := expandServiceBundles(fsys, []string{"web"})
 	require.NoError(t, err)
-	require.Len(t, expanded.NestedRefs, 2)
-	assert.Equal(t, bundleFileRef{
-		SrcPath:     "services/web/files/rules/alerts.yml",
-		LogicalPath: "files/rules/alerts.yml",
-		Category:    "file",
-		RelPath:     "rules/alerts.yml",
-	}, expanded.NestedRefs[0])
-	assert.Equal(t, bundleFileRef{
-		SrcPath:     "services/web/files/scrape.yml",
-		LogicalPath: "files/scrape.yml",
-		Category:    "file",
-		RelPath:     "scrape.yml",
-	}, expanded.NestedRefs[1])
+	assert.ElementsMatch(t, []fileRef{
+		{SrcPath: "services/web/containers/web.container", Category: config.CategoryContainer},
+		{SrcPath: "services/web/files/rules/alerts.yml", Category: config.CategoryFile, DataPath: "files/rules/alerts.yml", RelPath: "rules/alerts.yml"},
+		{SrcPath: "services/web/files/scrape.yml", Category: config.CategoryFile, DataPath: "files/scrape.yml", RelPath: "scrape.yml"},
+	}, expanded.Files)
 }
 
 // bundleTree is a nested, category-free Service Bundle layout; keys are

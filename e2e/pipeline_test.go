@@ -1041,14 +1041,13 @@ WantedBy=default.target
 
 // e2eAssignments builds an assignments.yml YAML string with the shared base
 // structure, parameterising only the e2e role's containers and optional secret.
-// extraSystemd appends additional base.systemd entries (e.g. the timer-triggered
+// extraSystemd appends additional base.paths entries (e.g. the timer-triggered
 // one-shot fixtures) without disturbing existing call sites.
 func e2eAssignments(e2eContainers []string, withSecret bool, extraSystemd ...string) string {
 	var sb strings.Builder
 	sb.WriteString(`base:
-  networks:
+  paths:
     - quadlets/networks/internal.network
-  systemd:
     - systemd/custom.socket
     - systemd/custom.service
     - systemd/maintenance.timer
@@ -1059,21 +1058,18 @@ func e2eAssignments(e2eContainers []string, withSecret bool, extraSystemd ...str
 	}
 	sb.WriteString(`roles:
   controller:
-    containers:
+    paths:
       - quadlets/containers/exporter.container
-    volumes:
       - quadlets/volumes/data.volume
-    kube:
       - quadlets/kube/app-stack.kube.tmpl
-    manifests:
       - manifests/app/deployment.yml.tmpl
     secrets:
       - secrets/app_secret.yml.tmpl
   worker:
-    containers:
+    paths:
       - quadlets/containers/exporter.container
   e2e:
-    containers:
+    paths:
 `)
 	for _, c := range e2eContainers {
 		fmt.Fprintf(&sb, "      - %s\n", c)
@@ -1083,7 +1079,7 @@ func e2eAssignments(e2eContainers []string, withSecret bool, extraSystemd ...str
 	}
 	sb.WriteString(`features:
   app-a:
-    containers:
+    paths:
       - quadlets/containers/nginx.container.tmpl
 `)
 	return sb.String()

@@ -50,7 +50,7 @@ ports:
 
 	// Create assignments.yml
 	writeTestFile(t, workDir, "assignments.yml", `base:
-  networks:
+  paths:
     - quadlets/networks/internal.network
 `)
 
@@ -514,7 +514,7 @@ func TestReconcileOnceSavesPendingUnitsOnFailedRestart(t *testing.T) {
 	repoDir := t.TempDir()
 	writeTestFile(t, repoDir, "fleet.yml", "images: {}\nports: {}\n")
 	writeTestFile(t, repoDir, "assignments.yml", `base:
-  networks:
+  paths:
     - quadlets/networks/internal.network
 `)
 	writeTestFile(t, repoDir, "hosts/test-host/host.yml", `hostname: test-host
@@ -1024,7 +1024,7 @@ func TestReconcileNoChangesNewSHAMarksApplied(t *testing.T) {
 ports: {}
 `)
 	writeTestFile(t, repoDir, "assignments.yml", `base:
-  networks:
+  paths:
     - quadlets/networks/internal.network
 `)
 	writeTestFile(t, repoDir, "hosts/test-host/host.yml", `hostname: test-host
@@ -1369,7 +1369,7 @@ ports:
   app: 8080
 `)
 	writeTestFile(t, repoDir, filepath.Join(subDir, "assignments.yml"), `base:
-  networks:
+  paths:
     - quadlets/networks/internal.network
 `)
 	writeTestFile(t, repoDir, filepath.Join(subDir, "hosts/test-host/host.yml"), `hostname: test-host
@@ -1406,7 +1406,7 @@ func TestRefreshResolvedSnapshot_ValidationFailure(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "hosts/test-host"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "fleet.yml"), []byte("images: {}\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "assignments.yml"), []byte(`base:
-  containers:
+  paths:
     - quadlets/broken.container
 `), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "hosts/test-host/host.yml"), []byte(`hostname: test-host
