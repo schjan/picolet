@@ -18,6 +18,7 @@ import (
 
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/reconciler"
+	"github.com/schjan/picolet/pkg/status"
 )
 
 // ErrApplyIncomplete is returned by the agent's apply path when all file writes
@@ -47,6 +48,13 @@ type SystemdManager interface {
 	StartUnit(ctx context.Context, name string) error
 	StopUnit(ctx context.Context, name string) error
 	RestartUnit(ctx context.Context, name string) error
+	// RunBuildUnit starts a .build unit's service and waits for the build to
+	// finish (a longer wait than other jobs). Never a restart: that would
+	// propagate to the units requiring the build before it has succeeded.
+	RunBuildUnit(ctx context.Context, name string) error
+	// RestartUnitIgnoringDependencies restarts (or starts, when inactive) a
+	// unit without starting its Requires= units again.
+	RestartUnitIgnoringDependencies(ctx context.Context, name string) error
 	// EnableUnit links a unit's [Install] symlinks (e.g. into timers.target.wants)
 	// so it persists across reboots. Required for hand-written raw systemd units;
 	// quadlet-generated units realize their own [Install] and must not be enabled.
@@ -119,6 +127,12 @@ type PodmanClient interface {
 	// any container (running or stopped) is removed (podman image prune -a);
 	// otherwise only dangling images are removed.
 	ImagePrune(ctx context.Context, all bool) (PruneResult, error)
+	// ImageID returns the ID of the image ref names, "" when no image has it.
+	ImageID(ctx context.Context, ref string) (string, error)
+	// ImageTag points the tag ref at the image id.
+	ImageTag(ctx context.Context, id, ref string) error
+	// ImageUntag removes the tag ref from its image.
+	ImageUntag(ctx context.Context, ref string) error
 }
 
 // FileWriter writes files atomically.
@@ -247,6 +261,8 @@ type Applier struct {
 	// agent mid-apply, before state is saved, so those operations are deferred
 	// (see restartUnits).
 	selfUnits map[string]struct{}
+	// deps are the generated unit dependencies (WithDependencies).
+	deps map[string]status.UnitDependencies
 }
 
 // New creates a new Applier. Hooks may be nil if no change-triggered actions are needed.
@@ -336,6 +352,11 @@ type applyPhaseResult struct {
 	// the members of a restarting pod (see dropPodMemberRestarts).
 	ChangedPods map[string]string
 	PodMembers  map[string]string
+	// Builds are the .build services whose unit or inputs changed, BuildTags
+	// the image tags they write (see triggeredBuilds); restartUnits runs them
+	// before restarting anything.
+	Builds      []string
+	BuildTags   []string
 	NeedsReload bool
 }
 
@@ -387,6 +408,7 @@ func (a *Applier) ApplyWithPending(ctx context.Context, cs *reconciler.Changeset
 	if a.dryRun {
 		return result, nil
 	}
+	phase.Builds, phase.BuildTags = triggeredBuilds(cs.Changes)
 	hookRestartUnits := a.runHooksWithPending(ctx, phase.ChangedSecrets, phase.ChangedRels, phase.ChangedUnits, pendingNames, result)
 	maps.Copy(phase.ChangedUnits, hookRestartUnits)
 	return result, a.restartUnits(ctx, phase, result)
@@ -464,7 +486,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			if change.ServiceName != "" {
 				recordChangedUnit(change, p)
 			}
-		case config.RestartNone:
+		case config.RestartRebuild, config.RestartNone: // builds: triggeredBuilds
 		}
 		if a.isSelfContainer(change.DestPath) {
 			result.NeedsSelfRestart = true
@@ -705,26 +727,53 @@ func (a *Applier) applyChange(ctx context.Context, change reconciler.Change) err
 
 func (a *Applier) restartUnits(ctx context.Context, phase *applyPhaseResult, result *ApplyResult) error {
 	if len(phase.ChangedUnits) == 0 && !phase.NeedsReload && len(result.DeferredSelfStops) == 0 &&
-		len(phase.SystemdActivations) == 0 {
+		len(phase.SystemdActivations) == 0 && len(phase.Builds) == 0 {
 		return nil
 	}
 	// Reload first: enable/start must see the new unit files in systemd's namespace.
 	if err := a.reloadIfNeeded(ctx, phase.NeedsReload); err != nil {
 		return err
 	}
+	// Builds run before anything is (re)started, so a failed one fails the
+	// apply with every running unit untouched.
+	if err := a.runBuilds(ctx, phase.Builds, phase.BuildTags, result); err != nil {
+		return err
+	}
+	for _, build := range phase.Builds {
+		// A hook restarting the build is covered by the build just run; an
+		// ordinary restart would propagate to its running consumers.
+		delete(phase.ChangedUnits, build)
+	}
 	a.activateSystemdUnits(ctx, phase, result)
 	dropPodMemberRestarts(phase)
-	var selfRestarts []string
-	for _, unit := range slices.Sorted(maps.Keys(phase.ChangedUnits)) {
+	consumers := a.takeBuildConsumers(phase)
+	selfRestarts := a.restartChangedUnits(ctx, phase, result)
+	selfConsumers := a.restartEach(consumers, func(unit string) { a.restartConsumer(ctx, unit, result) })
+	a.scheduleSelfUnitOps(selfRestarts, result)           //nolint:contextcheck // self ops intentionally detach from the apply context
+	a.scheduleSelfConsumerRestarts(selfConsumers, result) //nolint:contextcheck // self ops intentionally detach from the apply context
+	return nil
+}
+
+// restartChangedUnits restarts the changed quadlet units, alphabetically, and
+// returns the self units among them, whose restart is deferred.
+func (a *Applier) restartChangedUnits(ctx context.Context, phase *applyPhaseResult, result *ApplyResult) []string {
+	return a.restartEach(slices.Sorted(maps.Keys(phase.ChangedUnits)), func(unit string) {
+		_, oneshot := phase.OneshotUnits[unit]
+		a.restartChangedUnit(ctx, unit, oneshot, result)
+	})
+}
+
+// restartEach calls restart for each unit that is not a self unit and
+// returns the self units, whose restart is deferred (scheduleSelfUnitOps).
+func (a *Applier) restartEach(units []string, restart func(unit string)) (selfRestarts []string) {
+	for _, unit := range units {
 		if a.isSelfUnit(unit) {
 			selfRestarts = append(selfRestarts, unit)
 			continue
 		}
-		_, oneshot := phase.OneshotUnits[unit]
-		a.restartChangedUnit(ctx, unit, oneshot, result)
+		restart(unit)
 	}
-	a.scheduleSelfUnitOps(selfRestarts, result) //nolint:contextcheck // self ops intentionally detach from the apply context
-	return nil
+	return selfRestarts
 }
 
 // restartChangedUnit restarts one changed quadlet unit and records the outcome. A
@@ -734,7 +783,13 @@ func (a *Applier) restartChangedUnit(ctx context.Context, unit string, oneshot b
 		return
 	}
 	slog.Info("restarting unit", "unit", unit)
-	if err := a.systemd.RestartUnit(ctx, unit); err != nil {
+	recordRestart(unit, a.systemd.RestartUnit(ctx, unit), result)
+}
+
+// recordRestart records the outcome of restarting a managed unit: a failure
+// is pending (FailedRestartUnits), a success converges it (RestartedUnits).
+func recordRestart(unit string, err error, result *ApplyResult) {
+	if err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("restarting %s: %w", unit, err))
 		result.FailedRestartUnits = append(result.FailedRestartUnits, unit)
 		return

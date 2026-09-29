@@ -351,9 +351,59 @@ Deliver a build's Containerfile under `files/` and point at it with
 `File={{ filePath "<app>/Containerfile" }}` plus `SetWorkingDirectory=file` (build context =
 the Containerfile's directory). Both generated services are one-shots their consumers
 pull in: reported; the health loop never restarts one that fails on its own, but retries
-an apply-time restart that failed (a changed `.image` is pulled again; if the pull fails,
-it is pending like any failed unit restart, see [Hooks](#hooks)). A build runs when a
-consumer starts it (Podman sets no `RemainAfterExit` for builds); rebuild-on-change is #127.
+an apply-time restart of a `.image` that failed (a changed `.image` is pulled again; if
+the pull fails, it is pending like any failed unit restart, see [Hooks](#hooks)).
+
+#### Rebuild trigger
+
+Podman watches nothing: a build (no `RemainAfterExit`) runs whenever a consumer starts,
+and never because its inputs changed. Picolet therefore **rebuilds on change**, a
+deliberate exception to the rule that one-shots systemd activates are never started by
+Picolet. When a Reconciliation creates or updates a `.build`, or creates, updates or
+deletes a file it builds from — its `File=`, or anything under its build context
+directory — Picolet, after `daemon-reload`:
+
+1. **starts** `<name>-build.service` and waits for the build (up to 30 minutes), before
+   restarting anything else. A start, not a restart: systemd propagates a restart of a
+   `Requires=` dependency to its consumers, stopping them before the build has succeeded.
+2. **restarts** each running consumer — every unit that `Requires=` the build service
+   (`Image=<name>.build` containers and volumes) — with job mode `ignore-dependencies`,
+   after the other changed units, so the build is not run again: a running consumer is
+   never stopped by a build. A consumer that is not running (one whose start failed on
+   an earlier bad build) is started the ordinary way, with its dependencies; that runs
+   the build again, as a full cache hit. Also left to the ordinary path: members of a pod
+   restarted in the same Reconciliation (the pod restarts them, running the build again
+   from cache). One-shots a timer runs are left alone (the next run uses the new image).
+   A restart hook on the build service is covered by the build that already ran.
+
+A **failed build fails the Reconciliation**: nothing has been restarted, the deployed files
+are rolled back, and the commit counts toward the failed-commit gate like any failed apply.
+Every tag the Reconciliation's builds write is put back on the image it named before
+(including one an earlier, successful build of the same Reconciliation moved), so the
+consumer keeps running the previous image and no image built from rolled-back inputs
+stays tagged. The build service is left `failed` (reported, not retried by the health
+loop). A build Picolet gives up waiting on (timeout, shutdown) is killed and waited for.
+A failed consumer restart after a successful build is pending and retried like any
+failed unit restart; `picolet apply` fails instead and saves no state, so the next apply
+retries.
+
+**Build runs after the rebuild.** Podman runs the build again whenever a consumer starts:
+on the ordinary paths above, and on every later start (a reboot, a health-loop restart).
+That re-run uses cached layers and executes no `RUN` step, and with the default
+`Pull=missing` it does not contact the registry while the base image is present. Keep the
+default on a `.build`: with `Pull=always` or `Pull=newer` every re-run checks the registry,
+and fails while it is unreachable, which stops a consumer that had to be started anyway
+(a pod or dependency that changed in the same commit, a reboot). Picolet checks a build
+once, before restarting anything; it does not prevent these later runs.
+
+The build context follows Quadlet: a `[Service] WorkingDirectory=`, unless
+`SetWorkingDirectory=` is an absolute path; otherwise `SetWorkingDirectory=file` → the
+Containerfile's directory, `=unit` → the Quadlet directory, a path → that directory
+(relative to the Quadlet directory). Only local paths count: a URL or specifier (`%h`)
+triggers nothing, and with neither key only `File=` does. A Reconciliation that touches
+none of a build's inputs restarts neither the build nor its consumers. Do not set
+`RemainAfterExit=yes` on a `.build`: the service would stay active and the start would
+not rebuild.
 
 #### `paths:` entries
 

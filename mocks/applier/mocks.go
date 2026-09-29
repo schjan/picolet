@@ -17,10 +17,19 @@ func NewMockSystemdManager(t interface {
 	mock.TestingT
 	Cleanup(func())
 }) *MockSystemdManager {
+	if helper, ok := t.(interface{ Helper() }); ok {
+		helper.Helper()
+	}
+
 	mock := &MockSystemdManager{}
 	mock.Mock.Test(t)
 
-	t.Cleanup(func() { mock.AssertExpectations(t) })
+	t.Cleanup(func() {
+		if helper, ok := t.(interface{ Helper() }); ok {
+			helper.Helper()
+		}
+		mock.AssertExpectations(t)
+	})
 
 	return mock
 }
@@ -359,6 +368,120 @@ func (_c *MockSystemdManager_RestartUnit_Call) RunAndReturn(run func(ctx context
 	return _c
 }
 
+// RestartUnitIgnoringDependencies provides a mock function for the type MockSystemdManager
+func (_mock *MockSystemdManager) RestartUnitIgnoringDependencies(ctx context.Context, name string) error {
+	ret := _mock.Called(ctx, name)
+
+	if len(ret) == 0 {
+		panic("no return value specified for RestartUnitIgnoringDependencies")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) error); ok {
+		r0 = returnFunc(ctx, name)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockSystemdManager_RestartUnitIgnoringDependencies_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RestartUnitIgnoringDependencies'
+type MockSystemdManager_RestartUnitIgnoringDependencies_Call struct {
+	*mock.Call
+}
+
+// RestartUnitIgnoringDependencies is a helper method to define mock.On call
+//   - ctx context.Context
+//   - name string
+func (_e *MockSystemdManager_Expecter) RestartUnitIgnoringDependencies(ctx any, name any) *MockSystemdManager_RestartUnitIgnoringDependencies_Call {
+	return &MockSystemdManager_RestartUnitIgnoringDependencies_Call{Call: _e.mock.On("RestartUnitIgnoringDependencies", ctx, name)}
+}
+
+func (_c *MockSystemdManager_RestartUnitIgnoringDependencies_Call) Run(run func(ctx context.Context, name string)) *MockSystemdManager_RestartUnitIgnoringDependencies_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockSystemdManager_RestartUnitIgnoringDependencies_Call) Return(err error) *MockSystemdManager_RestartUnitIgnoringDependencies_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockSystemdManager_RestartUnitIgnoringDependencies_Call) RunAndReturn(run func(ctx context.Context, name string) error) *MockSystemdManager_RestartUnitIgnoringDependencies_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// RunBuildUnit provides a mock function for the type MockSystemdManager
+func (_mock *MockSystemdManager) RunBuildUnit(ctx context.Context, name string) error {
+	ret := _mock.Called(ctx, name)
+
+	if len(ret) == 0 {
+		panic("no return value specified for RunBuildUnit")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) error); ok {
+		r0 = returnFunc(ctx, name)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockSystemdManager_RunBuildUnit_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RunBuildUnit'
+type MockSystemdManager_RunBuildUnit_Call struct {
+	*mock.Call
+}
+
+// RunBuildUnit is a helper method to define mock.On call
+//   - ctx context.Context
+//   - name string
+func (_e *MockSystemdManager_Expecter) RunBuildUnit(ctx any, name any) *MockSystemdManager_RunBuildUnit_Call {
+	return &MockSystemdManager_RunBuildUnit_Call{Call: _e.mock.On("RunBuildUnit", ctx, name)}
+}
+
+func (_c *MockSystemdManager_RunBuildUnit_Call) Run(run func(ctx context.Context, name string)) *MockSystemdManager_RunBuildUnit_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockSystemdManager_RunBuildUnit_Call) Return(err error) *MockSystemdManager_RunBuildUnit_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockSystemdManager_RunBuildUnit_Call) RunAndReturn(run func(ctx context.Context, name string) error) *MockSystemdManager_RunBuildUnit_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // StartUnit provides a mock function for the type MockSystemdManager
 func (_mock *MockSystemdManager) StartUnit(ctx context.Context, name string) error {
 	ret := _mock.Called(ctx, name)
@@ -479,10 +602,19 @@ func NewMockPodmanClient(t interface {
 	mock.TestingT
 	Cleanup(func())
 }) *MockPodmanClient {
+	if helper, ok := t.(interface{ Helper() }); ok {
+		helper.Helper()
+	}
+
 	mock := &MockPodmanClient{}
 	mock.Mock.Test(t)
 
-	t.Cleanup(func() { mock.AssertExpectations(t) })
+	t.Cleanup(func() {
+		if helper, ok := t.(interface{ Helper() }); ok {
+			helper.Helper()
+		}
+		mock.AssertExpectations(t)
+	})
 
 	return mock
 }
@@ -692,6 +824,72 @@ func (_c *MockPodmanClient_GetPodState_Call) RunAndReturn(run func(ctx context.C
 	return _c
 }
 
+// ImageID provides a mock function for the type MockPodmanClient
+func (_mock *MockPodmanClient) ImageID(ctx context.Context, ref string) (string, error) {
+	ret := _mock.Called(ctx, ref)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ImageID")
+	}
+
+	var r0 string
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) (string, error)); ok {
+		return returnFunc(ctx, ref)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) string); ok {
+		r0 = returnFunc(ctx, ref)
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, string) error); ok {
+		r1 = returnFunc(ctx, ref)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockPodmanClient_ImageID_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ImageID'
+type MockPodmanClient_ImageID_Call struct {
+	*mock.Call
+}
+
+// ImageID is a helper method to define mock.On call
+//   - ctx context.Context
+//   - ref string
+func (_e *MockPodmanClient_Expecter) ImageID(ctx any, ref any) *MockPodmanClient_ImageID_Call {
+	return &MockPodmanClient_ImageID_Call{Call: _e.mock.On("ImageID", ctx, ref)}
+}
+
+func (_c *MockPodmanClient_ImageID_Call) Run(run func(ctx context.Context, ref string)) *MockPodmanClient_ImageID_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockPodmanClient_ImageID_Call) Return(s string, err error) *MockPodmanClient_ImageID_Call {
+	_c.Call.Return(s, err)
+	return _c
+}
+
+func (_c *MockPodmanClient_ImageID_Call) RunAndReturn(run func(ctx context.Context, ref string) (string, error)) *MockPodmanClient_ImageID_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // ImagePrune provides a mock function for the type MockPodmanClient
 func (_mock *MockPodmanClient) ImagePrune(ctx context.Context, all bool) (applier.PruneResult, error) {
 	ret := _mock.Called(ctx, all)
@@ -754,6 +952,126 @@ func (_c *MockPodmanClient_ImagePrune_Call) Return(pruneResult applier.PruneResu
 }
 
 func (_c *MockPodmanClient_ImagePrune_Call) RunAndReturn(run func(ctx context.Context, all bool) (applier.PruneResult, error)) *MockPodmanClient_ImagePrune_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// ImageTag provides a mock function for the type MockPodmanClient
+func (_mock *MockPodmanClient) ImageTag(ctx context.Context, id string, ref string) error {
+	ret := _mock.Called(ctx, id, ref)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ImageTag")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string) error); ok {
+		r0 = returnFunc(ctx, id, ref)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockPodmanClient_ImageTag_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ImageTag'
+type MockPodmanClient_ImageTag_Call struct {
+	*mock.Call
+}
+
+// ImageTag is a helper method to define mock.On call
+//   - ctx context.Context
+//   - id string
+//   - ref string
+func (_e *MockPodmanClient_Expecter) ImageTag(ctx any, id any, ref any) *MockPodmanClient_ImageTag_Call {
+	return &MockPodmanClient_ImageTag_Call{Call: _e.mock.On("ImageTag", ctx, id, ref)}
+}
+
+func (_c *MockPodmanClient_ImageTag_Call) Run(run func(ctx context.Context, id string, ref string)) *MockPodmanClient_ImageTag_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 string
+		if args[2] != nil {
+			arg2 = args[2].(string)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+		)
+	})
+	return _c
+}
+
+func (_c *MockPodmanClient_ImageTag_Call) Return(err error) *MockPodmanClient_ImageTag_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockPodmanClient_ImageTag_Call) RunAndReturn(run func(ctx context.Context, id string, ref string) error) *MockPodmanClient_ImageTag_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// ImageUntag provides a mock function for the type MockPodmanClient
+func (_mock *MockPodmanClient) ImageUntag(ctx context.Context, ref string) error {
+	ret := _mock.Called(ctx, ref)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ImageUntag")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) error); ok {
+		r0 = returnFunc(ctx, ref)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockPodmanClient_ImageUntag_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ImageUntag'
+type MockPodmanClient_ImageUntag_Call struct {
+	*mock.Call
+}
+
+// ImageUntag is a helper method to define mock.On call
+//   - ctx context.Context
+//   - ref string
+func (_e *MockPodmanClient_Expecter) ImageUntag(ctx any, ref any) *MockPodmanClient_ImageUntag_Call {
+	return &MockPodmanClient_ImageUntag_Call{Call: _e.mock.On("ImageUntag", ctx, ref)}
+}
+
+func (_c *MockPodmanClient_ImageUntag_Call) Run(run func(ctx context.Context, ref string)) *MockPodmanClient_ImageUntag_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockPodmanClient_ImageUntag_Call) Return(err error) *MockPodmanClient_ImageUntag_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockPodmanClient_ImageUntag_Call) RunAndReturn(run func(ctx context.Context, ref string) error) *MockPodmanClient_ImageUntag_Call {
 	_c.Call.Return(run)
 	return _c
 }
@@ -1084,10 +1402,19 @@ func NewMockFileWriter(t interface {
 	mock.TestingT
 	Cleanup(func())
 }) *MockFileWriter {
+	if helper, ok := t.(interface{ Helper() }); ok {
+		helper.Helper()
+	}
+
 	mock := &MockFileWriter{}
 	mock.Mock.Test(t)
 
-	t.Cleanup(func() { mock.AssertExpectations(t) })
+	t.Cleanup(func() {
+		if helper, ok := t.(interface{ Helper() }); ok {
+			helper.Helper()
+		}
+		mock.AssertExpectations(t)
+	})
 
 	return mock
 }

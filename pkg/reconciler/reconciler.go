@@ -25,7 +25,7 @@ type Change struct {
 	DestPath    string
 	Category    config.Category
 	Action      Action
-	NewContent  string // empty for delete
+	NewContent  string // desired content (noops too: a .build's inputs may change without it); empty for delete
 	OldHash     string // from state, empty for create
 	NewHash     string // sha256 of NewContent
 	ServiceName string // "foo.service"; "" for non-quadlets/secrets
@@ -82,6 +82,7 @@ func classifyFile(f resolver.ResolvedFile, currentState *state.State) Change {
 	c := Change{
 		DestPath:    f.DestPath,
 		Category:    f.Category,
+		NewContent:  f.Content,
 		OldHash:     mf.Hash,
 		NewHash:     newHash,
 		ServiceName: f.ServiceName,
@@ -91,12 +92,10 @@ func classifyFile(f resolver.ResolvedFile, currentState *state.State) Change {
 	switch {
 	case !managed:
 		c.Action = ActionCreate
-		c.NewContent = f.Content
 	case mf.Hash == newHash:
 		c.Action = ActionNoop
 	default:
 		c.Action = ActionUpdate
-		c.NewContent = f.Content
 	}
 
 	return c

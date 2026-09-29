@@ -89,7 +89,7 @@ const (
 	// HealthReportOnly: a one-shot unit its consumers pull in (Requires=); its
 	// status is reported, and a unit that failed on its own is never restarted
 	// by the health loop — re-running it belongs to whatever activates it. A
-	// failed apply-time restart (Restart is not RestartNone) is retried like a
+	// failed apply-time restart (Restart is RestartChanged) is retried like a
 	// daemon's.
 	HealthReportOnly
 )
@@ -107,6 +107,12 @@ const (
 	// RestartActivate: enable/start/restart by [Install] and unit type; the
 	// unit is disabled before its file is removed.
 	RestartActivate
+	// RestartRebuild: when the unit or a file it builds from changed, apply
+	// starts it (never restarts it: a restart propagates to its Requires=
+	// consumers before the build has succeeded), then restarts its running
+	// consumers ignoring dependencies, so the build is not run again. A failed
+	// start fails the apply, which rolls back; the consumers are left untouched.
+	RestartRebuild
 )
 
 // Spec is one row of the category table.
@@ -170,9 +176,8 @@ var categories = []Spec{
 		ApplyRank: 30, ConvertOrder: 1, Health: HealthReportOnly, Restart: RestartChanged, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
-		// RestartNone until #127 adds rebuild-on-input-change.
 		Category: CategoryBuild, Dest: DestQuadlet, Check: CheckQuadlet,
-		ApplyRank: 40, ConvertOrder: 3, Health: HealthReportOnly, Restart: RestartNone, Prefill: true, Unit: GeneratedUnit,
+		ApplyRank: 40, ConvertOrder: 3, Health: HealthReportOnly, Restart: RestartRebuild, Prefill: true, Unit: GeneratedUnit,
 	},
 	{
 		Category: CategoryContainer, Dest: DestQuadlet, Check: CheckQuadlet,

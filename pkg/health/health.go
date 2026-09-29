@@ -165,9 +165,11 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State,
 
 // restartableByHealth reports whether the health loop may restart unit: every
 // managed file backing it belongs to a HealthDaemon category, or to a
-// HealthReportOnly category that apply restarts (Restart is not RestartNone)
+// HealthReportOnly category that apply restarts (Restart is RestartChanged)
 // while a failed apply-time restart of the unit is pending — the health loop
 // retries what apply started, never a report-only unit that failed on its own.
+// A build (RestartRebuild) is never restarted here: a restart propagates to
+// its running consumers, and apply fails rather than leaving a build pending.
 // Files whose category is not in the table (e.g. state written by another
 // version) keep the conservative default of being restarted.
 func restartableByHealth(unit string, st *state.State) bool {
@@ -183,7 +185,7 @@ func restartableByHealth(unit string, st *state.State) bool {
 		switch spec.Health {
 		case config.HealthDaemon:
 		case config.HealthReportOnly:
-			if !applyPending || spec.Restart == config.RestartNone {
+			if !applyPending || spec.Restart != config.RestartChanged {
 				return false
 			}
 		case config.HealthNone:
