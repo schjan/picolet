@@ -109,9 +109,9 @@ const (
 	RestartActivate
 	// RestartRebuild: when the unit or a file it builds from changed, apply
 	// starts it (never restarts it: a restart propagates to its Requires=
-	// consumers before the build has succeeded), then restarts its consumers
-	// ignoring dependencies, so the build is not run again. A failed start
-	// fails the apply, which rolls back; the consumers are left untouched.
+	// consumers before the build has succeeded), then restarts its running
+	// consumers ignoring dependencies, so the build is not run again. A failed
+	// start fails the apply, which rolls back; the consumers are left untouched.
 	RestartRebuild
 )
 

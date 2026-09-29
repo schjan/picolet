@@ -470,8 +470,10 @@ func applyWithRollback(
 		}
 		slog.Warn("non-fatal apply error", "error", e)
 	}
-	if len(result.RetryableErrors) > 0 {
-		return result, fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(result.RetryableErrors...))
+	// Failed managed restarts too: with no pending bookkeeping here, saving
+	// state would leave them unretried; not saving makes the next apply retry.
+	if err := agent.ApplyIncompleteError(result, changeset); err != nil {
+		return result, err
 	}
 
 	return result, nil

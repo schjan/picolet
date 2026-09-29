@@ -2,6 +2,7 @@ package applier
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -29,26 +30,28 @@ func WithDependencies(deps map[string]status.UnitDependencies) Option {
 }
 
 // triggeredBuilds returns the services of the RestartRebuild units (.build)
-// that must run, sorted: those whose own file was created or updated, and
-// those one of whose local inputs (buildInputs) was created, updated or
-// deleted. Podman generates no trigger for either; a build otherwise runs
-// only when a consumer next starts.
-func triggeredBuilds(changes []reconciler.Change) []string {
+// that must run, sorted, and the image tags they write (ImageTag=): those
+// whose own file was created or updated, and those one of whose local inputs
+// (buildInputs) was created, updated or deleted. Podman generates no trigger
+// for either; a build otherwise runs only when a consumer next starts.
+func triggeredBuilds(changes []reconciler.Change) (builds, tags []string) {
 	var changed []string
 	for _, c := range changes {
 		if c.Action != reconciler.ActionNoop && destination(c.Category) != config.DestSecret {
 			changed = append(changed, c.DestPath)
 		}
 	}
-	var builds []string
 	for _, c := range changes {
 		spec, _ := config.SpecFor(c.Category)
 		if spec.Restart == config.RestartRebuild && c.ServiceName != "" && buildTriggered(c, changed) {
 			builds = append(builds, c.ServiceName)
+			if u := parseUnitFile(filepath.Base(c.DestPath), c.NewContent); u != nil {
+				tags = append(tags, u.LookupAll(quadlet.BuildGroup, quadlet.KeyImageTag)...)
+			}
 		}
 	}
 	slices.Sort(builds)
-	return slices.Compact(builds)
+	return slices.Compact(builds), tags
 }
 
 // buildTriggered reports whether the .build change c must run: its file was
@@ -154,15 +157,64 @@ func isWithin(path, dir string) bool {
 // runBuilds starts each triggered build and waits for it. A start, never a
 // restart: systemd propagates a restart of a Requires= dependency to the
 // units requiring it, which would stop the running consumers before the
-// build has succeeded. The first failure fails the apply — nothing has been
-// restarted yet, and the previously built image is still tagged.
-func (a *Applier) runBuilds(ctx context.Context, builds []string, result *ApplyResult) error {
+// build has succeeded. The first failure fails the apply before anything is
+// restarted, and every tag is put back on the image it named before, so no
+// image built from inputs the rollback restores (an earlier build of the same
+// apply) stays tagged.
+func (a *Applier) runBuilds(ctx context.Context, builds, tags []string, result *ApplyResult) error {
+	if len(builds) == 0 {
+		return nil
+	}
+	before, err := a.imageIDs(ctx, tags)
+	if err != nil {
+		return fmt.Errorf("recording image tags before rebuilding: %w", err)
+	}
 	for _, unit := range builds {
 		slog.Info("building image", "unit", unit)
 		if err := a.systemd.RunBuildUnit(ctx, unit); err != nil {
-			return fmt.Errorf("rebuilding image: %w", err)
+			return errors.Join(fmt.Errorf("rebuilding image: %w", err), a.restoreTags(ctx, tags, before))
 		}
 		result.RestartedUnits = append(result.RestartedUnits, unit)
+	}
+	return nil
+}
+
+// imageIDs returns the image ID each tag names ("" for none).
+func (a *Applier) imageIDs(ctx context.Context, tags []string) (map[string]string, error) {
+	ids := make(map[string]string, len(tags))
+	for _, tag := range tags {
+		id, err := a.podman.ImageID(ctx, tag)
+		if err != nil {
+			return nil, err
+		}
+		ids[tag] = id
+	}
+	return ids, nil
+}
+
+// restoreTags points every tag back at the image it named before (untagging
+// one that named none). Uses a context detached from cancellation: it runs
+// on the failure path, also when the apply was cancelled.
+func (a *Applier) restoreTags(ctx context.Context, tags []string, before map[string]string) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobTimeout)
+	defer cancel()
+	var errs []error
+	for _, tag := range tags {
+		now, err := a.podman.ImageID(ctx, tag)
+		switch {
+		case err != nil:
+			errs = append(errs, err)
+		case now == before[tag]:
+		case before[tag] == "":
+			slog.Warn("removing tag of a build the failed apply rolls back", "tag", tag)
+			errs = append(errs, a.podman.ImageUntag(ctx, tag))
+		default:
+			slog.Warn("restoring tag of a build the failed apply rolls back", "tag", tag, "image", before[tag])
+			errs = append(errs, a.podman.ImageTag(ctx, before[tag], tag))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("restoring image tags: %w", err)
 	}
 	return nil
 }
@@ -188,13 +240,13 @@ func (a *Applier) takeBuildConsumers(p *applyPhaseResult) []string {
 	return slices.Sorted(maps.Keys(consumers))
 }
 
-// restartConsumer restarts a consumer of a rebuilt image without its
-// dependencies, so the build service is not started again; an inactive
-// consumer is started the same way. Runs after the ordinary restarts, so
-// dependencies changed alongside it are already up; if one is not, the start
-// fails and the health loop restarts the failed consumer the ordinary way. A
-// one-shot systemd activates (a timer's job) is left to its trigger. A
-// failure is a failed restart like any other (pending).
+// restartConsumer restarts a running consumer of a rebuilt image without its
+// dependencies, so the build service is not started again and cannot take the
+// consumer down a second time. A consumer that is not running is started the
+// ordinary way, with its dependencies (and so the build again, from cache):
+// nothing runs that it could take down. A one-shot systemd activates (a
+// timer's job) is left to its trigger. A failure is a failed restart like any
+// other (pending).
 func (a *Applier) restartConsumer(ctx context.Context, unit string, result *ApplyResult) {
 	st, err := a.systemd.GetUnitStatus(ctx, unit)
 	if err != nil {
@@ -207,6 +259,22 @@ func (a *Applier) restartConsumer(ctx context.Context, unit string, result *Appl
 			SystemdUnitOp{Unit: unit, Operation: SystemdOpRestart, Result: SystemdOpResultSkipped})
 		return
 	}
-	slog.Info("restarting consumer of rebuilt image", "unit", unit)
-	recordRestart(unit, a.systemd.RestartUnitIgnoringDependencies(ctx, unit), result)
+	slog.Info("restarting consumer of rebuilt image", "unit", unit, "active_state", st.ActiveState)
+	switch st.ActiveState {
+	case "active", "activating", "reloading":
+		recordRestart(unit, a.systemd.RestartUnitIgnoringDependencies(ctx, unit), result)
+	default:
+		recordRestart(unit, a.systemd.RestartUnit(ctx, unit), result)
+	}
+}
+
+// scheduleSelfConsumerRestarts defers the restart of the agent's own units
+// among the consumers, like any self restart, but without dependencies: an
+// ordinary restart would run the build again under the agent.
+func (a *Applier) scheduleSelfConsumerRestarts(units []string, result *ApplyResult) {
+	for _, unit := range units {
+		slog.Info("restarting picolet (rebuilt image), state will be saved before shutdown", "unit", unit)
+		result.RestartedUnits = append(result.RestartedUnits, unit)
+		a.deferredSelfUnitOp(unit, a.systemd.RestartUnitIgnoringDependencies)
+	}
 }

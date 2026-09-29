@@ -127,6 +127,12 @@ type PodmanClient interface {
 	// any container (running or stopped) is removed (podman image prune -a);
 	// otherwise only dangling images are removed.
 	ImagePrune(ctx context.Context, all bool) (PruneResult, error)
+	// ImageID returns the ID of the image ref names, "" when no image has it.
+	ImageID(ctx context.Context, ref string) (string, error)
+	// ImageTag points the tag ref at the image id.
+	ImageTag(ctx context.Context, id, ref string) error
+	// ImageUntag removes the tag ref from its image.
+	ImageUntag(ctx context.Context, ref string) error
 }
 
 // FileWriter writes files atomically.
@@ -346,9 +352,11 @@ type applyPhaseResult struct {
 	// the members of a restarting pod (see dropPodMemberRestarts).
 	ChangedPods map[string]string
 	PodMembers  map[string]string
-	// Builds are the .build services whose unit or inputs changed (see
-	// triggeredBuilds); restartUnits runs them before restarting anything.
+	// Builds are the .build services whose unit or inputs changed, BuildTags
+	// the image tags they write (see triggeredBuilds); restartUnits runs them
+	// before restarting anything.
 	Builds      []string
+	BuildTags   []string
 	NeedsReload bool
 }
 
@@ -400,7 +408,7 @@ func (a *Applier) ApplyWithPending(ctx context.Context, cs *reconciler.Changeset
 	if a.dryRun {
 		return result, nil
 	}
-	phase.Builds = triggeredBuilds(cs.Changes)
+	phase.Builds, phase.BuildTags = triggeredBuilds(cs.Changes)
 	hookRestartUnits := a.runHooksWithPending(ctx, phase.ChangedSecrets, phase.ChangedRels, phase.ChangedUnits, pendingNames, result)
 	maps.Copy(phase.ChangedUnits, hookRestartUnits)
 	return result, a.restartUnits(ctx, phase, result)
@@ -728,15 +736,21 @@ func (a *Applier) restartUnits(ctx context.Context, phase *applyPhaseResult, res
 	}
 	// Builds run before anything is (re)started, so a failed one fails the
 	// apply with every running unit untouched.
-	if err := a.runBuilds(ctx, phase.Builds, result); err != nil {
+	if err := a.runBuilds(ctx, phase.Builds, phase.BuildTags, result); err != nil {
 		return err
+	}
+	for _, build := range phase.Builds {
+		// A hook restarting the build is covered by the build just run; an
+		// ordinary restart would propagate to its running consumers.
+		delete(phase.ChangedUnits, build)
 	}
 	a.activateSystemdUnits(ctx, phase, result)
 	dropPodMemberRestarts(phase)
 	consumers := a.takeBuildConsumers(phase)
 	selfRestarts := a.restartChangedUnits(ctx, phase, result)
-	selfRestarts = append(selfRestarts, a.restartEach(consumers, func(unit string) { a.restartConsumer(ctx, unit, result) })...)
-	a.scheduleSelfUnitOps(selfRestarts, result) //nolint:contextcheck // self ops intentionally detach from the apply context
+	selfConsumers := a.restartEach(consumers, func(unit string) { a.restartConsumer(ctx, unit, result) })
+	a.scheduleSelfUnitOps(selfRestarts, result)           //nolint:contextcheck // self ops intentionally detach from the apply context
+	a.scheduleSelfConsumerRestarts(selfConsumers, result) //nolint:contextcheck // self ops intentionally detach from the apply context
 	return nil
 }
 

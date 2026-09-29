@@ -120,8 +120,8 @@ func TestE2EBuild(t *testing.T) {
 	})
 
 	// Everything below depends on the apply; stop instead of cascading timeouts.
-	// `picolet apply` logs a failed restart as non-fatal and still succeeds, so
-	// the consumer's unit state is checked here too.
+	// The consumer's unit state is checked too, so a failure shows the
+	// diagnostics here rather than in a later subtest.
 	require.True(t, t.Run("apply", func(t *testing.T) {
 		defer dumpBuildDiagnostics(t)
 		require.NoError(t, runCLI(t, "apply", "--host", "build-host", "--repo-dir", fleetDir, "--config", configPath))

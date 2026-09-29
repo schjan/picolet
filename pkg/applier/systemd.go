@@ -220,9 +220,11 @@ func (m *DBusSystemdManager) RestartUnit(ctx context.Context, name string) error
 // RunBuildUnit starts a .build unit's service and waits, up to
 // buildJobTimeout, for the build to finish. A start (not a restart): systemd
 // propagates a restart of a Requires= dependency to the units requiring it.
-// A build given up on (timeout, cancelled ctx) is killed, so it cannot tag an
-// image from inputs the failed apply rolls back; killing its processes fails
-// the start job without stopping the units that require it.
+// A build given up on (timeout, cancelled ctx) is killed and waited for, so it
+// cannot tag an image from inputs the failed apply rolls back; killing its
+// processes fails the start job without stopping the units that require it.
+// A RUN step already executing runs in its own crun-buildah scope and may
+// finish on its own, but the killed `podman build` commits and tags nothing.
 func (m *DBusSystemdManager) RunBuildUnit(ctx context.Context, name string) error {
 	return m.withReconnect(ctx, func(c *dbus.Conn) error {
 		ch := make(chan string, 1)
@@ -231,14 +233,29 @@ func (m *DBusSystemdManager) RunBuildUnit(ctx context.Context, name string) erro
 		}
 		err := waitJobResult(ctx, ch, "building", name, buildJobTimeout, systemdJobDone)
 		if errors.Is(err, errJobTimeout) || ctx.Err() != nil {
-			killCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobTimeout)
-			defer cancel()
-			if killErr := c.KillUnitWithTarget(killCtx, name, dbus.All, int32(syscall.SIGTERM)); killErr != nil {
-				err = errors.Join(err, fmt.Errorf("killing abandoned build %s: %w", name, killErr))
-			}
+			err = errors.Join(err, killAbandonedBuild(context.WithoutCancel(ctx), c, name, ch))
 		}
 		return err
 	})
+}
+
+// killAbandonedBuild sends SIGTERM to a build's processes and waits for its
+// start job to end, escalating to SIGKILL if it does not within jobTimeout.
+func killAbandonedBuild(ctx context.Context, c *dbus.Conn, name string, job <-chan string) error {
+	for _, sig := range []int32{int32(syscall.SIGTERM), int32(syscall.SIGKILL)} {
+		killCtx, cancel := context.WithTimeout(ctx, jobTimeout)
+		err := c.KillUnitWithTarget(killCtx, name, dbus.All, sig)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("killing abandoned build %s: %w", name, err)
+		}
+		select {
+		case <-job:
+			return nil
+		case <-time.After(jobTimeout):
+		}
+	}
+	return fmt.Errorf("abandoned build %s: still running after SIGKILL", name)
 }
 
 // RestartUnitIgnoringDependencies restarts a unit, or starts it when

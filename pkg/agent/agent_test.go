@@ -434,6 +434,7 @@ func TestApplyWithRollbackRollsBackFailedBuild(t *testing.T) {
 	sys, pod, fw := newBareMocks(t)
 	fw.EXPECT().MkdirAll(mock.Anything).Return(nil)
 	fw.EXPECT().WriteFile(containerfile, []byte("FROM alpine:new\n")).Return(nil).Once()
+	pod.EXPECT().ImageID(mock.Anything, "localhost/app").Return("old", nil).Twice()
 	sys.EXPECT().RunBuildUnit(mock.Anything, "app-build.service").Return(assert.AnError)
 	fw.EXPECT().WriteFile(containerfile, []byte("FROM alpine:old\n")).Return(nil).Once()
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)

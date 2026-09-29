@@ -1085,6 +1085,14 @@ func changesetUnitNames(changeset *reconciler.Changeset) map[string]struct{} {
 	return names
 }
 
+// ApplyIncompleteError reports, for a whole changeset, whether the apply did
+// not converge (see applyIncompleteError). Shared with the one-shot
+// `picolet apply`, which has no pending bookkeeping and so saves no state
+// for an incomplete apply: the next apply retries.
+func ApplyIncompleteError(result *applier.ApplyResult, changeset *reconciler.Changeset) error {
+	return applyIncompleteError(result, changesetUnitNames(changeset))
+}
+
 // applyIncompleteError returns an ErrApplyIncomplete-wrapped error when the
 // apply did not fully converge — keep_running hooks failed, or a restart of a
 // picolet-managed unit failed — and nil otherwise. Only managed units (those

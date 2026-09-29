@@ -366,22 +366,30 @@ directory — Picolet, after `daemon-reload`:
 1. **starts** `<name>-build.service` and waits for the build (up to 30 minutes), before
    restarting anything else. A start, not a restart: systemd propagates a restart of a
    `Requires=` dependency to its consumers, stopping them before the build has succeeded.
-2. **restarts** each consumer — every unit that `Requires=` the build service
-   (`Image=<name>.build` containers and volumes) — with `--job-mode=ignore-dependencies`,
-   after the other changed units, so the build is not run a second time. This starts an
-   inactive consumer too (one whose start failed on an earlier bad build). If a
-   dependency of the consumer is down, that start fails and the health loop restarts the
-   failed consumer the ordinary way. Left alone: members of a pod restarted in the same
-   Reconciliation (the pod starts them) and one-shots a timer runs (the next run uses the
-   new image).
+2. **restarts** each running consumer — every unit that `Requires=` the build service
+   (`Image=<name>.build` containers and volumes) — with job mode `ignore-dependencies`,
+   after the other changed units, so the build is not run again: a running consumer is
+   never stopped by a build. A consumer that is not running (one whose start failed on
+   an earlier bad build) is started the ordinary way, with its dependencies; that runs
+   the build again, as a full cache hit. Also left to the ordinary path: members of a pod
+   restarted in the same Reconciliation (the pod restarts them, running the build again
+   from cache). One-shots a timer runs are left alone (the next run uses the new image).
+   A restart hook on the build service is covered by the build that already ran.
 
 A **failed build fails the Reconciliation**: nothing has been restarted, the deployed files
 are rolled back, and the commit counts toward the failed-commit gate like any failed apply.
-The previously built image keeps its tag and the consumer keeps running it; the build
-service is left `failed` (reported, not retried by the health loop). A build Picolet gives
-up waiting on (timeout, shutdown) is killed, so it cannot tag an image from rolled-back
-inputs. A failed consumer restart after a successful build is pending and retried like
-any failed unit restart.
+Every tag the Reconciliation's builds write is put back on the image it named before
+(including one an earlier, successful build of the same Reconciliation moved), so the
+consumer keeps running the previous image and no image built from rolled-back inputs
+stays tagged. The build service is left `failed` (reported, not retried by the health
+loop). A build Picolet gives up waiting on (timeout, shutdown) is killed and waited for.
+A failed consumer restart after a successful build is pending and retried like any
+failed unit restart; `picolet apply` fails instead and saves no state, so the next apply
+retries.
+
+A cached re-run (the ordinary paths above, and every later consumer start — Podman runs
+the build whenever a consumer starts) executes no `RUN` step; it can only fail where the
+build reaches out anyway, e.g. `Pull=always`/`newer` with the registry down.
 
 The build context follows Quadlet: a `[Service] WorkingDirectory=`, unless
 `SetWorkingDirectory=` is an absolute path; otherwise `SetWorkingDirectory=file` → the

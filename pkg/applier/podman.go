@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/containers/podman/v5/libpod/define"
 	"github.com/containers/podman/v5/pkg/bindings"
@@ -144,6 +145,53 @@ func (c *SocketPodmanClient) ImagePrune(_ context.Context, all bool) (PruneResul
 		return PruneResult{}, fmt.Errorf("pruning images: %w", err)
 	}
 	return aggregatePrune(reps)
+}
+
+// ImageID returns the ID of the image ref names, "" when no image has it.
+//
+//nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
+func (c *SocketPodmanClient) ImageID(_ context.Context, ref string) (string, error) {
+	report, err := images.GetImage(c.connCtx, ref, nil)
+	if err != nil {
+		if code, _ := bindings.CheckResponseCode(err); code == http.StatusNotFound {
+			return "", nil
+		}
+		return "", fmt.Errorf("inspecting image %s: %w", ref, err)
+	}
+	return report.ID, nil
+}
+
+// ImageTag points the tag ref at the image id, moving it off any other image.
+//
+//nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
+func (c *SocketPodmanClient) ImageTag(_ context.Context, id, ref string) error {
+	repo, tag := splitImageRef(ref)
+	if err := images.Tag(c.connCtx, id, tag, repo, nil); err != nil {
+		return fmt.Errorf("tagging image %s as %s: %w", id, ref, err)
+	}
+	return nil
+}
+
+// ImageUntag removes the tag ref from its image.
+//
+//nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
+func (c *SocketPodmanClient) ImageUntag(_ context.Context, ref string) error {
+	repo, tag := splitImageRef(ref)
+	if err := images.Untag(c.connCtx, ref, tag, repo, nil); err != nil {
+		return fmt.Errorf("untagging image %s: %w", ref, err)
+	}
+	return nil
+}
+
+// splitImageRef splits "registry/repo:tag" into repository and tag; a
+// reference without a tag means "latest". A colon before the last slash is a
+// registry port, not a tag.
+func splitImageRef(ref string) (repo, tag string) {
+	i := strings.LastIndex(ref, ":")
+	if i < 0 || strings.Contains(ref[i:], "/") {
+		return ref, "latest"
+	}
+	return ref[:i], ref[i+1:]
 }
 
 // aggregatePrune folds per-image prune reports into a single result. It is kept
