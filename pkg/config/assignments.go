@@ -27,8 +27,12 @@ func (a *Assignments) Validate() error {
 	return nil
 }
 
-// AssignmentGroup is a collection of file paths grouped by type.
+// AssignmentGroup is a collection of file paths: typed lists, plus `paths:`
+// entries whose category is derived from the file name (CategoryForPath).
 type AssignmentGroup struct {
+	// Paths lists Fleet-root-relative files or directories; directories are
+	// expanded recursively by the resolver.
+	Paths      []string `yaml:"paths"`
 	Networks   []string `yaml:"networks"`
 	Systemd    []string `yaml:"systemd"`
 	Volumes    []string `yaml:"volumes"`
@@ -44,8 +48,7 @@ type AssignmentGroup struct {
 }
 
 // byCategory binds the typed lists of the assignments.yml schema to their
-// categories. The lists are the schema itself; #146/#148 replace them with
-// extension-derived `paths:` entries.
+// categories. #148 removes them in favour of `paths:` entries.
 func (g AssignmentGroup) byCategory() map[Category][]string {
 	return map[Category][]string{
 		CategoryNetwork:   g.Networks,
@@ -65,8 +68,11 @@ func (g AssignmentGroup) byCategory() map[Category][]string {
 // ResolvedFileSet is the merged set of all files assigned to a host.
 type ResolvedFileSet struct {
 	// Paths holds the source paths per category, sorted and unique.
-	Paths    map[Category][]string
-	Services []string
+	Paths map[Category][]string
+	// PathEntries holds the `paths:` entries (files or directories), sorted
+	// and unique; the resolver expands and categorizes them.
+	PathEntries []string
+	Services    []string
 }
 
 // Resolve computes the complete file set for a host by merging
@@ -94,6 +100,7 @@ func (r *ResolvedFileSet) deduplicate() {
 	for category, paths := range r.Paths {
 		r.Paths[category] = sortedUnique(paths)
 	}
+	r.PathEntries = sortedUnique(r.PathEntries)
 	r.Services = sortedUnique(r.Services)
 }
 
@@ -109,5 +116,6 @@ func (r *ResolvedFileSet) merge(g AssignmentGroup) {
 	for category, paths := range g.byCategory() {
 		r.Paths[category] = append(r.Paths[category], paths...)
 	}
+	r.PathEntries = append(r.PathEntries, g.Paths...)
 	r.Services = append(r.Services, g.Services...)
 }

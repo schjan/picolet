@@ -1818,25 +1818,6 @@ features: {}
 	assert.Contains(t, err.Error(), "reading static secret")
 }
 
-func TestSecretPathTraversal(t *testing.T) {
-	t.Parallel()
-	secretsDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(secretsDir, "valid.txt"), []byte("secret"), 0o600))
-
-	secretRoot, err := os.OpenRoot(secretsDir)
-	require.NoError(t, err)
-	defer secretRoot.Close()
-
-	// Valid read should succeed
-	data, err := secretRoot.ReadFile("valid.txt")
-	require.NoError(t, err)
-	assert.Equal(t, "secret", string(data))
-
-	// Path traversal should fail
-	_, err = secretRoot.ReadFile("../../etc/passwd")
-	require.Error(t, err)
-}
-
 func TestResolveServicesForHostRendersOnlyRequestedService(t *testing.T) {
 	t.Parallel()
 	fsys := fstest.MapFS{

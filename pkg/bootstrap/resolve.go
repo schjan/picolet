@@ -3,7 +3,6 @@ package bootstrap
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/resolver"
@@ -17,10 +16,7 @@ const (
 )
 
 type resolveConfig struct {
-	RepoDir string
-	// Config is the already-loaded fleet config for RepoDir; loaded from
-	// RepoDir when nil.
-	Config     *config.Config
+	RepoDir    string
 	Hostname   string
 	Service    string
 	Rootless   bool
@@ -40,19 +36,17 @@ func resolveBootstrapHost(ctx context.Context, cfg resolveConfig) (*resolver.Res
 		return nil, fmt.Errorf("service is required")
 	}
 
-	repoFS := os.DirFS(cfg.RepoDir)
-	fleetCfg := cfg.Config
-	if fleetCfg == nil {
-		var err error
-		fleetCfg, err = config.LoadAll(repoFS)
-		if err != nil {
-			return nil, fmt.Errorf("loading config: %w", err)
-		}
+	repo, err := config.OpenRepo(cfg.RepoDir)
+	if err != nil {
+		return nil, err
 	}
+	defer repo.Close()
+	readSecret, closeSecrets := secretReader(cfg.SecretsDir, cfg.FileMode)
+	defer closeSecrets()
 	r, err := resolver.New(resolver.Config{
-		FS:           repoFS,
-		Config:       fleetCfg,
-		SecretReader: secretReader(cfg.SecretsDir, cfg.FileMode),
+		FS:           repo.FS,
+		Config:       repo.Config,
+		SecretReader: readSecret,
 		Rootless:     cfg.Rootless,
 		Strict:       true,
 		DataDir:      cfg.DataDir,
@@ -67,26 +61,11 @@ func resolveBootstrapHost(ctx context.Context, cfg resolveConfig) (*resolver.Res
 	return resolved, nil
 }
 
-func secretReader(secretsDir string, mode fileReaderMode) resolver.SecretReader {
+// secretReader returns the resolve pass's secret reader and the func that
+// releases it.
+func secretReader(secretsDir string, mode fileReaderMode) (resolver.SecretReader, func()) {
 	if mode == fileReaderPlaceholder {
-		return func(string) (string, error) { return "<secret>", nil }
+		return func(string) (string, error) { return "<secret>", nil }, func() {}
 	}
-	// The Root is opened lazily on first use and reused across all secret
-	// reads of the resolve pass; it stays open for the remainder of the
-	// (short-lived) bootstrap process.
-	var root *os.Root
-	return func(path string) (string, error) {
-		if root == nil {
-			r, err := os.OpenRoot(secretsDir)
-			if err != nil {
-				return "", fmt.Errorf("opening secrets dir: %w", err)
-			}
-			root = r
-		}
-		data, err := root.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("reading secret %q: %w", path, err)
-		}
-		return string(data), nil
-	}
+	return resolver.DirSecretReader(secretsDir)
 }

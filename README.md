@@ -282,6 +282,40 @@ an apply-time restart that failed (a changed `.image` is pulled again; if the pu
 it is pending like any failed unit restart, see [Hooks](#hooks)). A build runs when a
 consumer starts it (Podman sets no `RemainAfterExit` for builds); rebuild-on-change is #127.
 
+#### `paths:` entries
+
+Any assignment group (`base`, `roles`, `features`) may list files or directories
+under `paths:` (Fleet-root-relative); picolet derives each file's category from its
+path. Directories are expanded recursively.
+
+1. A final `.tmpl` on a file name is stripped first (`web.pod.tmpl` is a pod template).
+2. A first path segment `manifests/`, `files/` or `secrets/` selects that category
+   (Kubernetes manifest, opaque File, Podman secret). The segment anywhere else, or
+   two of them in one path, is an error.
+3. Otherwise the extension decides: Quadlet extensions go to the Quadlet directory,
+   systemd extensions to the systemd directory.
+4. Any other file — unknown extension or none (`Containerfile`, `README.md`,
+   `.gitkeep`) — is an error: move it under `files/` or remove it from the listed
+   directory. `picolet.yml`/`picolet.yml.tmpl` are skipped.
+
+Entries are Fleet-root-relative; `..` is rejected. A symlink below a listed directory
+is an error (directories are walked without following links); a symlinked file listed
+directly is read like any source. No symlink may point outside the Fleet repo.
+
+```yaml
+roles:
+  worker:
+    paths:
+      - files/                       # every File below files/
+      - quadlets/pods/shop.pod.tmpl  # one pod
+```
+
+`paths:` and the per-category lists coexist: a file reached twice in one category
+deploys once; two sources for one destination are an error. When a list and `paths:`
+put one file in different categories, it deploys to both destinations if they differ
+(e.g. `secrets: [files/token]` with `paths: [files/token]`), and is an error if they
+coincide (e.g. `files: [manifests/x.yml]` with `paths: [manifests/]`).
+
 ### Service Bundles
 
 Use `services:` in `assignments.yml` when one logical service spans several file

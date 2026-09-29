@@ -366,24 +366,30 @@ func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*expanded
 	}, nil
 }
 
-// expandFileSet returns a new ResolvedFileSet merged with any service bundles,
-// plus the full list of nested data refs (legacy + bundled). The input fileSet
-// is not mutated. Data categories (UsesRelPath) and Services are left out of
-// the returned Paths: nested data paths flow through bundleFileRefs, and
-// Services is already flattened into the category paths.
+// expandFileSet returns a new ResolvedFileSet merged with any service bundles
+// and `paths:` entries, plus the full list of nested data refs (legacy,
+// bundled and from `paths:`). The input fileSet is not mutated. Data
+// categories (UsesRelPath), Entries and Services are left out of the returned
+// Paths: nested data paths flow through bundleFileRefs, and Entries and
+// Services are already flattened into the category paths.
 // Populating them would let a future caller miss bundle contents.
 func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []bundleFileRef, []hookRef, error) {
-	expanded, err := expandServiceBundles(r.fsys, fileSet.Services)
-	if err != nil {
+	expanded, bundleErr := expandServiceBundles(r.fsys, fileSet.Services)
+	fromPaths, pathsErr := expandPathEntries(r.fsys, fileSet.PathEntries)
+	if err := errors.Join(bundleErr, pathsErr); err != nil {
 		return nil, nil, nil, err
 	}
+	if err := r.checkTypedCategories(fileSet.Paths, fromPaths); err != nil {
+		return nil, nil, nil, err
+	}
+	expanded.append(fromPaths)
 
 	merged := &config.ResolvedFileSet{Paths: make(map[config.Category][]string)}
 	bundleFileRefs := slices.Clone(expanded.NestedRefs)
 	for _, spec := range config.Specs() {
 		if spec.Dest == config.DestData {
 			for _, srcPath := range fileSet.Paths[spec.Category] {
-				bundleFileRefs = append(bundleFileRefs, newLegacyBundleFileRef(srcPath, spec))
+				bundleFileRefs = append(bundleFileRefs, newDataFileRef(srcPath, srcPath, spec))
 			}
 			continue
 		}
@@ -394,15 +400,15 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.Resol
 	return merged, uniqueBundleFileRefs(bundleFileRefs), expanded.Hooks, nil
 }
 
-// newLegacyBundleFileRef constructs a bundleFileRef for a legacy (non-bundled)
-// data path, where the source and logical paths are the same. Bundled refs set
-// a stripped LogicalPath and are built in readNestedSubdir.
-func newLegacyBundleFileRef(srcPath string, spec config.Spec) bundleFileRef {
+// newDataFileRef constructs the bundleFileRef of a data-category file. The
+// logical path decides the destination and RelPath; it equals srcPath for
+// typed lists and `paths:` entries.
+func newDataFileRef(srcPath, logical string, spec config.Spec) bundleFileRef {
 	return bundleFileRef{
 		SrcPath:     srcPath,
-		LogicalPath: srcPath,
+		LogicalPath: logical,
 		Category:    spec.Category,
-		RelPath:     stripSubdirPrefix(deployedLogicalPath(srcPath), spec.Subdir),
+		RelPath:     stripSubdirPrefix(deployedLogicalPath(logical), spec.Subdir),
 	}
 }
 
@@ -463,6 +469,20 @@ func (r *Resolver) unitDestPath(spec config.Spec, srcPath string) string {
 		dir = r.systemdDir
 	}
 	return filepath.Join(dir, destFilename(srcPath))
+}
+
+// destPath returns where a source of the given category deploys; logical is
+// the path data categories derive their destination from.
+func (r *Resolver) destPath(spec config.Spec, srcPath, logical string) (string, error) {
+	switch spec.Dest {
+	case config.DestData:
+		return r.dataDestPath(logical), nil
+	case config.DestSecret:
+		return r.secretDestPath(srcPath)
+	case config.DestQuadlet, config.DestSystemd:
+		return r.unitDestPath(spec, srcPath), nil
+	}
+	return "", fmt.Errorf("category %s: unknown destination %d", spec.Category, spec.Dest)
 }
 
 func (r *Resolver) dataDestPath(logicalPath string) string {

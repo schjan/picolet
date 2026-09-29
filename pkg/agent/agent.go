@@ -616,31 +616,20 @@ func LoadAndResolve(ctx context.Context, params ResolveParams) ([]resolver.Resol
 // LoadAndResolveHost loads fleet config from repoPath and resolves the desired state plus host metadata.
 func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.ResolvedHost, error) {
 	slog.Debug("loading fleet config", "repo", params.RepoPath)
-	repoFS := os.DirFS(params.RepoPath)
-	cfg, err := config.LoadAll(repoFS)
+	repo, err := config.OpenRepo(params.RepoPath)
 	if err != nil {
-		return nil, fmt.Errorf("loading config: %w", err)
+		return nil, err
 	}
+	defer repo.Close()
 
-	secretReader := func(path string) (string, error) {
-		secretRoot, err := os.OpenRoot(params.SecretsDir)
-		if err != nil {
-			return "", fmt.Errorf("opening secrets dir: %w", err)
-		}
-		defer secretRoot.Close()
-
-		data, err := secretRoot.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("reading secret %q: %w", path, err)
-		}
-		return string(data), nil
-	}
+	secretReader, releaseSecrets := resolver.DirSecretReader(params.SecretsDir)
+	defer releaseSecrets()
 
 	slog.Debug("resolving host", "hostname", params.Hostname)
 	loadStart := time.Now()
 	r, err := resolver.New(resolver.Config{
-		FS:             repoFS,
-		Config:         cfg,
+		FS:             repo.FS,
+		Config:         repo.Config,
 		SecretReader:   secretReader,
 		OpSecretReader: params.OpSecretReader,
 		PPSecretReader: params.PPSecretReader,
