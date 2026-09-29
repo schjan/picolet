@@ -277,7 +277,10 @@ target them as `unit: <name>.image` / `unit: <name>.build`). Containers use them
 Deliver a build's Containerfile under `files/` and point at it with
 `File={{ filePath "<app>/Containerfile" }}` plus `SetWorkingDirectory=file` (build context =
 the Containerfile's directory). Both generated services are one-shots their consumers
-pull in: reported, never restarted by the health loop; rebuild-on-change is #127.
+pull in: reported; the health loop never restarts one that fails on its own, but retries
+an apply-time restart that failed (a changed `.image` is pulled again; if the pull fails,
+it is pending like any failed unit restart, see [Hooks](#hooks)). A `.build` is not
+restarted at apply; it runs when a consumer starts. Rebuild-on-change is #127.
 
 ### Service Bundles
 

@@ -23,8 +23,8 @@ type CheckResult struct {
 	Skipped   []string
 	// ExternallyActivated is the subset of Unhealthy that picolet must not restart
 	// because systemd owns their (re-)invocation: timer-fired or static one-shots,
-	// and the units of HealthReportOnly categories (.build/.image), which their
-	// consumers pull in.
+	// and units of HealthReportOnly categories (.build/.image) that failed on
+	// their own, which their consumers pull in.
 	ExternallyActivated []string
 	// TimerJobs names the units picolet keeps run bookkeeping for: one-shots a
 	// .timer fires, plus the .timers that fire them. Every name is a key of
@@ -148,8 +148,8 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State,
 		// "failed" and any unexpected state. A one-shot job systemd activates
 		// (timer-fired or a static raw unit) is picolet's to report, not to run:
 		// retries belong in the unit (Restart=on-failure) and its trigger re-invokes
-		// it. So is a unit whose category is not HealthDaemon. Restart everything
-		// else conservatively.
+		// it. So is a unit restartableByHealth rules out. Restart everything else
+		// conservatively.
 		external := applier.ExternallyActivated(status)
 		slog.Warn("unit unhealthy", "unit", unit, "active_state", status.ActiveState,
 			"sub_state", status.SubState, "externally_activated", external)
@@ -163,16 +163,30 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State,
 	}
 }
 
-// restartableByHealth reports whether every managed file backing unit belongs to a
-// HealthDaemon category, i.e. the health loop may restart it. Files whose
-// category is not in the table (e.g. state written by another version) keep
-// the conservative default of being restarted.
+// restartableByHealth reports whether the health loop may restart unit: every
+// managed file backing it belongs to a HealthDaemon category, or to a
+// HealthReportOnly category that apply restarts (Restart is not RestartNone)
+// while a failed apply-time restart of the unit is pending — the health loop
+// retries what apply started, never a report-only unit that failed on its own.
+// Files whose category is not in the table (e.g. state written by another
+// version) keep the conservative default of being restarted.
 func restartableByHealth(unit string, st *state.State) bool {
+	_, applyPending := st.PendingUnits[unit]
 	for path, name := range st.ServiceNames {
 		if name != unit {
 			continue
 		}
-		if spec, ok := config.SpecFor(st.ManagedFiles[path].Category); ok && spec.Health != config.HealthDaemon {
+		spec, ok := config.SpecFor(st.ManagedFiles[path].Category)
+		if !ok {
+			continue
+		}
+		switch spec.Health {
+		case config.HealthDaemon:
+		case config.HealthReportOnly:
+			if !applyPending || spec.Restart == config.RestartNone {
+				return false
+			}
+		case config.HealthNone:
 			return false
 		}
 	}

@@ -84,8 +84,10 @@ const (
 	// cooldown and the externally-activated one-shot exemption).
 	HealthDaemon
 	// HealthReportOnly: a one-shot unit its consumers pull in (Requires=); its
-	// status is reported, but a failed unit is never restarted by the health
-	// loop — re-running it belongs to whatever activates it.
+	// status is reported, and a unit that failed on its own is never restarted
+	// by the health loop — re-running it belongs to whatever activates it. A
+	// failed apply-time restart (Restart is not RestartNone) is retried like a
+	// daemon's.
 	HealthReportOnly
 )
 

@@ -8,10 +8,10 @@ import (
 	"github.com/schjan/picolet/pkg/status"
 )
 
-// UnitHealthCollector emits picolet_unit_active and picolet_unit_state_info for
-// all managed units on each Prometheus scrape, reading from the injected
-// *status.Store. Stale series are impossible by construction — Collect emits
-// only what the store currently holds.
+// UnitHealthCollector emits picolet_unit_state_info for every managed unit and
+// picolet_unit_active for active and failed ones on each Prometheus scrape,
+// reading from the injected *status.Store. Stale series are impossible by
+// construction — Collect emits only what the store currently holds.
 type UnitHealthCollector struct {
 	store      *status.Store
 	descActive *prometheus.Desc
@@ -48,6 +48,12 @@ func (c *UnitHealthCollector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 	for unit, s := range c.store.Snapshot().Units {
+		mInfo, err := prometheus.NewConstMetric(c.descInfo, prometheus.GaugeValue, 1, unit, s.ActiveState, s.SubState)
+		if err != nil {
+			slog.Debug("skipping unit info metric", "unit", unit, "error", err)
+			continue
+		}
+		ch <- mInfo
 		var activeVal float64
 		switch s.ActiveState {
 		case "active", "activating":
@@ -55,8 +61,9 @@ func (c *UnitHealthCollector) Collect(ch chan<- prometheus.Metric) {
 		case "failed":
 			activeVal = 0
 		default:
-			// "inactive", "deactivating", "reloading", "maintenance": expected/transitional.
-			// Absent from metrics — prevents false alerts for timer/oneshot services.
+			// "inactive", "deactivating", "reloading", "maintenance": expected/transitional
+			// (a finished one-shot or build is inactive). No picolet_unit_active series,
+			// so `== 0` alerts fire for failed units only; the state is in the info metric.
 			continue
 		}
 		mActive, err := prometheus.NewConstMetric(c.descActive, prometheus.GaugeValue, activeVal, unit)
@@ -64,12 +71,6 @@ func (c *UnitHealthCollector) Collect(ch chan<- prometheus.Metric) {
 			slog.Debug("skipping unit active metric", "unit", unit, "error", err)
 			continue
 		}
-		mInfo, err := prometheus.NewConstMetric(c.descInfo, prometheus.GaugeValue, 1, unit, s.ActiveState, s.SubState)
-		if err != nil {
-			slog.Debug("skipping unit info metric", "unit", unit, "error", err)
-			continue
-		}
 		ch <- mActive
-		ch <- mInfo
 	}
 }

@@ -183,42 +183,60 @@ func TestEnforceExternallyActivatedOneshots(t *testing.T) {
 }
 
 // A failed .build/.image service is a generated one-shot (UnitFileState
-// "generated", so ExternallyActivated is false) its consumer pulls in: the
-// health loop reports it under the external-activation skip reason and never
-// restarts it — the strict mock fails on any RestartUnit.
-func TestEnforceFailedBuildAndImageNotRestarted(t *testing.T) {
+// "generated", so ExternallyActivated is false) its consumer pulls in. One
+// that failed on its own is reported under the external-activation skip
+// reason and never restarted. A .image whose apply-time restart failed
+// (pending record) is retried like a daemon; a .build never is, because apply
+// does not restart it. The strict mock fails on any unexpected RestartUnit.
+func TestEnforceFailedBuildAndImage(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		path     string
-		category config.Category
-		unit     string
+		name        string
+		path        string
+		category    config.Category
+		unit        string
+		pending     bool
+		wantRestart bool
 	}{
-		{"/etc/containers/systemd/picolet/app.build", config.CategoryBuild, "app-build.service"},
-		{"/etc/containers/systemd/picolet/redis.image", config.CategoryImage, "redis-image.service"},
+		{"build failed on its own", "/etc/containers/systemd/picolet/app.build", config.CategoryBuild, "app-build.service", false, false},
+		{"build with a pending record", "/etc/containers/systemd/picolet/app.build", config.CategoryBuild, "app-build.service", true, false},
+		{"image failed on its own", "/etc/containers/systemd/picolet/redis.image", config.CategoryImage, "redis-image.service", false, false},
+		{"image whose apply-time pull failed", "/etc/containers/systemd/picolet/redis.image", config.CategoryImage, "redis-image.service", true, true},
 	} {
-		t.Run(tc.category.String(), func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			sys := appliermocks.NewMockSystemdManager(t)
 			sys.EXPECT().GetUnitStatus(mock.Anything, tc.unit).Return(applier.UnitStatus{
 				ActiveState: "failed", SubState: "failed", UnitFileState: "generated", ServiceType: "oneshot",
 			}, nil)
+			if tc.wantRestart {
+				sys.EXPECT().RestartUnit(mock.Anything, tc.unit).Return(nil)
+			}
 
 			c := New(sys)
-			old := time.Now().Add(-time.Hour)
 			st := &state.State{
 				ManagedFiles: map[string]state.ManagedFile{tc.path: {Hash: "sha256:abc", Category: tc.category}},
 				ServiceNames: map[string]string{tc.path: tc.unit},
-				PendingUnits: map[string]state.PendingUnit{
+			}
+			if tc.pending {
+				// An old attempt so the restart cooldown never suppresses the retry.
+				old := time.Now().Add(-time.Hour)
+				st.PendingUnits = map[string]state.PendingUnit{
 					tc.unit: {SHA: "sha", Attempts: 1, FirstFailedAt: old, LastAttemptAt: old},
-				},
+				}
 			}
 
 			result, err := c.Enforce(context.Background(), st)
 			require.NoError(t, err)
 			assert.Equal(t, []string{tc.unit}, result.Unhealthy)
+			assert.Contains(t, result.Statuses, tc.unit)
+			if tc.wantRestart {
+				assert.Equal(t, []string{tc.unit}, result.Restarted)
+				assert.Empty(t, result.ExternallyActivated)
+				return
+			}
 			assert.Equal(t, []string{tc.unit}, result.ExternallyActivated)
 			assert.Empty(t, result.Restarted)
-			assert.Contains(t, result.Statuses, tc.unit)
 			assert.NotContains(t, st.PendingUnits, tc.unit)
 		})
 	}
