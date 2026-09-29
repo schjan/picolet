@@ -51,7 +51,8 @@ func triggeredBuilds(changes []reconciler.Change) (builds, tags []string) {
 		}
 	}
 	slices.Sort(builds)
-	return slices.Compact(builds), tags
+	slices.Sort(tags)
+	return slices.Compact(builds), slices.Compact(tags)
 }
 
 // buildTriggered reports whether the .build change c must run: its file was

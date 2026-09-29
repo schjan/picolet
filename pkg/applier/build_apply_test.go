@@ -326,3 +326,43 @@ func TestApplyFailedBuildRestoresEarlierImageTags(t *testing.T) {
 	require.ErrorIs(t, err, assert.AnError)
 	assert.Equal(t, []string{"build app-build.service", "build web-build.service"}, *log)
 }
+
+// Two builds writing the same tag: it is recorded and restored once, to the
+// image it named before either build ran.
+func TestApplyFailedBuildRestoresSharedTagOnce(t *testing.T) {
+	t.Parallel()
+	const webFile = "/var/lib/picolet/files/web/Containerfile"
+	sys, _ := recordingSystemd(t, nil, "build web-build.service")
+	pod := appliermocks.NewMockPodmanClient(t)
+	pod.EXPECT().ImageID(mock.Anything, "localhost/app:latest").Return("old", nil).Once()
+	pod.EXPECT().ImageID(mock.Anything, "localhost/app:latest").Return("new", nil).Once()
+	pod.EXPECT().ImageTag(mock.Anything, "old", "localhost/app:latest").Return(nil).Once()
+	a := applier.New(sys, pod, newMemFileWriter(), false, nil, applier.WithDependencies(buildDeps))
+
+	_, err := a.Apply(context.Background(), &reconciler.Changeset{Changes: []reconciler.Change{
+		buildChange(testBuildUnit, reconciler.ActionNoop),
+		dataFileChange(testContainerfile, reconciler.ActionUpdate),
+		{
+			DestPath: testQuadletDir + "web.build", Category: config.CategoryBuild, Action: reconciler.ActionNoop,
+			NewContent:  "[Build]\nImageTag=localhost/app:latest\nFile=" + webFile + "\nSetWorkingDirectory=file\n",
+			ServiceName: "web-build.service",
+		},
+		dataFileChange(webFile, reconciler.ActionUpdate),
+	}})
+	require.ErrorIs(t, err, assert.AnError)
+}
+
+// First deploy: a consumer created with its build is not running yet, so it
+// is started the ordinary way, pulling in its dependencies.
+func TestApplyStartsConsumerCreatedWithItsBuild(t *testing.T) {
+	t.Parallel()
+	sys, log := recordingSystemd(t, map[string]applier.UnitStatus{"app.service": {ActiveState: "inactive"}})
+	a := applier.New(sys, imagePodman(t), newMemFileWriter(), false, nil, applier.WithDependencies(buildDeps))
+
+	_, err := a.Apply(context.Background(), &reconciler.Changeset{Changes: []reconciler.Change{
+		buildChange(testBuildUnit, reconciler.ActionCreate),
+		containerChange("app", "[Container]\nImage=app.build\n", reconciler.ActionCreate),
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"build app-build.service", "restart app.service"}, *log)
+}

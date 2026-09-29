@@ -387,9 +387,14 @@ A failed consumer restart after a successful build is pending and retried like a
 failed unit restart; `picolet apply` fails instead and saves no state, so the next apply
 retries.
 
-A cached re-run (the ordinary paths above, and every later consumer start — Podman runs
-the build whenever a consumer starts) executes no `RUN` step; it can only fail where the
-build reaches out anyway, e.g. `Pull=always`/`newer` with the registry down.
+**Build runs after the rebuild.** Podman runs the build again whenever a consumer starts:
+on the ordinary paths above, and on every later start (a reboot, a health-loop restart).
+That re-run uses cached layers and executes no `RUN` step, and with the default
+`Pull=missing` it does not contact the registry while the base image is present. Keep the
+default on a `.build`: with `Pull=always` or `Pull=newer` every re-run checks the registry,
+and fails while it is unreachable, which stops a consumer that had to be started anyway
+(a pod or dependency that changed in the same commit, a reboot). Picolet checks a build
+once, before restarting anything; it does not prevent these later runs.
 
 The build context follows Quadlet: a `[Service] WorkingDirectory=`, unless
 `SetWorkingDirectory=` is an absolute path; otherwise `SetWorkingDirectory=file` → the
