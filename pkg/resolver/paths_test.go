@@ -205,6 +205,26 @@ func TestResolveHostPathsCoexistWithTypedLists(t *testing.T) {
 	}, pathsDeployments(resolved.Files))
 }
 
+// A typed list and `paths:` may select one source in two categories when the
+// destinations differ (a staged migration can deploy it twice on purpose).
+func TestResolveHostPathsTypedCategoryWithDistinctDestinationDeploysBoth(t *testing.T) {
+	t.Parallel()
+	resolved, err := resolvePaths(t, `  secrets: [files/token]
+  files: [units/web.container]
+  paths: [files/token, units/web.container]
+`, map[string]string{
+		"files/token":         "s3cr3t\n",
+		"units/web.container": pathsUnit,
+	})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []pathsDeployment{
+		{SrcPath: "files/token", DestPath: "secret:token", Category: config.CategorySecret},
+		{SrcPath: "files/token", DestPath: "/var/lib/picolet/files/token", Category: config.CategoryFile, RelPath: "token"},
+		{SrcPath: "units/web.container", DestPath: "/var/lib/picolet/units/web.container", Category: config.CategoryFile, RelPath: "units/web.container"},
+		{SrcPath: "units/web.container", DestPath: "/etc/containers/systemd/picolet/web.container", Category: config.CategoryContainer},
+	}, pathsDeployments(resolved.Files))
+}
+
 func TestResolveHostPathsDestinationCollision(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

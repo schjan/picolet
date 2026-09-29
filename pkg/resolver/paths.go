@@ -71,27 +71,56 @@ func (b *expandedBundles) addTreeFile(srcPath, logical string) error {
 	return nil
 }
 
-// checkTypedCategories rejects a source that a typed list and `paths:` put in
-// different categories: both would deploy it to one destination, and the
-// source-keyed collision check sees a single source. Typed lists alone keep
-// their behavior; this only fires when a `paths:` entry is involved.
-func (b *expandedBundles) checkTypedCategories(typed map[config.Category][]string) error {
-	derived := make(map[string]config.Category)
-	for category, srcs := range b.Paths {
-		for _, src := range srcs {
-			derived[src] = category
-		}
-	}
-	for _, ref := range b.NestedRefs {
-		derived[ref.SrcPath] = ref.Category
+// checkTypedCategories rejects a source that a typed list and a `paths:` entry
+// select in different categories at one destination: the source-keyed
+// collision check sees a single source there, so the file would be deployed
+// twice. Different destinations deploy both. Typed lists alone keep their
+// behavior; this only fires when a `paths:` entry is involved.
+func (r *Resolver) checkTypedCategories(typed map[config.Category][]string, fromPaths *expandedBundles) error {
+	derived, err := r.sourceDeployments(fromPaths)
+	if err != nil {
+		return err
 	}
 	var errs []error
 	for _, spec := range config.Specs() {
 		for _, src := range typed[spec.Category] {
-			if c, ok := derived[src]; ok && c != spec.Category {
-				errs = append(errs, fmt.Errorf("%s: a typed list selects it as %s, a paths: entry as %s", src, spec.Category, c))
+			d, ok := derived[src]
+			if !ok || d.category == spec.Category {
+				continue
+			}
+			dest, err := r.destPath(spec, src, src)
+			if err != nil {
+				return fmt.Errorf("%s: %w", src, err)
+			}
+			if dest == d.dest {
+				errs = append(errs, fmt.Errorf("%s: a typed list selects it as %s, a paths: entry as %s, both deploying to %s",
+					src, spec.Category, d.category, dest))
 			}
 		}
 	}
 	return errors.Join(errs...)
+}
+
+type sourceDeployment struct {
+	category config.Category
+	dest     string
+}
+
+// sourceDeployments maps every expanded source to its category and destination.
+func (r *Resolver) sourceDeployments(expanded *expandedBundles) (map[string]sourceDeployment, error) {
+	out := make(map[string]sourceDeployment)
+	for category, srcs := range expanded.Paths {
+		spec, _ := config.SpecFor(category)
+		for _, src := range srcs {
+			dest, err := r.destPath(spec, src, src)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", src, err)
+			}
+			out[src] = sourceDeployment{category, dest}
+		}
+	}
+	for _, ref := range expanded.NestedRefs {
+		out[ref.SrcPath] = sourceDeployment{ref.Category, r.dataDestPath(ref.LogicalPath)}
+	}
+	return out, nil
 }

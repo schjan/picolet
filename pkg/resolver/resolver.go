@@ -379,7 +379,7 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.Resol
 	if err := errors.Join(bundleErr, pathsErr); err != nil {
 		return nil, nil, nil, err
 	}
-	if err := fromPaths.checkTypedCategories(fileSet.Paths); err != nil {
+	if err := r.checkTypedCategories(fileSet.Paths, fromPaths); err != nil {
 		return nil, nil, nil, err
 	}
 	expanded.append(fromPaths)
@@ -469,6 +469,20 @@ func (r *Resolver) unitDestPath(spec config.Spec, srcPath string) string {
 		dir = r.systemdDir
 	}
 	return filepath.Join(dir, destFilename(srcPath))
+}
+
+// destPath returns where a source of the given category deploys; logical is
+// the path data categories derive their destination from.
+func (r *Resolver) destPath(spec config.Spec, srcPath, logical string) (string, error) {
+	switch spec.Dest {
+	case config.DestData:
+		return r.dataDestPath(logical), nil
+	case config.DestSecret:
+		return r.secretDestPath(srcPath)
+	case config.DestQuadlet, config.DestSystemd:
+		return r.unitDestPath(spec, srcPath), nil
+	}
+	return "", fmt.Errorf("category %s: unknown destination %d", spec.Category, spec.Dest)
 }
 
 func (r *Resolver) dataDestPath(logicalPath string) string {
