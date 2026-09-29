@@ -1,4 +1,3 @@
 [Container]
-Image=docker.io/library/alpine:3.23
+Image=shop-api.build
 Pod=shop.pod
-Exec=sleep infinity

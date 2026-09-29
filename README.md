@@ -257,6 +257,8 @@ Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a co
 | `quadlets/containers/` | `.container` | `/etc/containers/systemd/picolet/` |
 | `quadlets/kube/` | `.kube` | `/etc/containers/systemd/picolet/` |
 | `quadlets/pods/` | `.pod` | `/etc/containers/systemd/picolet/` |
+| `quadlets/images/` | `.image` | `/etc/containers/systemd/picolet/` |
+| `quadlets/builds/` | `.build` | `/etc/containers/systemd/picolet/` |
 | `manifests/<app>/` | `.yml` (Kubernetes resources only) | `/var/lib/picolet/manifests/<app>/` |
 | `files/<app>/` | any | `/var/lib/picolet/files/<app>/` |
 | `secrets/` | `.yml` | Podman secrets |
@@ -268,6 +270,14 @@ The pod service starts its members (unless `StartWithPod=false`), so when a pod
 changes in the same reconciliation as its members, only the pod service is restarted.
 The agent's own container (`picolet.service`/`picolet-system.service`) must not join a
 pod: `validate` rejects it, because restarting or stopping the pod would stop the agent.
+
+A `.image` generates `<name>-image.service`, a `.build` `<name>-build.service` (hooks may
+target them as `unit: <name>.image` / `unit: <name>.build`). Containers use them with
+`Image=<name>.image` / `Image=<name>.build`; the unit must be deployed to the same host.
+Deliver a build's Containerfile under `files/` and point at it with
+`File={{ filePath "<app>/Containerfile" }}` plus `SetWorkingDirectory=file` (build context =
+the Containerfile's directory). Both generated services are one-shots their consumers
+pull in: reported, never restarted by the health loop; rebuild-on-change is #127.
 
 ### Service Bundles
 
@@ -285,6 +295,8 @@ services/<name>/
   networks/
   kube/
   pods/
+  images/
+  builds/
   systemd/
   secrets/
   manifests/    # K8s YAML only — validated against k8s.io/api types
@@ -292,7 +304,7 @@ services/<name>/
   picolet.yml
 ```
 
-`manifests/` and `files/` may contain nested directories. The other seven category directories
+`manifests/` and `files/` may contain nested directories. The other nine category directories
 must contain files directly.
 
 `picolet.yml` is optional service metadata. It does not deploy a resource by
@@ -524,7 +536,7 @@ The template data root exposes `.Images`, `.Ports`, `.Fleet` (all hosts + full c
 | `.Host.Role` | The host's `role` |
 | `.Host.Features` | The host's enabled features |
 | `.Host.Services` | Resolved service-bundle names for this host (sorted, deduplicated) |
-| `.Host.SystemdUnits` | Systemd unit names picolet manages on this host — quadlet-derived (`.container`/`.kube`/`.network`/`.volume`/`.pod`) plus raw systemd files, sorted and deduplicated. See [Two-pass rendering](#two-pass-rendering) |
+| `.Host.SystemdUnits` | Systemd unit names picolet manages on this host — quadlet-derived (`.container`/`.kube`/`.network`/`.volume`/`.pod`/`.image`/`.build`) plus raw systemd files, sorted and deduplicated. See [Two-pass rendering](#two-pass-rendering) |
 
 | Function | Purpose |
 |----------|---------|

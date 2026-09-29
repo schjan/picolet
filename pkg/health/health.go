@@ -22,7 +22,9 @@ type CheckResult struct {
 	Restarted []string
 	Skipped   []string
 	// ExternallyActivated is the subset of Unhealthy that picolet must not restart
-	// because systemd owns their (re-)invocation: timer-fired or static one-shots.
+	// because systemd owns their (re-)invocation: timer-fired or static one-shots,
+	// and the units of HealthReportOnly categories (.build/.image), which their
+	// consumers pull in.
 	ExternallyActivated []string
 	// TimerJobs names the units picolet keeps run bookkeeping for: one-shots a
 	// .timer fires, plus the .timers that fire them. Every name is a key of

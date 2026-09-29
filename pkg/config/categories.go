@@ -83,13 +83,18 @@ const (
 	// HealthDaemon: long-running; a failed unit is restarted (subject to the
 	// cooldown and the externally-activated one-shot exemption).
 	HealthDaemon
+	// HealthReportOnly: a one-shot job its consumers pull in (Requires=); its
+	// status is reported, but a failed unit is never restarted by the health
+	// loop — re-running it belongs to whatever activates it.
+	HealthReportOnly
 )
 
 // RestartPolicy is what apply does with the unit behind a created or updated file.
 type RestartPolicy int
 
 const (
-	// RestartNone: no unit; changes reach services through hooks only.
+	// RestartNone: apply never restarts the unit; changes reach services
+	// through hooks, or when a consumer next starts it.
 	RestartNone RestartPolicy = iota
 	// RestartChanged: restart the generated service after daemon-reload
 	// (timer-triggered one-shots are gated).
@@ -154,6 +159,15 @@ var categories = []Spec{
 		ApplyRank: 20, ConvertOrder: 2, Health: HealthDaemon, Restart: RestartChanged, PreConvert: true, Unit: GeneratedUnit,
 	},
 	{
+		Category: CategoryImage, Dest: DestQuadlet, Subdir: "images", Check: CheckQuadlet,
+		ApplyRank: 30, ConvertOrder: 1, Health: HealthReportOnly, Restart: RestartChanged, PreConvert: true, Unit: GeneratedUnit,
+	},
+	{
+		// RestartNone until #127 adds rebuild-on-input-change.
+		Category: CategoryBuild, Dest: DestQuadlet, Subdir: "builds", Check: CheckQuadlet,
+		ApplyRank: 40, ConvertOrder: 3, Health: HealthReportOnly, Restart: RestartNone, Prefill: true, Unit: GeneratedUnit,
+	},
+	{
 		Category: CategoryContainer, Dest: DestQuadlet, Subdir: "containers", Check: CheckQuadlet,
 		ApplyRank: 100, ConvertOrder: 4, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, PreConvert: true, Unit: GeneratedUnit,
 	},
@@ -179,16 +193,8 @@ var categories = []Spec{
 	},
 	// Known to Podman, not deployable yet: not selectable, rejected by the validator.
 	{
-		Category: CategoryImage, Dest: DestQuadlet, Check: CheckUnsupported,
-		ApplyRank: 30, ConvertOrder: 1, Health: HealthDaemon, Restart: RestartChanged, Unit: GeneratedUnit,
-	},
-	{
 		Category: CategoryArtifact, Dest: DestQuadlet, Check: CheckUnsupported,
 		ApplyRank: 35, ConvertOrder: 1, Health: HealthDaemon, Restart: RestartChanged, Unit: GeneratedUnit,
-	},
-	{
-		Category: CategoryBuild, Dest: DestQuadlet, Check: CheckUnsupported,
-		ApplyRank: 40, ConvertOrder: 3, Health: HealthDaemon, Restart: RestartChanged, Prefill: true, Unit: GeneratedUnit,
 	},
 }
 

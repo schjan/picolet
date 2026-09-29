@@ -1,0 +1,4 @@
+[Build]
+ImageTag=localhost/shop-api:latest
+File=/var/lib/picolet/files/shop-api/Containerfile
+SetWorkingDirectory=file

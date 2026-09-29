@@ -27,8 +27,9 @@ type HostTemplateData struct {
 
 	// SystemdUnits is the sorted, deduplicated list of systemd unit names
 	// picolet manages on this host:
-	//   - Quadlet-derived units (.container, .kube, .network, .volume, .pod) via
-	//     Podman's parser, which honors ServiceName= overrides.
+	//   - Quadlet-derived units (.container, .kube, .network, .volume, .pod,
+	//     .image, .build) via Podman's parser, which honors ServiceName=
+	//     overrides.
 	//   - Raw systemd units (CategorySystemd), where the unit name is the
 	//     filename with any .tmpl suffix stripped (e.g. "https.socket").
 	// Populated by the first render pass — see prepareTemplateData in

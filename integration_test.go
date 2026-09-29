@@ -189,6 +189,58 @@ func findChange(t *testing.T, cs *reconciler.Changeset, destPath string) reconci
 	return cs.Changes[i]
 }
 
+const (
+	shopAPIBuildPath = "/etc/containers/systemd/picolet/shop-api.build"
+	nginxImagePath   = "/etc/containers/systemd/picolet/nginx.image"
+)
+
+// TestIntegrationReconcilePipelineBuildAndImage drives node-1's .build and
+// .image through create and delete: each is tracked under its generated
+// <name>-build.service / <name>-image.service, the build's File= names the
+// Containerfile deployed from files/, and removing them stops those services
+// before their files are removed.
+func TestIntegrationReconcilePipelineBuildAndImage(t *testing.T) {
+	t.Parallel()
+	repoFS := os.DirFS(testdataDir)
+	cfg, err := config.LoadAll(repoFS)
+	require.NoError(t, err)
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	require.NoError(t, err)
+	resolved, err := r.ResolveHost(t.Context(), "node-1")
+	require.NoError(t, err)
+
+	created := reconciler.Diff(resolved.Files, state.NewState())
+	build := findChange(t, created, shopAPIBuildPath)
+	assert.Equal(t, config.CategoryBuild, build.Category)
+	assert.Equal(t, "shop-api-build.service", build.ServiceName)
+	image := findChange(t, created, nginxImagePath)
+	assert.Equal(t, config.CategoryImage, image.Category)
+	assert.Equal(t, "nginx-image.service", image.ServiceName)
+	i := slices.IndexFunc(created.Changes, func(c reconciler.Change) bool {
+		return c.Category == config.CategoryFile && c.RelPath == "shop-api/Containerfile"
+	})
+	require.GreaterOrEqual(t, i, 0, "Containerfile not deployed")
+	assert.Contains(t, build.NewContent, "File="+created.Changes[i].DestPath+"\n")
+
+	remaining := slices.DeleteFunc(slices.Clone(resolved.Files), func(f resolver.ResolvedFile) bool {
+		return f.DestPath == shopAPIBuildPath || f.DestPath == nginxImagePath
+	})
+	cs := reconciler.Diff(remaining, stateAfter(created))
+	require.Equal(t, 2, cs.Summary[reconciler.ActionDelete])
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	fw := appliermocks.NewMockFileWriter(t)
+	for path, unit := range map[string]string{
+		shopAPIBuildPath: "shop-api-build.service",
+		nginxImagePath:   "nginx-image.service",
+	} {
+		stop := sys.EXPECT().StopUnit(mock.Anything, unit).Return(nil).Once()
+		fw.EXPECT().Remove(path).Return(nil).Once().NotBefore(stop)
+	}
+	_, err = applier.New(sys, appliermocks.NewMockPodmanClient(t), fw, false, nil).Apply(t.Context(), cs)
+	require.NoError(t, err)
+}
+
 func TestIntegrationMultiHostConsistency(t *testing.T) {
 	t.Parallel()
 	repoFS := os.DirFS(testdataDir)

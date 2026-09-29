@@ -12,6 +12,7 @@ import (
 
 	appliermocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/applier"
+	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/state"
 )
 
@@ -179,6 +180,73 @@ func TestEnforceExternallyActivatedOneshots(t *testing.T) {
 				"an externally-activated unit is never retried, so its pending record must clear")
 		})
 	}
+}
+
+// A failed .build/.image service is a generated one-shot (UnitFileState
+// "generated", so ExternallyActivated is false) its consumer pulls in: the
+// health loop reports it under the external-activation skip reason and never
+// restarts it — the strict mock fails on any RestartUnit.
+func TestEnforceFailedBuildAndImageNotRestarted(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		path     string
+		category config.Category
+		unit     string
+	}{
+		{"/etc/containers/systemd/picolet/app.build", config.CategoryBuild, "app-build.service"},
+		{"/etc/containers/systemd/picolet/redis.image", config.CategoryImage, "redis-image.service"},
+	} {
+		t.Run(tc.category.String(), func(t *testing.T) {
+			t.Parallel()
+			sys := appliermocks.NewMockSystemdManager(t)
+			sys.EXPECT().GetUnitStatus(mock.Anything, tc.unit).Return(applier.UnitStatus{
+				ActiveState: "failed", SubState: "failed", UnitFileState: "generated", ServiceType: "oneshot",
+			}, nil)
+
+			c := New(sys)
+			old := time.Now().Add(-time.Hour)
+			st := &state.State{
+				ManagedFiles: map[string]state.ManagedFile{tc.path: {Hash: "sha256:abc", Category: tc.category}},
+				ServiceNames: map[string]string{tc.path: tc.unit},
+				PendingUnits: map[string]state.PendingUnit{
+					tc.unit: {SHA: "sha", Attempts: 1, FirstFailedAt: old, LastAttemptAt: old},
+				},
+			}
+
+			result, err := c.Enforce(context.Background(), st)
+			require.NoError(t, err)
+			assert.Equal(t, []string{tc.unit}, result.Unhealthy)
+			assert.Equal(t, []string{tc.unit}, result.ExternallyActivated)
+			assert.Empty(t, result.Restarted)
+			assert.Contains(t, result.Statuses, tc.unit)
+			assert.NotContains(t, st.PendingUnits, tc.unit)
+		})
+	}
+}
+
+// A container with Notify=healthy sits in "activating" until its healthcheck
+// passes. It is listed as healthy and never restarted by the health loop.
+func TestEnforceActivatingContainerNotRestarted(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{
+		ActiveState: "activating", SubState: "start", UnitFileState: "generated", ServiceType: "notify",
+	}, nil)
+
+	c := New(sys)
+	st := &state.State{
+		ManagedFiles: map[string]state.ManagedFile{
+			"/etc/containers/systemd/picolet/app.container": {Hash: "sha256:abc", Category: config.CategoryContainer},
+		},
+		ServiceNames: map[string]string{"/etc/containers/systemd/picolet/app.container": "app.service"},
+	}
+
+	result, err := c.Enforce(context.Background(), st)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"app.service"}, result.Healthy)
+	assert.Equal(t, "activating", result.Statuses["app.service"].ActiveState)
+	assert.Empty(t, result.Unhealthy)
+	assert.Empty(t, result.Restarted)
 }
 
 // Run bookkeeping must be classified on every state path. A one-shot that works
