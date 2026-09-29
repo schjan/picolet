@@ -38,6 +38,11 @@ type HostMetadata struct {
 	Role             string
 	Features         []string
 	ExternalHostname string
+	// Machine is the Machine the Host runs on (never empty once recorded).
+	Machine string
+	// User is the Linux user the Agent runs as; empty for the rootful Host,
+	// as in host.yml.
+	User string
 }
 
 // OrphanScan captures the most recent startup orphan cleanup outcome.
@@ -376,5 +381,7 @@ func cloneHost(in HostMetadata) HostMetadata {
 		Role:             in.Role,
 		Features:         slices.Clone(in.Features),
 		ExternalHostname: in.ExternalHostname,
+		Machine:          in.Machine,
+		User:             in.User,
 	}
 }

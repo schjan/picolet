@@ -155,6 +155,8 @@ func (h *Handler) buildHeaderInput(st *state.State, snap status.Snapshot) Header
 		Role:             snap.Host.Role,
 		Features:         snap.Host.Features,
 		ExternalHostname: snap.Host.ExternalHostname,
+		Machine:          snap.Host.Machine,
+		User:             snap.Host.User,
 		FailedSHA:        st.FailedSHA,
 		FailedCount:      st.FailedCount,
 		FailedAt:         st.FailedAt,

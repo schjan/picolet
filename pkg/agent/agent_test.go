@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1470,6 +1471,14 @@ ContainerName=broken
 	assert.Empty(t, snap.Dependencies, "deps must remain unset on validation failure")
 	// Host metadata IS recorded (recordHostMetadata happens before AnalyzeFiles).
 	assert.Equal(t, "server", snap.Host.Role)
+	assert.Empty(t, snap.Host.User, "status keeps host.yml's user: as written; empty for the rootful Host")
+	// The metric alone substitutes root: machine defaults to the hostname and
+	// the empty user becomes user="root".
+	require.NoError(t, testutil.CollectAndCompare(metrics.NewHostInfoCollector(store), strings.NewReader(`
+# HELP picolet_host_info Resolved host metadata (value=1).
+# TYPE picolet_host_info gauge
+picolet_host_info{machine="test-host",role="server",user="root"} 1
+`), "picolet_host_info"))
 }
 
 func TestTickDoesNotCreateDeploymentForUnchangedSHAOpRefresh(t *testing.T) {

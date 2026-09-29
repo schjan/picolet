@@ -29,6 +29,8 @@ type HeaderInput struct {
 	Role             string
 	Features         []string
 	ExternalHostname string
+	Machine          string
+	User             string
 	FailedSHA        string
 	FailedCount      int
 	FailedAt         time.Time
@@ -44,6 +46,8 @@ type Header struct {
 	Role             string
 	Features         string
 	ExternalHostname string
+	Machine          string
+	User             string
 }
 
 // Banner describes the failure-gate banner state.
@@ -239,6 +243,8 @@ func buildViewModel(
 			Role:             in.Role,
 			Features:         strings.Join(in.Features, ", "),
 			ExternalHostname: in.ExternalHostname,
+			Machine:          in.Machine,
+			User:             in.User,
 		},
 		Banner:         buildBanner(in, now),
 		Groups:         groups,

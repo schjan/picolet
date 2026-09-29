@@ -186,6 +186,22 @@ scrape_configs:
       - targets: ["127.0.0.1:9417", "127.0.0.1:9418"]
 ```
 
+Each Agent names itself so sibling Agents stay apart: `picolet_host_info`
+carries `role`, `machine` and `user` labels (`user="root"` for the rootful
+Host, so the label is never empty), the dashboard header shows
+`machine / user` next to the hostname, and `picolet resolve --host` opens with
+a `# host=… role=… machine=… user=… listen_port=…` line. Outside the metric,
+`user` is `host.yml`'s `user:` as written: the rootful Host's dashboard header
+shows only its Machine, and its resolve line reads `user=`.
+
+```promql
+# Reconciliations per Machine, split by Agent user
+sum by (machine, user) (
+  rate(picolet_reconciliation_total[1h])
+  * on(instance) group_left(machine, user) picolet_host_info
+)
+```
+
 To expose the listener deliberately, set `listen_addr` in the agent config:
 
 ```yaml

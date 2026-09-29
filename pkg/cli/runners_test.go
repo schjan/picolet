@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -33,6 +35,26 @@ func TestApplyWithRollbackIncompleteOnFailedManagedRestart(t *testing.T) {
 		NewContent: "[Container]\nImage=new\n", ServiceName: "app.service",
 	}}}, sys, appliermocks.NewMockPodmanClient(t), nil, nil)
 	require.ErrorIs(t, err, applier.ErrApplyIncomplete)
+}
+
+// resolve --host opens its output with one line naming which Agent the files
+// are for; user is host.yml's user:, empty for the rootful Host.
+func TestRunResolveHeader(t *testing.T) {
+	t.Parallel()
+	tests := map[string]string{
+		"vps-1":        "# host=vps-1 role=vps machine=vps-1 user=pi listen_port=9417",
+		"vps-1-runner": "# host=vps-1-runner role=vps machine=vps-1 user=runner listen_port=9419",
+		"vps-1-system": "# host=vps-1-system role=vps machine=vps-1 user= listen_port=9418",
+	}
+	for host, want := range tests {
+		t.Run(host, func(t *testing.T) {
+			t.Parallel()
+			var out bytes.Buffer
+			require.NoError(t, runResolve(t.Context(), &out, "../../testdata/example-fleet", host))
+			header, _, _ := strings.Cut(out.String(), "\n")
+			assert.Equal(t, want, header)
+		})
+	}
 }
 
 // Cannot use t.Parallel(): t.Setenv() mutates a process-global, so the test
