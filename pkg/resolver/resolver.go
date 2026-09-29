@@ -366,24 +366,27 @@ func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*expanded
 	}, nil
 }
 
-// expandFileSet returns a new ResolvedFileSet merged with any service bundles,
-// plus the full list of nested data refs (legacy + bundled). The input fileSet
-// is not mutated. Data categories (UsesRelPath) and Services are left out of
-// the returned Paths: nested data paths flow through bundleFileRefs, and
-// Services is already flattened into the category paths.
+// expandFileSet returns a new ResolvedFileSet merged with any service bundles
+// and `paths:` entries, plus the full list of nested data refs (legacy,
+// bundled and from `paths:`). The input fileSet is not mutated. Data
+// categories (UsesRelPath), Entries and Services are left out of the returned
+// Paths: nested data paths flow through bundleFileRefs, and Entries and
+// Services are already flattened into the category paths.
 // Populating them would let a future caller miss bundle contents.
 func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.ResolvedFileSet, []bundleFileRef, []hookRef, error) {
-	expanded, err := expandServiceBundles(r.fsys, fileSet.Services)
-	if err != nil {
+	expanded, bundleErr := expandServiceBundles(r.fsys, fileSet.Services)
+	fromPaths, pathsErr := expandPathEntries(r.fsys, fileSet.PathEntries)
+	if err := errors.Join(bundleErr, pathsErr); err != nil {
 		return nil, nil, nil, err
 	}
+	expanded.append(fromPaths)
 
 	merged := &config.ResolvedFileSet{Paths: make(map[config.Category][]string)}
 	bundleFileRefs := slices.Clone(expanded.NestedRefs)
 	for _, spec := range config.Specs() {
 		if spec.Dest == config.DestData {
 			for _, srcPath := range fileSet.Paths[spec.Category] {
-				bundleFileRefs = append(bundleFileRefs, newLegacyBundleFileRef(srcPath, spec))
+				bundleFileRefs = append(bundleFileRefs, newDataFileRef(srcPath, srcPath, spec))
 			}
 			continue
 		}
@@ -394,15 +397,15 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*config.Resol
 	return merged, uniqueBundleFileRefs(bundleFileRefs), expanded.Hooks, nil
 }
 
-// newLegacyBundleFileRef constructs a bundleFileRef for a legacy (non-bundled)
-// data path, where the source and logical paths are the same. Bundled refs set
-// a stripped LogicalPath and are built in readNestedSubdir.
-func newLegacyBundleFileRef(srcPath string, spec config.Spec) bundleFileRef {
+// newDataFileRef constructs the bundleFileRef of a data-category file. The
+// logical path decides the destination and RelPath; it equals srcPath for
+// typed lists and `paths:` entries.
+func newDataFileRef(srcPath, logical string, spec config.Spec) bundleFileRef {
 	return bundleFileRef{
 		SrcPath:     srcPath,
-		LogicalPath: srcPath,
+		LogicalPath: logical,
 		Category:    spec.Category,
-		RelPath:     stripSubdirPrefix(deployedLogicalPath(srcPath), spec.Subdir),
+		RelPath:     stripSubdirPrefix(deployedLogicalPath(logical), spec.Subdir),
 	}
 }
 
@@ -585,25 +588,44 @@ func (r *Resolver) buildSecretFiles(
 	return files, nil
 }
 
+// detectCollisions reports every destination that two deployments share. A
+// deployment is a source in a category: the same source reached twice in one
+// category is one deployment, in two categories it is a collision.
 func detectCollisions(files []ResolvedFile) error {
-	collisions := make(map[string][]string)
+	type deployment struct {
+		src      string
+		category config.Category
+	}
+	byDest := make(map[string][]deployment)
 	for _, file := range files {
-		collisions[file.DestPath] = append(collisions[file.DestPath], file.SrcPath)
+		byDest[file.DestPath] = append(byDest[file.DestPath], deployment{file.SrcPath, file.Category})
 	}
-
-	destPaths := make([]string, 0, len(collisions))
-	for destPath := range collisions {
-		destPaths = append(destPaths, destPath)
-	}
-	slices.Sort(destPaths)
 
 	var errs []error
-	for _, destPath := range destPaths {
-		uniquePaths := sortedUnique(collisions[destPath])
-		if len(uniquePaths) < 2 {
+	for _, destPath := range slices.Sorted(maps.Keys(byDest)) {
+		deployments := slices.SortedFunc(slices.Values(byDest[destPath]), func(a, b deployment) int {
+			if diff := strings.Compare(a.src, b.src); diff != 0 {
+				return diff
+			}
+			return strings.Compare(a.category.String(), b.category.String())
+		})
+		deployments = slices.Compact(deployments)
+		if len(deployments) < 2 {
 			continue
 		}
-		errs = append(errs, fmt.Errorf("destination collision for %s: %s", destPath, strings.Join(uniquePaths, ", ")))
+		// Name the categories only when they are what tells the sources apart.
+		qualify := false
+		for i := 1; i < len(deployments); i++ {
+			qualify = qualify || deployments[i].src == deployments[i-1].src
+		}
+		names := make([]string, len(deployments))
+		for i, d := range deployments {
+			names[i] = d.src
+			if qualify {
+				names[i] += " (" + d.category.String() + ")"
+			}
+		}
+		errs = append(errs, fmt.Errorf("destination collision for %s: %s", destPath, strings.Join(names, ", ")))
 	}
 	return errors.Join(errs...)
 }

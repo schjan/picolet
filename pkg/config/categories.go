@@ -2,7 +2,10 @@ package config
 
 import (
 	"cmp"
+	"fmt"
+	"path"
 	"slices"
+	"strings"
 )
 
 // Category identifies the kind of managed file Picolet resolves, validates,
@@ -136,8 +139,10 @@ type Spec struct {
 }
 
 // categories is the category table: adding a Quadlet or systemd unit type is
-// one row here plus, for Quadlets, its converter wiring in pkg/validator, and
-// for selectable ones a Subdir and a typed list in AssignmentGroup.
+// one row here plus, for Quadlets, its converter wiring in pkg/validator.
+// `paths:` entries select every row by path (CategoryForPath: first segment
+// for data and secret rows, extension otherwise); a Subdir and a typed list in
+// AssignmentGroup serve the typed lists and bundle subdirectories.
 //
 // Two orderings are kept apart on purpose:
 //   - ConvertOrder mirrors quadlet.SupportedExtensions: .pod converts last
@@ -227,6 +232,19 @@ var specsByCategory = func() map[Category]Spec {
 	return m
 }()
 
+// segmentCategories maps the directory names that select a category by
+// position (manifests/, files/, secrets/) to that category: the Subdir of
+// every data and secret row.
+var segmentCategories = func() map[string]Category {
+	m := make(map[string]Category)
+	for _, s := range categories {
+		if s.Dest == DestData || s.Dest == DestSecret {
+			m[s.Subdir] = s.Category
+		}
+	}
+	return m
+}()
+
 // Specs returns the category table in resolution order.
 func Specs() []Spec {
 	return slices.Clone(categories)
@@ -242,6 +260,62 @@ func SpecFor(c Category) (Spec, bool) {
 func CategoryForExtension(ext string) (Category, bool) {
 	c, ok := extensions[ext]
 	return c, ok
+}
+
+// CategoryForPath derives the category of a Fleet file from its logical path:
+// Fleet-root-relative for a `paths:` entry, bundle-relative (services/<name>/
+// stripped) for a Service Bundle once #147 lands. A first directory segment
+// manifests/, files/ or secrets/ selects that category (at any other depth, or
+// two of them, it is an error); otherwise the extension before any final .tmpl
+// decides. Errors do not name the file; callers prefix the source path.
+func CategoryForPath(logical string) (Category, error) {
+	dir, file := path.Split(logical)
+	if c, ok, err := categoryForSegment(dir); ok || err != nil {
+		return c, err
+	}
+	return categoryForFileName(file)
+}
+
+// categoryForSegment applies the first-segment rule to a directory part
+// ("manifests/app/"); ok is false when no segment names a category.
+func categoryForSegment(dir string) (c Category, ok bool, err error) {
+	var named []string
+	deep := ""
+	for i, seg := range strings.Split(strings.TrimSuffix(dir, "/"), "/") {
+		if _, found := segmentCategories[seg]; !found {
+			continue
+		}
+		if !slices.Contains(named, seg) {
+			named = append(named, seg)
+		}
+		if i > 0 && deep == "" {
+			deep = seg
+		}
+	}
+	switch {
+	case len(named) > 1:
+		return "", false, fmt.Errorf("path has both %q and %q; manifests/, files/ and secrets/ are exclusive and must be the first path segment",
+			named[0]+"/", named[1]+"/")
+	case deep != "":
+		return "", false, fmt.Errorf("%q must be the first path segment; manifests/, files/ and secrets/ are recognized only there", deep+"/")
+	case len(named) == 1:
+		return segmentCategories[named[0]], true, nil
+	}
+	return "", false, nil
+}
+
+// categoryForFileName looks up the extension before any final .tmpl.
+func categoryForFileName(file string) (Category, error) {
+	const hint = "move it under files/ or remove it from the listed directory"
+	name := strings.TrimSuffix(file, ".tmpl")
+	ext := path.Ext(name)
+	if c, ok := extensions[ext]; ok {
+		return c, nil
+	}
+	if ext == "" || ext == name { // dotfiles (.gitkeep) have no extension either
+		return "", fmt.Errorf("no file extension; %s", hint)
+	}
+	return "", fmt.Errorf("unknown extension %q; %s", ext, hint)
 }
 
 // ApplyOrder returns every category ordered by ApplyRank.

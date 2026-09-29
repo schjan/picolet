@@ -293,6 +293,63 @@ func TestIntegrationErrorPaths(t *testing.T) {
 		require.ErrorAs(t, err, &notFound)
 		assert.Equal(t, "nonexistent", notFound.Hostname)
 	})
+
+	pathsCases := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			name:  "manifests below the first segment",
+			files: map[string]string{"app/manifests/deploy.yml": "kind: ConfigMap\n"},
+			want:  `app/manifests/deploy.yml: "manifests/" must be the first path segment`,
+		},
+		{
+			name:  "manifests and files in one path",
+			files: map[string]string{"app/manifests/files/deploy.yml": "kind: ConfigMap\n"},
+			want:  `app/manifests/files/deploy.yml: path has both "manifests/" and "files/"`,
+		},
+		{
+			name:  "unknown extension",
+			files: map[string]string{"app/web.contaner": "[Container]\n"},
+			want:  `app/web.contaner: unknown extension ".contaner"; move it under files/ or remove it from the listed directory`,
+		},
+		{
+			name:  "extensionless file",
+			files: map[string]string{"app/Containerfile": "FROM scratch\n"},
+			want:  "app/Containerfile: no file extension; move it under files/ or remove it from the listed directory",
+		},
+		{
+			name:  "destination collision",
+			files: map[string]string{"app/web.network": "[Network]\n", "app/nested/web.network": "[Network]\n"},
+			want:  "destination collision for /etc/containers/systemd/picolet/web.network: app/nested/web.network, app/web.network",
+		},
+	}
+	for _, tc := range pathsCases {
+		t.Run("paths: "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.ErrorContains(t, validatePathsFleet(t, tc.files), tc.want)
+		})
+	}
+}
+
+// validatePathsFleet runs `picolet validate` on a one-host fleet whose base
+// group lists `paths: [app/]`; files maps Fleet paths to content.
+func validatePathsFleet(t *testing.T, files map[string]string) error {
+	t.Helper()
+	repoFS := fstest.MapFS{
+		"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+		"assignments.yml":          &fstest.MapFile{Data: []byte("base:\n  paths: [app/]\nroles: {}\nfeatures: {}\n")},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte("hostname: test-host\nexternal_hostname: test-host.ts.net\nrole: node\nfeatures: []\n")},
+	}
+	for p, content := range files {
+		repoFS[p] = &fstest.MapFile{Data: []byte(content)}
+	}
+	cfg, err := config.LoadAll(repoFS)
+	require.NoError(t, err)
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	require.NoError(t, err)
+	return validator.ValidateAll(t.Context(), r, cfg)
 }
 
 func newAggregatedSecretFleetFS(ruleExpr string) fstest.MapFS {
