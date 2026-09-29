@@ -60,7 +60,12 @@ func Create(ctx context.Context, cfg CreateConfig) error {
 // buildCreateScriptData resolves the host's picolet bundle (with placeholder
 // secrets) and derives everything the rendered script needs from it.
 func buildCreateScriptData(ctx context.Context, cfg CreateConfig) (createScriptData, error) {
-	fleetCfg, err := config.LoadAll(os.DirFS(cfg.FleetDir))
+	fleetRoot, err := os.OpenRoot(cfg.FleetDir)
+	if err != nil {
+		return createScriptData{}, fmt.Errorf("opening fleet dir: %w", err)
+	}
+	defer fleetRoot.Close()
+	fleetCfg, err := config.LoadAll(fleetRoot.FS())
 	if err != nil {
 		return createScriptData{}, fmt.Errorf("loading config: %w", err)
 	}

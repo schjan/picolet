@@ -40,10 +40,14 @@ func resolveBootstrapHost(ctx context.Context, cfg resolveConfig) (*resolver.Res
 		return nil, fmt.Errorf("service is required")
 	}
 
-	repoFS := os.DirFS(cfg.RepoDir)
+	repoRoot, err := os.OpenRoot(cfg.RepoDir)
+	if err != nil {
+		return nil, fmt.Errorf("opening repo: %w", err)
+	}
+	defer repoRoot.Close()
+	repoFS := repoRoot.FS()
 	fleetCfg := cfg.Config
 	if fleetCfg == nil {
-		var err error
 		fleetCfg, err = config.LoadAll(repoFS)
 		if err != nil {
 			return nil, fmt.Errorf("loading config: %w", err)

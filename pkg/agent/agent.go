@@ -616,7 +616,14 @@ func LoadAndResolve(ctx context.Context, params ResolveParams) ([]resolver.Resol
 // LoadAndResolveHost loads fleet config from repoPath and resolves the desired state plus host metadata.
 func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.ResolvedHost, error) {
 	slog.Debug("loading fleet config", "repo", params.RepoPath)
-	repoFS := os.DirFS(params.RepoPath)
+	// os.Root, not os.DirFS: a symlink in the Fleet repo must not reach host
+	// files outside it.
+	repoRoot, err := os.OpenRoot(params.RepoPath)
+	if err != nil {
+		return nil, fmt.Errorf("opening repo: %w", err)
+	}
+	defer repoRoot.Close()
+	repoFS := repoRoot.FS()
 	cfg, err := config.LoadAll(repoFS)
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
