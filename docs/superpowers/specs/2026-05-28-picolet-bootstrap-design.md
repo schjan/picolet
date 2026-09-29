@@ -286,7 +286,7 @@ Add `bootstrapCmd()`, `bootstrapCreateCmd()`, `bootstrapTeardownCmd()` returning
 
 ### Service filtering
 
-A `ResolvedFile.SrcPath` looks like `services/picolet/containers/picolet.container.tmpl`. Filter helper:
+A `ResolvedFile.SrcPath` looks like `services/picolet/picolet.container.tmpl`. Filter helper:
 
 ```go
 // FilterByService returns the subset of files whose SrcPath belongs

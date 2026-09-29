@@ -1,0 +1,5 @@
+# Dev/test host running rootless picolet (role test → services/picolet/).
+# Replace with actual hostname — must match hostname: in ~/.config/picolet/config.yml
+hostname: example-host-dev
+role: test
+features: []
