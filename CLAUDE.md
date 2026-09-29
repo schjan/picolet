@@ -85,7 +85,7 @@ type SecretReader func(path string) (string, error)
 ### Configuration Layers
 
 - **Agent config** (`/etc/picolet/config.yml`) — hostname, repo URL, poll interval. Loaded by `pkg/agentcfg`.
-- **Fleet config** (in git repo) — `fleet.yml` (images, ports), `assignments.yml` (file mappings per role/feature), `hosts/<name>/host.yml` (per-host settings). Loaded by `pkg/config`. Production code reads the repo through `os.OpenRoot(dir)` + `root.FS()`, never `os.DirFS`: `DirFS` follows symlinks out of the tree, which would let a Fleet deploy any host file (the agent runs as root). Tests may use `fstest.MapFS`/`os.DirFS`.
+- **Fleet config** (in git repo) — `fleet.yml` (images, ports), `assignments.yml` (file mappings per role/feature), `hosts/<name>/host.yml` (per-host settings). Loaded by `pkg/config`. Production code opens the repo with `config.OpenRepo` (an `os.Root`-backed FS), never `os.DirFS`: `DirFS` follows symlinks out of the tree, which would let a Fleet deploy any host file (the agent runs as root). Host secrets go through `resolver.DirSecretReader`. Tests may use `fstest.MapFS`/`os.DirFS`.
 - **Secrets** — read from local filesystem (`cfg.SecretsDir`), not from git.
 
 ### Template System
