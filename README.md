@@ -307,9 +307,10 @@ roles:
 ```
 
 `paths:` and the per-category lists coexist: a file reached twice in one category
-deploys once; two sources for one destination are an error, and so is one file that
-a list and `paths:` put in different categories at the same destination (e.g.
-`files: [manifests/x.yml]` with `paths: [manifests/]`).
+deploys once; two sources for one destination are an error. When a list and `paths:`
+put one file in different categories, it deploys to both destinations if they differ
+(e.g. `secrets: [files/token]` with `paths: [files/token]`), and is an error if they
+coincide (e.g. `files: [manifests/x.yml]` with `paths: [manifests/]`).
 
 ### Service Bundles
 
