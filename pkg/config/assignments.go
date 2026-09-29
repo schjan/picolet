@@ -2,7 +2,9 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 
 	"go.yaml.in/yaml/v4"
@@ -19,89 +21,107 @@ type Assignments struct {
 	RetiredPiTypes yaml.Node `yaml:"pi_types"`
 }
 
-// Validate rejects retired keys.
+// Validate rejects retired keys: `pi_types:`, and the typed lists of every
+// group (all of them, base first, then roles and features by name).
 func (a *Assignments) Validate() error {
 	if keyPresent(a.RetiredPiTypes) {
 		return errors.New(migratePiTypes)
 	}
-	return nil
+	errs := a.Base.retiredListErrors("base")
+	for _, role := range slices.Sorted(maps.Keys(a.Roles)) {
+		g := a.Roles[role]
+		errs = append(errs, g.retiredListErrors("roles."+role)...)
+	}
+	for _, feature := range slices.Sorted(maps.Keys(a.Features)) {
+		g := a.Features[feature]
+		errs = append(errs, g.retiredListErrors("features."+feature)...)
+	}
+	return errors.Join(errs...)
 }
 
-// AssignmentGroup is a collection of file paths: typed lists, plus `paths:`
-// entries whose category is derived from the file name (CategoryForPath).
+// AssignmentGroup is a collection of assignment entries: `paths:` entries
+// whose category is derived from the file name (CategoryForPath), `secrets:`
+// (the one explicit category) and Service Bundles.
 type AssignmentGroup struct {
 	// Paths lists Fleet-root-relative files or directories; directories are
 	// expanded recursively by the resolver.
-	Paths      []string `yaml:"paths"`
-	Networks   []string `yaml:"networks"`
-	Systemd    []string `yaml:"systemd"`
-	Volumes    []string `yaml:"volumes"`
-	Containers []string `yaml:"containers"`
-	Kube       []string `yaml:"kube"`
-	Pods       []string `yaml:"pods"`
-	Images     []string `yaml:"images"`
-	Builds     []string `yaml:"builds"`
-	Manifests  []string `yaml:"manifests"`
-	Files      []string `yaml:"files"`
-	Secrets    []string `yaml:"secrets"`
-	Services   []string `yaml:"services"`
+	Paths []string `yaml:"paths"`
+	// Secrets lists Podman secrets: repo paths, host-only secret file names
+	// or provider refs (op://, pass://).
+	Secrets  []string `yaml:"secrets"`
+	Services []string `yaml:"services"`
+
+	// The retired typed lists, captured so Validate can name `paths:` as the
+	// replacement. Reject-only — see keyPresent.
+	RetiredNetworks   yaml.Node `yaml:"networks"`
+	RetiredSystemd    yaml.Node `yaml:"systemd"`
+	RetiredVolumes    yaml.Node `yaml:"volumes"`
+	RetiredContainers yaml.Node `yaml:"containers"`
+	RetiredKube       yaml.Node `yaml:"kube"`
+	RetiredPods       yaml.Node `yaml:"pods"`
+	RetiredImages     yaml.Node `yaml:"images"`
+	RetiredBuilds     yaml.Node `yaml:"builds"`
+	RetiredManifests  yaml.Node `yaml:"manifests"`
+	RetiredFiles      yaml.Node `yaml:"files"`
 }
 
-// byCategory binds the typed lists of the assignments.yml schema to their
-// categories. #148 removes them in favour of `paths:` entries.
-func (g AssignmentGroup) byCategory() map[Category][]string {
-	return map[Category][]string{
-		CategoryNetwork:   g.Networks,
-		CategorySystemd:   g.Systemd,
-		CategoryVolume:    g.Volumes,
-		CategoryContainer: g.Containers,
-		CategoryKube:      g.Kube,
-		CategoryPod:       g.Pods,
-		CategoryImage:     g.Images,
-		CategoryBuild:     g.Builds,
-		CategoryManifest:  g.Manifests,
-		CategoryFile:      g.Files,
-		CategorySecret:    g.Secrets,
+// retiredListErrors names every retired typed list present in the group.
+func (g *AssignmentGroup) retiredListErrors(group string) []error {
+	lists := []struct {
+		key  string
+		node *yaml.Node
+	}{
+		{"networks", &g.RetiredNetworks},
+		{"systemd", &g.RetiredSystemd},
+		{"volumes", &g.RetiredVolumes},
+		{"containers", &g.RetiredContainers},
+		{"kube", &g.RetiredKube},
+		{"pods", &g.RetiredPods},
+		{"images", &g.RetiredImages},
+		{"builds", &g.RetiredBuilds},
+		{"manifests", &g.RetiredManifests},
+		{"files", &g.RetiredFiles},
 	}
+	var errs []error
+	for _, l := range lists {
+		if keyPresent(*l.node) {
+			errs = append(errs, fmt.Errorf(migrateTypedList, group, l.key))
+		}
+	}
+	return errs
 }
 
-// ResolvedFileSet is the merged set of all files assigned to a host.
+// ResolvedFileSet is the merged set of assignment entries for a host, each
+// list sorted and unique. The resolver expands Paths and Services into
+// categorized files.
 type ResolvedFileSet struct {
-	// Paths holds the source paths per category, sorted and unique.
-	Paths map[Category][]string
-	// PathEntries holds the `paths:` entries (files or directories), sorted
-	// and unique; the resolver expands and categorizes them.
-	PathEntries []string
-	Services    []string
+	// Paths holds the `paths:` entries (files or directories).
+	Paths    []string
+	Secrets  []string
+	Services []string
 }
 
 // Resolve computes the complete file set for a host by merging
 // base + role + features assignments.
 func (a *Assignments) Resolve(host *HostConfig) *ResolvedFileSet {
 	result := &ResolvedFileSet{}
-	result.merge(a.Base)
+	result.merge(&a.Base)
 	if group, ok := a.Roles[host.Role]; ok {
-		result.merge(group)
+		result.merge(&group)
 	} else if host.Role != "" {
 		slog.Warn("no assignments for role", "role", host.Role, "host", host.Hostname)
 	}
 	for _, feature := range host.Features {
 		if group, ok := a.Features[feature]; ok {
-			result.merge(group)
+			result.merge(&group)
 		} else {
 			slog.Warn("no assignments for feature", "feature", feature, "host", host.Hostname)
 		}
 	}
-	result.deduplicate()
+	result.Paths = sortedUnique(result.Paths)
+	result.Secrets = sortedUnique(result.Secrets)
+	result.Services = sortedUnique(result.Services)
 	return result
-}
-
-func (r *ResolvedFileSet) deduplicate() {
-	for category, paths := range r.Paths {
-		r.Paths[category] = sortedUnique(paths)
-	}
-	r.PathEntries = sortedUnique(r.PathEntries)
-	r.Services = sortedUnique(r.Services)
 }
 
 // sortedUnique returns a sorted copy with duplicates removed.
@@ -109,13 +129,8 @@ func sortedUnique(s []string) []string {
 	return slices.Compact(slices.Sorted(slices.Values(s)))
 }
 
-func (r *ResolvedFileSet) merge(g AssignmentGroup) {
-	if r.Paths == nil {
-		r.Paths = make(map[Category][]string)
-	}
-	for category, paths := range g.byCategory() {
-		r.Paths[category] = append(r.Paths[category], paths...)
-	}
-	r.PathEntries = append(r.PathEntries, g.Paths...)
+func (r *ResolvedFileSet) merge(g *AssignmentGroup) {
+	r.Paths = append(r.Paths, g.Paths...)
+	r.Secrets = append(r.Secrets, g.Secrets...)
 	r.Services = append(r.Services, g.Services...)
 }

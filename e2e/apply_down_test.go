@@ -43,7 +43,7 @@ func setupApplyDownFleet(t *testing.T, fleetDir string) {
 		"assignments.yml": `base: {}
 roles:
   apply:
-    containers:
+    paths:
       - quadlets/containers/apply.container.tmpl
     secrets:
       - secrets/apply_secret.txt

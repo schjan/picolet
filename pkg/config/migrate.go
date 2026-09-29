@@ -10,6 +10,9 @@ const (
 	migratePiType     = "host.yml: 'pi_type:' was renamed to 'role:'"
 	migratePiTypes    = "assignments.yml: 'pi_types:' was renamed to 'roles:'"
 	migratePrometheus = "fleet.yml: 'prometheus:' was removed from the schema; delete it"
+	// migrateTypedList is formatted with the group ("roles.worker") and the
+	// retired list key ("containers").
+	migrateTypedList = "assignments.yml: %s: '%s:' was removed; list these files under 'paths:', which derives the category from the file name"
 )
 
 // keyPresent reports whether a YAML key appeared in the document at all,

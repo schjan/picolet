@@ -1,53 +1,46 @@
 base:
-  networks:
+  paths:
     - quadlets/networks/internal.network
-  systemd:
     - systemd/custom.socket
     - systemd/custom.service
     - systemd/maintenance.timer
     - systemd/maintenance.service
 roles:
   controller:
-    containers:
+    paths:
       - quadlets/containers/exporter.container
-    volumes:
       - quadlets/volumes/data.volume
-    kube:
       - quadlets/kube/app-stack.kube.tmpl
-    manifests:
       - manifests/app/deployment.yml.tmpl
     secrets:
       - secrets/app_secret.yml.tmpl
   worker:
     # paths: category by file name — a directory (files/ → opaque Files,
-    # extensionless Containerfile included) and a single .pod file.
+    # extensionless Containerfile included) and single files.
     paths:
       - files/
       - quadlets/pods/shop.pod.tmpl
-    containers:
       - quadlets/containers/exporter.container
       - quadlets/containers/shop-api.container
       - quadlets/containers/shop-proxy.container.tmpl
-    images:
       - quadlets/images/nginx.image.tmpl
-    builds:
       - quadlets/builds/shop-api.build.tmpl
   web:
     services:
       - web-app
   e2e:
-    containers:
+    paths:
       - quadlets/containers/simple.container.tmpl
     secrets:
       - secrets/e2e_secret.txt
       - secrets/static_alert_rules.yml.tmpl
   dev:
-    containers:
+    paths:
       - quadlets/containers/simple.container.tmpl
     secrets:
       - secrets/e2e_secret.txt
       - secrets/static_alert_rules.yml.tmpl
 features:
   app-a:
-    containers:
+    paths:
       - quadlets/containers/nginx.container.tmpl

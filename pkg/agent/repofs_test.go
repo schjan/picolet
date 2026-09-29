@@ -21,8 +21,8 @@ func TestLoadAndResolveHostRejectsSymlinksEscapingTheRepo(t *testing.T) {
 		links map[string]string // repo path -> target relative to the outside dir
 	}{
 		{
-			name:  "typed list source",
-			base:  "  files: [files/leak.conf]\n",
+			name:  "paths file entry naming a symlink",
+			base:  "  paths: [files/leak.conf]\n",
 			links: map[string]string{"files/leak.conf": "leak.conf"},
 		},
 		{
@@ -32,7 +32,7 @@ func TestLoadAndResolveHostRejectsSymlinksEscapingTheRepo(t *testing.T) {
 		},
 		{
 			name:  "template readFile",
-			base:  "  containers: [quadlets/app.container.tmpl]\n",
+			base:  "  paths: [quadlets/app.container.tmpl]\n",
 			files: map[string]string{"quadlets/app.container.tmpl": "[Container]\nImage=x\nEnvironment=X={{ readFile \"files/leak.conf\" }}\n"},
 			links: map[string]string{"files/leak.conf": "leak.conf"},
 		},

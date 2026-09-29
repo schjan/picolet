@@ -12,11 +12,48 @@ import (
 	"github.com/schjan/picolet/pkg/config"
 )
 
-type bundleFileRef struct {
-	SrcPath     string
-	LogicalPath string
-	Category    config.Category
-	RelPath     string // deployed logical path with the category segment (manifests/, files/) stripped if present
+// fileRef is one categorized source a host deploys. The category table
+// (config.SpecFor) decides everything else about it.
+type fileRef struct {
+	SrcPath  string
+	Category config.Category
+	// DataPath is the logical path a DestData file deploys under
+	// ("manifests/app/deploy.yml.tmpl"): Fleet-root-relative for a `paths:`
+	// entry, bundle-relative for a Service Bundle. Empty for every other
+	// category, whose destination follows SrcPath.
+	DataPath string
+	// RelPath is DataPath below its category segment, without .tmpl
+	// ("app/deploy.yml"); DestData only.
+	RelPath string
+}
+
+// newFileRef builds the ref of srcPath, whose category was derived from
+// logical (config.CategoryForPath).
+func newFileRef(srcPath, logical string, category config.Category) fileRef {
+	ref := fileRef{SrcPath: srcPath, Category: category}
+	if spec, _ := config.SpecFor(category); spec.Dest == config.DestData {
+		ref.DataPath = logical
+		ref.RelPath = strings.TrimPrefix(deployedLogicalPath(logical), spec.Subdir+"/")
+	}
+	return ref
+}
+
+// uniqueFileRefs sorts refs into resolution order (category table row, then
+// DataPath, then SrcPath) and drops duplicates: a file reached twice (two
+// `paths:` entries, a bundle and a `paths:` entry) deploys once.
+func uniqueFileRefs(refs []fileRef) []fileRef {
+	row := make(map[config.Category]int)
+	for i, spec := range config.Specs() {
+		row[spec.Category] = i
+	}
+	slices.SortFunc(refs, func(a, b fileRef) int {
+		return cmp.Or(
+			cmp.Compare(row[a.Category], row[b.Category]),
+			cmp.Compare(a.DataPath, b.DataPath),
+			cmp.Compare(a.SrcPath, b.SrcPath),
+		)
+	})
+	return slices.Compact(refs)
 }
 
 type hookRef struct {
@@ -24,10 +61,12 @@ type hookRef struct {
 	SrcPath string
 }
 
-type expandedBundles struct {
-	Paths      map[config.Category][]string // non-data category sources, by source path
-	NestedRefs []bundleFileRef              // data-category (manifest, file) refs
-	Hooks      []hookRef
+// expansion is the categorized file set of a host: every file expanded from
+// `paths:` entries and Service Bundles plus the `secrets:` entries, and the
+// bundles' hook metadata.
+type expansion struct {
+	Files []fileRef
+	Hooks []hookRef
 }
 
 // sortedUnique returns a sorted copy with duplicates removed.
@@ -52,8 +91,8 @@ func validateServiceName(service string) error {
 	return nil
 }
 
-func expandServiceBundles(fsys fs.FS, services []string) (*expandedBundles, error) {
-	expanded := &expandedBundles{}
+func expandServiceBundles(fsys fs.FS, services []string) (*expansion, error) {
+	expanded := &expansion{}
 	var errs []error
 
 	for _, service := range services {
@@ -65,15 +104,6 @@ func expandServiceBundles(fsys fs.FS, services []string) (*expandedBundles, erro
 		expanded.append(bundle)
 	}
 
-	for category, paths := range expanded.Paths {
-		expanded.Paths[category] = sortedUnique(paths)
-	}
-	slices.SortFunc(expanded.NestedRefs, func(a, b bundleFileRef) int {
-		if diff := cmp.Compare(a.LogicalPath, b.LogicalPath); diff != 0 {
-			return diff
-		}
-		return cmp.Compare(a.SrcPath, b.SrcPath)
-	})
 	slices.SortFunc(expanded.Hooks, func(a, b hookRef) int {
 		if diff := cmp.Compare(a.Service, b.Service); diff != 0 {
 			return diff
@@ -87,7 +117,7 @@ func expandServiceBundles(fsys fs.FS, services []string) (*expandedBundles, erro
 // expandServiceBundle expands services/<service>/ like a `paths:` directory
 // (expandTree), with the logical path taken relative to the bundle, plus its
 // optional root picolet.yml hook metadata.
-func expandServiceBundle(fsys fs.FS, service string) (*expandedBundles, error) {
+func expandServiceBundle(fsys fs.FS, service string) (*expansion, error) {
 	if err := validateServiceName(service); err != nil {
 		return nil, err
 	}
@@ -97,7 +127,7 @@ func expandServiceBundle(fsys fs.FS, service string) (*expandedBundles, error) {
 		return nil, err
 	}
 
-	bundle := &expandedBundles{}
+	bundle := &expansion{}
 	hookRefs, errs := collectBundleHookRefs(root, service, rootEntries)
 	bundle.Hooks = hookRefs
 	if err := bundle.expandTree(fsys, root, root+"/"); err != nil {
@@ -105,7 +135,7 @@ func expandServiceBundle(fsys fs.FS, service string) (*expandedBundles, error) {
 	}
 
 	// Only emit "empty" when nothing else explains a bundle without files.
-	if len(errs) == 0 && bundle.fileCount() == 0 {
+	if len(errs) == 0 && len(bundle.Files) == 0 {
 		errs = append(errs, fmt.Errorf("%s: empty service bundle", root))
 	}
 
@@ -160,36 +190,7 @@ func isHookMetadataFile(name string) bool {
 	return name == "picolet.yml" || name == "picolet.yml.tmpl"
 }
 
-func (b *expandedBundles) append(other *expandedBundles) {
-	for category, paths := range other.Paths {
-		b.addPaths(category, paths...)
-	}
-	b.NestedRefs = append(b.NestedRefs, other.NestedRefs...)
-	b.Hooks = append(b.Hooks, other.Hooks...)
-}
-
-func (b *expandedBundles) addPaths(category config.Category, srcPaths ...string) {
-	if b.Paths == nil {
-		b.Paths = make(map[config.Category][]string)
-	}
-	b.Paths[category] = append(b.Paths[category], srcPaths...)
-}
-
-func (b *expandedBundles) fileCount() int {
-	n := len(b.NestedRefs)
-	for _, paths := range b.Paths {
-		n += len(paths)
-	}
-	return n
-}
-
-// stripSubdirPrefix strips the leading category segment from a logical path
-// (e.g. "manifests/app/foo.yml" -> "app/foo.yml" for subdir "manifests").
-// Typed-list sources may not start with the segment; in that case the input
-// is returned unchanged.
-func stripSubdirPrefix(logical, subdir string) string {
-	if rel, ok := strings.CutPrefix(logical, subdir+"/"); ok {
-		return rel
-	}
-	return logical
+func (e *expansion) append(other *expansion) {
+	e.Files = append(e.Files, other.Files...)
+	e.Hooks = append(e.Hooks, other.Hooks...)
 }

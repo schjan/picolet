@@ -333,6 +333,25 @@ func TestIntegrationErrorPaths(t *testing.T) {
 	}
 }
 
+// Every retired typed list is a load error naming its group and `paths:` as
+// the replacement.
+func TestIntegrationErrorPathsRetiredTypedLists(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"networks", "systemd", "volumes", "containers", "kube", "pods", "images", "builds", "manifests", "files"} {
+		t.Run("typed list "+key, func(t *testing.T) {
+			t.Parallel()
+			repoFS := fstest.MapFS{
+				"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {}\n")},
+				"assignments.yml":          &fstest.MapFile{Data: []byte("base: {}\nroles:\n  node:\n    " + key + ":\n      - app/x\nfeatures: {}\n")},
+				"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte("hostname: test-host\nrole: node\nfeatures: []\n")},
+			}
+			_, err := config.LoadAll(repoFS)
+			require.EqualError(t, err, "invalid config: assignments.yml: roles.node: '"+key+
+				":' was removed; list these files under 'paths:', which derives the category from the file name")
+		})
+	}
+}
+
 // validatePathsFleet runs `picolet validate` on a one-host fleet whose base
 // group lists `paths: [app/]`; files maps Fleet paths to content.
 func validatePathsFleet(t *testing.T, files map[string]string) error {
@@ -425,11 +444,9 @@ func newSystemdUnitsFleetFS() fstest.MapFS {
 	return fstest.MapFS{
 		"fleet.yml": &fstest.MapFile{Data: []byte("images:\n  node_exporter: \"prom/node-exporter:v1.8\"\n  web: \"nginx:1.27\"\nports: {}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`base:
-  networks:
+  paths:
     - quadlets/internal.network
-  systemd:
     - systemd/health.timer
-  containers:
     - quadlets/web.container
     - quadlets/node-exporter.container.tmpl
 roles: {}

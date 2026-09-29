@@ -71,7 +71,7 @@ WantedBy=timers.target
 	files := map[string]string{
 		"fleet.yml": "images: {}\n",
 		"assignments.yml": `base:
-  systemd:
+  paths:
     - systemd/e2e-job-ok.service
     - systemd/e2e-job-ok.timer
     - systemd/e2e-job-fail.service

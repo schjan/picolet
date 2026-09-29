@@ -24,7 +24,7 @@ func TestFailedImagePullAtApplyIsRetriedByHealth(t *testing.T) {
 	const unit = "redis-image.service"
 	repoDir := t.TempDir()
 	writeTestFile(t, repoDir, "fleet.yml", "images: {}\nports: {}\n")
-	writeTestFile(t, repoDir, "assignments.yml", "base:\n  images:\n    - quadlets/images/redis.image\n")
+	writeTestFile(t, repoDir, "assignments.yml", "base:\n  paths:\n    - quadlets/images/redis.image\n")
 	writeTestFile(t, repoDir, "hosts/test-host/host.yml", "hostname: test-host\nrole: server\nfeatures: []\n")
 	writeTestFile(t, repoDir, "quadlets/images/redis.image", "[Image]\nImage=docker.io/library/redis:7\n")
 

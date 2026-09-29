@@ -182,46 +182,46 @@ func TestResolveHostPathsSkipsBundleMetadata(t *testing.T) {
 	}, pathsDeployments(resolved.Files))
 }
 
-func TestResolveHostPathsCoexistWithTypedLists(t *testing.T) {
+// A file reached twice — by two `paths:` entries, by a `paths:` entry and the
+// `secrets:` list, or by a Service Bundle and a `paths:` entry — deploys once.
+func TestResolveHostPathsFileReachedTwiceDeploysOnce(t *testing.T) {
 	t.Parallel()
-	resolved, err := resolvePaths(t, `  containers: [units/web.container]
-  manifests: [manifests/app/deploy.yml]
-  secrets: [secrets/db.yml]
+	resolved, err := resolvePaths(t, `  secrets: [secrets/db.yml]
+  services: [web]
   paths:
     - units/
     - units/web.container
     - manifests/
     - secrets/
+    - services/web/web.network
 `, map[string]string{
 		"units/web.container":      pathsUnit,
 		"manifests/app/deploy.yml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app\n",
 		"secrets/db.yml":           "password: x\n",
+		"services/web/web.network": "[Network]\n",
 	})
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []pathsDeployment{
 		{SrcPath: "units/web.container", DestPath: "/etc/containers/systemd/picolet/web.container", Category: config.CategoryContainer},
+		{SrcPath: "services/web/web.network", DestPath: "/etc/containers/systemd/picolet/web.network", Category: config.CategoryNetwork},
 		{SrcPath: "manifests/app/deploy.yml", DestPath: "/var/lib/picolet/manifests/app/deploy.yml", Category: config.CategoryManifest, RelPath: "app/deploy.yml"},
 		{SrcPath: "secrets/db.yml", DestPath: "secret:db", Category: config.CategorySecret},
 	}, pathsDeployments(resolved.Files))
 }
 
-// A typed list and `paths:` may select one source in two categories when the
-// destinations differ (a staged migration can deploy it twice on purpose).
-func TestResolveHostPathsTypedCategoryWithDistinctDestinationDeploysBoth(t *testing.T) {
+// The `secrets:` list and `paths:` may select one source in two categories:
+// the destinations differ, so both deploy.
+func TestResolveHostPathsSecretAndFileOfOneSourceDeployBoth(t *testing.T) {
 	t.Parallel()
 	resolved, err := resolvePaths(t, `  secrets: [files/token]
-  files: [units/web.container]
-  paths: [files/token, units/web.container]
+  paths: [files/token]
 `, map[string]string{
-		"files/token":         "s3cr3t\n",
-		"units/web.container": pathsUnit,
+		"files/token": "s3cr3t\n",
 	})
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []pathsDeployment{
 		{SrcPath: "files/token", DestPath: "secret:token", Category: config.CategorySecret},
 		{SrcPath: "files/token", DestPath: "/var/lib/picolet/files/token", Category: config.CategoryFile, RelPath: "token"},
-		{SrcPath: "units/web.container", DestPath: "/var/lib/picolet/units/web.container", Category: config.CategoryFile, RelPath: "units/web.container"},
-		{SrcPath: "units/web.container", DestPath: "/etc/containers/systemd/picolet/web.container", Category: config.CategoryContainer},
 	}, pathsDeployments(resolved.Files))
 }
 
@@ -240,16 +240,10 @@ func TestResolveHostPathsDestinationCollision(t *testing.T) {
 			want:  "destination collision for /etc/containers/systemd/picolet/web.container: a/web.container, b/web.container",
 		},
 		{
-			name:  "typed list and paths",
-			base:  "  containers: [quadlets/web.container]\n  paths: [units/]\n",
-			files: map[string]string{"quadlets/web.container": pathsUnit, "units/web.container.tmpl": pathsUnit},
-			want:  "destination collision for /etc/containers/systemd/picolet/web.container: quadlets/web.container, units/web.container.tmpl",
-		},
-		{
-			name:  "typed list and paths disagree on the category",
-			base:  "  files: [manifests/deploy.yml]\n  paths: [manifests/]\n",
-			files: map[string]string{"manifests/deploy.yml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app\n"},
-			want:  "manifests/deploy.yml: a typed list selects it as file, a paths: entry as manifest",
+			name:  "secrets list and paths",
+			base:  "  secrets: [host/db.yml]\n  paths: [secrets/]\n",
+			files: map[string]string{"secrets/db.yml": "password: x\n"},
+			want:  "destination collision for secret:db: host/db.yml, secrets/db.yml",
 		},
 	}
 	for _, tt := range tests {

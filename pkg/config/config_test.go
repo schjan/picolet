@@ -23,17 +23,16 @@ ports:
 `)},
 		"assignments.yml": &fstest.MapFile{Data: []byte(`
 base:
-  networks:
+  paths:
     - quadlets/networks/internal.network
-  containers:
     - quadlets/containers/traefik.container.tmpl
 roles:
   monitoring_server:
-    containers:
+    paths:
       - quadlets/containers/prometheus.container.tmpl
 features:
   mosquitto:
-    kube:
+    paths:
       - quadlets/kube/mosquitto-stack.kube.tmpl
 `)},
 		"hosts/host-a/host.yml": &fstest.MapFile{Data: []byte(`
@@ -77,72 +76,63 @@ func TestAssignmentsResolve(t *testing.T) {
 	t.Parallel()
 	assignments := &Assignments{
 		Base: AssignmentGroup{
-			Networks:   []string{"net1"},
-			Containers: []string{"base-container"},
-			Services:   []string{"base-service"},
+			Paths:    []string{"quadlets/net1.network", "quadlets/base.container"},
+			Secrets:  []string{"secrets/base.yml"},
+			Services: []string{"base-service"},
 		},
 		Roles: map[string]AssignmentGroup{
 			"monitoring_server": {
-				Containers: []string{"prometheus"},
-				Volumes:    []string{"prom-vol"},
-				Services:   []string{"pi-service"},
+				Paths:    []string{"quadlets/prometheus.container", "volumes/"},
+				Services: []string{"pi-service"},
 			},
 		},
 		Features: map[string]AssignmentGroup{
 			"mosquitto": {
-				Kube:     []string{"mosquitto-stack"},
-				Pods:     []string{"mosquitto.pod", "mosquitto.pod"},
+				Paths:    []string{"mosquitto/", "mosquitto/", "quadlets/base.container"},
+				Secrets:  []string{"op://vault/mqtt/password", "secrets/base.yml"},
 				Services: []string{"feature-service", "base-service"},
 			},
 		},
 	}
 
 	tests := []struct {
-		name      string
-		host      *HostConfig
-		wantNets  int
-		wantConts int
-		wantKubes int
-		wantVols  int
-		wantPods  int
-		wantSvcs  []string
+		name string
+		host *HostConfig
+		want *ResolvedFileSet
 	}{
 		{
-			name:      "server with mosquitto",
-			host:      &HostConfig{Role: "server", Features: []string{"mosquitto"}},
-			wantNets:  1,
-			wantConts: 1,
-			wantKubes: 1,
-			wantPods:  1,
-			wantSvcs:  []string{"base-service", "feature-service"},
+			name: "server with mosquitto",
+			host: &HostConfig{Role: "server", Features: []string{"mosquitto"}},
+			want: &ResolvedFileSet{
+				Paths:    []string{"mosquitto/", "quadlets/base.container", "quadlets/net1.network"},
+				Secrets:  []string{"op://vault/mqtt/password", "secrets/base.yml"},
+				Services: []string{"base-service", "feature-service"},
+			},
 		},
 		{
-			name:      "monitoring_server no features",
-			host:      &HostConfig{Role: "monitoring_server"},
-			wantNets:  1,
-			wantConts: 2,
-			wantVols:  1,
-			wantSvcs:  []string{"base-service", "pi-service"},
+			name: "monitoring_server no features",
+			host: &HostConfig{Role: "monitoring_server"},
+			want: &ResolvedFileSet{
+				Paths:    []string{"quadlets/base.container", "quadlets/net1.network", "quadlets/prometheus.container", "volumes/"},
+				Secrets:  []string{"secrets/base.yml"},
+				Services: []string{"base-service", "pi-service"},
+			},
 		},
 		{
-			name:      "server no features",
-			host:      &HostConfig{Role: "server"},
-			wantNets:  1,
-			wantConts: 1,
-			wantSvcs:  []string{"base-service"},
+			name: "server no features",
+			host: &HostConfig{Role: "server"},
+			want: &ResolvedFileSet{
+				Paths:    []string{"quadlets/base.container", "quadlets/net1.network"},
+				Secrets:  []string{"secrets/base.yml"},
+				Services: []string{"base-service"},
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := assignments.Resolve(tt.host)
-			assert.Len(t, result.Paths[CategoryNetwork], tt.wantNets)
-			assert.Len(t, result.Paths[CategoryContainer], tt.wantConts)
-			assert.Len(t, result.Paths[CategoryKube], tt.wantKubes)
-			assert.Len(t, result.Paths[CategoryVolume], tt.wantVols)
-			assert.Len(t, result.Paths[CategoryPod], tt.wantPods)
-			assert.Equal(t, tt.wantSvcs, result.Services)
+			assert.Equal(t, tt.want, assignments.Resolve(tt.host))
 		})
 	}
 }
@@ -227,6 +217,47 @@ func TestValidateRejectsRetiredKeysExactly(t *testing.T) {
 	}
 }
 
+// Every retired typed list is rejected in every group, naming the group, the
+// key and `paths:`; presence alone counts.
+func TestValidateRejectsTypedLists(t *testing.T) {
+	t.Parallel()
+	keys := []string{"networks", "systemd", "volumes", "containers", "kube", "pods", "images", "builds", "manifests", "files"}
+	groups := []struct {
+		name string
+		doc  func(entry string) string
+	}{
+		{"base", func(entry string) string { return "base:\n  " + entry + "\n" }},
+		{"roles.worker", func(entry string) string { return "roles:\n  worker:\n    " + entry + "\n" }},
+		{"features.obs", func(entry string) string { return "features:\n  obs:\n    " + entry + "\n" }},
+	}
+	for _, key := range keys {
+		for _, g := range groups {
+			for variant, value := range map[string]string{"list": " [quadlets/a.container]", "empty": " []", "null": ""} {
+				doc := g.doc(key + ":" + value)
+				t.Run(g.name+"/"+key+"/"+variant, func(t *testing.T) {
+					t.Parallel()
+					var a Assignments
+					require.NoError(t, yaml.Load([]byte(doc), &a, yaml.WithKnownFields()))
+					require.EqualError(t, a.Validate(),
+						"assignments.yml: "+g.name+": '"+key+":' was removed; list these files under 'paths:', which derives the category from the file name",
+						"document: %q", doc)
+				})
+			}
+		}
+	}
+}
+
+func TestValidateReportsEveryTypedList(t *testing.T) {
+	t.Parallel()
+	doc := "features:\n  obs:\n    files: []\nroles:\n  worker:\n    kube: []\n    containers: []\nbase:\n  paths: [a/]\n  secrets: [s]\n  services: [x]\n"
+	var a Assignments
+	require.NoError(t, yaml.Load([]byte(doc), &a, yaml.WithKnownFields()))
+	const tail = "' was removed; list these files under 'paths:', which derives the category from the file name"
+	require.EqualError(t, a.Validate(), "assignments.yml: roles.worker: 'containers:"+tail+"\n"+
+		"assignments.yml: roles.worker: 'kube:"+tail+"\n"+
+		"assignments.yml: features.obs: 'files:"+tail)
+}
+
 // TestLoadAllRejectsRetiredKeys covers the wiring: each Validate is reached
 // from LoadAll, whichever file carries the retired key.
 func TestLoadAllRejectsRetiredKeys(t *testing.T) {
@@ -265,6 +296,13 @@ func TestLoadAllRejectsRetiredKeys(t *testing.T) {
 			assignments: goodAssignments,
 			host:        goodHost,
 			wantMessage: migratePrometheus,
+		},
+		{
+			name:        "typed list in assignments.yml",
+			fleet:       goodFleet,
+			assignments: "base: {}\nroles:\n  worker:\n    containers: [quadlets/a.container]\nfeatures: {}\n",
+			host:        goodHost,
+			wantMessage: "assignments.yml: roles.worker: 'containers:' was removed",
 		},
 	}
 
@@ -444,19 +482,6 @@ func TestSecretHookNormalizeValidatesURLScheme(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
-}
-
-func TestAssignmentsResolveMergesFiles(t *testing.T) {
-	t.Parallel()
-	a := &Assignments{
-		Base: AssignmentGroup{Files: []string{"shared/base.yml"}},
-		Features: map[string]AssignmentGroup{
-			"observability": {Files: []string{"shared/obs.yml"}},
-		},
-	}
-	host := &HostConfig{Hostname: "h", Role: "p", Features: []string{"observability"}}
-	resolved := a.Resolve(host)
-	assert.Equal(t, []string{"shared/base.yml", "shared/obs.yml"}, resolved.Paths[CategoryFile])
 }
 
 func TestHookNormalizeValidatesFiles(t *testing.T) {
