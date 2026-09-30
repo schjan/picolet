@@ -2,7 +2,7 @@
 
 **picolet** = **pico** (smaller-than-nano, as in tiny) + **quadlet** -- a tiny Quadlet manager.
 
-A minimal, single-binary GitOps agent for managing Podman Quadlet files on Raspberry Pi fleets. Think Flux/ArgoCD, but for hosts running Podman instead of Kubernetes.
+A minimal, single-binary GitOps agent for managing Podman Quadlet files on hosts running Podman — a Raspberry Pi, a VPS or any other Linux machine. Think Flux/ArgoCD, but for Podman instead of Kubernetes.
 
 ## Installation
 
@@ -58,14 +58,14 @@ Picolet manages itself via GitOps. Bootstrap gets it running; after that, the fl
 
 ### 1. Create a Fleet Repository
 
-Use `deploy/fleet-repo/` as a starting point. Your fleet repo needs:
+Use `deploy/fleet-repo/` as a starting point: a worked example of one Machine (`srv-1`) with three Hosts — the default user (`srv-1`), the rootful Host (`srv-1-system`) and an isolated user (`srv-1-runner`); see [Machines, users and ports](#machines-users-and-ports). Your fleet repo needs:
 
 - `fleet.yml` — image versions and ports
 - `assignments.yml` — which files go to which hosts
 - `hosts/<hostname>/host.yml` — per-host config
 - `services/picolet-system/` (rootful) or `services/picolet/` (rootless) — picolet's own Service Bundle: its Quadlet and its config secret
 
-See `deploy/fleet-repo/` for a complete example.
+Read [Fleet conventions](#fleet-conventions) before you lay the repository out.
 
 ### 2. Bootstrap a Host
 
@@ -78,7 +78,7 @@ sudo apt install podman
 # 2. Create agent config
 sudo mkdir -p /etc/picolet/secrets
 sudo tee /etc/picolet/config.yml << EOF
-hostname: "my-pi"
+hostname: "srv-1"
 repo_url: "https://github.com/yourorg/fleet.git"
 git_token_path: "/etc/picolet/secrets/git_token"
 EOF
@@ -95,7 +95,7 @@ sudo bash deploy/bootstrap/bootstrap.sh
 # 1. Create agent config
 mkdir -p ~/.config/picolet/secrets
 cat > ~/.config/picolet/config.yml << EOF
-hostname: "my-pi"
+hostname: "srv-1"
 repo_url: "https://github.com/yourorg/fleet.git"
 systemd_user: true
 git_token_path: "/etc/picolet/secrets/git_token"
@@ -126,7 +126,7 @@ host-resolvable strings:
 
 ```yaml
 # config.yml — picolet runs containerized, host data dir mounted at a different path
-host_data_dir: /home/pi/.local/share/picolet
+host_data_dir: /home/app/.local/share/picolet
 ```
 
 `host_data_dir` only changes the path string templates emit; it does not change
@@ -331,6 +331,67 @@ Two cases in step 3 are required, not optional: a rootless Host needs `user:`
 a Host whose `hostname` is not a hostname label (e.g. contains `.` or `_`) needs
 `machine:` — until it has one, upgraded Agents refuse to load the Fleet, so
 commit it right after step 2 completes.
+
+### Fleet conventions
+
+`deploy/fleet-repo/` follows these conventions; they are not enforced by
+picolet unless stated. It is one Machine, `srv-1`, with three Hosts — `srv-1`
+(default user `app`), `srv-1-system` (rootful) and `srv-1-runner` (user
+`runner`) — plus a `metrics` Service Bundle, all under the generic domain
+`example.net`.
+
+- **Host naming.** The Machine's default user Host is named after the Machine
+  (`srv-1`), the rootful Host `<machine>-system` (`srv-1-system`), every further
+  isolated user `<machine>-<purpose>` (`srv-1-runner`). Picolet never parses the
+  name; see [Machines, users and ports](#machines-users-and-ports).
+- **Nothing secret in git.** The Fleet repo holds templates and references
+  (`op://`, `pass://`), never values: no tokens, passwords, private keys or
+  key-bearing URLs, and no file a secret was ever committed to. Real values
+  live in a [Secret Provider](#secret-providers) or in the Host's local
+  secrets directory.
+- **One provider token per Machine.** By default every Agent on a Machine uses
+  the same provider token: one credential to provision and rotate per Machine.
+  The stricter options are a token scoped to a single Host's vault or share, or
+  no provider at all (secrets provisioned on the Host by hand) — pick them
+  when a Host, such as an isolated `runner` user, must not be able to read what
+  its siblings can.
+- **Nothing the Agent deploys hosts the Fleet.** The Fleet repository (forge,
+  git server) and the secret provider must never run on a service that an Agent
+  deploys from that same Fleet: if that service is down or broken by a bad
+  commit, no Agent can fetch the fix or the credentials to repair it.
+- **Cross-Host traffic uses loopback ports or the public hostname.** Hosts on
+  one Machine talk to each other over `127.0.0.1:<port>` (each Host's ports come
+  from the Fleet, e.g. `siblings` → `.ListenPort`); Hosts on different Machines
+  use the public hostname (`external_hostname`, e.g. `srv-1.example.net`), never
+  a private or overlay address that only some Hosts can reach.
+- **The network story.**
+  - The Agent and the metrics stack stay `Network=host`, so they reach the
+    Machine's loopback and the other Agents.
+  - Services use one `.network` per Service Bundle and publish their metrics on
+    `127.0.0.1:<port>`, so the metrics stack scrapes them over loopback.
+  - The reverse proxy takes ports 80 and 443 through `.socket` units and
+    publishes no port at all.
+- **Never copy a live database.** Back up with the database's own dump or
+  snapshot tool, or stop the service first; a file-level copy of a running
+  database is not a backup.
+- **Validate in CI with the exact image the Fleet deploys.** Run
+  `picolet validate` in CI with the `images.picolet` reference from `fleet.yml`,
+  so validation sees the same Podman `quadlet.Convert*()` as the Agents:
+
+  ```bash
+  podman run --rm -v "$PWD:/fleet:ro" ghcr.io/schjan/picolet:v0.1.0 validate --repo-dir /fleet
+  ```
+
+  (`v0.1.0` is a placeholder for the tag in your `fleet.yml`.)
+
+**Keeping a public Fleet generic.** Use placeholders such as `srv-1`,
+`example.net` and `example/fleet` in anything you publish. `deploy/fleet-repo/`
+is guarded by a CI denylist grep: `.github/fleet-denylist.txt` holds generic
+patterns (one per line, `#` comments allowed) and the `FLEET_DENYLIST` Actions
+secret holds the real machine names, domains and tailnet suffixes,
+newline-separated, so they never appear in the repository. The check is
+case-insensitive and fixed-string over `deploy/fleet-repo/`; without the secret
+(fork PRs) only the file applies.
 
 ### File Categories
 
