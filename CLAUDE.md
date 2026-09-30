@@ -76,6 +76,8 @@ Other packages (`agent`, `health`, `rollback`) consume these interfaces. Mocks a
 
 Note: `SocketPodmanClient` stores a `connCtx context.Context` because the Podman binding library embeds the socket connection into the context — this is intentional (`//nolint:containedctx`).
 
+`bootstrap machine` has its own boundary: `machine.HostOps` (`pkg/machine`, implemented by `OSHostOps`, mock in `mocks/machine/`) — the Machine's users, sessions, units and paths. `machine.New` is the pure planner (Fleet + Machine → ordered steps with stable ids, data only); `machine.Evaluate` derives each step's check from its kind and annotates it would do / already done / unknown (`ErrUnprivileged`). Only the read side exists so far.
+
 ### Function Types as Interfaces
 
 `SecretReader` and `DiskReader` in `pkg/resolver` and `pkg/rollback` are function types, not interfaces:

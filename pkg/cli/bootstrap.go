@@ -2,11 +2,15 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/bootstrap"
+	"github.com/schjan/picolet/pkg/machine"
 )
 
 func bootstrapCmd() *cli.Command {
@@ -29,6 +33,7 @@ func bootstrapCmd() *cli.Command {
 		},
 		Commands: []*cli.Command{
 			bootstrapCreateCmd(),
+			bootstrapMachineCmd(),
 			bootstrapTeardownCmd(),
 		},
 	}
@@ -93,6 +98,30 @@ func bootstrapCreateCmd() *cli.Command {
 				Stdout:        os.Stdout,
 				Stderr:        os.Stderr,
 			})
+		},
+	}
+}
+
+func bootstrapMachineCmd() *cli.Command {
+	return &cli.Command{
+		Name:      "machine",
+		Usage:     "bootstrap every Host the Fleet declares on this Machine",
+		ArgsUsage: "<machine>",
+		Before:    setupTextLogging,
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "repo-dir", Usage: "Fleet checkout on this Machine"},
+			&cli.BoolFlag{Name: "plan", Required: true, Usage: "print the ordered steps with would do / already done / unknown, change nothing (required: only planning is supported so far)"},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.NArg() > 1 {
+				return fmt.Errorf("expected one machine, got %d arguments", cmd.NArg())
+			}
+			return machine.ShowPlan(ctx, machine.PlanConfig{
+				Machine: cmd.Args().First(),
+				RepoDir: cmd.String("repo-dir"),
+				Env:     machine.Environment{GOOS: runtime.GOOS, InContainer: agentcfg.InContainer()},
+				Stdout:  os.Stdout,
+			}, machine.NewOSHostOps())
 		},
 	}
 }

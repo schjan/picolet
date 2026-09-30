@@ -1,0 +1,44 @@
+Machine vps-1: 3 Hosts
+  vps-1         user pi      listen port 9417
+  vps-1-runner  user runner  listen port 9419
+  vps-1-system  rootful      listen port 9418
+Fleet checkout: <repo>
+
+Phase 1: users, sessions and directories
+  would do      vps-1/user                  Linux user pi present                                                  missing
+  would do      vps-1/subids                subuid/subgid ranges of pi present                                     user does not exist yet
+  would do      vps-1/linger                lingering enabled for pi                                               user does not exist yet
+  would do      vps-1/user-manager          user manager of pi running                                             user does not exist yet
+  would do      vps-1/podman-socket         user podman.socket of pi enabled                                       user does not exist yet
+  would do      vps-1/dir/secrets           directory ~pi/.config/picolet/secrets, owner pi, mode 0700             user does not exist yet
+  would do      vps-1/dir/data              directory ~pi/.local/share/picolet, owner pi, mode 0700                user does not exist yet
+  would do      vps-1/dir/quadlets          directory ~pi/.config/containers/systemd, owner pi, mode 0755          user does not exist yet
+  would do      vps-1/dir/units             directory ~pi/.config/systemd/user, owner pi, mode 0755                user does not exist yet
+  would do      vps-1/checkout              Fleet checkout readable by pi                                          not readable by every user
+  would do      vps-1-runner/user           Linux user runner present                                              missing
+  would do      vps-1-runner/subids         subuid/subgid ranges of runner present                                 user does not exist yet
+  would do      vps-1-runner/linger         lingering enabled for runner                                           user does not exist yet
+  would do      vps-1-runner/user-manager   user manager of runner running                                         user does not exist yet
+  would do      vps-1-runner/podman-socket  user podman.socket of runner enabled                                   user does not exist yet
+  would do      vps-1-runner/dir/secrets    directory ~runner/.config/picolet/secrets, owner runner, mode 0700     user does not exist yet
+  would do      vps-1-runner/dir/data       directory ~runner/.local/share/picolet, owner runner, mode 0700        user does not exist yet
+  would do      vps-1-runner/dir/quadlets   directory ~runner/.config/containers/systemd, owner runner, mode 0755  user does not exist yet
+  would do      vps-1-runner/dir/units      directory ~runner/.config/systemd/user, owner runner, mode 0755        user does not exist yet
+  would do      vps-1-runner/checkout       Fleet checkout readable by runner                                      not readable by every user
+  would do      vps-1-system/podman-socket  system podman.socket enabled
+  would do      vps-1-system/dir/secrets    directory /etc/picolet/secrets, owner root, mode 0700     missing
+  would do      vps-1-system/dir/data       directory /var/lib/picolet-system, owner root, mode 0700  missing
+  would do      vps-1-system/dir/quadlets   directory /etc/containers/systemd, owner root, mode 0755  missing
+  already done  vps-1-system/dir/units      directory /etc/systemd/system, owner root, mode 0755
+
+Phase 2: credential files
+  already done  vps-1/credentials         credential files placed  no credential source given, nothing to place
+  already done  vps-1-runner/credentials  credential files placed  no credential source given, nothing to place
+  already done  vps-1-system/credentials  credential files placed  no credential source given, nothing to place
+
+Phase 3: per-Host bootstrap
+  would do  vps-1/bootstrap         per-Host bootstrap as pi (--systemd user)
+  would do  vps-1-runner/bootstrap  per-Host bootstrap as runner (--systemd user)
+  would do  vps-1-system/bootstrap  per-Host bootstrap as root (--systemd system)
+
+27 would do, 4 already done

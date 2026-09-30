@@ -28,13 +28,15 @@ var podmanPrivatePools = []net.IPNet{
 // Network=host agent on a Machine whose only NIC sits inside one of those pools
 // reads true. Use it to phrase a conditional warning, never to gate behaviour.
 func InPrivateNetworkNamespace() bool {
-	if !inContainer() {
+	if !InContainer() {
 		return false
 	}
 	return privateNetworkNamespace(routableAddrs())
 }
 
-func inContainer() bool {
+// InContainer reports whether picolet runs inside a podman or docker
+// container rather than directly on the Machine.
+func InContainer() bool {
 	for _, marker := range containerMarkers {
 		if _, err := os.Stat(marker); err == nil {
 			return true
