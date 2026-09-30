@@ -157,6 +157,8 @@ func (a *Agent) recordHostMetadata(host *config.HostConfig) {
 		Role:             host.Role,
 		Features:         host.Features,
 		ExternalHostname: host.ExternalHostname,
+		Machine:          host.Machine,
+		User:             host.User,
 	})
 }
 

@@ -121,7 +121,7 @@ func resolveCmd() *cli.Command {
 			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			return runResolve(ctx, cmd.Root().String("repo-dir"), cmd.String("host"))
+			return runResolve(ctx, cmd.Root().Writer, cmd.Root().String("repo-dir"), cmd.String("host"))
 		},
 	}
 }

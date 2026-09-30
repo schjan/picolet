@@ -67,7 +67,7 @@ func TestUnitDependencyCollector_NilStore(t *testing.T) {
 func TestHostInfoCollector(t *testing.T) {
 	t.Parallel()
 	store := status.NewStore()
-	store.SetHost(status.HostMetadata{Role: "server", Features: []string{"mqtt", "gpu"}})
+	store.SetHost(status.HostMetadata{Role: "server", Features: []string{"mqtt", "gpu"}, Machine: "vps-1", User: "runner"})
 
 	reg := prometheus.NewRegistry()
 	require.NoError(t, reg.Register(metrics.NewHostInfoCollector(store)))
@@ -79,9 +79,24 @@ picolet_host_feature_info{feature="gpu"} 1
 picolet_host_feature_info{feature="mqtt"} 1
 # HELP picolet_host_info Resolved host metadata (value=1).
 # TYPE picolet_host_info gauge
-picolet_host_info{role="server"} 1
+picolet_host_info{machine="vps-1",role="server",user="runner"} 1
 `
 	require.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(expected)))
+}
+
+// The rootful Host has no user: in host.yml; its user label is "root" so the
+// label is never empty.
+func TestHostInfoCollector_RootfulUserIsRoot(t *testing.T) {
+	t.Parallel()
+	store := status.NewStore()
+	store.SetHost(status.HostMetadata{Role: "vps", Machine: "vps-1"})
+
+	expected := `
+# HELP picolet_host_info Resolved host metadata (value=1).
+# TYPE picolet_host_info gauge
+picolet_host_info{machine="vps-1",role="vps",user="root"} 1
+`
+	require.NoError(t, testutil.CollectAndCompare(metrics.NewHostInfoCollector(store), strings.NewReader(expected), "picolet_host_info"))
 }
 
 func TestHostInfoCollector_NilStore(t *testing.T) {

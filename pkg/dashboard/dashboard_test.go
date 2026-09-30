@@ -262,6 +262,8 @@ func TestServeIndex_UsesStatusSnapshot(t *testing.T) {
 		Role:             "server",
 		Features:         []string{"mqtt"},
 		ExternalHostname: "edge.example.net",
+		Machine:          "vps-1",
+		User:             "runner",
 	})
 	statusStore.SetVerifiedAt(fixedNow.Add(-30 * time.Second))
 	statusStore.SetOrphanScan(status.OrphanScan{Ran: true, FilesRemoved: 1})
@@ -281,6 +283,7 @@ func TestServeIndex_UsesStatusSnapshot(t *testing.T) {
 	for _, want := range []string{
 		"edge.example.net",
 		"<dt>role</dt><dd>server</dd>",
+		"<dt>machine / user</dt><dd>vps-1 / runner</dd>",
 		"mqtt",
 		"verified",
 		"dependencies",
@@ -295,6 +298,23 @@ func TestServeIndex_UsesStatusSnapshot(t *testing.T) {
 	}
 	if strings.Contains(body, `http-equiv="refresh"`) {
 		t.Errorf("refresh meta should be suppressed when refresh=0")
+	}
+}
+
+// The rootful Host has no user: in host.yml; the header shows its Machine alone.
+func TestServeIndex_RootfulHostShowsMachineOnly(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{Hostname: "vps-1-system"}
+	statusStore := status.NewStore()
+	statusStore.SetHost(status.HostMetadata{Role: "vps", Machine: "vps-1"})
+	h, _ := dashboard.NewHandler(newTestStore(t, state.State{}), cfg, "0.0.0", nil, dashboard.WithStatusStore(statusStore))
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if want := "<dt>machine</dt><dd>vps-1</dd>"; !strings.Contains(rec.Body.String(), want) {
+		t.Errorf("body missing %q", want)
 	}
 }
 

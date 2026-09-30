@@ -18,6 +18,11 @@
     <h1 class="logotype">picolet</h1>
     <dl>
       <div><dt>host</dt><dd>{{ .Header.Hostname }}</dd></div>
+      {{- if .Header.User }}
+      <div><dt>machine / user</dt><dd>{{ .Header.Machine }} / {{ .Header.User }}</dd></div>
+      {{- else if .Header.Machine }}
+      <div><dt>machine</dt><dd>{{ .Header.Machine }}</dd></div>
+      {{- end }}
       {{- if .Header.ExternalHostname }}
       <div><dt>external</dt><dd>{{ .Header.ExternalHostname }}</dd></div>
       {{- end }}

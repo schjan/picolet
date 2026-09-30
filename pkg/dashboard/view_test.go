@@ -163,6 +163,21 @@ func TestBuildViewModel_Header(t *testing.T) {
 	}
 }
 
+func TestBuildViewModel_HeaderMachineAndUser(t *testing.T) {
+	t.Parallel()
+	in, files, services, statuses := fixtureBuildViewModel()
+	in.Machine = "vps-1"
+	in.User = "runner"
+	vm := buildViewModel(in, files, services, statuses, nil, nil, status.OrphanScan{}, nil, fixtureNow, true)
+
+	if vm.Header.Machine != "vps-1" {
+		t.Errorf("machine = %q", vm.Header.Machine)
+	}
+	if vm.Header.User != "runner" {
+		t.Errorf("user = %q", vm.Header.User)
+	}
+}
+
 func TestBuildViewModel_BannerActive(t *testing.T) {
 	t.Parallel()
 	in, files, services, statuses := fixtureBuildViewModel()

@@ -58,6 +58,10 @@ func (c *UnitDependencyCollector) emit(ch chan<- prometheus.Metric, unit, relati
 	ch <- m
 }
 
+// rootfulUser is the user label of the rootful Host, whose host.yml has no
+// user:, so picolet_host_info's user label is never empty.
+const rootfulUser = "root"
+
 // HostInfoCollector emits bounded host metadata as info-style metrics.
 type HostInfoCollector struct {
 	store       *status.Store
@@ -72,7 +76,7 @@ func NewHostInfoCollector(store *status.Store) *HostInfoCollector {
 		descHost: prometheus.NewDesc(
 			"picolet_host_info",
 			"Resolved host metadata (value=1).",
-			[]string{"role"}, nil,
+			[]string{"role", "machine", "user"}, nil,
 		),
 		descFeature: prometheus.NewDesc(
 			"picolet_host_feature_info",
@@ -93,7 +97,11 @@ func (c *HostInfoCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 	host := c.store.Snapshot().Host
 	if host.Role != "" {
-		ch <- prometheus.MustNewConstMetric(c.descHost, prometheus.GaugeValue, 1, host.Role)
+		user := host.User
+		if user == "" {
+			user = rootfulUser
+		}
+		ch <- prometheus.MustNewConstMetric(c.descHost, prometheus.GaugeValue, 1, host.Role, host.Machine, user)
 	}
 	for _, feature := range host.Features {
 		ch <- prometheus.MustNewConstMetric(c.descFeature, prometheus.GaugeValue, 1, feature)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -319,7 +320,7 @@ func runValidate(ctx context.Context, repoDir string) error {
 	return validator.ValidateAll(ctx, r, repo.Config)
 }
 
-func runResolve(ctx context.Context, repoDir, host string) error {
+func runResolve(ctx context.Context, out io.Writer, repoDir, host string) error {
 	repo, err := config.OpenRepo(repoDir)
 	if err != nil {
 		return err
@@ -334,15 +335,23 @@ func runResolve(ctx context.Context, repoDir, host string) error {
 		return err
 	}
 	// Report the inputs that selected this file set (role + features), so a
-	// surprising result is traceable without opening host.yml. Logged, not
-	// printed: stdout stays a pure stream of rendered file content.
+	// surprising result is traceable without opening host.yml.
 	slog.Info("resolved host",
 		"host", resolved.Hostname,
 		"role", resolved.Host.Role,
 		"features", resolved.Host.Features,
 		"files", len(resolved.Files))
+	// The header names the Agent the files are for, so sibling Hosts on one
+	// Machine are told apart.
+	h := resolved.Host
+	if _, err := fmt.Fprintf(out, "# host=%s role=%s machine=%s user=%s listen_port=%d\n",
+		resolved.Hostname, h.Role, h.Machine, h.User, h.ListenPort); err != nil {
+		return fmt.Errorf("writing resolve output: %w", err)
+	}
 	for _, f := range resolved.Files {
-		fmt.Printf("=== %s ===\n%s\n", f.DestPath, f.Content)
+		if _, err := fmt.Fprintf(out, "=== %s ===\n%s\n", f.DestPath, f.Content); err != nil {
+			return fmt.Errorf("writing resolve output: %w", err)
+		}
 	}
 	return nil
 }
