@@ -1,0 +1,36 @@
+[Unit]
+Description=Reverse proxy (Caddy), socket-activated on ports 80 and 443
+Requires=proxy.socket
+After=proxy.socket network-online.target
+Wants=network-online.target
+
+[Container]
+Image={{ index .Images "proxy" }}
+ContainerName=proxy
+
+# No PublishPort=: the listening sockets come from proxy.socket. The proxy joins
+# the .network of every bundle it routes and reaches each by container name.
+{{- if has "forge" .Host.Services }}
+Network=forge.network
+{{- end }}
+
+Notify=true
+NoNewPrivileges=true
+ReadOnly=true
+# The config directory, not the file: Picolet replaces files atomically, and a
+# single-file bind mount would keep pointing at the old inode.
+Volume={{ filePath "proxy" }}:/etc/caddy:ro
+# Certificates and ACME account (data), autosaved config (config).
+Volume=proxy-data.volume:/data
+Volume=proxy-config.volume:/config
+
+[Service]
+# Inherit proxy.socket's listeners however the service is started, including
+# Picolet restarting proxy.service directly. A socket named after the service is
+# the default; spelled out so the pairing reads from both units.
+Sockets=proxy.socket
+Restart=always
+TimeoutStartSec=90
+
+[Install]
+WantedBy=default.target

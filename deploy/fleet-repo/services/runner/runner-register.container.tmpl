@@ -1,0 +1,35 @@
+[Unit]
+Description=Register the CI runner with the forge (one-shot)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image={{ index .Images "runner" }}
+ContainerName=runner-register
+Network=runner.network
+# Rootless: uid 0 in the container is the runner user, like in runner.container.
+User=0
+# The forge's registration token (secrets/runner_token.tmpl), at
+# /run/secrets/runner_token.
+Secret=runner_token
+Volume={{ filePath "runner" }}:/etc/runner:ro
+Volume=runner-data.volume:/data
+Exec=/bin/sh /etc/runner/register.sh
+
+[Service]
+# Runs once and then stays "active (exited)": runner.service Requires= it, so
+# starting the daemon does not register again, and the health loop counts it
+# healthy. Picolet restarts it - re-running register.sh - when this unit
+# changes, and the runner-registration hook does when runner_token changes;
+# systemd carries that restart over to runner.service. register.sh skips a
+# token that is already registered, so a reboot adds no runner to the forge.
+Type=oneshot
+RemainAfterExit=yes
+# The forge is on another Host and may be down: retry here, Picolet will not
+# re-run a one-shot on its own.
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

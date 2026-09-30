@@ -1,10 +1,11 @@
-# An isolated user on Machine srv-1 (e.g. a CI runner that must not share a UID
-# with the rest). A second non-root Agent on the Machine needs its own
-# listen_port:, or it would collide with srv-1's Agent on 9417.
+# An isolated user on Machine srv-1: the CI runner, whose jobs get this user's
+# Podman socket, so it must not share a UID with the rest. A second non-root
+# Agent on the Machine needs its own listen_port:, or it would collide with
+# srv-1's Agent on 9417.
 hostname: srv-1-runner
 external_hostname: srv-1.example.net
 role: rootless
-features: []
+features: [runner]
 machine: srv-1
 user: runner
 listen_port: 9419

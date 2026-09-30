@@ -1,0 +1,8 @@
+# Caddy's admin API listens on loopback inside the container, out of the
+# Agent's reach, so a changed config means a restart. A cheap one: proxy.socket
+# keeps ports 80/443 open meanwhile, and connections wait for the new process.
+hooks:
+  - name: proxy-config
+    files: [proxy/Caddyfile]
+    unit: proxy.container
+    action: restart

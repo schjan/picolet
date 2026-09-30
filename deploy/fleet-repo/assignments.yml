@@ -21,3 +21,19 @@ features:
   metrics:
     services:
       - metrics
+  # Reverse proxy: takes ports 80/443 through proxy.socket (systemd) and
+  # publishes no port; it joins the .network of every bundle it routes.
+  proxy:
+    services:
+      - proxy
+  # The forge (application, its .network and volumes, config Files). Its public
+  # URL is https://<external_hostname of the Host carrying this feature>/, served
+  # by the proxy on the same Host.
+  forge:
+    services:
+      - forge
+  # A CI runner for the forge, on its own Linux user: jobs get this user's
+  # Podman socket, so nothing else may share the user.
+  runner:
+    services:
+      - runner

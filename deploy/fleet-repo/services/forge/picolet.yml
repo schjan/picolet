@@ -1,0 +1,6 @@
+# Forgejo reads its settings at start only: a changed forge.env restarts it.
+hooks:
+  - name: forge-config
+    files: [forge/forge.env]
+    unit: forge.container
+    action: restart

@@ -1,0 +1,13 @@
+hooks:
+  # A rotated registration token re-runs the registration one-shot (restart is
+  # the only way to re-run a RemainAfterExit unit); systemd restarts
+  # runner.service with it, since that Requires= the registration.
+  - name: runner-registration
+    secrets: [runner_token]
+    unit: runner-register.container
+    action: restart
+  # The daemon reads config.yml at start only.
+  - name: runner-config
+    files: [runner/config.yml]
+    unit: runner.container
+    action: restart

@@ -1,0 +1,20 @@
+[Unit]
+Description=Reverse proxy listening sockets (ports 80 and 443)
+
+[Socket]
+# systemd, not the container, owns ports 80 and 443 (rootless: needs
+# net.ipv4.ip_unprivileged_port_start=80 on the Machine). The proxy publishes no
+# port; proxy.service inherits these sockets, and they stay open while it
+# restarts, so connections wait instead of being refused.
+#
+# Caddy picks the sockets up by position: fd/3 is the first ListenStream=, fd/4
+# the second (files/proxy/Caddyfile.tmpl). Keep the order, and keep both in this
+# one unit: systemd passes the sockets of one unit in configuration order but
+# specifies no order across several socket units.
+BindIPv6Only=both
+ListenStream=[::]:80
+ListenStream=[::]:443
+Service=proxy.service
+
+[Install]
+WantedBy=sockets.target

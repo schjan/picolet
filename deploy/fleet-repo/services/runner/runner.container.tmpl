@@ -1,0 +1,32 @@
+[Unit]
+Description=CI runner (jobs run on this user's Podman)
+# Registered first. Restarting the registration (token rotation) restarts this
+# unit too.
+Requires=runner-register.service
+After=runner-register.service network-online.target
+Wants=network-online.target
+
+[Container]
+Image={{ index .Images "runner" }}
+ContainerName=runner
+Network=runner.network
+Exec=forgejo-runner --config /etc/runner/config.yml daemon
+
+# Rootless: uid 0 in the container is the runner user, which may use the
+# user's Podman socket. The image default (uid 1000) could not.
+User=0
+SecurityLabelDisable=true
+Volume={{ filePath "runner" }}:/etc/runner:ro
+Volume=runner-data.volume:/data
+# The socket at the same path as on the Machine: the runner passes that path to
+# Podman as the bind source of each job container's /var/run/docker.sock
+# (config.yml docker_host: automount), and Podman resolves it on the Machine.
+Volume=%t/podman/podman.sock:%t/podman/podman.sock
+Environment=DOCKER_HOST=unix://%t/podman/podman.sock
+
+[Service]
+Restart=always
+TimeoutStartSec=90
+
+[Install]
+WantedBy=default.target
