@@ -101,8 +101,6 @@ type Step struct {
 	Path string
 	// Mode is the permission of a StepDir.
 	Mode fs.FileMode
-	// Unit is the unit of a StepPodmanSocket.
-	Unit string
 }
 
 // Plan is the ordered work for one Machine.
@@ -195,9 +193,7 @@ func setupSteps(h Host, repoDir string) []Step {
 			step("user-manager", StepUserManager),
 		)
 	}
-	socket := step("podman-socket", StepPodmanSocket)
-	socket.Unit = podmanSocket
-	steps = append(steps, socket)
+	steps = append(steps, step("podman-socket", StepPodmanSocket))
 	for _, d := range agentDirs {
 		s := step("dir/"+d.name, StepDir)
 		s.Path, s.Mode = d.rootPath, d.mode
@@ -227,13 +223,13 @@ func (s Step) Describe() string { //nolint:cyclop // one case per step kind
 		return "user manager of " + s.Host.User + " running"
 	case StepPodmanSocket:
 		if s.Host.Rootful() {
-			return "system " + s.Unit + " enabled"
+			return "system " + podmanSocket + " enabled"
 		}
-		return "user " + s.Unit + " of " + s.Host.User + " enabled"
+		return "user " + podmanSocket + " of " + s.Host.User + " enabled"
 	case StepDir:
 		return fmt.Sprintf("directory %s, owner %s, mode %04o", s.displayPath(), s.Host.owner(), s.Mode)
 	case StepCheckout:
-		return "Fleet checkout readable by " + s.Host.User
+		return "Fleet checkout readable by " + s.Host.User + " (world-readable)"
 	case StepCredentials:
 		return "credential files placed"
 	case StepHostBootstrap:

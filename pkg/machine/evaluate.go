@@ -106,7 +106,7 @@ func (f *hostFacts) check(ctx context.Context, s Step) (Result, error) {
 	case StepUserManager:
 		return f.checkUserManager()
 	case StepPodmanSocket:
-		return f.checkPodmanSocket(ctx, s.Unit)
+		return f.checkPodmanSocket(ctx)
 	case StepDir:
 		return f.checkDir(s)
 	case StepCheckout:
@@ -159,7 +159,7 @@ func (f *hostFacts) checkSubIDs() (Result, error) {
 	}
 	// Bootstrap verifies ranges and never allocates them: the run stops this
 	// Host here until the operator adds them.
-	return Result{Status: StatusWouldDo, Detail: fmt.Sprintf("no %s range, the run stops this Host; add one: usermod %s %s",
+	return Result{Status: StatusWouldDo, Detail: fmt.Sprintf("no %s range, a run stops this Host; add one: usermod %s %s",
 		strings.Join(missing, "/"), strings.Join(flags, " "), user.Name)}, nil
 }
 
@@ -187,9 +187,9 @@ func (f *hostFacts) userManager() (Result, error) {
 	return boolResult(f.ops.UserManagerRunning(user))("", "not running")
 }
 
-func (f *hostFacts) checkPodmanSocket(ctx context.Context, unit string) (Result, error) {
+func (f *hostFacts) checkPodmanSocket(ctx context.Context) (Result, error) {
 	if f.host.Rootful() {
-		return boolResult(f.ops.SystemUnitEnabled(ctx, unit))("", "")
+		return boolResult(f.ops.SystemUnitEnabled(ctx, podmanSocket))("", "")
 	}
 	manager, err := f.checkUserManager()
 	if err != nil || manager.Status != StatusDone {
@@ -200,7 +200,7 @@ func (f *hostFacts) checkPodmanSocket(ctx context.Context, unit string) (Result,
 		}
 		return manager, err
 	}
-	return boolResult(f.ops.UserUnitEnabled(ctx, f.user, unit))("", "")
+	return boolResult(f.ops.UserUnitEnabled(ctx, f.user, podmanSocket))("", "")
 }
 
 func (f *hostFacts) checkDir(s Step) (Result, error) {
@@ -219,7 +219,7 @@ func (f *hostFacts) checkDir(s Step) (Result, error) {
 	case !info.Exists:
 		return Result{Status: StatusWouldDo, Detail: "missing"}, nil
 	case !info.Mode.IsDir():
-		return Result{Status: StatusWouldDo, Detail: "exists and is not a directory, the run stops this Host"}, nil
+		return Result{Status: StatusWouldDo, Detail: "exists and is not a directory"}, nil
 	case info.UID != uid || info.GID != gid || info.Mode.Perm() != s.Mode:
 		return Result{Status: StatusWouldDo, Detail: fmt.Sprintf("is %d:%d %04o", info.UID, info.GID, info.Mode.Perm())}, nil
 	}

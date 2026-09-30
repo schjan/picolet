@@ -119,14 +119,16 @@ func (o *OSHostOps) exists(p string) (bool, error) {
 // UserUnitEnabled implements HostOps. Only root and the user can ask the
 // user's manager.
 func (o *OSHostOps) UserUnitEnabled(ctx context.Context, u User, unit string) (bool, error) {
+	runtimeDir := fmt.Sprintf("/run/user/%d", u.UID)
+	query := []string{
+		"env", "XDG_RUNTIME_DIR=" + runtimeDir, "DBUS_SESSION_BUS_ADDRESS=unix:path=" + runtimeDir + "/bus",
+		"systemctl", "--user", "is-enabled", unit,
+	}
 	switch o.euid {
 	case 0:
-		runtimeDir := fmt.Sprintf("/run/user/%d", u.UID)
-		return unitEnabled(ctx, "runuser", "-u", u.Name, "--", "env",
-			"XDG_RUNTIME_DIR="+runtimeDir, "DBUS_SESSION_BUS_ADDRESS=unix:path="+runtimeDir+"/bus",
-			"systemctl", "--user", "is-enabled", unit)
+		return unitEnabled(ctx, "runuser", append([]string{"-u", u.Name, "--"}, query...)...)
 	case u.UID:
-		return unitEnabled(ctx, "systemctl", "--user", "is-enabled", unit)
+		return unitEnabled(ctx, query[0], query[1:]...)
 	}
 	return false, fmt.Errorf("%w: systemctl --user of %s", ErrUnprivileged, u.Name)
 }
@@ -202,6 +204,9 @@ func (o *OSHostOps) WorldReadableTree(p string) (bool, error) {
 		}
 		return nil
 	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
 	if err != nil {
 		return false, unprivileged(err)
 	}

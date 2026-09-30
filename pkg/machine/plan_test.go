@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,10 +19,13 @@ import (
 
 const exampleFleet = "../../testdata/example-fleet"
 
-// exampleFleetAbs is the checkout path the plan checks and renders.
+// exampleFleetAbs is the checkout path the plan checks and renders: absolute,
+// symlinks resolved.
 func exampleFleetAbs(t *testing.T) string {
 	t.Helper()
 	repo, err := filepath.Abs(exampleFleet)
+	require.NoError(t, err)
+	repo, err = filepath.EvalSymlinks(repo)
 	require.NoError(t, err)
 	return repo
 }
@@ -39,26 +43,26 @@ func linuxHost() machine.Environment {
 	return machine.Environment{GOOS: "linux"}
 }
 
-// showPlan renders the plan for Machine vps-1 of the example fleet, with the
-// checkout's absolute path replaced by <repo> so the golden is portable.
-func showPlan(t *testing.T, ops machine.HostOps) (string, error) {
+// showPlan renders the plan for Machine vps-1 of the example fleet checked
+// out at repoDir, with the checkout's resolved path replaced by <repo> so the
+// golden is portable.
+func showPlan(t *testing.T, repoDir string, ops machine.HostOps) (string, error) {
 	t.Helper()
-	repo := exampleFleetAbs(t)
 	var out bytes.Buffer
 	err := machine.ShowPlan(context.Background(), machine.PlanConfig{
 		Machine: "vps-1",
-		RepoDir: exampleFleet,
+		RepoDir: repoDir,
 		Env:     linuxHost(),
 		Stdout:  &out,
 	}, ops)
-	return strings.ReplaceAll(out.String(), repo, "<repo>"), err
+	return strings.ReplaceAll(out.String(), exampleFleetAbs(t), "<repo>"), err
 }
 
-// A Machine nothing has been done to yet, planned as root: no user exists,
-// so every user-level step is "would do" without a check.
-func TestShowPlanFreshMachine(t *testing.T) {
-	t.Parallel()
-	ops := mocks.NewMockHostOps(t)
+// expectFreshMachine sets ops up as a Machine nothing has been done to yet,
+// planned as root: no user exists, so every user-level step is "would do"
+// without a check.
+func expectFreshMachine(t *testing.T, ops *mocks.MockHostOps) {
+	t.Helper()
 	ops.EXPECT().LookupUser("pi").Return(machine.User{}, false, nil)
 	ops.EXPECT().LookupUser("runner").Return(machine.User{}, false, nil)
 	ops.EXPECT().SystemUnitEnabled(mock.Anything, "podman.socket").Return(false, nil)
@@ -67,10 +71,30 @@ func TestShowPlanFreshMachine(t *testing.T) {
 	}
 	ops.EXPECT().Stat("/etc/systemd/system").Return(dir(0, 0, 0o755), nil)
 	ops.EXPECT().WorldReadableTree(exampleFleetAbs(t)).Return(false, nil).Times(2)
+}
 
-	out, err := showPlan(t, ops)
+func TestShowPlanFreshMachine(t *testing.T) {
+	t.Parallel()
+	ops := mocks.NewMockHostOps(t)
+	expectFreshMachine(t, ops)
+
+	out, err := showPlan(t, exampleFleet, ops)
 	require.NoError(t, err)
 	goldie.New(t).Assert(t, "fresh-machine", []byte(out))
+}
+
+// A checkout reached through a symlink is checked, and shown, as the tree the
+// symlink points at: a walk of the link itself would see no tree.
+func TestShowPlanResolvesSymlinkedCheckout(t *testing.T) {
+	t.Parallel()
+	link := filepath.Join(t.TempDir(), "fleet")
+	require.NoError(t, os.Symlink(exampleFleetAbs(t), link))
+	ops := mocks.NewMockHostOps(t)
+	expectFreshMachine(t, ops)
+
+	out, err := showPlan(t, link, ops)
+	require.NoError(t, err)
+	require.Contains(t, out, "Fleet checkout: <repo>\n")
 }
 
 // A partly bootstrapped Machine planned by an unprivileged operator: pi is
@@ -105,7 +129,7 @@ func TestShowPlanPartialMachineUnprivileged(t *testing.T) {
 	ops.EXPECT().Stat("/etc/systemd/system").Return(dir(0, 0, 0o755), nil)
 	ops.EXPECT().WorldReadableTree(exampleFleetAbs(t)).Return(true, nil).Times(2)
 
-	out, err := showPlan(t, ops)
+	out, err := showPlan(t, exampleFleet, ops)
 	require.NoError(t, err)
 	goldie.New(t).Assert(t, "partial-machine-unprivileged", []byte(out))
 }

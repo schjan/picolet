@@ -46,7 +46,11 @@ func ShowPlan(ctx context.Context, cfg PlanConfig, ops HostOps) error {
 	if cfg.RepoDir == "" {
 		return errors.New("--repo-dir is required: the Fleet checkout on this Machine")
 	}
+	// The readability check walks the real tree, not a symlink to it.
 	repoDir, err := filepath.Abs(cfg.RepoDir)
+	if err == nil {
+		repoDir, err = filepath.EvalSymlinks(repoDir)
+	}
 	if err != nil {
 		return fmt.Errorf("resolving --repo-dir: %w", err)
 	}

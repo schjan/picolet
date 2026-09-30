@@ -14,9 +14,9 @@ Phase 1: users, sessions and directories
   would do      vps-1/dir/data              directory ~pi/.local/share/picolet, owner pi, mode 0700        is 1000:1000 0755
   would do      vps-1/dir/quadlets          directory ~pi/.config/containers/systemd, owner pi, mode 0755  is 0:0 0755
   would do      vps-1/dir/units             directory ~pi/.config/systemd/user, owner pi, mode 0755        missing
-  already done  vps-1/checkout              Fleet checkout readable by pi
+  already done  vps-1/checkout              Fleet checkout readable by pi (world-readable)
   already done  vps-1-runner/user           Linux user runner present               uid 1001
-  would do      vps-1-runner/subids         subuid/subgid ranges of runner present  no subgid range, the run stops this Host; add one: usermod --add-subgids <first>-<last> runner
+  would do      vps-1-runner/subids         subuid/subgid ranges of runner present  no subgid range, a run stops this Host; add one: usermod --add-subgids <first>-<last> runner
   would do      vps-1-runner/linger         lingering enabled for runner
   unknown       vps-1-runner/user-manager   user manager of runner running                                         needs root to check
   unknown       vps-1-runner/podman-socket  user podman.socket of runner enabled                                   needs root to check
@@ -24,7 +24,7 @@ Phase 1: users, sessions and directories
   unknown       vps-1-runner/dir/data       directory ~runner/.local/share/picolet, owner runner, mode 0700        needs root to check
   unknown       vps-1-runner/dir/quadlets   directory ~runner/.config/containers/systemd, owner runner, mode 0755  needs root to check
   unknown       vps-1-runner/dir/units      directory ~runner/.config/systemd/user, owner runner, mode 0755        needs root to check
-  already done  vps-1-runner/checkout       Fleet checkout readable by runner
+  already done  vps-1-runner/checkout       Fleet checkout readable by runner (world-readable)
   already done  vps-1-system/podman-socket  system podman.socket enabled
   already done  vps-1-system/dir/secrets    directory /etc/picolet/secrets, owner root, mode 0700
   already done  vps-1-system/dir/data       directory /var/lib/picolet-system, owner root, mode 0700

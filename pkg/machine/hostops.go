@@ -56,6 +56,7 @@ type HostOps interface {
 	FileContentEquals(path string, content []byte) (bool, error)
 	// WorldReadableTree reports whether every user on the Machine can read
 	// the tree at path: every entry grants read to others, every directory
-	// (the tree's and the path's ancestors) grants search to others.
+	// (the tree's and the path's ancestors) grants search to others. False
+	// when path does not exist.
 	WorldReadableTree(path string) (bool, error)
 }

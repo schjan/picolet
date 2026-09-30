@@ -21,7 +21,7 @@ task lint:fix       # golangci-lint with --fix
 task fmt            # run all formatters (gofumpt + gci) via golangci-lint fmt
 ```
 
-**Regenerate mocks** (after changing interfaces in `pkg/applier`): `go tool mockery`
+**Regenerate mocks** (after changing interfaces in `pkg/applier`, `pkg/agent` or `pkg/machine`): `go tool mockery`
 
 **Without Task**: all `go build`/`go test` commands require the build tags from `Taskfile.yml` (podman/v5 otherwise pulls in C libraries):
 
@@ -66,7 +66,7 @@ Quadlet files are written to `/etc/containers/systemd/picolet/` (picolet-owned s
 
 ### Interface Ownership
 
-All three system-boundary interfaces are **defined and implemented in `pkg/applier`**:
+The three system-boundary interfaces of the Agent are **defined and implemented in `pkg/applier`**:
 
 - `SystemdManager` — D-Bus systemd control (`DBusSystemdManager`)
 - `PodmanClient` — Podman socket API (`SocketPodmanClient`)

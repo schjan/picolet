@@ -6,8 +6,9 @@ import (
 )
 
 // containerMarkers are the files podman and docker place in a container's
-// filesystem; their absence means picolet runs directly on the Machine.
-var containerMarkers = []string{"/run/.containerenv", "/.dockerenv"}
+// filesystem, and the one systemd writes when it runs as a container's init
+// (nspawn, LXC); their absence means picolet runs directly on the Machine.
+var containerMarkers = []string{"/run/.containerenv", "/.dockerenv", "/run/systemd/container"}
 
 // podmanPrivatePools are the address pools podman hands to a container that has
 // a network namespace of its own: the netavark/CNI bridge (rootful) and pasta or

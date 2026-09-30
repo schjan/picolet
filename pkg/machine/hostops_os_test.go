@@ -154,3 +154,11 @@ func TestOSHostOpsWorldReadableTree(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, readable, "a file others cannot read")
 }
+
+func TestOSHostOpsWorldReadableTreeMissing(t *testing.T) {
+	t.Parallel()
+	ops := machineRoot(t, map[string]fs.FileMode{"/srv": 0o755}, nil)
+	readable, err := ops.WorldReadableTree("/srv/fleet")
+	require.NoError(t, err)
+	assert.False(t, readable, "a checkout that does not exist is not readable")
+}
