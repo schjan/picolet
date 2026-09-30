@@ -126,6 +126,26 @@ var rebuildCases = []struct {
 		want: []string{"build app-build.service", "restart-nodeps app.service"},
 	},
 	{
+		// podman build without a context argument uses the Containerfile's
+		// directory.
+		name: "file beside a Containerfile without SetWorkingDirectory=",
+		changes: []reconciler.Change{
+			buildChange("[Build]\nImageTag=localhost/app\nFile="+testContainerfile+"\n", reconciler.ActionNoop),
+			dataFileChange("/var/lib/picolet/files/app/src/main.go", reconciler.ActionUpdate),
+		},
+		want: []string{"build app-build.service", "restart-nodeps app.service"},
+	},
+	{
+		// =unit makes the unit's directory the working directory; an
+		// absolute File= still takes the context from its own directory.
+		name: "SetWorkingDirectory=unit beside an absolute Containerfile",
+		changes: []reconciler.Change{
+			buildChange("[Build]\nImageTag=localhost/app\nFile="+testContainerfile+"\nSetWorkingDirectory=unit\n", reconciler.ActionNoop),
+			dataFileChange(testQuadletDir+"ctx/Containerfile", reconciler.ActionUpdate),
+		},
+		want: nil,
+	},
+	{
 		name: "unrelated file changed",
 		changes: []reconciler.Change{
 			buildChange(testBuildUnit, reconciler.ActionNoop),
@@ -182,6 +202,23 @@ func TestApplyRebuildsOnInputChange(t *testing.T) {
 			assert.Equal(t, tt.want, *log)
 		})
 	}
+}
+
+// A containerized Agent writes data files below its data dir while the
+// .build names them by the path the Host sees: a changed Containerfile
+// still rebuilds.
+func TestApplyRebuildsOnInputChangeAtHostDataDir(t *testing.T) {
+	t.Parallel()
+	sys, log := recordingSystemd(t, nil)
+	a := applier.New(sys, imagePodman(t), newMemFileWriter(), false, nil,
+		applier.WithDependencies(buildDeps), applier.WithHostDataDir("/var/lib/picolet", "/srv/picolet"))
+
+	_, err := a.Apply(context.Background(), &reconciler.Changeset{Changes: []reconciler.Change{
+		buildChange("[Build]\nImageTag=localhost/app\nFile=/srv/picolet/files/app/Containerfile\nSetWorkingDirectory=file\n", reconciler.ActionNoop),
+		dataFileChange(testContainerfile, reconciler.ActionUpdate),
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"build app-build.service", "restart-nodeps app.service"}, *log)
 }
 
 // A failed build fails the apply before anything is restarted: neither its

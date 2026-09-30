@@ -487,14 +487,16 @@ and fails while it is unreachable, which stops a consumer that had to be started
 (a pod or dependency that changed in the same commit, a reboot). Picolet checks a build
 once, before restarting anything; it does not prevent these later runs.
 
-The build context follows Quadlet: a `[Service] WorkingDirectory=`, unless
-`SetWorkingDirectory=` is an absolute path; otherwise `SetWorkingDirectory=file` → the
-Containerfile's directory, `=unit` → the Quadlet directory, a path → that directory
-(relative to the Quadlet directory). Only local paths count: a URL or specifier (`%h`)
-triggers nothing, and with neither key only `File=` does. A Reconciliation that touches
-none of a build's inputs restarts neither the build nor its consumers. Do not set
-`RemainAfterExit=yes` on a `.build`: the service would stay active and the start would
-not rebuild.
+The build context follows Quadlet and `podman build`: a `SetWorkingDirectory=` path (a
+relative one is relative to the Quadlet directory, and replaced by `[Service]
+WorkingDirectory=` when that is set); otherwise, for a relative `File=`, the working
+directory (`[Service] WorkingDirectory=`, else `SetWorkingDirectory=file` → the
+Containerfile's directory, `=unit` → the Quadlet directory); otherwise the directory of
+the absolute `File=`. Inputs are matched by the path the Host sees (`host_data_dir` when
+the agent runs containerized). Only local paths count: a URL or specifier (`%h`) triggers
+nothing. A Reconciliation that touches none of a build's inputs restarts neither the build
+nor its consumers. Do not set `RemainAfterExit=yes` on a `.build`: the service would stay
+active and the start would not rebuild.
 
 #### `paths:` entries
 

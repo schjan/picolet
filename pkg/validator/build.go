@@ -4,12 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
 
+	"github.com/schjan/picolet/pkg/buildunit"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/resolver"
 )
@@ -74,17 +74,16 @@ func (d delivery) deliversBelow(dir string) bool {
 	return false
 }
 
-// checkBuild reports the paths a .build unit reads that lie in a delivered
-// data directory but that the Fleet does not deliver: its Containerfile, its
-// build context and its working directory. A path picolet cannot resolve
-// from the unit (URL, systemd specifier, relative to the unit file or to the
+// checkBuild reports the paths the .build unit at unitPath reads that lie in
+// a delivered data directory but that the Fleet does not deliver: its
+// Containerfile, its build context and its working directory. A path picolet
+// cannot resolve from the unit (URL, systemd specifier, relative to the
 // service's default directory) might exist on the Host and passes.
-func (d delivery) checkBuild(unit *parser.UnitFile) error {
-	file, _ := unit.Lookup(quadlet.BuildGroup, quadlet.KeyFile)
+func (d delivery) checkBuild(unit *parser.UnitFile, unitPath string) error {
 	setWorkDir, _ := unit.Lookup(quadlet.BuildGroup, quadlet.KeySetWorkingDirectory)
 	workDir, _ := unit.Lookup(quadlet.ServiceGroup, quadlet.ServiceKeyWorkingDirectory)
 
-	errs := []error{d.checkContainerfile(unit, file, workDir, buildContext(file, setWorkDir, workDir))}
+	errs := []error{d.checkContainerfile(unit, buildunit.Resolve(unit, unitPath))}
 	if !isWorkingDirectoryKeyword(setWorkDir) {
 		errs = append(errs, d.checkDir(unit, quadlet.KeySetWorkingDirectory, setWorkDir))
 	}
@@ -92,76 +91,23 @@ func (d delivery) checkBuild(unit *parser.UnitFile) error {
 	return errors.Join(errs...)
 }
 
-// buildContext returns the context argument Podman's ConvertBuild passes to
-// podman build, "" when it passes none (podman build then uses the absolute
-// File='s directory):
-//   - an absolute or URL SetWorkingDirectory=; a relative one only without
-//     [Service] WorkingDirectory=, which otherwise makes Podman drop it;
-//   - otherwise, for a relative local File=, the working directory:
-//     [Service] WorkingDirectory=, else the one SetWorkingDirectory=file/unit
-//     derives relative to the unit file (returned as the keyword, which does
-//     not resolve).
-func buildContext(file, setWorkDir, workDir string) string {
-	if setWorkDir != "" && !isWorkingDirectoryKeyword(setWorkDir) &&
-		(filepath.IsAbs(setWorkDir) || podmanURL.MatchString(setWorkDir) || workDir == "") {
-		return setWorkDir
-	}
-	if !isRelativeLocal(file) {
-		return ""
-	}
-	if workDir != "" {
-		return workDir
-	}
-	return setWorkDir
-}
-
 // checkContainerfile reports File= when every place podman build looks for
 // it lies in a delivered data directory and none is delivered.
-func (d delivery) checkContainerfile(unit *parser.UnitFile, file, workDir, context string) error {
-	candidates, ok := containerfileCandidates(file, workDir, context)
-	if !ok {
+func (d delivery) checkContainerfile(unit *parser.UnitFile, paths buildunit.Paths) error {
+	if !paths.ContainerfilesComplete {
 		return nil
 	}
-	for _, c := range candidates {
+	for _, c := range paths.Containerfiles {
 		if !d.owns(c) || d.delivers(c) {
 			return nil
 		}
 	}
-	if len(candidates) == 1 && candidates[0] == filepath.Clean(file) {
+	file, _ := unit.Lookup(quadlet.BuildGroup, quadlet.KeyFile)
+	if len(paths.Containerfiles) == 1 && paths.Containerfiles[0] == filepath.Clean(file) {
 		return notDelivered(unit, quadlet.KeyFile, file)
 	}
 	return fmt.Errorf("%s: %s=%s (%s) is not delivered by the Fleet",
-		unit.Filename, quadlet.KeyFile, file, strings.Join(candidates, " or "))
-}
-
-// containerfileCandidates returns the paths podman build tries for File=, in
-// order (buildah imagebuildah.BuildDockerfiles): File= as given, relative to
-// the service's working directory, then joined onto the context unless it
-// already starts with it. ok is false when a candidate cannot be resolved
-// from the unit, so the file may exist there.
-func containerfileCandidates(file, workDir, context string) ([]string, bool) {
-	if file == "" || strings.Contains(file, "%") || podmanURL.MatchString(file) {
-		return nil, false
-	}
-	first := file
-	if !filepath.IsAbs(file) {
-		if !checkable(workDir) {
-			return nil, false
-		}
-		first = filepath.Join(workDir, file)
-	}
-	candidates := []string{filepath.Clean(first)}
-	if context == "" {
-		return candidates, true
-	}
-	if !checkable(context) {
-		return nil, false
-	}
-	context = filepath.Clean(context)
-	if fallback := filepath.Join(context, file); !strings.HasPrefix(file, context) && fallback != candidates[0] {
-		candidates = append(candidates, fallback)
-	}
-	return candidates, true
+		unit.Filename, quadlet.KeyFile, file, strings.Join(paths.Containerfiles, " or "))
 }
 
 // checkDir reports a directory the unit names under key when it lies in a
@@ -179,16 +125,6 @@ func (d delivery) checkDir(unit *parser.UnitFile, key, dir string) error {
 
 func notDelivered(unit *parser.UnitFile, key, value string) error {
 	return fmt.Errorf("%s: %s=%s is not delivered by the Fleet", unit.Filename, key, value)
-}
-
-// podmanURL is Podman's pattern for a File=/SetWorkingDirectory= value it
-// treats as a URL (quadlet.URL, v5 pkg/systemd/quadlet/quadlet.go).
-var podmanURL = regexp.MustCompile(`^((https?)|(git)://)|(github\.com/).+$`)
-
-// isRelativeLocal reports a File= that ConvertBuild passes on relative to
-// the working directory: set, not absolute, not a URL, not a specifier.
-func isRelativeLocal(file string) bool {
-	return file != "" && !filepath.IsAbs(file) && !strings.HasPrefix(file, "%") && !podmanURL.MatchString(file)
 }
 
 // checkable reports whether a reference is a literal absolute path. Podman

@@ -55,7 +55,7 @@ func AnalyzeFiles(files []resolver.ResolvedFile, target Target) (map[string]stat
 		}
 		// Podman accepted the unit, so its references are well-formed.
 		if err == nil && f.Category == config.CategoryBuild {
-			err = delivered.checkBuild(f.ParsedUnit)
+			err = delivered.checkBuild(f.ParsedUnit, f.DestPath)
 		}
 		if err != nil {
 			errs = append(errs, err)
