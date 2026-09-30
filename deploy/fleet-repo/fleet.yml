@@ -1,5 +1,6 @@
 images:
   picolet: "ghcr.io/schjan/picolet:v0.1.0"
+  prometheus: "docker.io/prom/prometheus:v3.5.0"
 
 ports:
   # The Agents' listen ports (Network=host, bound to 127.0.0.1). A Host
@@ -7,3 +8,5 @@ ports:
   # declares user:, on picolet_system_metrics when it is rootful.
   picolet_metrics: 9417
   picolet_system_metrics: 9418
+  # Prometheus of the metrics bundle (Network=host, bound to 127.0.0.1).
+  prometheus: 9090

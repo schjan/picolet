@@ -1,0 +1,13 @@
+# Machine srv-1 runs three Hosts (this one, srv-1-system, srv-1-runner). This
+# one is the Machine's default user: with no machine: it is on the Machine named
+# after its hostname, and with no listen_port: its Agent takes fleet.yml
+# ports.picolet_metrics. Replace the hostname with your Machine's name; it must
+# match hostname: in the Agent's config (see services/picolet/secrets/).
+#
+# Host naming convention: see README "Machines, users and ports".
+hostname: srv-1
+external_hostname: srv-1.example.net
+role: rootless
+# The metrics stack (Prometheus) runs on this Host only.
+features: [metrics]
+user: app

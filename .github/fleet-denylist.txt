@@ -1,0 +1,11 @@
+# Terms that must never appear in deploy/fleet-repo/ (checked by the
+# validate-fleet job in .github/workflows/ci.yml).
+#
+# One fixed string per line, matched case-insensitively against file contents
+# and path names. Blank lines and lines starting with # are ignored. Keep only
+# generic patterns here: this repository is public. The production Fleet's
+# machine names, domains and other terms live in the FLEET_DENYLIST Actions
+# secret (same format, newline-separated), which the job adds to this list.
+
+# Tailnet MagicDNS suffix
+.ts.net

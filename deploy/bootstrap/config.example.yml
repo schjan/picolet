@@ -3,7 +3,7 @@
 # Rootless: ~/.config/picolet/config.yml
 
 # Required: must exactly match hosts/<name>/host.yml in the fleet repo
-hostname: "node-1"
+hostname: "srv-1-system"
 
 # Required: HTTPS URL (SSH is not supported)
 repo_url: "https://github.com/yourorg/your-fleet-repo.git"

@@ -1,0 +1,7 @@
+# The rootful Host on Machine srv-1: no user:, so its Agent runs as root and,
+# with no listen_port:, takes fleet.yml ports.picolet_system_metrics.
+hostname: srv-1-system
+external_hostname: srv-1.example.net
+role: rootful
+features: []
+machine: srv-1

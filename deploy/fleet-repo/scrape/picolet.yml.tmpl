@@ -1,0 +1,8 @@
+# This Host's own Agent (the picolet bundle's snippet; picolet-system.yml.tmpl
+# reuses it for the rootful Host).
+- job_name: picolet
+  static_configs:
+    - targets: ["127.0.0.1:{{ .Host.ListenPort }}"]
+      labels:
+        host: {{ .Host.Hostname }}
+        user: {{ renderTemplate "scrape/lib/user.tmpl" .Host | trim }}
