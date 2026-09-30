@@ -1,0 +1,7 @@
+# This Host's own Agent.
+- job_name: picolet
+  static_configs:
+    - targets: ["127.0.0.1:{{ .Host.ListenPort }}"]
+      labels:
+        host: {{ .Host.Hostname }}
+        user: {{ .Host.User }}

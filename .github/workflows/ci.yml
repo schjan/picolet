@@ -35,6 +35,38 @@ jobs:
       - name: Validate reference fleet
         run: go run -tags "$BUILD_TAGS" ./cmd/picolet validate --repo-dir deploy/fleet-repo
 
+      - name: Check fleet denylist
+        # Terms come from the committed .github/fleet-denylist.txt and the
+        # FLEET_DENYLIST secret (empty on fork PRs: the file alone applies).
+        # Fixed-string, case-insensitive, over file contents and path names.
+        # Never print a term: only the paths of files with content matches.
+        env:
+          FLEET_DENYLIST: ${{ secrets.FLEET_DENYLIST }}
+        run: |
+          set -u
+          terms="$(mktemp)"
+          trap 'rm -f "$terms"' EXIT
+          { cat .github/fleet-denylist.txt; printf '\n%s\n' "${FLEET_DENYLIST-}"; } \
+            | tr -d '\r' \
+            | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
+            | grep -Ev '^(#|$)' > "$terms" || true
+
+          status=0
+          rc=0
+          grep -rIliF -f "$terms" -- deploy/fleet-repo || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::Denylisted term found in the files above (deploy/fleet-repo/)"
+            status=1
+          elif [ "$rc" -ne 1 ]; then
+            echo "::error::grep failed (exit $rc)"
+            status=1
+          fi
+          if find deploy/fleet-repo | grep -qiF -f "$terms"; then
+            echo "::error::A path name under deploy/fleet-repo/ contains a denylisted term"
+            status=1
+          fi
+          exit "$status"
+
   e2e:
     # Podman >= 5.2 for Quadlet .build: ubuntu-24.04 images ship 4.9.3 since
     # actions/runner-images#14642; ubuntu-26.04 ships 5.7.0 (preview image).

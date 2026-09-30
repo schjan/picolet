@@ -1,0 +1,27 @@
+# Containers of this Host's own user, found through its Podman socket (the
+# Docker-compatible API; the socket is mounted in metrics.container.tmpl). A
+# container is scraped when it carries the label prometheus.scrape=true and
+# publishes exactly one port on 127.0.0.1 - services publish their metrics on
+# loopback, never on all interfaces.
+- job_name: podman
+  docker_sd_configs:
+    - host: unix:///run/podman/podman.sock
+      refresh_interval: 30s
+  relabel_configs:
+    - source_labels: [__meta_docker_container_label_prometheus_scrape]
+      regex: "true"
+      action: keep
+    - source_labels: [__meta_docker_port_public_ip]
+      regex: 127\.0\.0\.1
+      action: keep
+    - source_labels: [__meta_docker_port_public]
+      regex: (.+)
+      target_label: __address__
+      replacement: 127.0.0.1:$1
+    - source_labels: [__meta_docker_container_name]
+      regex: /?(.+)
+      target_label: container
+    - target_label: host
+      replacement: {{ .Host.Hostname }}
+    - target_label: user
+      replacement: {{ .Host.User }}

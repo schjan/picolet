@@ -1,0 +1,13 @@
+# The other Agents on Machine {{ .Host.Machine }} (this Host's own Agent comes from the
+# picolet bundle's snippet). Every Agent binds 127.0.0.1:<listen_port> with
+# Network=host, so a sibling is reachable over loopback on its listen port.
+{{- if siblings }}
+- job_name: picolet-siblings
+  static_configs:
+{{- range siblings }}
+    - targets: ["127.0.0.1:{{ .ListenPort }}"]
+      labels:
+        host: {{ .Hostname }}
+        user: {{ if .Rootful }}root{{ else }}{{ .User }}{{ end }}
+{{- end }}
+{{- end }}
