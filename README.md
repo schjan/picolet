@@ -493,8 +493,11 @@ the target Machine and adopt only if every step passes:
    ACME CA, and `http://` redirects to it. The socket wiring (redirect on
    `fd/3`, forge on `fd/4`, `/metrics` blocked) was exercised with Caddy 2.10.2
    and a local CA; automatic ACME issuance over the inherited sockets was not
-   (it needs public DNS). If issuance fails, deliver the certificate as Files
-   and name it in the site (`tls <cert> <key>`) instead of relying on ACME.
+   (it needs public DNS). If issuance fails, stop relying on ACME: deliver the
+   certificate as a File under the proxy bundle's `files/proxy/` (mounted at
+   `/etc/caddy`), the private key as a Podman secret (`Secret=` in
+   `proxy.container`; nothing secret in git), and name both in the site with
+   `tls /etc/caddy/<cert> /run/secrets/<key>`.
 2. From `srv-1-runner`, `podman exec runner wget -qO- https://srv-1.example.net/`
    succeeds: containers of one Machine reach the forge over its public
    hostname. With rootless Podman's pasta networking, a container may not reach
