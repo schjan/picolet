@@ -77,9 +77,12 @@ func (d delivery) checkBuild(unit *parser.UnitFile) error {
 
 // buildReferences returns the paths a .build unit reads, following Podman's
 // ConvertBuild and podman build:
-//   - containerfile: File=. A relative local one is looked up in the working
-//     directory, then in the build context, so it resolves only when the
-//     context is that working directory (no SetWorkingDirectory= path).
+//   - containerfile: File=. podman build looks a relative local one up in
+//     the service's working directory, then in the build context. It
+//     resolves against [Service] WorkingDirectory= when that is also the
+//     context (no SetWorkingDirectory= path), and against the context when
+//     no working directory is set; with both set and different, either may
+//     hold it, so it is not resolved.
 //   - context: a SetWorkingDirectory= path. Without one the context is the
 //     working directory or the absolute Containerfile's directory, both
 //     checked on their own; SetWorkingDirectory=file/unit without an
@@ -94,10 +97,17 @@ func buildReferences(unit *parser.UnitFile) (containerfile, context, workDir ref
 
 	containerfile = reference{key: quadlet.KeyFile, value: file, path: file}
 	workDir = reference{key: quadlet.ServiceKeyWorkingDirectory, value: dir, path: dir}
+	lookupDir := dir
 	if setWorkDir != "" && !isWorkingDirectoryKeyword(setWorkDir) {
 		context = reference{key: quadlet.KeySetWorkingDirectory, value: setWorkDir, path: setWorkDir}
-	} else if isRelativeLocal(file) && checkable(dir) {
-		containerfile.path = filepath.Join(dir, file)
+		if dir != "" {
+			lookupDir = ""
+		} else {
+			lookupDir = setWorkDir
+		}
+	}
+	if isRelativeLocal(file) && checkable(lookupDir) {
+		containerfile.path = filepath.Join(lookupDir, file)
 	}
 	return containerfile, context, workDir
 }

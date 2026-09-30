@@ -366,8 +366,8 @@ target them as `unit: <name>.image` / `unit: <name>.build`). Containers use them
 Deliver a build's Containerfile under `files/` and point at it with
 `File={{ filePath "<app>/Containerfile" }}` plus `SetWorkingDirectory=file` (build context =
 the Containerfile's directory). `validate` (and the agent, before applying) rejects a
-`.build` whose Containerfile (`File=`, a relative one resolved against
-`[Service] WorkingDirectory=`), build context (`SetWorkingDirectory=` path) or working
+`.build` whose Containerfile (`File=`; a relative one is resolved against
+`[Service] WorkingDirectory=`, else against the build context), build context (`SetWorkingDirectory=` path) or working
 directory (`[Service] WorkingDirectory=`) lies in the host's `files/` or `manifests/` data
 directory but is not delivered by the host's assignments; a directory counts as delivered
 when any delivered file lies below it. Absolute paths elsewhere (managed on the host), URLs,

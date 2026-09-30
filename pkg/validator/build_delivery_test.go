@@ -56,6 +56,15 @@ func TestAnalyzeFilesBuildReferencesDeliveredFiles(t *testing.T) {
 			build: "File=" + testHostDataDir + "/repo/app/Containerfile\nSetWorkingDirectory=file\n",
 		},
 		{
+			name:  "Containerfile in a sibling directory sharing the files/ prefix",
+			build: "File=" + testHostDataDir + "/files2/app/Containerfile\nSetWorkingDirectory=file\n",
+		},
+		{
+			name:    "Containerfile in files/ while the Fleet delivers no data files",
+			build:   "File=" + testHostDataDir + "/files/app/Containerfile\nSetWorkingDirectory=file\n",
+			wantErr: "app.build: File=" + testHostDataDir + "/files/app/Containerfile is not delivered by the Fleet",
+		},
+		{
 			name:  "delivered build context",
 			build: "File=Containerfile\nSetWorkingDirectory=" + testHostDataDir + "/files/app\n",
 			files: []resolver.ResolvedFile{deliveredFile("app/Containerfile"), deliveredFile("app/src/main.go")},
@@ -119,9 +128,12 @@ func TestAnalyzeFilesBuildReferencesDeliveredFiles(t *testing.T) {
 			build: "File=Containerfile\nSetWorkingDirectory=app\n",
 		},
 		{
-			name:  "relative Containerfile without a working directory",
-			build: "File=Containerfile\nSetWorkingDirectory=" + testHostDataDir + "/files/app\n",
-			files: []resolver.ResolvedFile{deliveredFile("app/src/main.go")},
+			// Without [Service] WorkingDirectory=, the service starts in / (or
+			// the user's home), so podman build finds File= in the context.
+			name:    "relative Containerfile the Fleet does not deliver to the build context",
+			build:   "File=Containerfile\nSetWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files:   []resolver.ResolvedFile{deliveredFile("app/src/main.go")},
+			wantErr: "app.build: File=Containerfile (" + testHostDataDir + "/files/app/Containerfile) is not delivered by the Fleet",
 		},
 	}
 	for _, tt := range tests {
