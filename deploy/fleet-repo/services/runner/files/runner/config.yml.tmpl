@@ -1,0 +1,17 @@
+# Forgejo Runner config of Host {{ .Host.Hostname }} (runner bundle), read by
+# the registration one-shot and the daemon.
+log:
+  level: info
+runner:
+  # Written by register.sh, read by the daemon: the runner-data volume.
+  file: /data/.runner
+  capacity: 1
+  # Declared to the forge whenever the daemon starts.
+  labels:
+    - docker:docker://docker.io/library/node:22-bookworm
+container:
+  # Job containers get this user's Podman socket as /var/run/docker.sock, so a
+  # job can build and run images - and control every container of this user,
+  # which is why the runner has a Linux user to itself. Use "-" when no job
+  # needs it.
+  docker_host: automount

@@ -1,0 +1,25 @@
+{{- /* The forge's public URL: the external_hostname of the Host with the forge feature. */ -}}
+{{- $forge := "" }}
+{{- range .Fleet.Hosts }}{{ if has "forge" .Features }}{{ $forge = .ExternalHostname }}{{ end }}{{ end }}
+{{- if not $forge }}{{ fail "runner: no Host in the Fleet has the forge feature" }}{{ end -}}
+# Registers runner {{ .Host.Hostname }} with the forge at https://{{ $forge }}/
+# over the public hostname, like any client. Run by runner-register.service.
+set -eu
+
+instance="https://{{ $forge }}/"
+token="$(cat /run/secrets/runner_token)"
+
+# The forge URL and token this runner last registered with. Registering again
+# with both unchanged would only add a second runner to the forge, so a reboot
+# or a re-run keeps the registration; a rotated token or a moved forge (the
+# saved registration keeps the URL it was made with) registers anew.
+stamp=/data/.runner-registration.sha256
+sum="$(printf '%s\n%s' "$instance" "$token" | sha256sum | cut -d ' ' -f 1)"
+if [ -f /data/.runner ] && [ "$(cat "$stamp" 2>/dev/null)" = "$sum" ]; then
+	echo "runner already registered with $instance and the current token"
+	exit 0
+fi
+
+forgejo-runner --config /etc/runner/config.yml register --no-interactive \
+	--instance "$instance" --token "$token" --name "{{ .Host.Hostname }}"
+printf '%s\n' "$sum" >"$stamp"

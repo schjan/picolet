@@ -1,6 +1,13 @@
 images:
   picolet: "ghcr.io/schjan/picolet:v0.1.0"
   prometheus: "docker.io/prom/prometheus:v3.5.0"
+  # Caddy 2.11.0 through at least 2.11.4 fail ACME challenges on socket-activated
+  # listeners (caddyserver/caddy#7525); stay on 2.10 until a release ships the fix.
+  proxy: "docker.io/library/caddy:2.10.2"
+  forge: "codeberg.org/forgejo/forgejo:15.0.9-rootless"
+  # The last release before `forgejo-runner register` was deprecated (12.8.0);
+  # the runner bundle's registration one-shot relies on it.
+  runner: "data.forgejo.org/forgejo/runner:12.7.3"
 
 ports:
   # The Agents' listen ports (Network=host, bound to 127.0.0.1). A Host
@@ -10,3 +17,7 @@ ports:
   picolet_system_metrics: 9418
   # Prometheus of the metrics bundle (Network=host, bound to 127.0.0.1).
   prometheus: 9090
+  # The forge's HTTP port published on 127.0.0.1 for the metrics stack (the
+  # public way in is the proxy on 443). Loopback ports are per Machine: keep
+  # them unique across all Hosts that share one.
+  forge: 3000

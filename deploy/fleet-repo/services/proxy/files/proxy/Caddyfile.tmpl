@@ -1,0 +1,28 @@
+# Caddy config of Host {{ .Host.Hostname }} (proxy bundle). Caddy binds no
+# port itself: proxy.socket passes its listeners in, fd/3 = port 80 and
+# fd/4 = port 443, in the order that unit lists them.
+{
+	default_bind fd/4 {
+		protocols h1 h2
+	}
+	auto_https disable_redirects
+}
+
+# Port 80: redirect everything to HTTPS.
+http:// {
+	bind fd/3 {
+		protocols h1
+	}
+	redir https://{host}{uri} permanent
+}
+{{- if has "forge" .Host.Services }}
+
+# The forge bundle, reached on forge.network by its container name. Its
+# /metrics is for the metrics stack, which scrapes it on 127.0.0.1; never
+# serve it publicly.
+{{ .Host.ExternalHostname }} {
+	@metrics path /metrics /metrics/*
+	respond @metrics 404
+	reverse_proxy forge:3000
+}
+{{- end }}

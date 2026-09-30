@@ -1,0 +1,38 @@
+[Unit]
+Description=Forge (Forgejo, SQLite)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image={{ index .Images "forge" }}
+ContainerName=forge
+
+# The bundle's own network; the proxy joins it and reaches the forge as forge:3000.
+Network=forge.network
+# Metrics on loopback only: the metrics stack's Podman service discovery scrapes
+# a labelled container through its single port published on 127.0.0.1. The web
+# UI answers there too; the public way in is the proxy on 443.
+PublishPort=127.0.0.1:{{ index .Ports "forge" }}:3000
+Label=prometheus.scrape=true
+
+# Settings as FORGEJO__<section>__<KEY> variables, written into app.ini on every
+# start. app.ini itself stays in the config volume, where Forgejo keeps the
+# tokens it generates on first start (INTERNAL_TOKEN, JWT secrets).
+EnvironmentFile={{ filePath "forge/forge.env" }}
+# SECRET_KEY, which encrypts 2FA seeds and Actions secrets, is not generated
+# when the installer is locked: Forgejo would fall back to a publicly known
+# default. It comes from the Host (secrets/forge_secret_key.tmpl), read through
+# FORGEJO__security__SECRET_KEY_URI in forge.env. Keep it with the backups: a
+# dump restored without it cannot decrypt those.
+Secret=forge_secret_key
+# Repositories, attachments and the SQLite database (never copy it while the
+# forge runs; see README "Reference bundles: proxy, forge, runner").
+Volume=forge-data.volume:/var/lib/gitea
+Volume=forge-config.volume:/etc/gitea
+
+[Service]
+Restart=always
+TimeoutStartSec=90
+
+[Install]
+WantedBy=default.target

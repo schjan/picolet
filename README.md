@@ -356,8 +356,9 @@ commit it right after step 2 completes.
 `deploy/fleet-repo/` follows these conventions; they are not enforced by
 picolet unless stated. It is one Machine, `srv-1`, with three Hosts — `srv-1`
 (default user `app`), `srv-1-system` (rootful) and `srv-1-runner` (user
-`runner`) — plus a `metrics` Service Bundle, all under the generic domain
-`example.net`.
+`runner`) — plus the Service Bundles `metrics`, `proxy`, `forge` and `runner`
+(see [Reference bundles](#reference-bundles-proxy-forge-runner)), all under the
+generic domain `example.net`.
 
 - **Host naming.** See [Machines, users and ports](#machines-users-and-ports):
   `srv-1`, `srv-1-system` and `srv-1-runner` follow it.
@@ -380,7 +381,10 @@ picolet unless stated. It is one Machine, `srv-1`, with three Hosts — `srv-1`
   one Machine talk to each other over `127.0.0.1:<port>` (each Host's ports come
   from the Fleet, e.g. `siblings` → `.ListenPort`); Hosts on different Machines
   use the public hostname (`external_hostname`, e.g. `srv-1.example.net`), never
-  a private or overlay address that only some Hosts can reach.
+  a private or overlay address that only some Hosts can reach. A client of a
+  public service uses its public hostname even from the same Machine: the
+  runner registers with the forge through the proxy's `https://` name, which
+  its TLS certificate covers, like any other client.
 - **The network story.**
   - The Agent and the metrics stack stay `Network=host`, so they reach the
     Machine's loopback and the other Agents.
@@ -394,9 +398,11 @@ picolet unless stated. It is one Machine, `srv-1`, with three Hosts — `srv-1`
   collision-free because the file is named after its bundle. The metrics
   bundle's `prometheus.yml.tmpl` composes the snippets of the bundles assigned
   to its Host.
-- **Never copy a live database.** Back up with the database's own dump or
+- **Never copy a live database.** Back up with the application's own dump (the
+  forge: `forgejo dump`, see
+  [Reference bundles](#reference-bundles-proxy-forge-runner)) or the database's
   snapshot tool, or stop the service first; a file-level copy of a running
-  database is not a backup.
+  database — or of the volume holding it — is not a backup.
 - **Validate in CI with the exact image the Fleet deploys.** Run
   `picolet validate` in CI with the `images.picolet` reference from `fleet.yml`,
   so validation sees the same Podman `quadlet.Convert*()` as the Agents:
@@ -415,6 +421,155 @@ secret holds the real machine names, domains and tailnet suffixes,
 newline-separated, so they never appear in the repository. The check is
 case-insensitive and fixed-string over `deploy/fleet-repo/`; without the secret
 (fork PRs) only the file applies.
+
+### Reference bundles: proxy, forge, runner
+
+`deploy/fleet-repo/` runs a real multi-unit service across two Hosts of Machine
+`srv-1`: a forge and its reverse proxy on the default user (`srv-1`, features
+`proxy` and `forge`) and a CI runner for it on the isolated user
+(`srv-1-runner`, feature `runner`). Images: Caddy (proxy), Forgejo (forge),
+Forgejo Runner (runner); the bundles keep generic names so you can swap them.
+
+```mermaid
+graph LR
+  client[clients, runner] -->|"https://srv-1.example.net (443)"| socket[proxy.socket]
+  socket -->|fd/3, fd/4| proxy[proxy container]
+  proxy -->|forge.network| forge[forge container]
+  prom[metrics, Network=host] -->|127.0.0.1:3000/metrics| forge
+```
+
+- **`proxy`** (`services/proxy/`) — `proxy.socket`, a raw systemd unit, holds
+  ports 80 and 443; `proxy.container` inherits them through `[Service]
+  Sockets=proxy.socket`, publishes no port, and joins `forge.network` to reach
+  the forge by container name. Caddy maps inherited sockets by position
+  (`bind fd/3` = the first `ListenStream=`, `fd/4` = the second), so both
+  listeners stay in one socket unit: systemd orders the sockets of one unit but
+  not those of several. Picolet enables and starts the socket like any
+  `.socket`; while the proxy restarts (the `proxy-config` hook restarts it on a
+  changed `Caddyfile`), the socket stays open and connections wait. A rootless
+  user may only bind ports ≥ 1024 unless the Machine sets
+  `net.ipv4.ip_unprivileged_port_start=80` (`/etc/sysctl.d/`); set it before
+  assigning the bundle. Caddy is pinned to 2.10: 2.11.0 through 2.11.4 fail ACME
+  challenges on socket-activated listeners
+  ([caddyserver/caddy#7525](https://github.com/caddyserver/caddy/issues/7525)).
+- **`forge`** (`services/forge/`) — `forge.container` on its own
+  `forge.network`, volumes for data and `app.ini`, and a config File
+  (`files/forge/forge.env.tmpl`, `EnvironmentFile=`, restarted by the
+  `forge-config` hook). Its HTTP port is published on `127.0.0.1:3000` only,
+  labelled `prometheus.scrape=true`, so the metrics bundle's Podman service
+  discovery scrapes it; the proxy answers `/metrics` with 404. It uses SQLite,
+  a file in `forge-data`: **never copy the database file or the volume while the
+  forge runs — use the application's dump** (`forgejo dump`, run in the
+  container), or stop `forge.service` first. The web installer is locked:
+  create the first admin with `forgejo admin user create` in the container.
+  With the installer locked Forgejo generates no `SECRET_KEY` (it would fall
+  back to a publicly known default), so the key comes from the Host: the
+  Podman secret `forge_secret_key` (`secrets/forge_secret_key.tmpl`), read via
+  `SECRET_KEY_URI`. Back it up next to the dumps and never rotate it: it
+  decrypts the 2FA and Actions secrets already stored. By the conventions
+  above, this forge must never host the Fleet repository.
+- **`runner`** (`services/runner/`) — two containers on `runner.network`:
+  - `runner-register.container`, the registration: a `Type=oneshot`
+    `RemainAfterExit=yes` one-shot running `forgejo-runner register` against
+    the forge's public hostname (the `external_hostname` of the Host with the
+    `forge` feature), like any other client. It stays `active (exited)`, so the
+    health loop counts it healthy and starting the daemon does not register
+    again. It retries every 30 s (`Restart=on-failure`): the forge is on
+    another Host and may be down. Being a Quadlet one-shot with no timer, a
+    failed registration is also restarted by the health loop (5-minute
+    cooldown); only timer-fired and static raw one-shots are left alone.
+  - `runner.container`, the daemon, `Wants=` the registration (a failed
+    attempt must not leave it stopped; it restarts every 30 s until
+    `/data/.runner` exists) and is `PartOf=` it, so a re-run registration
+    restarts it. It hands jobs the runner user's Podman socket
+    (`docker_host: automount`). A job can then control every container of that
+    user — the reason the runner is a Host of its own. That includes the
+    user's own Picolet Agent and the secrets it can read, so give the runner
+    Host no Fleet write access and no provider token that reaches its
+    siblings' secrets (see "One provider token per Machine" above).
+
+  The registration token is the Podman secret `runner_token`
+  (`secrets/runner_token.tmpl` reads it from the Host's secrets directory;
+  switch it to `readOpSecret`/`readProtonPassSecret` to take it from a
+  provider). **Rotation:** the `runner-registration` hook (`secrets:
+  [runner_token]`, `files: [runner/register.sh]`, `action: restart`) restarts
+  the one-shot when the secret changes or `register.sh` does (e.g. the forge's
+  `external_hostname` moved) — restarting is the only way to re-run a
+  `RemainAfterExit` unit — and systemd carries the restart over to
+  `runner.service`. A host-local secret is re-read on the next Reconciliation
+  (the next commit), a provider secret on the next provider refresh.
+  `register.sh` records the forge URL and token it registered with and skips
+  an unchanged pair, so reboots add no runners to the forge; a rotated token
+  or a moved forge registers anew. Remove the superseded runner in the forge
+  afterwards. A runner deleted in the forge is not re-registered until the
+  token rotates. The runner is pinned to 12.7.3, the last release before
+  `register` was deprecated in favour of connections declared in the runner
+  config; moving past it means replacing the registration one-shot.
+
+#### Reality check
+
+`picolet validate` proves the bundles are well-formed Quadlet and systemd
+units; it proves nothing about a runner driving rootless Podman through the
+Docker-compatible socket. Before adopting the runner, run this experiment on
+the target Machine and adopt only if every step passes:
+
+1. Deploy the three Hosts; `srv-1`'s `proxy.socket` is `active (listening)`,
+   `https://srv-1.example.net/` serves the forge with a certificate from your
+   ACME CA, and `http://` redirects to it. The socket wiring (redirect on
+   `fd/3`, forge on `fd/4`, `/metrics` blocked) was exercised with Caddy 2.10.2
+   and a local CA; automatic ACME issuance over the inherited sockets was not
+   (it needs public DNS). If issuance fails, stop relying on ACME: deliver the
+   certificate as a File under the proxy bundle's `files/proxy/` (mounted at
+   `/etc/caddy`), the private key as a Podman secret (`Secret=` in
+   `proxy.container`; nothing secret in git), and name both in the site with
+   `tls /etc/caddy/<cert> /run/secrets/<key>`.
+2. From `srv-1-runner`, `podman exec runner wget -qO- https://srv-1.example.net/`
+   succeeds: containers of one Machine reach the forge over its public
+   hostname. With rootless Podman's pasta networking, a container may not reach
+   the Machine's own public address; if this fails, fix it here, before the
+   jobs depend on it.
+3. `systemctl --user status runner-register.service` (as `runner`) shows
+   `active (exited)`, the forge lists the runner online, and restarting the
+   one-shot with an unchanged token logs "runner already registered".
+4. **Echo workflow** — a repository with
+
+   ```yaml
+   # .forgejo/workflows/echo.yml
+   on: [push]
+   jobs:
+     echo:
+       runs-on: docker
+       steps:
+         - run: echo "hello from $(hostname)"
+   ```
+
+   passes: the runner creates a job container and network on the runner
+   user's Podman and reports the log back.
+5. **Image-build workflow** — a job that builds and runs an image through the
+   mounted socket passes:
+
+   ```yaml
+   # .forgejo/workflows/build.yml
+   on: [push]
+   jobs:
+     build:
+       runs-on: docker
+       container:
+         image: docker.io/library/docker:cli
+       env:
+         DOCKER_BUILDKIT: "0"  # Podman's Docker API has no BuildKit
+       steps:
+         - run: |
+             printf 'FROM docker.io/library/alpine:3.22\nRUN echo built > /built\n' > Containerfile
+             docker build -f Containerfile -t reality-check:latest .
+             docker run --rm reality-check:latest cat /built
+   ```
+
+   The built image lands in the runner user's Podman store: it cannot touch
+   `srv-1`'s containers, which is the point of the separate user.
+6. Rotate the registration token in the forge, update `runner_token` on
+   `srv-1-runner`, and let a Reconciliation run: the `runner-registration` hook
+   fires, the new runner comes online, and the echo workflow still passes.
 
 ### File Categories
 
