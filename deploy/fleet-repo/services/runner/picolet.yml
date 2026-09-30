@@ -1,9 +1,11 @@
 hooks:
-  # A rotated registration token re-runs the registration one-shot (restart is
-  # the only way to re-run a RemainAfterExit unit); systemd restarts
-  # runner.service with it, which is PartOf= the registration.
+  # A rotated registration token, or a changed register.sh (the forge moved to
+  # another hostname), re-runs the registration one-shot (restart is the only
+  # way to re-run a RemainAfterExit unit); systemd restarts runner.service with
+  # it, which is PartOf= the registration.
   - name: runner-registration
     secrets: [runner_token]
+    files: [runner/register.sh]
     unit: runner-register.container
     action: restart
   # The daemon reads config.yml at start only.

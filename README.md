@@ -464,20 +464,26 @@ graph LR
     `/data/.runner` exists) and is `PartOf=` it, so a re-run registration
     restarts it. It hands jobs the runner user's Podman socket
     (`docker_host: automount`). A job can then control every container of that
-    user — the reason the runner is a Host of its own.
+    user — the reason the runner is a Host of its own. That includes the
+    user's own Picolet Agent and the secrets it can read, so give the runner
+    Host no Fleet write access and no provider token that reaches its
+    siblings' secrets (see "One provider token per Machine" above).
 
   The registration token is the Podman secret `runner_token`
   (`secrets/runner_token.tmpl` reads it from the Host's secrets directory;
   switch it to `readOpSecret`/`readProtonPassSecret` to take it from a
   provider). **Rotation:** the `runner-registration` hook (`secrets:
-  [runner_token]`, `action: restart`) restarts the one-shot when the secret
-  changes — restarting is the only way to re-run a `RemainAfterExit` unit — and
-  systemd carries the restart over to `runner.service`. A host-local secret is
-  re-read on the next Reconciliation (the next commit), a provider secret on
-  the next provider refresh. `register.sh` records the token it registered
-  with and skips an unchanged one, so reboots add no runners to the forge; a
-  rotation registers a new runner, and the forge shows the old one offline
-  until you delete it. The runner is pinned to 12.7.3, the last release before
+  [runner_token]`, `files: [runner/register.sh]`, `action: restart`) restarts
+  the one-shot when the secret changes or `register.sh` does (e.g. the forge's
+  `external_hostname` moved) — restarting is the only way to re-run a
+  `RemainAfterExit` unit — and systemd carries the restart over to
+  `runner.service`. A host-local secret is re-read on the next Reconciliation
+  (the next commit), a provider secret on the next provider refresh.
+  `register.sh` records the forge URL and token it registered with and skips
+  an unchanged pair, so reboots add no runners to the forge; a rotated token
+  or a moved forge registers anew. Remove the superseded runner in the forge
+  afterwards. A runner deleted in the forge is not re-registered until the
+  token rotates. The runner is pinned to 12.7.3, the last release before
   `register` was deprecated in favour of connections declared in the runner
   config; moving past it means replacing the registration one-shot.
 
@@ -536,7 +542,7 @@ the target Machine and adopt only if every step passes:
        steps:
          - run: |
              printf 'FROM docker.io/library/alpine:3.22\nRUN echo built > /built\n' > Containerfile
-             docker build -t reality-check:latest .
+             docker build -f Containerfile -t reality-check:latest .
              docker run --rm reality-check:latest cat /built
    ```
 
