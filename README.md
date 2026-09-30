@@ -366,16 +366,17 @@ target them as `unit: <name>.image` / `unit: <name>.build`). Containers use them
 Deliver a build's Containerfile under `files/` and point at it with
 `File={{ filePath "<app>/Containerfile" }}` plus `SetWorkingDirectory=file` (build context =
 the Containerfile's directory). `validate` (and the agent, before applying) rejects a
-`.build` whose Containerfile (`File=`; a relative one is resolved against
-`[Service] WorkingDirectory=`, else against the build context), build context (`SetWorkingDirectory=` path) or working
+`.build` whose Containerfile (`File=`), build context (`SetWorkingDirectory=` path) or working
 directory (`[Service] WorkingDirectory=`) lies in the host's `files/` or `manifests/` data
 directory but is not delivered by the host's assignments; a directory counts as delivered
-when any delivered file lies below it. Absolute paths elsewhere (managed on the host), URLs,
-systemd specifiers and paths relative to the unit file are not checked. Both generated
-services are one-shots their consumers pull in: reported; the health loop never restarts
-one that fails on its own, but retries an apply-time restart of a `.image` that failed (a
-changed `.image` is pulled again; if the pull fails, it is pending like any failed unit
-restart, see [Hooks](#hooks)).
+when any delivered file lies below it. A relative `File=` is resolved against
+`[Service] WorkingDirectory=`, or against the build context when no working directory is
+set; when both are set and differ, podman may find it in either, so it is not checked.
+Absolute paths elsewhere (managed on the host), URLs, systemd specifiers and paths relative
+to the unit file are not checked. Both generated services are one-shots their consumers
+pull in: reported; the health loop never restarts one that fails on its own, but retries an
+apply-time restart of a `.image` that failed (a changed `.image` is pulled again; if the
+pull fails, it is pending like any failed unit restart, see [Hooks](#hooks)).
 
 #### Rebuild trigger
 
