@@ -32,8 +32,9 @@ func machineRoot(t *testing.T, entries map[string]fs.FileMode, files map[string]
 func TestOSHostOpsSubIDRanges(t *testing.T) {
 	t.Parallel()
 	ops := machineRoot(t, nil, map[string]string{
-		"/etc/subuid": "# comment\npi:100000:65536\nrunner:165536:0\n1002:231072:65536\n",
-		"/etc/subgid": "pi:100000:65536\n",
+		"/etc/subuid": "# comment\npi:100000:65536\nrunner:165536:0\n1002:231072:65536\n" +
+			"bad:not-a-number:65536\nlast:4294967295:1\nover:4294967295:2\n",
+		"/etc/subgid": "pi:100000:65536\nbad:100000:65536\n",
 	})
 	tests := []struct {
 		user           User
@@ -43,6 +44,9 @@ func TestOSHostOpsSubIDRanges(t *testing.T) {
 		{User{Name: "runner", UID: 1001}, false, false},
 		{User{Name: "ci", UID: 1002}, true, false},
 		{User{Name: "nobody", UID: 65534}, false, false},
+		{User{Name: "bad", UID: 1003}, false, true},
+		{User{Name: "last", UID: 1004}, true, false},
+		{User{Name: "over", UID: 1005}, false, false},
 	}
 	for _, tt := range tests {
 		subuid, subgid, err := ops.SubIDRanges(tt.user)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"os/user"
@@ -77,7 +78,8 @@ func (o *OSHostOps) SubIDRanges(u User) (bool, bool, error) {
 }
 
 // hasSubIDRange reports whether file (subuid(5)/subgid(5): name-or-uid:start:count
-// per line) holds a range with a non-zero count for u.
+// per line) holds a usable range for u: a valid start, a non-zero count, and
+// an end inside the 32-bit ID space.
 func (o *OSHostOps) hasSubIDRange(file string, u User) (bool, error) {
 	data, err := os.ReadFile(o.path(file))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -90,14 +92,20 @@ func (o *OSHostOps) hasSubIDRange(file string, u User) (bool, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
 		fields := strings.Split(strings.TrimSpace(scanner.Text()), ":")
-		if len(fields) != 3 || (fields[0] != u.Name && fields[0] != uid) {
-			continue
-		}
-		if count, err := strconv.ParseUint(fields[2], 10, 32); err == nil && count > 0 {
+		if len(fields) == 3 && (fields[0] == u.Name || fields[0] == uid) && validSubIDRange(fields[1], fields[2]) {
 			return true, nil
 		}
 	}
 	return false, scanner.Err()
+}
+
+func validSubIDRange(start, count string) bool {
+	first, err := strconv.ParseUint(start, 10, 32)
+	if err != nil {
+		return false
+	}
+	n, err := strconv.ParseUint(count, 10, 32)
+	return err == nil && n > 0 && first+n-1 <= math.MaxUint32
 }
 
 // LingerEnabled implements HostOps.
@@ -117,39 +125,56 @@ func (o *OSHostOps) exists(p string) (bool, error) {
 }
 
 // UserUnitEnabled implements HostOps. Only root and the user can ask the
-// user's manager.
+// user's manager. Root asks as the user by switching credentials in the
+// child directly: runuser/su would open a PAM session, whose hooks
+// (pam_systemd, pam_mkhomedir) may write to the Machine.
 func (o *OSHostOps) UserUnitEnabled(ctx context.Context, u User, unit string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "systemctl", "--user", "is-enabled", unit)
 	runtimeDir := fmt.Sprintf("/run/user/%d", u.UID)
-	query := []string{
-		"env", "XDG_RUNTIME_DIR=" + runtimeDir, "DBUS_SESSION_BUS_ADDRESS=unix:path=" + runtimeDir + "/bus",
-		"systemctl", "--user", "is-enabled", unit,
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + u.Home, "USER=" + u.Name, "LOGNAME=" + u.Name,
+		"XDG_RUNTIME_DIR=" + runtimeDir, "DBUS_SESSION_BUS_ADDRESS=unix:path=" + runtimeDir + "/bus",
 	}
 	switch o.euid {
 	case 0:
-		return unitEnabled(ctx, "runuser", append([]string{"-u", u.Name, "--"}, query...)...)
+		cred, err := credential(u)
+		if err != nil {
+			return false, err
+		}
+		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
 	case u.UID:
-		return unitEnabled(ctx, query[0], query[1:]...)
+	default:
+		return false, fmt.Errorf("%w: systemctl --user of %s", ErrUnprivileged, u.Name)
 	}
-	return false, fmt.Errorf("%w: systemctl --user of %s", ErrUnprivileged, u.Name)
+	return unitEnabled(cmd)
+}
+
+// credential is u's uid and primary gid with no supplementary groups, so the
+// child keeps none of root's.
+func credential(u User) (*syscall.Credential, error) {
+	if u.UID < 0 || uint64(u.UID) > math.MaxUint32 || u.GID < 0 || uint64(u.GID) > math.MaxUint32 {
+		return nil, fmt.Errorf("user %s: uid %d / gid %d out of range", u.Name, u.UID, u.GID)
+	}
+	return &syscall.Credential{Uid: uint32(u.UID), Gid: uint32(u.GID), Groups: []uint32{}}, nil
 }
 
 // SystemUnitEnabled implements HostOps.
 func (o *OSHostOps) SystemUnitEnabled(ctx context.Context, unit string) (bool, error) {
-	return unitEnabled(ctx, "systemctl", "is-enabled", unit)
+	return unitEnabled(exec.CommandContext(ctx, "systemctl", "is-enabled", unit))
 }
 
-// unitEnabled runs a `systemctl is-enabled` command line. It exits non-zero
-// for every state but enabled ones and prints the state on stdout; only a
-// run without a state is an error. enabled-runtime does not survive a
-// reboot, so it counts as not enabled.
-func unitEnabled(ctx context.Context, name string, args ...string) (bool, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+// unitEnabled runs a `systemctl is-enabled` command. It exits non-zero for
+// every state but enabled ones and prints the state on stdout; only a run
+// without a state is an error. enabled-runtime does not survive a reboot, so
+// it counts as not enabled.
+func unitEnabled(cmd *exec.Cmd) (bool, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	state, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 	if state == "" && err != nil {
-		return false, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return false, fmt.Errorf("%s: %w: %s", strings.Join(cmd.Args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return state == "enabled", nil
 }
