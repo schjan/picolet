@@ -128,12 +128,54 @@ func TestAnalyzeFilesBuildReferencesDeliveredFiles(t *testing.T) {
 			build: "File=Containerfile\nSetWorkingDirectory=app\n",
 		},
 		{
-			// Without [Service] WorkingDirectory=, the service starts in / (or
-			// the user's home), so podman build finds File= in the context.
-			name:    "relative Containerfile the Fleet does not deliver to the build context",
-			build:   "File=Containerfile\nSetWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			// Without [Service] WorkingDirectory=, podman build first looks in
+			// the service's default directory (/ or the user's home), which
+			// the operator may have put a Containerfile in.
+			name:  "relative Containerfile the Fleet does not deliver to the build context",
+			build: "File=Containerfile\nSetWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files: []resolver.ResolvedFile{deliveredFile("app/src/main.go")},
+		},
+		{
+			name: "relative Containerfile in neither the working directory nor the context",
+			build: "File=Containerfile\nSetWorkingDirectory=" + testHostDataDir + "/files/app\n\n" +
+				"[Service]\nWorkingDirectory=" + testHostDataDir + "/files/tools\n",
+			files: []resolver.ResolvedFile{deliveredFile("app/src/main.go"), deliveredFile("tools/lint.sh")},
+			wantErr: "app.build: File=Containerfile (" + testHostDataDir + "/files/tools/Containerfile or " +
+				testHostDataDir + "/files/app/Containerfile) is not delivered by the Fleet",
+		},
+		{
+			name: "relative Containerfile missing from a context that is the working directory",
+			build: "File=missing\nSetWorkingDirectory=" + testHostDataDir + "/files/app\n\n" +
+				"[Service]\nWorkingDirectory=" + testHostDataDir + "/files/app\n",
 			files:   []resolver.ResolvedFile{deliveredFile("app/src/main.go")},
-			wantErr: "app.build: File=Containerfile (" + testHostDataDir + "/files/app/Containerfile) is not delivered by the Fleet",
+			wantErr: "app.build: File=missing (" + testHostDataDir + "/files/app/missing) is not delivered by the Fleet",
+		},
+		{
+			// Podman drops a unit-relative SetWorkingDirectory= when
+			// [Service] WorkingDirectory= is set; that becomes the context.
+			name: "relative Containerfile missing from the working directory beside a unit-relative context",
+			build: "File=missing\nSetWorkingDirectory=ignored\n\n" +
+				"[Service]\nWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files:   []resolver.ResolvedFile{deliveredFile("app/src/main.go")},
+			wantErr: "app.build: File=missing (" + testHostDataDir + "/files/app/missing) is not delivered by the Fleet",
+		},
+		{
+			// podman build falls back to File= joined onto the context.
+			name:  "absolute Containerfile delivered below the context",
+			build: "File=" + testHostDataDir + "/files/missing/Containerfile\nSetWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files: []resolver.ResolvedFile{deliveredFile("app" + testHostDataDir + "/files/missing/Containerfile")},
+		},
+		{
+			name:    "build context the Fleet delivers as a file",
+			build:   "File=/opt/app/Containerfile\nSetWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files:   []resolver.ResolvedFile{deliveredFile("app")},
+			wantErr: "app.build: SetWorkingDirectory=" + testHostDataDir + "/files/app is not delivered by the Fleet",
+		},
+		{
+			name:    "working directory the Fleet delivers as a file",
+			build:   "\n[Service]\nWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files:   []resolver.ResolvedFile{deliveredFile("app")},
+			wantErr: "app.build: WorkingDirectory=" + testHostDataDir + "/files/app is not delivered by the Fleet",
 		},
 	}
 	for _, tt := range tests {
