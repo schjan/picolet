@@ -1,7 +1,7 @@
 hooks:
   # A rotated registration token re-runs the registration one-shot (restart is
   # the only way to re-run a RemainAfterExit unit); systemd restarts
-  # runner.service with it, since that Requires= the registration.
+  # runner.service with it, which is PartOf= the registration.
   - name: runner-registration
     secrets: [runner_token]
     unit: runner-register.container

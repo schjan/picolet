@@ -17,8 +17,14 @@ Label=prometheus.scrape=true
 
 # Settings as FORGEJO__<section>__<KEY> variables, written into app.ini on every
 # start. app.ini itself stays in the config volume, where Forgejo keeps the
-# secrets it generates on first start: nothing secret in git.
+# tokens it generates on first start (INTERNAL_TOKEN, JWT secrets).
 EnvironmentFile={{ filePath "forge/forge.env" }}
+# SECRET_KEY, which encrypts 2FA seeds and Actions secrets, is not generated
+# when the installer is locked: Forgejo would fall back to a publicly known
+# default. It comes from the Host (secrets/forge_secret_key.tmpl), read through
+# FORGEJO__security__SECRET_KEY_URI in forge.env. Keep it with the backups: a
+# dump restored without it cannot decrypt those.
+Secret=forge_secret_key
 # Repositories, attachments and the SQLite database (never copy it while the
 # forge runs; see README "Reference bundles: proxy, forge, runner").
 Volume=forge-data.volume:/var/lib/gitea

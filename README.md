@@ -362,7 +362,10 @@ generic domain `example.net`.
   one Machine talk to each other over `127.0.0.1:<port>` (each Host's ports come
   from the Fleet, e.g. `siblings` → `.ListenPort`); Hosts on different Machines
   use the public hostname (`external_hostname`, e.g. `srv-1.example.net`), never
-  a private or overlay address that only some Hosts can reach.
+  a private or overlay address that only some Hosts can reach. A client of a
+  public service uses its public hostname even from the same Machine: the
+  runner registers with the forge through the proxy's `https://` name, which
+  its TLS certificate covers, like any other client.
 - **The network story.**
   - The Agent and the metrics stack stay `Network=host`, so they reach the
     Machine's loopback and the other Agents.
@@ -439,20 +442,29 @@ graph LR
   a file in `forge-data`: **never copy the database file or the volume while the
   forge runs — use the application's dump** (`forgejo dump`, run in the
   container), or stop `forge.service` first. The web installer is locked:
-  create the first admin with `forgejo admin user create` in the container. By
-  the conventions above, this forge must never host the Fleet repository.
+  create the first admin with `forgejo admin user create` in the container.
+  With the installer locked Forgejo generates no `SECRET_KEY` (it would fall
+  back to a publicly known default), so the key comes from the Host: the
+  Podman secret `forge_secret_key` (`secrets/forge_secret_key.tmpl`), read via
+  `SECRET_KEY_URI`. Back it up next to the dumps and never rotate it: it
+  decrypts the 2FA and Actions secrets already stored. By the conventions
+  above, this forge must never host the Fleet repository.
 - **`runner`** (`services/runner/`) — two containers on `runner.network`:
   - `runner-register.container`, the registration: a `Type=oneshot`
     `RemainAfterExit=yes` one-shot running `forgejo-runner register` against
     the forge's public hostname (the `external_hostname` of the Host with the
     `forge` feature), like any other client. It stays `active (exited)`, so the
     health loop counts it healthy and starting the daemon does not register
-    again. It retries on its own (`Restart=on-failure`): the forge is on
-    another Host and Picolet never re-runs a one-shot by itself.
-  - `runner.container`, the daemon, `Requires=` the registration and hands jobs
-    the runner user's Podman socket (`docker_host: automount`). A job can then
-    control every container of that user — the reason the runner is a Host of
-    its own.
+    again. It retries every 30 s (`Restart=on-failure`): the forge is on
+    another Host and may be down. Being a Quadlet one-shot with no timer, a
+    failed registration is also restarted by the health loop (5-minute
+    cooldown); only timer-fired and static raw one-shots are left alone.
+  - `runner.container`, the daemon, `Wants=` the registration (a failed
+    attempt must not leave it stopped; it restarts every 30 s until
+    `/data/.runner` exists) and is `PartOf=` it, so a re-run registration
+    restarts it. It hands jobs the runner user's Podman socket
+    (`docker_host: automount`). A job can then control every container of that
+    user — the reason the runner is a Host of its own.
 
   The registration token is the Podman secret `runner_token`
   (`secrets/runner_token.tmpl` reads it from the Host's secrets directory;

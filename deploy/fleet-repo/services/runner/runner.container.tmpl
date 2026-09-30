@@ -1,10 +1,16 @@
 [Unit]
 Description=CI runner (jobs run on this user's Podman)
-# Registered first. Restarting the registration (token rotation) restarts this
-# unit too.
-Requires=runner-register.service
-After=runner-register.service network-online.target
-Wants=network-online.target
+# Registered first: Wants=, not Requires=, so a failed registration attempt
+# (forge down) does not leave the daemon stopped for good - it keeps
+# restarting below until the registration lands. PartOf= carries a restart of
+# the registration (token rotation) over to this unit.
+Wants=runner-register.service network-online.target podman.socket
+After=runner-register.service network-online.target podman.socket
+PartOf=runner-register.service
+# Until runner-register has written /data/.runner, the daemon exits at start:
+# keep retrying (RestartSec= below), without a start-rate limit that would
+# leave it failed.
+StartLimitIntervalSec=0
 
 [Container]
 Image={{ index .Images "runner" }}
@@ -26,6 +32,7 @@ Environment=DOCKER_HOST=unix://%t/podman/podman.sock
 
 [Service]
 Restart=always
+RestartSec=30
 TimeoutStartSec=90
 
 [Install]

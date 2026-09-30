@@ -21,7 +21,8 @@ http:// {
 # /metrics is for the metrics stack, which scrapes it on 127.0.0.1; never
 # serve it publicly.
 {{ .Host.ExternalHostname }} {
-	respond /metrics 404
+	@metrics path /metrics /metrics/*
+	respond @metrics 404
 	reverse_proxy forge:3000
 }
 {{- end }}
