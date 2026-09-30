@@ -1,0 +1,16 @@
+# Prometheus config of Host {{ .Host.Hostname }}, composed from the scrape snippets
+# that the Service Bundles assigned to this Host ship under
+# services/<bundle>/files/scrape/*.yml.tmpl. A bundle contributes its scrape jobs
+# by shipping a snippet; nothing here names a bundle. Snippets are unindented
+# lists of scrape jobs (- job_name: ...) rendered with the Host's template data.
+global:
+  scrape_interval: 30s
+  external_labels:
+    machine: {{ .Host.Machine }}
+
+scrape_configs:
+{{- range glob "services/*/files/scrape/*.yml.tmpl" }}
+{{- if has (index (splitList "/" .) 1) $.Host.Services }}
+{{ renderTemplate . $ | trim | nindent 2 }}
+{{- end }}
+{{- end }}

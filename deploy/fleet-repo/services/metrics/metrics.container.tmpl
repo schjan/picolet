@@ -1,0 +1,33 @@
+[Unit]
+Description=Prometheus (metrics stack)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image={{ index .Images "prometheus" }}
+ContainerName=metrics
+
+# Network=host, like the Agent: Prometheus reaches every Agent of the Machine on
+# 127.0.0.1:<listen_port> and every service on its published 127.0.0.1:<port>.
+# Its own UI/API stays on loopback too.
+Network=host
+Exec=--config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=30d --web.listen-address=127.0.0.1:{{ index .Ports "prometheus" }}
+
+# Rootless: uid 0 in the container is the Host's own user, which may read the
+# user's Podman socket (Podman service discovery, see files/scrape/podman.yml.tmpl).
+# The image default (nobody) could not.
+User=0
+SecurityLabelDisable=true
+
+# The config directory, not the file: Picolet replaces files atomically, and a
+# single-file bind mount would keep pointing at the old inode.
+Volume={{ filePath "prometheus" }}:/etc/prometheus:ro
+Volume=metrics-data.volume:/prometheus
+Volume=%t/podman/podman.sock:/run/podman/podman.sock:ro
+
+[Service]
+Restart=always
+TimeoutStartSec=90
+
+[Install]
+WantedBy=default.target

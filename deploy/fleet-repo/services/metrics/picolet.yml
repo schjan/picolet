@@ -1,0 +1,8 @@
+# Prometheus reloads its config on SIGHUP: a changed scrape config (this bundle's
+# or any assigned bundle's snippet) reloads it without a restart.
+hooks:
+  - name: metrics-scrape-reload
+    files: [prometheus/prometheus.yml]
+    unit: metrics.service
+    action: signal
+    container: metrics

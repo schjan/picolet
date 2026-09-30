@@ -1,17 +1,18 @@
 base: {}
 
 roles:
-  # Production: rootful Podman, system-level systemd
-  worker:
-    services:
-      - picolet-system
-  controller:
-    services:
-      - picolet-system
-
-  # Dev/test: rootless Podman, user-level systemd
-  test:
+  # Rootless Podman, user-level systemd: the Host has user: (srv-1, srv-1-runner)
+  rootless:
     services:
       - picolet
+  # Rootful Podman, system-level systemd: the Host has no user: (srv-1-system)
+  rootful:
+    services:
+      - picolet-system
 
-features: {}
+features:
+  # Prometheus on Network=host; scrapes the Agents of its Machine and the
+  # containers of its own user (see services/metrics/).
+  metrics:
+    services:
+      - metrics
