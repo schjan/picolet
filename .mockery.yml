@@ -32,3 +32,11 @@ packages:
     interfaces:
       MQTTClient: ~
       DeploymentReporter: ~
+  github.com/schjan/picolet/pkg/machine:
+    config:
+      dir: "mocks/{{.SrcPackageName}}"
+      filename: "mocks.go"
+      pkgname: "mocks"
+      structname: "Mock{{.InterfaceName}}"
+    interfaces:
+      HostOps: ~

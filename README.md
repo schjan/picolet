@@ -107,6 +107,25 @@ chmod 600 ~/.config/picolet/config.yml ~/.config/picolet/secrets/git_token
 bash deploy/bootstrap/bootstrap-rootless.sh
 ```
 
+#### Previewing a Machine bootstrap
+
+`picolet bootstrap machine` brings up every Host whose `host.yml` declares a
+Machine. So far it only plans: run on the Machine, with a Fleet checkout there,
+
+```bash
+picolet bootstrap machine vps-1 --repo-dir /srv/fleet --plan
+```
+
+prints every step in execution order, phase by phase (per Host: user,
+subuid/subgid ranges, lingering, user manager, `podman.socket`, the four
+directories the Agent quadlet bind-mounts, Fleet checkout readable; then
+credential files; then the per-Host bootstrap), each marked `would do`,
+`already done` or `unknown`. It changes nothing and does not need root; a
+check only root can make (another user's `0700` home, `systemctl --user` of
+another user) shows as `unknown`, so run it with `sudo` for a definitive plan.
+It refuses to run inside a container or on anything but Linux. Each Host listens
+on the port the Fleet declares (`listen_port:`); bootstrap never allocates one.
+
 #### Containerized picolet & `host_data_dir`
 
 The `rootless` flag describes picolet's **internal** assumptions — the path layout
