@@ -1,0 +1,3 @@
+# This Host's own (rootful) Agent: the same job as the picolet bundle's, with
+# user: root.
+{{ renderTemplate "scrape/picolet.yml.tmpl" . | trim }}

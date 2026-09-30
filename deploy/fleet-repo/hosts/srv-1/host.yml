@@ -4,8 +4,7 @@
 # ports.picolet_metrics. Replace the hostname with your Machine's name; it must
 # match hostname: in the Agent's config (see services/picolet/secrets/).
 #
-# Naming convention: default user Host = Machine name; rootful Host =
-# <machine>-system; isolated user = <machine>-<purpose>.
+# Host naming convention: see README "Machines, users and ports".
 hostname: srv-1
 external_hostname: srv-1.example.net
 role: rootless

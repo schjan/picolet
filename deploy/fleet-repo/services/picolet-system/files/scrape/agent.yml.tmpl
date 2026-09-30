@@ -1,7 +1,0 @@
-# This Host's own (rootful) Agent.
-- job_name: picolet-system
-  static_configs:
-    - targets: ["127.0.0.1:{{ .Host.ListenPort }}"]
-      labels:
-        host: {{ .Host.Hostname }}
-        user: root

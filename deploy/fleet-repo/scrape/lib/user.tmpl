@@ -1,0 +1,2 @@
+{{- /* The user label of a Host (.Host or a siblings entry): "root" for the rootful Host. */ -}}
+{{ if .Rootful }}root{{ else }}{{ .User }}{{ end }}

@@ -7,6 +7,11 @@ roles:
       - picolet
   # Rootful Podman, system-level systemd: the Host has no user: (srv-1-system)
   rootful:
+    # paths: delivers single files (here: raw systemd units) next to plain
+    # bundles. The journal is system-wide, so only the rootful Host trims it.
+    paths:
+      - systemd/journal-vacuum.timer
+      - systemd/journal-vacuum.service
     services:
       - picolet-system
 

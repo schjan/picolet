@@ -1,7 +1,7 @@
 [Unit]
 Description=Prometheus (metrics stack)
-After=network-online.target
-Wants=network-online.target
+After=network-online.target podman.socket
+Wants=network-online.target podman.socket
 
 [Container]
 Image={{ index .Images "prometheus" }}
@@ -14,7 +14,7 @@ Network=host
 Exec=--config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=30d --web.listen-address=127.0.0.1:{{ index .Ports "prometheus" }}
 
 # Rootless: uid 0 in the container is the Host's own user, which may read the
-# user's Podman socket (Podman service discovery, see files/scrape/podman.yml.tmpl).
+# user's Podman socket (Podman service discovery, see scrape/metrics.yml.tmpl).
 # The image default (nobody) could not.
 User=0
 SecurityLabelDisable=true

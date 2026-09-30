@@ -35,7 +35,7 @@ The `validate` and `resolve` commands require a fleet repository with `fleet.yml
 
 ```bash
 ./picolet validate
-./picolet resolve --host=node-1
+./picolet resolve --host=srv-1
 ```
 
 ### Build Tags
@@ -78,7 +78,7 @@ sudo apt install podman
 # 2. Create agent config
 sudo mkdir -p /etc/picolet/secrets
 sudo tee /etc/picolet/config.yml << EOF
-hostname: "srv-1"
+hostname: "srv-1-system"
 repo_url: "https://github.com/yourorg/fleet.git"
 git_token_path: "/etc/picolet/secrets/git_token"
 EOF
@@ -300,9 +300,10 @@ Loading the Fleet rejects (a collision names both Hosts):
   the hostname — that is not a hostname label, or a `listen_port:`
   outside 1–65535.
 
-Host names follow a convention — `<machine>` for the Machine's default user,
-`<machine>-system` for the rootful Host, `<machine>-<user>` for further users —
-that picolet never parses; only `machine:` and `user:` count.
+Host names follow a convention — `<machine>` for the Machine's default user
+(the default user is named after the Machine), `<machine>-system` for the rootful
+Host, `<machine>-<user>` for further users — that picolet never parses; only
+`machine:` and `user:` count.
 
 Templates see the topology on `.Host` and every `.Fleet.Hosts` entry (see
 [Templates](#templates)); `siblings` lists the other Hosts on the same Machine,
@@ -340,10 +341,8 @@ picolet unless stated. It is one Machine, `srv-1`, with three Hosts — `srv-1`
 `runner`) — plus a `metrics` Service Bundle, all under the generic domain
 `example.net`.
 
-- **Host naming.** The Machine's default user Host is named after the Machine
-  (`srv-1`), the rootful Host `<machine>-system` (`srv-1-system`), every further
-  isolated user `<machine>-<purpose>` (`srv-1-runner`). Picolet never parses the
-  name; see [Machines, users and ports](#machines-users-and-ports).
+- **Host naming.** See [Machines, users and ports](#machines-users-and-ports):
+  `srv-1`, `srv-1-system` and `srv-1-runner` follow it.
 - **Nothing secret in git.** The Fleet repo holds templates and references
   (`op://`, `pass://`), never values: no tokens, passwords, private keys or
   key-bearing URLs, and no file a secret was ever committed to. Real values
@@ -371,6 +370,12 @@ picolet unless stated. It is one Machine, `srv-1`, with three Hosts — `srv-1`
     `127.0.0.1:<port>`, so the metrics stack scrapes them over loopback.
   - The reverse proxy takes ports 80 and 443 through `.socket` units and
     publishes no port at all.
+- **Scrape snippets stay out of the bundles.** A bundle's files are delivered to
+  every Host that carries it, so a bundle's scrape jobs live at the Fleet root as
+  `scrape/<bundle>.yml.tmpl` - registered as a template, never delivered, and
+  collision-free because the file is named after its bundle. The metrics
+  bundle's `prometheus.yml.tmpl` composes the snippets of the bundles assigned
+  to its Host.
 - **Never copy a live database.** Back up with the database's own dump or
   snapshot tool, or stop the service first; a file-level copy of a running
   database is not a backup.
