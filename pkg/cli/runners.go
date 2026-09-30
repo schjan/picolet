@@ -197,8 +197,8 @@ func ppReaderFromConfig(ctx context.Context, cfg *agentcfg.Config) (resolver.Sec
 	return reader, nil
 }
 
-// dryRunResolveWithConfig resolves files using agent config (secrets, RepoSubDir, rootless-aware state).
-func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath string) ([]resolver.ResolvedFile, *state.Store, bool, error) {
+// dryRunResolveWithConfig resolves the host using agent config (secrets, RepoSubDir, rootless-aware state).
+func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath string) (*resolver.ResolvedHost, *state.Store, bool, error) {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
 		return nil, nil, false, err
@@ -213,7 +213,7 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 		return nil, nil, false, err
 	}
 
-	files, err := agent.LoadAndResolve(ctx, agent.ResolveParams{
+	resolved, err := agent.LoadAndResolveHost(ctx, agent.ResolveParams{
 		RepoPath:       filepath.Join(repoDir, cfg.RepoSubDir),
 		Hostname:       hostname,
 		SecretsDir:     cfg.SecretsDir,
@@ -231,11 +231,11 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 		return nil, nil, false, err
 	}
 
-	return files, store, cfg.Rootless, nil
+	return resolved, store, cfg.Rootless, nil
 }
 
-// dryRunResolveBasic resolves files without agent config (no secrets, default state path).
-func dryRunResolveBasic(ctx context.Context, repoDir, hostname string) ([]resolver.ResolvedFile, *state.Store, error) {
+// dryRunResolveBasic resolves the host without agent config (no secrets, default state path).
+func dryRunResolveBasic(ctx context.Context, repoDir, hostname string) (*resolver.ResolvedHost, *state.Store, error) {
 	repo, err := config.OpenRepo(repoDir)
 	if err != nil {
 		return nil, nil, err
@@ -251,27 +251,28 @@ func dryRunResolveBasic(ctx context.Context, repoDir, hostname string) ([]resolv
 		return nil, nil, err
 	}
 
-	return resolved.Files, state.NewStore(agent.DefaultStatePath), nil
+	return resolved, state.NewStore(agent.DefaultStatePath), nil
 }
 
 func runDryRun(ctx context.Context, repoDir, hostname, configPath string) error {
 	var (
-		files    []resolver.ResolvedFile
+		resolved *resolver.ResolvedHost
 		store    *state.Store
 		rootless bool
 		err      error
 	)
 
 	if configPath != "" {
-		files, store, rootless, err = dryRunResolveWithConfig(ctx, repoDir, hostname, configPath)
+		resolved, store, rootless, err = dryRunResolveWithConfig(ctx, repoDir, hostname, configPath)
 	} else {
-		files, store, err = dryRunResolveBasic(ctx, repoDir, hostname)
+		resolved, store, err = dryRunResolveBasic(ctx, repoDir, hostname)
 	}
 	if err != nil {
 		return err
 	}
+	files := resolved.Files
 
-	if err := validator.ValidateFiles(files, rootless); err != nil {
+	if err := validator.ValidateFiles(files, validator.Target{Rootless: rootless, HostDataDir: resolved.HostDataDir}); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -538,7 +539,7 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		return nil
 	}
 
-	deps, err := validator.AnalyzeFiles(files, cfg.Rootless)
+	deps, err := validator.AnalyzeFiles(files, validator.Target{Rootless: cfg.Rootless, HostDataDir: resolved.HostDataDir})
 	if err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}

@@ -1074,8 +1074,9 @@ Internal=true
 		Hostname:   "test-host",
 		SecretsDir: t.TempDir(),
 	}
-	files, err := LoadAndResolve(t.Context(), ResolveParams{RepoPath: repoDir, Hostname: cfg.Hostname, SecretsDir: cfg.SecretsDir})
+	resolved, err := LoadAndResolveHost(t.Context(), ResolveParams{RepoPath: repoDir, Hostname: cfg.Hostname, SecretsDir: cfg.SecretsDir})
 	require.NoError(t, err)
+	files := resolved.Files
 
 	st := state.NewState()
 	UpdateState(st, reconciler.Diff(files, st))
@@ -1419,8 +1420,9 @@ Internal=true
 
 	// Resolve from the subdirectory path (simulates what Agent.loadAndResolve does with RepoSubDir).
 	fleetPath := filepath.Join(repoDir, subDir)
-	files, err := LoadAndResolve(t.Context(), ResolveParams{RepoPath: fleetPath, Hostname: "test-host", SecretsDir: t.TempDir()})
+	resolved, err := LoadAndResolveHost(t.Context(), ResolveParams{RepoPath: fleetPath, Hostname: "test-host", SecretsDir: t.TempDir()})
 	require.NoError(t, err)
+	files := resolved.Files
 	require.NotEmpty(t, files)
 	assert.Equal(t, "/etc/containers/systemd/picolet/internal.network", files[0].DestPath)
 }
@@ -1578,8 +1580,9 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 	// Pre-seed state at the current SHA, with the secret already managed and
 	// one hook waiting for retry. The diff against this state must be empty;
 	// the noop gate must be bypassed because PendingHooks is non-empty.
-	files, err := LoadAndResolve(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
+	resolved, err := LoadAndResolveHost(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
 	require.NoError(t, err)
+	files := resolved.Files
 	store := state.NewStore(statePath)
 	st := state.NewState()
 	UpdateState(st, reconciler.Diff(files, st))
@@ -1614,8 +1617,9 @@ func tickPendingUnitFixture(t *testing.T, poller *gitpoll.Poller, repoDir, state
 	initial, err := poller.Poll(ctx, "")
 	require.NoError(t, err)
 
-	files, err := LoadAndResolve(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
+	resolved, err := LoadAndResolveHost(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
 	require.NoError(t, err)
+	files := resolved.Files
 	store := state.NewStore(statePath)
 	st := state.NewState()
 	UpdateState(st, reconciler.Diff(files, st))
@@ -1727,8 +1731,9 @@ func tickTimerJobFixture(t *testing.T, poller *gitpoll.Poller, repoDir, statePat
 	initial, err := poller.Poll(ctx, "")
 	require.NoError(t, err)
 
-	files, err := LoadAndResolve(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
+	resolved, err := LoadAndResolveHost(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
 	require.NoError(t, err)
+	files := resolved.Files
 	store := state.NewStore(statePath)
 	st := state.NewState()
 	UpdateState(st, reconciler.Diff(files, st))
@@ -1872,8 +1877,9 @@ func TestTickDropsStalePendingHookNameOnRetry(t *testing.T) {
 	// Pre-seed state matching the current resolved files (so the diff is empty)
 	// AND a pending hook for a *different* secret that did not change in this
 	// tick. The pending entry must survive the tick.
-	files, err := LoadAndResolve(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
+	resolved, err := LoadAndResolveHost(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
 	require.NoError(t, err)
+	files := resolved.Files
 	store := state.NewStore(statePath)
 	st := state.NewState()
 	UpdateState(st, reconciler.Diff(files, st))

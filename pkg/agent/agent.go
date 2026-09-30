@@ -582,7 +582,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	return nil
 }
 
-// ResolveParams holds the parameters for LoadAndResolve and LoadAndResolveHost.
+// ResolveParams holds the parameters for LoadAndResolveHost.
 type ResolveParams struct {
 	RepoPath       string
 	Hostname       string
@@ -607,17 +607,8 @@ type ResolveParams struct {
 	LenientHosts bool
 }
 
-// LoadAndResolve loads fleet config from repoPath and resolves the desired state for the given host.
-// It is the shared implementation behind Agent.loadAndResolve and CLI subcommands (apply, dry-run).
-func LoadAndResolve(ctx context.Context, params ResolveParams) ([]resolver.ResolvedFile, error) {
-	resolved, err := LoadAndResolveHost(ctx, params)
-	if err != nil {
-		return nil, err
-	}
-	return resolved.Files, nil
-}
-
 // LoadAndResolveHost loads fleet config from repoPath and resolves the desired state plus host metadata.
+// It is the shared implementation behind Agent.loadAndResolve and CLI subcommands (apply, dry-run).
 func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.ResolvedHost, error) {
 	slog.Debug("loading fleet config", "repo", params.RepoPath)
 	var loadOpts []config.LoadOption
@@ -720,7 +711,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		if len(st.PendingHooks) > 0 {
 			return a.retryPendingHooks(ctx, resolved, st, store, changeset, counts)
 		}
-		return a.reconcileNoChanges(headSHA, files, changeset, st, store, counts)
+		return a.reconcileNoChanges(headSHA, resolved, changeset, st, store, counts)
 	}
 
 	slog.Info("changes detected",
@@ -729,7 +720,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		"delete", changeset.Summary[reconciler.ActionDelete],
 	)
 
-	deps, err := validator.AnalyzeFiles(files, a.cfg.Rootless)
+	deps, err := a.analyze(resolved)
 	if err != nil {
 		slog.Warn("validation failed", "error", err)
 		a.recordEvent("failure", headSHA, fmt.Sprintf("validation failed: %v", err))
@@ -793,8 +784,8 @@ func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Stor
 // without aborting the verify-OK signal, because nothing triggered the tick.
 // Here, something *did* trigger the tick (secret-provider refresh or git
 // change that rendered identically), so a bad render is actionable.
-func (a *Agent) reconcileNoChanges(headSHA string, files []resolver.ResolvedFile, changeset *reconciler.Changeset, st *state.State, store *state.Store, counts refSecretsCounts) (*ReconcileResult, error) {
-	deps, err := validator.AnalyzeFiles(files, a.cfg.Rootless)
+func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHost, changeset *reconciler.Changeset, st *state.State, store *state.Store, counts refSecretsCounts) (*ReconcileResult, error) {
+	deps, err := a.analyze(resolved)
 	if err != nil {
 		a.recordEvent("failure", headSHA, fmt.Sprintf("validation failed: %v", err))
 		return nil, fmt.Errorf("validation failed: %w", err)
@@ -1237,12 +1228,17 @@ func (a *Agent) refreshResolvedSnapshot(ctx context.Context) error {
 		return err
 	}
 	a.recordHostMetadata(resolved.Host)
-	deps, err := validator.AnalyzeFiles(resolved.Files, a.cfg.Rootless)
+	deps, err := a.analyze(resolved)
 	if err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 	a.statusStore.SetDependencies(deps)
 	return nil
+}
+
+// analyze validates resolved's files for this Agent's Host.
+func (a *Agent) analyze(resolved *resolver.ResolvedHost) (map[string]status.UnitDependencies, error) {
+	return validator.AnalyzeFiles(resolved.Files, validator.Target{Rootless: a.cfg.Rootless, HostDataDir: resolved.HostDataDir})
 }
 
 // recordEvent appends a state-changing event to the in-memory ring rendered

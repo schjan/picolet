@@ -54,6 +54,6 @@ func TestArtifactQuadletRejected(t *testing.T) {
 		DestPath:   "/etc/containers/systemd/picolet/data.artifact",
 		Category:   config.CategoryArtifact,
 		ParsedUnit: unit,
-	}}, false)
+	}}, Target{})
 	require.ErrorContains(t, err, "`.artifact` is not supported by picolet")
 }

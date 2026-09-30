@@ -51,6 +51,9 @@ type ResolvedHost struct {
 	Host     *config.HostConfig
 	Files    []ResolvedFile
 	Hooks    []config.Hook
+	// HostDataDir is the host-visible data directory the filePath and
+	// manifestPath helpers emit (Config.HostDataDir, else the data dir).
+	HostDataDir string
 }
 
 // Config holds configuration for creating a Resolver.
@@ -230,10 +233,11 @@ func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host
 	}
 
 	return &ResolvedHost{
-		Hostname: hostname,
-		Host:     host,
-		Files:    files,
-		Hooks:    hooks,
+		Hostname:    hostname,
+		Host:        host,
+		Files:       files,
+		Hooks:       hooks,
+		HostDataDir: r.hostDataDir,
 	}, nil
 }
 

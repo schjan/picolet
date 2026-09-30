@@ -151,7 +151,7 @@ Network=internal.network
 `),
 	}
 
-	depsByUnit, err := AnalyzeFiles(files, false)
+	depsByUnit, err := AnalyzeFiles(files, Target{})
 	require.NoError(t, err)
 
 	deps := depsByUnit["web.service"]
@@ -175,7 +175,7 @@ Network=internal.network
 `),
 	}
 
-	depsByUnit, err := AnalyzeFiles(files, false)
+	depsByUnit, err := AnalyzeFiles(files, Target{})
 	require.NoError(t, err)
 
 	for unit, deps := range depsByUnit {
@@ -200,7 +200,7 @@ Image=docker.io/library/nginx:latest
 `),
 	}
 
-	depsByUnit, err := AnalyzeFiles(files, true)
+	depsByUnit, err := AnalyzeFiles(files, Target{Rootless: true})
 	require.NoError(t, err)
 
 	deps := depsByUnit["web.service"]
@@ -222,7 +222,7 @@ ExecStart=/bin/true
 `,
 	}}
 
-	depsByUnit, err := AnalyzeFiles(files, false)
+	depsByUnit, err := AnalyzeFiles(files, Target{})
 	require.NoError(t, err)
 
 	deps := depsByUnit["custom.service"]
@@ -416,7 +416,7 @@ func TestValidateFilesRejectsUnknownCategory(t *testing.T) {
 		SrcPath:  "unknown/file",
 		Category: "unknown",
 		Content:  "content",
-	}}, false)
+	}}, Target{})
 	require.Error(t, err)
 	require.ErrorContains(t, err, `unknown file category "unknown"`)
 }
@@ -609,7 +609,7 @@ func TestValidateFileTruthTable(t *testing.T) {
 				Content:  tt.content,
 				Category: config.CategoryFile,
 			}
-			_, err := AnalyzeFiles([]resolver.ResolvedFile{f}, false)
+			_, err := AnalyzeFiles([]resolver.ResolvedFile{f}, Target{})
 			if tt.wantErr == "" {
 				require.NoError(t, err)
 				return

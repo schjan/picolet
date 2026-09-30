@@ -24,7 +24,7 @@ func TestAnalyzeFilesContainerRequiresItsBuildAndImage(t *testing.T) {
 		newParsedFile(t, config.CategoryImage, testQuadletDir+"redis.image", "[Image]\nImage=docker.io/library/redis:7\n"),
 	}
 
-	depsByUnit, err := AnalyzeFiles(files, false)
+	depsByUnit, err := AnalyzeFiles(files, Target{})
 	require.NoError(t, err)
 
 	assert.Contains(t, depsByUnit["app.service"].Requires, "app-build.service")
@@ -77,7 +77,7 @@ func TestValidateFilesBuildAndImageErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			files := []resolver.ResolvedFile{newParsedFile(t, tt.category, testQuadletDir+tt.file, tt.content)}
-			require.ErrorContains(t, ValidateFiles(files, false), tt.wantErr)
+			require.ErrorContains(t, ValidateFiles(files, Target{}), tt.wantErr)
 		})
 	}
 }
