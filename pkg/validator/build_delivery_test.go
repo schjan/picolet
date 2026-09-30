@@ -96,9 +96,16 @@ func TestAnalyzeFilesBuildReferencesDeliveredFiles(t *testing.T) {
 			wantErr: "app.build: WorkingDirectory=" + testHostDataDir + "/files/ap is not delivered by the Fleet",
 		},
 		{
-			// Podman's URL pattern matches any File= starting with "http".
-			name:  "File= Podman takes for a URL",
-			build: "File=http-app/Containerfile\n\n[Service]\nWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			// Quadlet takes a File= starting with "http" for a URL and passes
+			// no context, but podman build reads it locally.
+			name:    "File= only Quadlet takes for a URL",
+			build:   "File=http-app/Containerfile\n\n[Service]\nWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files:   []resolver.ResolvedFile{deliveredFile("app/Containerfile")},
+			wantErr: "app.build: File=http-app/Containerfile (" + testHostDataDir + "/files/app/http-app/Containerfile) is not delivered by the Fleet",
+		},
+		{
+			name:  "File= podman build fetches",
+			build: "File=https://example.com/app/Containerfile\n\n[Service]\nWorkingDirectory=" + testHostDataDir + "/files/app\n",
 			files: []resolver.ResolvedFile{deliveredFile("app/Containerfile")},
 		},
 		{

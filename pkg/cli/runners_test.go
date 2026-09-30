@@ -33,7 +33,7 @@ func TestApplyWithRollbackIncompleteOnFailedManagedRestart(t *testing.T) {
 	_, err := applyWithRollback(t.Context(), &reconciler.Changeset{Changes: []reconciler.Change{{
 		DestPath: unit, Category: config.CategoryContainer, Action: reconciler.ActionUpdate,
 		NewContent: "[Container]\nImage=new\n", ServiceName: "app.service",
-	}}}, sys, appliermocks.NewMockPodmanClient(t), nil, nil)
+	}}}, sys, appliermocks.NewMockPodmanClient(t), nil, nil, "", "")
 	require.ErrorIs(t, err, applier.ErrApplyIncomplete)
 }
 

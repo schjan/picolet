@@ -1,9 +1,10 @@
 // Package buildunit resolves the local paths a .build Quadlet's image build
-// reads, the way Podman does: Quadlet's ConvertBuild derives the build
+// reads, in Podman's two stages: Quadlet's ConvertBuild derives the build
 // service's working directory and the podman build context argument, and
 // podman build derives the context directory and the Containerfile paths it
-// tries. The validator checks these paths against the delivered files; the
-// applier rebuilds when one of them changes.
+// tries. Each stage has its own notion of a URL. The validator checks these
+// paths against the delivered files; the applier rebuilds when one of them
+// changes.
 package buildunit
 
 import (
@@ -31,15 +32,16 @@ type Paths struct {
 	ContainerfilesComplete bool
 }
 
-// Resolve returns the paths podman build reads for the .build unit u, which
-// lies at unitPath on the Host.
+// Resolve returns the paths podman build reads for the .build unit u.
+// unitPath is where the unit file lies: a unit-relative
+// SetWorkingDirectory= and =unit resolve against its directory.
 func Resolve(u *parser.UnitFile, unitPath string) Paths {
 	file, _ := u.Lookup(quadlet.BuildGroup, quadlet.KeyFile)
 	setWorkDir, _ := u.Lookup(quadlet.BuildGroup, quadlet.KeySetWorkingDirectory)
 	workDir, _ := u.Lookup(quadlet.ServiceGroup, quadlet.ServiceKeyWorkingDirectory)
 
-	contextArg, workDir := setWorkingDirectory(setWorkDir, workDir, file, filepath.Dir(unitPath))
-	if contextArg == "" && !strings.HasPrefix(file, "%") && !filepath.IsAbs(file) && !isURL(file) {
+	contextArg, workDir := handleSetWorkingDirectory(setWorkDir, workDir, file, filepath.Dir(unitPath))
+	if contextArg == "" && !strings.HasPrefix(file, "%") && !filepath.IsAbs(file) && !isQuadletURL(file) {
 		// ConvertBuild passes the working directory as the context of a
 		// relative File= (and of none).
 		contextArg = workDir
@@ -50,13 +52,13 @@ func Resolve(u *parser.UnitFile, unitPath string) Paths {
 	return withContext(file, contextArg, workDir)
 }
 
-// setWorkingDirectory returns the context argument ConvertBuild passes to
-// podman build for SetWorkingDirectory= ("" for none) and the build
-// service's working directory ("" for systemd's default), following Quadlet's
-// handleSetWorkingDirectory: an explicit [Service] WorkingDirectory= wins
+// handleSetWorkingDirectory returns the context argument ConvertBuild passes
+// to podman build for SetWorkingDirectory= ("" for none) and the build
+// service's working directory ("" for systemd's default), following the
+// Quadlet function of that name: an explicit [Service] WorkingDirectory= wins
 // over the one SetWorkingDirectory= derives, and drops a unit-relative
 // SetWorkingDirectory= path.
-func setWorkingDirectory(setWorkDir, workDir, file, unitDir string) (contextArg, serviceWorkDir string) {
+func handleSetWorkingDirectory(setWorkDir, workDir, file, unitDir string) (contextArg, serviceWorkDir string) {
 	switch strings.ToLower(setWorkDir) {
 	case "":
 		return "", workDir
@@ -69,7 +71,7 @@ func setWorkingDirectory(setWorkDir, workDir, file, unitDir string) (contextArg,
 		return "", cmp.Or(workDir, unitDir)
 	}
 	switch {
-	case filepath.IsAbs(setWorkDir) || isURL(setWorkDir):
+	case filepath.IsAbs(setWorkDir) || isQuadletURL(setWorkDir):
 		return setWorkDir, workDir
 	case workDir != "":
 		return "", workDir
@@ -81,10 +83,10 @@ func setWorkingDirectory(setWorkDir, workDir, file, unitDir string) (contextArg,
 // withoutContext returns the paths of a build podman runs without a context
 // argument: it uses the Containerfile's directory as the context.
 func withoutContext(file, workDir string) Paths {
-	if file == "" || isURL(file) {
+	if file == "" || isBuildURL(file) {
 		return Paths{}
 	}
-	f, ok := resolve(file, workDir)
+	f, ok := absPath(file, workDir)
 	if !ok {
 		return Paths{}
 	}
@@ -95,13 +97,13 @@ func withoutContext(file, workDir string) Paths {
 // argument contextArg.
 func withContext(file, contextArg, workDir string) Paths {
 	var p Paths
-	if !isURL(contextArg) {
-		p.Context, _ = resolve(contextArg, workDir)
+	if !isBuildURL(contextArg) {
+		p.Context, _ = absPath(contextArg, workDir)
 	}
-	if file == "" || isURL(file) {
+	if file == "" || isBuildURL(file) {
 		return p
 	}
-	first, ok := resolve(file, workDir)
+	first, ok := absPath(file, workDir)
 	if ok {
 		p.Containerfiles = []string{first}
 	}
@@ -124,10 +126,10 @@ func unitRelative(p, unitDir string) string {
 	return filepath.Join(unitDir, p)
 }
 
-// resolve returns p as an absolute clean path, a relative one against the
+// absPath returns p as an absolute clean path, a relative one against the
 // working directory; ok is false when it contains a systemd specifier or is
 // relative to a working directory the unit does not set.
-func resolve(p, workDir string) (string, bool) {
+func absPath(p, workDir string) (string, bool) {
 	if strings.Contains(p, "%") {
 		return "", false
 	}
@@ -140,8 +142,20 @@ func resolve(p, workDir string) (string, bool) {
 	return filepath.Join(workDir, p), true
 }
 
-// isURL reports whether Quadlet treats a File= or SetWorkingDirectory= value
-// as a URL.
-func isURL(p string) bool {
+// isQuadletURL reports whether ConvertBuild treats a File= or
+// SetWorkingDirectory= value as a URL (quadlet.URL, which also matches any
+// value starting with "http").
+func isQuadletURL(p string) bool {
 	return quadlet.URL.MatchString(p)
+}
+
+// isBuildURL reports whether podman build fetches a context or Containerfile
+// argument instead of reading it locally (cmd/podman/common/build.go isURL).
+func isBuildURL(p string) bool {
+	for _, prefix := range []string{"http://", "https://", "git://", "github.com/"} {
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	return false
 }

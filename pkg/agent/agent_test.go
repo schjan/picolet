@@ -172,7 +172,7 @@ func TestApplyWithRollbackReturnsRetryableHookErrorsWithoutRollback(t *testing.T
 		Container: "app",
 		Signal:    "HUP",
 		OnFailure: config.HookOnFailureKeepRunning,
-	}}, nil, nil)
+	}}, nil, nil, "", "")
 
 	require.ErrorIs(t, err, applier.ErrApplyIncomplete)
 	require.NotNil(t, result)
@@ -416,7 +416,7 @@ func TestApplyWithRollbackReturnsIncompleteOnFailedUnitRestart(t *testing.T) {
 			ServiceName: "app.service",
 		}},
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
-	}, nil, nil, nil)
+	}, nil, nil, nil, "", "")
 
 	// A failed unit restart yields ErrApplyIncomplete with a non-nil result;
 	// a rollback would instead return (nil, errRollbackPerformed).
@@ -451,7 +451,7 @@ func TestApplyWithRollbackRollsBackFailedBuild(t *testing.T) {
 			{DestPath: containerfile, Category: config.CategoryFile, Action: reconciler.ActionUpdate, NewContent: "FROM alpine:new\n", RelPath: "app/Containerfile"},
 		},
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1, reconciler.ActionNoop: 1},
-	}, nil, nil, map[string]status.UnitDependencies{"app.service": {Requires: []string{"app-build.service"}}})
+	}, nil, nil, map[string]status.UnitDependencies{"app.service": {Requires: []string{"app-build.service"}}}, "", "")
 
 	require.ErrorIs(t, err, errRollbackPerformed)
 	require.ErrorIs(t, err, assert.AnError)
@@ -478,7 +478,7 @@ func TestApplyWithRollbackCompletesWhenUnmanagedHookUnitRestartFails(t *testing.
 		Secrets: []string{"app_config"},
 		Unit:    "nginx.service",
 		Action:  config.HookActionRestart,
-	}}, nil, nil)
+	}}, nil, nil, "", "")
 
 	// nginx.service is not a picolet-managed quadlet — it is absent from the
 	// changeset's ServiceNames, so health-enforce could never retry it. Its
@@ -1968,7 +1968,7 @@ func TestApplyWithRollbackRunsPendingHooksAlongsideChangeset(t *testing.T) {
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
 	}
 
-	result, err := a.applyWithRollback(t.Context(), "head-sha", changeset, hooks, []string{"stale-pending"}, nil)
+	result, err := a.applyWithRollback(t.Context(), "head-sha", changeset, hooks, []string{"stale-pending"}, nil, "", "")
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"stale-pending"}, result.AttemptedHookNames,
 		"pending hook ran even though its trigger was not in the changeset")

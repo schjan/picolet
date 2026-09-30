@@ -438,12 +438,12 @@ when a delivered file lies below it. `podman build` looks for `File=` as written
 one in `[Service] WorkingDirectory=`), then inside the build context, so it is rejected only
 when every place it could be is in those data directories and none is delivered; a relative
 `File=` without `[Service] WorkingDirectory=` is not checked, because the service's default
-directory is the operator's. Absolute paths elsewhere (managed on the host), URLs, systemd
-specifiers and paths relative to the unit file are not checked. Both generated services are
-one-shots their consumers pull in: reported; the health loop never restarts one that fails
-on its own, but retries an apply-time restart of a `.image` that failed (a changed `.image`
-is pulled again; if the pull fails, it is pending like any failed unit restart, see
-[Hooks](#hooks)).
+directory is the operator's. Absolute paths elsewhere (managed on the host), URLs `podman
+build` fetches, systemd specifiers and paths relative to the unit file are not checked.
+Both generated services are one-shots their consumers pull in: reported; the health loop
+never restarts one that fails on its own, but retries an apply-time restart of a `.image`
+that failed (a changed `.image` is pulled again; if the pull fails, it is pending like any
+failed unit restart, see [Hooks](#hooks)).
 
 #### Rebuild trigger
 
@@ -488,15 +488,15 @@ and fails while it is unreachable, which stops a consumer that had to be started
 once, before restarting anything; it does not prevent these later runs.
 
 The build context follows Quadlet and `podman build`: a `SetWorkingDirectory=` path (a
-relative one is relative to the Quadlet directory, and replaced by `[Service]
-WorkingDirectory=` when that is set); otherwise, for a relative `File=`, the working
-directory (`[Service] WorkingDirectory=`, else `SetWorkingDirectory=file` → the
-Containerfile's directory, `=unit` → the Quadlet directory); otherwise the directory of
-the absolute `File=`. Inputs are matched by the path the Host sees (`host_data_dir` when
-the agent runs containerized). Only local paths count: a URL or specifier (`%h`) triggers
-nothing. A Reconciliation that touches none of a build's inputs restarts neither the build
-nor its consumers. Do not set `RemainAfterExit=yes` on a `.build`: the service would stay
-active and the start would not rebuild.
+relative one is relative to the Quadlet directory, and dropped when `[Service]
+WorkingDirectory=` is set); otherwise, for a relative `File=`, the working directory
+(`[Service] WorkingDirectory=`, else `SetWorkingDirectory=file` → the Containerfile's
+directory, `=unit` → the Quadlet directory); otherwise the directory of the absolute
+`File=`. Data files are matched by the path the Host sees (`host_data_dir` when the agent
+runs containerized). Only local paths count: a URL `podman build` fetches or a specifier
+(`%h`) triggers nothing. A Reconciliation that touches none of a build's inputs restarts
+neither the build nor its consumers. Do not set `RemainAfterExit=yes` on a `.build`: the
+service would stay active and the start would not rebuild.
 
 #### `paths:` entries
 

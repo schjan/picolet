@@ -10,6 +10,7 @@ import (
 
 const unitPath = "/etc/containers/systemd/picolet/app.build"
 
+//nolint:funlen // table-driven test
 func TestResolve(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -55,6 +56,41 @@ func TestResolve(t *testing.T) {
 		{
 			name: "URL context",
 			unit: "[Build]\nFile=Containerfile\nSetWorkingDirectory=https://github.com/example/app.git\n",
+			want: Paths{},
+		},
+		{
+			name: "SetWorkingDirectory=unit beside an absolute File=",
+			unit: "[Build]\nFile=/srv/app/Containerfile\nSetWorkingDirectory=unit\n",
+			want: Paths{Context: "/srv/app", Containerfiles: []string{"/srv/app/Containerfile"}, ContainerfilesComplete: true},
+		},
+		{
+			name: "SetWorkingDirectory=unit with a relative File=",
+			unit: "[Build]\nFile=Containerfile\nSetWorkingDirectory=unit\n",
+			want: Paths{
+				Context:                "/etc/containers/systemd/picolet",
+				Containerfiles:         []string{"/etc/containers/systemd/picolet/Containerfile"},
+				ContainerfilesComplete: true,
+			},
+		},
+		{
+			// Quadlet takes it for a URL and passes no context; podman
+			// build reads it locally and uses its directory.
+			name: "File= only Quadlet takes for a URL",
+			unit: "[Build]\nFile=httpContainerfile\n[Service]\nWorkingDirectory=/srv/app\n",
+			want: Paths{Context: "/srv/app", Containerfiles: []string{"/srv/app/httpContainerfile"}, ContainerfilesComplete: true},
+		},
+		{
+			name: "context path only Quadlet takes for a URL",
+			unit: "[Build]\nFile=Containerfile\nSetWorkingDirectory=httpctx\n[Service]\nWorkingDirectory=/srv/app\n",
+			want: Paths{
+				Context:                "/srv/app/httpctx",
+				Containerfiles:         []string{"/srv/app/Containerfile", "/srv/app/httpctx/Containerfile"},
+				ContainerfilesComplete: true,
+			},
+		},
+		{
+			name: "File= podman build fetches",
+			unit: "[Build]\nFile=https://example.com/Containerfile\n[Service]\nWorkingDirectory=/srv/app\n",
 			want: Paths{},
 		},
 		{

@@ -146,6 +146,15 @@ var rebuildCases = []struct {
 		want: nil,
 	},
 	{
+		// Quadlet takes it for a URL; podman build reads it locally.
+		name: "Containerfile named like a URL only to Quadlet changed",
+		changes: []reconciler.Change{
+			buildChange("[Build]\nImageTag=localhost/app\nFile=httpContainerfile\n[Service]\nWorkingDirectory=/var/lib/picolet/files/app\n", reconciler.ActionNoop),
+			dataFileChange("/var/lib/picolet/files/app/httpContainerfile", reconciler.ActionUpdate),
+		},
+		want: []string{"build app-build.service", "restart-nodeps app.service"},
+	},
+	{
 		name: "unrelated file changed",
 		changes: []reconciler.Change{
 			buildChange(testBuildUnit, reconciler.ActionNoop),
