@@ -273,15 +273,15 @@ own Linux user. `host.yml` says where a Host runs:
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `machine:` | the `hostname` | The Machine this Host runs on; a hostname label, compared case-insensitively (`VPS-1` and `vps-1` are one Machine) |
+| `machine:` | the `hostname` | The Machine this Host runs on; a hostname label, compared case-insensitively (`SRV-1` and `srv-1` are one Machine) |
 | `user:` | absent = rootful | The Linux user the Agent runs as; omit it for the rootful Host (`user: root` is rejected) |
 | `listen_port:` | `fleet.yml` `ports.picolet_metrics` when `user:` is set, `ports.picolet_system_metrics` for the rootful Host | The port the Agent listens on |
 
 ```yaml
-# hosts/vps-1-runner/host.yml
-hostname: vps-1-runner
-role: runner
-machine: vps-1
+# hosts/srv-1-runner/host.yml (deploy/fleet-repo/)
+hostname: srv-1-runner
+role: rootless
+machine: srv-1
 user: runner
 listen_port: 9419
 ```
@@ -300,10 +300,9 @@ Loading the Fleet rejects (a collision names both Hosts):
   the hostname — that is not a hostname label, or a `listen_port:`
   outside 1–65535.
 
-Host names follow a convention — `<machine>` for the Machine's default user
-(the default user is named after the Machine), `<machine>-system` for the rootful
-Host, `<machine>-<user>` for further users — that picolet never parses; only
-`machine:` and `user:` count.
+Host names follow a convention — `<machine>` for the Host of the Machine's
+default user, `<machine>-system` for the rootful Host, `<machine>-<user>` for
+further users — that picolet never parses; only `machine:` and `user:` count.
 
 Templates see the topology on `.Host` and every `.Fleet.Hosts` entry (see
 [Templates](#templates)); `siblings` lists the other Hosts on the same Machine,
