@@ -440,7 +440,7 @@ when every place it could be is in those data directories and none is delivered;
 `File=`, a `Containerfile` or `Dockerfile` must be delivered to a build context the Fleet
 delivers files to. A relative `File=` is checked only beside a `[Service] WorkingDirectory=`:
 without one, `podman build` first looks for it in the service's default directory (the
-operator's) or, with `SetWorkingDirectory=file`/`unit`, in the Quadlet directory, so it may
+operator's) or, with `SetWorkingDirectory=file`/`unit`, under the Quadlet directory, so it may
 exist there; a `SetWorkingDirectory=` path is still checked as the build context. Absolute
 paths elsewhere (managed on the host), URLs `podman build` fetches, stdin (`-`), systemd
 specifiers and paths relative to the unit file are not checked.
