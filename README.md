@@ -438,10 +438,12 @@ when a delivered file lies below it. `podman build` looks for `File=` as written
 one in `[Service] WorkingDirectory=`), then inside the build context, so it is rejected only
 when every place it could be is in those data directories and none is delivered; without
 `File=`, a `Containerfile` or `Dockerfile` must be delivered to a build context the Fleet
-delivers files to. A relative `File=` without `[Service] WorkingDirectory=` is not checked,
-because the service's default directory is the operator's. Absolute paths elsewhere (managed
-on the host), URLs `podman build` fetches, stdin (`-`), systemd specifiers and paths relative
-to the unit file are not checked.
+delivers files to. A relative `File=` is checked only beside a `[Service] WorkingDirectory=`:
+without one, `podman build` first looks for it in the service's default directory (the
+operator's) or, with `SetWorkingDirectory=file`/`unit`, in the Quadlet directory, so it may
+exist there; a `SetWorkingDirectory=` path is still checked as the build context. Absolute
+paths elsewhere (managed on the host), URLs `podman build` fetches, stdin (`-`), systemd
+specifiers and paths relative to the unit file are not checked.
 Both generated services are one-shots their consumers pull in: reported; the health loop
 never restarts one that fails on its own, but retries an apply-time restart of a `.image`
 that failed (a changed `.image` is pulled again; if the pull fails, it is pending like any
