@@ -214,20 +214,28 @@ func TestApplyRebuildsOnInputChange(t *testing.T) {
 }
 
 // A containerized Agent writes data files below its data dir while the
-// .build names them by the path the Host sees: a changed Containerfile
-// still rebuilds.
+// .build names them by the path the Host sees: a changed Containerfile or a
+// file deleted from the build context still rebuilds.
 func TestApplyRebuildsOnInputChangeAtHostDataDir(t *testing.T) {
 	t.Parallel()
-	sys, log := recordingSystemd(t, nil)
-	a := applier.New(sys, imagePodman(t), newMemFileWriter(), false, nil,
-		applier.WithDependencies(buildDeps), applier.WithHostDataDir("/var/lib/picolet", "/srv/picolet"))
-
-	_, err := a.Apply(context.Background(), &reconciler.Changeset{Changes: []reconciler.Change{
-		buildChange("[Build]\nImageTag=localhost/app\nFile=/srv/picolet/files/app/Containerfile\nSetWorkingDirectory=file\n", reconciler.ActionNoop),
+	const hostBuildUnit = "[Build]\nImageTag=localhost/app\nFile=/srv/picolet/files/app/Containerfile\nSetWorkingDirectory=file\n"
+	for _, change := range []reconciler.Change{
 		dataFileChange(testContainerfile, reconciler.ActionUpdate),
-	}})
-	require.NoError(t, err)
-	assert.Equal(t, []string{"build app-build.service", "restart-nodeps app.service"}, *log)
+		dataFileChange("/var/lib/picolet/files/app/src/main.go", reconciler.ActionDelete),
+	} {
+		t.Run(string(change.Action), func(t *testing.T) {
+			t.Parallel()
+			sys, log := recordingSystemd(t, nil)
+			a := applier.New(sys, imagePodman(t), newMemFileWriter(), false, nil,
+				applier.WithDependencies(buildDeps), applier.WithHostDataDir("/var/lib/picolet", "/srv/picolet"))
+
+			_, err := a.Apply(context.Background(), &reconciler.Changeset{Changes: []reconciler.Change{
+				buildChange(hostBuildUnit, reconciler.ActionNoop), change,
+			}})
+			require.NoError(t, err)
+			assert.Equal(t, []string{"build app-build.service", "restart-nodeps app.service"}, *log)
+		})
+	}
 }
 
 // A failed build fails the apply before anything is restarted: neither its

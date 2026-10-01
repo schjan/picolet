@@ -80,19 +80,23 @@ func (d delivery) deliversBelow(dir string) bool {
 // cannot resolve from the unit (URL, systemd specifier, relative to the
 // service's default directory) might exist on the Host and passes.
 func (d delivery) checkBuild(unit *parser.UnitFile, unitPath string) error {
-	setWorkDir, _ := unit.Lookup(quadlet.BuildGroup, quadlet.KeySetWorkingDirectory)
-	workDir, _ := unit.Lookup(quadlet.ServiceGroup, quadlet.ServiceKeyWorkingDirectory)
-
-	errs := []error{d.checkContainerfile(unit, buildunit.Resolve(unit, unitPath))}
-	if !isWorkingDirectoryKeyword(setWorkDir) {
-		errs = append(errs, d.checkDir(unit, quadlet.KeySetWorkingDirectory, setWorkDir))
+	paths := buildunit.Resolve(unit, unitPath)
+	errs := []error{d.checkContainerfile(unit, paths)}
+	if paths.NamedContext {
+		setWorkDir, _ := unit.Lookup(quadlet.BuildGroup, quadlet.KeySetWorkingDirectory)
+		errs = append(errs, d.checkDir(unit, quadlet.KeySetWorkingDirectory, setWorkDir, paths.Context))
 	}
-	errs = append(errs, d.checkDir(unit, quadlet.ServiceKeyWorkingDirectory, workDir))
+	// systemd fails the service when it cannot chdir into it.
+	if workDir, _ := unit.Lookup(quadlet.ServiceGroup, quadlet.ServiceKeyWorkingDirectory); filepath.IsAbs(workDir) && !strings.Contains(workDir, "%") {
+		errs = append(errs, d.checkDir(unit, quadlet.ServiceKeyWorkingDirectory, workDir, filepath.Clean(workDir)))
+	}
 	return errors.Join(errs...)
 }
 
-// checkContainerfile reports File= when every place podman build looks for
-// it lies in a delivered data directory and none is delivered.
+// checkContainerfile reports the Containerfile when every place podman build
+// looks for it lies in a delivered data directory and none is delivered.
+// Without File=, podman build looks in the context; a context the Fleet
+// delivers nothing to is reported as a directory instead.
 func (d delivery) checkContainerfile(unit *parser.UnitFile, paths buildunit.Paths) error {
 	if !paths.ContainerfilesComplete {
 		return nil
@@ -103,43 +107,36 @@ func (d delivery) checkContainerfile(unit *parser.UnitFile, paths buildunit.Path
 		}
 	}
 	file, _ := unit.Lookup(quadlet.BuildGroup, quadlet.KeyFile)
-	if len(paths.Containerfiles) == 1 && paths.Containerfiles[0] == filepath.Clean(file) {
-		return notDelivered(unit, quadlet.KeyFile, file)
+	switch {
+	case file == "":
+		if !d.deliversBelow(paths.Context) {
+			return nil
+		}
+		return fmt.Errorf("%s: no %s=, and neither %s is delivered by the Fleet",
+			unit.Filename, quadlet.KeyFile, strings.Join(paths.Containerfiles, " nor "))
+	case len(paths.Containerfiles) == 1 && paths.Containerfiles[0] == filepath.Clean(file):
+		return notDelivered(unit, quadlet.KeyFile, file, "")
+	default:
+		return notDelivered(unit, quadlet.KeyFile, file, strings.Join(paths.Containerfiles, " or "))
 	}
-	return fmt.Errorf("%s: %s=%s (%s) is not delivered by the Fleet",
-		unit.Filename, quadlet.KeyFile, file, strings.Join(paths.Containerfiles, " or "))
 }
 
-// checkDir reports a directory the unit names under key when it lies in a
-// delivered data directory but no delivered file lies below it.
-func (d delivery) checkDir(unit *parser.UnitFile, key, dir string) error {
-	if !checkable(dir) {
+// checkDir reports the directory dir the unit names as key=value when it
+// lies in a delivered data directory but no delivered file lies below it.
+func (d delivery) checkDir(unit *parser.UnitFile, key, value, dir string) error {
+	if !d.owns(dir) || d.deliversBelow(dir) {
 		return nil
 	}
-	path := filepath.Clean(dir)
-	if !d.owns(path) || d.deliversBelow(path) {
-		return nil
+	if dir == value {
+		return notDelivered(unit, key, value, "")
 	}
-	return notDelivered(unit, key, dir)
+	return notDelivered(unit, key, value, dir)
 }
 
-func notDelivered(unit *parser.UnitFile, key, value string) error {
+// notDelivered reports key=value, resolved to resolved when that differs.
+func notDelivered(unit *parser.UnitFile, key, value, resolved string) error {
+	if resolved != "" {
+		value += " (" + resolved + ")"
+	}
 	return fmt.Errorf("%s: %s=%s is not delivered by the Fleet", unit.Filename, key, value)
-}
-
-// checkable reports whether a reference is a literal absolute path. Podman
-// treats anything else as a URL or resolves it relative to the unit file,
-// and systemd expands specifiers (%h) only on the Host.
-func checkable(ref string) bool {
-	return filepath.IsAbs(ref) && !strings.Contains(ref, "%")
-}
-
-// isWorkingDirectoryKeyword reports the SetWorkingDirectory= values that name
-// a file's directory instead of a path.
-func isWorkingDirectoryKeyword(value string) bool {
-	switch strings.ToLower(value) {
-	case "file", "unit":
-		return true
-	}
-	return false
 }

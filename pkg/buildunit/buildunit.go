@@ -18,17 +18,22 @@ import (
 
 // Paths are the local paths podman build reads for a .build unit.
 type Paths struct {
-	// Context is the build context directory; "" when it is remote (a URL)
-	// or depends on something the unit does not determine (a systemd
+	// Context is the build context directory; "" when it is remote (a URL,
+	// stdin) or depends on something the unit does not determine (a systemd
 	// specifier, the service's default working directory).
 	Context string
+	// NamedContext reports that Context is the path SetWorkingDirectory=
+	// names, not one derived from File= or the working directory.
+	NamedContext bool
 	// Containerfiles are the paths podman build tries for File=, in order
 	// (buildah's BuildDockerfiles): File= resolved against the working
 	// directory, then File= joined onto the context unless it already starts
-	// with it. Only the resolvable ones are listed.
+	// with it. Without File=, the context's Containerfile and Dockerfile.
+	// Only the resolvable ones are listed.
 	Containerfiles []string
 	// ContainerfilesComplete reports that Containerfiles lists every path
-	// podman build may try: File= is set, local, and each candidate resolves.
+	// podman build may try: the Containerfile is local (not a URL or stdin)
+	// and each candidate resolves.
 	ContainerfilesComplete bool
 }
 
@@ -41,7 +46,8 @@ func Resolve(u *parser.UnitFile, unitPath string) Paths {
 	workDir, _ := u.Lookup(quadlet.ServiceGroup, quadlet.ServiceKeyWorkingDirectory)
 
 	contextArg, workDir := handleSetWorkingDirectory(setWorkDir, workDir, file, filepath.Dir(unitPath))
-	if contextArg == "" && !strings.HasPrefix(file, "%") && !filepath.IsAbs(file) && !isQuadletURL(file) {
+	named := contextArg != ""
+	if !named && !strings.HasPrefix(file, "%") && !filepath.IsAbs(file) && !isQuadletURL(file) {
 		// ConvertBuild passes the working directory as the context of a
 		// relative File= (and of none).
 		contextArg = workDir
@@ -49,7 +55,9 @@ func Resolve(u *parser.UnitFile, unitPath string) Paths {
 	if contextArg == "" {
 		return withoutContext(file, workDir)
 	}
-	return withContext(file, contextArg, workDir)
+	p := withContext(file, contextArg, workDir)
+	p.NamedContext = named && p.Context != ""
+	return p
 }
 
 // handleSetWorkingDirectory returns the context argument ConvertBuild passes
@@ -83,7 +91,7 @@ func handleSetWorkingDirectory(setWorkDir, workDir, file, unitDir string) (conte
 // withoutContext returns the paths of a build podman runs without a context
 // argument: it uses the Containerfile's directory as the context.
 func withoutContext(file, workDir string) Paths {
-	if file == "" || isBuildURL(file) {
+	if file == "" || readsElsewhere(file) {
 		return Paths{}
 	}
 	f, ok := absPath(file, workDir)
@@ -97,10 +105,18 @@ func withoutContext(file, workDir string) Paths {
 // argument contextArg.
 func withContext(file, contextArg, workDir string) Paths {
 	var p Paths
-	if !isBuildURL(contextArg) {
+	if !readsElsewhere(contextArg) {
 		p.Context, _ = absPath(contextArg, workDir)
 	}
-	if file == "" || isBuildURL(file) {
+	if file == "" {
+		// podman build looks for these in the context.
+		if p.Context != "" {
+			p.Containerfiles = []string{filepath.Join(p.Context, "Containerfile"), filepath.Join(p.Context, "Dockerfile")}
+			p.ContainerfilesComplete = true
+		}
+		return p
+	}
+	if readsElsewhere(file) {
 		return p
 	}
 	first, ok := absPath(file, workDir)
@@ -149,9 +165,13 @@ func isQuadletURL(p string) bool {
 	return quadlet.URL.MatchString(p)
 }
 
-// isBuildURL reports whether podman build fetches a context or Containerfile
-// argument instead of reading it locally (cmd/podman/common/build.go isURL).
-func isBuildURL(p string) bool {
+// readsElsewhere reports whether podman build reads a context or
+// Containerfile argument from somewhere other than a local path: a URL it
+// fetches (cmd/podman/common/build.go isURL) or stdin ("-").
+func readsElsewhere(p string) bool {
+	if p == "-" {
+		return true
+	}
 	for _, prefix := range []string{"http://", "https://", "git://", "github.com/"} {
 		if strings.HasPrefix(p, prefix) {
 			return true

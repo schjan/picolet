@@ -28,13 +28,14 @@ func TestResolve(t *testing.T) {
 			// first, which the unit does not determine, then in the context.
 			name: "relative File= with a context path and no working directory",
 			unit: "[Build]\nFile=Containerfile\nSetWorkingDirectory=/srv/app\n",
-			want: Paths{Context: "/srv/app", Containerfiles: []string{"/srv/app/Containerfile"}},
+			want: Paths{Context: "/srv/app", NamedContext: true, Containerfiles: []string{"/srv/app/Containerfile"}},
 		},
 		{
 			name: "relative File= in the working directory and a separate context",
 			unit: "[Build]\nFile=Containerfile\nSetWorkingDirectory=/srv/app\n[Service]\nWorkingDirectory=/srv/tools\n",
 			want: Paths{
 				Context:                "/srv/app",
+				NamedContext:           true,
 				Containerfiles:         []string{"/srv/tools/Containerfile", "/srv/app/Containerfile"},
 				ContainerfilesComplete: true,
 			},
@@ -49,6 +50,7 @@ func TestResolve(t *testing.T) {
 			unit: "[Build]\nFile=Containerfile\nSetWorkingDirectory=ctx\n",
 			want: Paths{
 				Context:                "/etc/containers/systemd/picolet/ctx",
+				NamedContext:           true,
 				Containerfiles:         []string{"/etc/containers/systemd/picolet/Containerfile", "/etc/containers/systemd/picolet/ctx/Containerfile"},
 				ContainerfilesComplete: true,
 			},
@@ -84,6 +86,7 @@ func TestResolve(t *testing.T) {
 			unit: "[Build]\nFile=Containerfile\nSetWorkingDirectory=httpctx\n[Service]\nWorkingDirectory=/srv/app\n",
 			want: Paths{
 				Context:                "/srv/app/httpctx",
+				NamedContext:           true,
 				Containerfiles:         []string{"/srv/app/Containerfile", "/srv/app/httpctx/Containerfile"},
 				ContainerfilesComplete: true,
 			},
@@ -97,6 +100,38 @@ func TestResolve(t *testing.T) {
 			name: "specifier in File=",
 			unit: "[Build]\nFile=/srv/%i/Containerfile\nSetWorkingDirectory=file\n",
 			want: Paths{},
+		},
+		{
+			// podman build looks for a Containerfile, then a Dockerfile.
+			name: "no File=: the context's default Containerfiles",
+			unit: "[Build]\nSetWorkingDirectory=/srv/app\n",
+			want: Paths{
+				Context:                "/srv/app",
+				NamedContext:           true,
+				Containerfiles:         []string{"/srv/app/Containerfile", "/srv/app/Dockerfile"},
+				ContainerfilesComplete: true,
+			},
+		},
+		{
+			name: "no File=: the working directory's default Containerfiles",
+			unit: "[Build]\n[Service]\nWorkingDirectory=/srv/app\n",
+			want: Paths{
+				Context:                "/srv/app",
+				Containerfiles:         []string{"/srv/app/Containerfile", "/srv/app/Dockerfile"},
+				ContainerfilesComplete: true,
+			},
+		},
+		{
+			// podman build reads the Containerfile from stdin; the context
+			// stays local.
+			name: "File=- is stdin",
+			unit: "[Build]\nFile=-\n[Service]\nWorkingDirectory=/srv/app\n",
+			want: Paths{Context: "/srv/app"},
+		},
+		{
+			name: "SetWorkingDirectory=- is a context on stdin",
+			unit: "[Build]\nFile=/srv/app/Containerfile\nSetWorkingDirectory=-\n",
+			want: Paths{Containerfiles: []string{"/srv/app/Containerfile"}},
 		},
 	}
 	for _, tt := range tests {
