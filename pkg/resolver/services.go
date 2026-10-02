@@ -69,16 +69,10 @@ type expansion struct {
 	Hooks []hookRef
 }
 
-// sortedUnique returns a sorted copy with duplicates removed.
-func sortedUnique(values []string) []string {
-	return slices.Compact(slices.Sorted(slices.Values(values)))
-}
-
-// validateServiceName rejects bundle names that would resolve outside the
-// services/ namespace once joined to "services/" and cleaned. The repo FS is
-// already DirFS-scoped so there's no arbitrary-path read, but a name like
-// "../quadlets" would silently reroute the bundle root to the legacy quadlet
-// directory, contradicting the documented layout.
+// validateServiceName rejects bundle names that would resolve outside
+// services/<name>/ once joined to "services/" and cleaned: a name with a path
+// separator, "." or ".." would address another directory (e.g. "../files")
+// instead of one bundle.
 func validateServiceName(service string) error {
 	switch {
 	case service == "":
@@ -187,7 +181,16 @@ func collectBundleHookRefs(root, service string, entries []fs.DirEntry) ([]hookR
 }
 
 func isHookMetadataFile(name string) bool {
-	return name == "picolet.yml" || name == "picolet.yml.tmpl"
+	return name == "picolet.yml" || name == "picolet.yml"+config.TemplateSuffix
+}
+
+// isBundleMetadataPath reports whether srcPath is a Service Bundle's root
+// metadata file, services/<name>/picolet.yml[.tmpl], the only place hook
+// metadata is read. A file of that name elsewhere (files/picolet.yml, a
+// nested bundle directory) is ordinary content.
+func isBundleMetadataPath(srcPath string) bool {
+	parts := strings.Split(srcPath, "/")
+	return len(parts) == 3 && parts[0] == "services" && isHookMetadataFile(parts[2])
 }
 
 func (e *expansion) append(other *expansion) {

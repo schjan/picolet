@@ -39,7 +39,7 @@ type ResolvedFile struct {
 	ParsedUnit *parser.UnitFile
 	// ServiceName is the derived systemd service name (e.g. "foo.service"); "" for non-quadlets.
 	ServiceName string
-	// RelPath is the file's path relative to its bundle category directory
+	// RelPath is the file's path below its data category directory
 	// (e.g. "config/scrape.yml" for a manifest at manifests/config/scrape.yml).
 	// Only set for manifest- and file-category resolved files.
 	RelPath string
@@ -172,8 +172,8 @@ func (r *Resolver) ResolveServicesForHost(ctx context.Context, hostname string, 
 		return nil, &HostNotFoundError{Hostname: hostname}
 	}
 	full := r.cfg.Assignments.Resolve(host)
-	available := sortedUnique(full.Services)
-	requested := sortedUnique(services)
+	available := config.SortedUnique(full.Services)
+	requested := config.SortedUnique(services)
 	var missing []string
 	for _, service := range requested {
 		if !slices.Contains(available, service) {
@@ -329,7 +329,7 @@ func (r *Resolver) collectSystemdUnits(registry *template.Template, tmplData *Te
 		case config.NoUnit:
 		}
 	}
-	return sortedUnique(units)
+	return config.SortedUnique(units)
 }
 
 // ResolveAll resolves all hosts and returns the results.
@@ -436,7 +436,7 @@ func (r *Resolver) dataDestPath(logicalPath string) string {
 }
 
 func deployedLogicalPath(logicalPath string) string {
-	return strings.TrimSuffix(logicalPath, ".tmpl")
+	return config.TrimTemplateSuffix(logicalPath)
 }
 
 // secretDestPath returns the DestPath for either a provider-backed ref
@@ -518,7 +518,7 @@ func detectCollisions(files []ResolvedFile) error {
 
 	var errs []error
 	for _, destPath := range destPaths {
-		uniquePaths := sortedUnique(collisions[destPath])
+		uniquePaths := config.SortedUnique(collisions[destPath])
 		if len(uniquePaths) < 2 {
 			continue
 		}
@@ -623,7 +623,7 @@ func resolveHookQuadletUnit(quadletName string, files []ResolvedFile) (string, e
 	if file := findQuadletFile(quadletName, files); file != nil && file.ServiceName != "" {
 		return file.ServiceName, nil
 	}
-	return "", fmt.Errorf("unit %q: no matching quadlet file found in assigned bundles", quadletName)
+	return "", fmt.Errorf("unit %q: no matching quadlet file found in the host's files", quadletName)
 }
 
 // isQuadletUnit reports whether the given unit name has a Quadlet file extension,
@@ -639,7 +639,7 @@ func isQuadletUnit(unit string) bool {
 
 // destFilename returns the base filename for a source path, stripping any .tmpl suffix.
 func destFilename(srcPath string) string {
-	return strings.TrimSuffix(path.Base(srcPath), ".tmpl")
+	return config.TrimTemplateSuffix(path.Base(srcPath))
 }
 
 func (r *Resolver) resolveNestedRef(registry *template.Template, tmplData *TemplateData, ref fileRef) (*ResolvedFile, error) {
@@ -801,7 +801,7 @@ func (r *Resolver) collectTemplateRefs(registry *template.Template, tmplData *Te
 		allPaths = append(allPaths, ref.SrcPath)
 	}
 	for _, path := range allPaths {
-		if !strings.HasSuffix(path, ".tmpl") {
+		if !config.IsTemplate(path) {
 			continue
 		}
 		_ = registry.ExecuteTemplate(io.Discard, path, tmplData) // errors are non-fatal in collect phase
@@ -830,7 +830,7 @@ func (r *Resolver) buildDirectSecretFile(ref, content string) (*ResolvedFile, er
 //  3. Host-only secrets (not in repo) are read from SecretsDir via secretReader.
 //  4. If no secretReader is configured, a placeholder value ("<secret>") is returned and a warning is logged.
 func (r *Resolver) secretContent(registry *template.Template, tmplData *TemplateData, srcPath, filename string) (string, error) {
-	if strings.HasSuffix(srcPath, ".tmpl") {
+	if config.IsTemplate(srcPath) {
 		return r.renderOrRead(registry, tmplData, srcPath)
 	}
 	// Static repo file — copy as-is without template rendering.
@@ -851,7 +851,7 @@ func (r *Resolver) secretContent(registry *template.Template, tmplData *Template
 }
 
 func (r *Resolver) renderOrRead(registry *template.Template, tmplData *TemplateData, path string) (string, error) {
-	if strings.HasSuffix(path, ".tmpl") {
+	if config.IsTemplate(path) {
 		slog.Debug("rendering template", "path", path)
 		var buf bytes.Buffer
 		if err := registry.ExecuteTemplate(&buf, path, tmplData); err != nil {

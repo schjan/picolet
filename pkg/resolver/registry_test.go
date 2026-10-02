@@ -244,13 +244,13 @@ func TestBundleFilePathFuncUsesHostDataDir(t *testing.T) {
 	t.Parallel()
 
 	manifestSpec, _ := config.SpecFor(config.CategoryManifest)
-	manifestFn := bundleFilePathFunc("/host/share/picolet", manifestSpec)
+	manifestFn := dataPathFunc("/host/share/picolet", manifestSpec)
 	got, err := manifestFn("config/scrape.yml")
 	require.NoError(t, err)
 	assert.Equal(t, "/host/share/picolet/manifests/config/scrape.yml", got)
 
 	fileSpec, _ := config.SpecFor(config.CategoryFile)
-	fileFn := bundleFilePathFunc("/host/share/picolet", fileSpec)
+	fileFn := dataPathFunc("/host/share/picolet", fileSpec)
 	got, err = fileFn("nginx/app.conf")
 	require.NoError(t, err)
 	assert.Equal(t, "/host/share/picolet/files/nginx/app.conf", got)

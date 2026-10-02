@@ -13,7 +13,7 @@ import (
 var ErrNotCleanRelPath = errors.New("must be a clean relative path")
 
 // ValidateRelPath returns the cleaned form of a relative path used to address
-// a file inside a bundle category directory (e.g. manifests/, files/). It
+// a file inside a data category's deployed directory (files/, manifests/). It
 // rejects empty strings, absolute paths, traversal segments, double slashes,
 // trailing slashes, and any input that does not equal path.Clean(input).
 // On success the cleaned path is returned; on failure ErrNotCleanRelPath

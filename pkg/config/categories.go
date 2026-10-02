@@ -313,7 +313,7 @@ func categoryForSegment(dir string) (c Category, ok bool, err error) {
 // categoryForFileName looks up the extension before any final .tmpl.
 func categoryForFileName(file string) (Category, error) {
 	const hint = "move it under files/ or remove it from the listed directory"
-	name := strings.TrimSuffix(file, ".tmpl")
+	name := TrimTemplateSuffix(file)
 	ext := path.Ext(name)
 	if c, ok := extensions[ext]; ok {
 		return c, nil

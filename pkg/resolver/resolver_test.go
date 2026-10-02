@@ -252,6 +252,9 @@ func TestTemplateDataSystemdUnits_QuadletDerived(t *testing.T) {
     - quadlets/stack.kube
     - quadlets/net.network
     - quadlets/data.volume
+    - quadlets/web.pod
+    - quadlets/app.build
+    - quadlets/redis.image
 roles: {}
 features: {}
 `, map[string]string{
@@ -259,9 +262,15 @@ features: {}
 		"quadlets/stack.kube":    "[Kube]\nYaml=stack.yml\n",
 		"quadlets/net.network":   "[Network]\nInternal=true\n",
 		"quadlets/data.volume":   "[Volume]\nDriver=local\n",
+		"quadlets/web.pod":       "[Pod]\n",
+		"quadlets/app.build":     "[Build]\nImageTag=localhost/app\nFile=/srv/Containerfile\n",
+		"quadlets/redis.image":   "[Image]\nImage=docker.io/library/redis:7\n",
 	})
 	assert.Equal(t,
-		[]string{"app.service", "data-volume.service", "net-network.service", "stack.service"},
+		[]string{
+			"app-build.service", "app.service", "data-volume.service", "net-network.service",
+			"redis-image.service", "stack.service", "web-pod.service",
+		},
 		prepareUnits(t, fsys))
 }
 
@@ -724,7 +733,7 @@ hostname: server
 role: server
 features: []
 `)},
-		"services/app/containers/app.container": &fstest.MapFile{Data: []byte(`[Container]
+		"services/app/app.container": &fstest.MapFile{Data: []byte(`[Container]
 Image=app
 ContainerName=app
 `)},
@@ -779,7 +788,7 @@ hostname: server
 role: server
 features: []
 `)},
-		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
+		"services/app/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
 		"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
 hooks:
   - name: broken
@@ -818,7 +827,7 @@ hostname: server
 role: server
 features: []
 `)},
-		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
+		"services/app/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
 		// Hook URL embeds an op:// reference. Phase 1 must collect this ref so
 		// the OpSecretReader sees it on the (single) batch call.
 		"services/app/picolet.yml.tmpl": &fstest.MapFile{Data: []byte(`
@@ -868,7 +877,7 @@ hostname: server
 role: server
 features: []
 `)},
-		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
+		"services/app/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\n")},
 		"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
 hooks:
   - name: shared
@@ -877,7 +886,7 @@ hooks:
     action: http
     url: "http://example.test/reload"
 `)},
-		"services/api/containers/api.container": &fstest.MapFile{Data: []byte("[Container]\nImage=api\n")},
+		"services/api/api.container": &fstest.MapFile{Data: []byte("[Container]\nImage=api\n")},
 		"services/api/picolet.yml": &fstest.MapFile{Data: []byte(`
 hooks:
   - name: shared
@@ -930,63 +939,58 @@ func TestIsQuadletUnit(t *testing.T) {
 	}
 }
 
+// hookUnitQuadlets gives every deployable Quadlet category a source file for
+// the hook-unit fixture and the service Podman generates for it.
+var hookUnitQuadlets = map[config.Category]struct{ file, body, wantUnit string }{
+	config.CategoryContainer: {"app.container", "[Container]\nImage=app\nContainerName=app\n", "app.service"},
+	config.CategoryPod:       {"web.pod", "[Pod]\n", "web-pod.service"},
+	config.CategoryBuild:     {"app.build", "[Build]\nImageTag=localhost/app\nFile=/srv/Containerfile\n", "app-build.service"},
+	config.CategoryImage:     {"redis.image", "[Image]\nImage=docker.io/library/redis:7\n", "redis-image.service"},
+	config.CategoryNetwork:   {"internal.network", "[Network]\n", "internal-network.service"},
+	config.CategoryVolume:    {"data.volume", "[Volume]\n", "data-volume.service"},
+	config.CategoryKube:      {"stack.kube", "[Kube]\nYaml=stack.yml\n", "stack.service"},
+}
+
 func TestResolveHostHookUnitResolution(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name     string
-		hookUnit string
-		wantUnit string
-	}{
-		{
-			name:     "quadlet container resolves to service name",
-			hookUnit: "app.container",
-			wantUnit: "app.service",
-		},
-		{
-			name:     "quadlet pod resolves to its generated -pod service",
-			hookUnit: "web.pod",
-			wantUnit: "web-pod.service",
-		},
-		{
-			name:     "quadlet build resolves to its generated -build service",
-			hookUnit: "app.build",
-			wantUnit: "app-build.service",
-		},
-		{
-			name:     "quadlet image resolves to its generated -image service",
-			hookUnit: "redis.image",
-			wantUnit: "redis-image.service",
-		},
-		{
-			name:     "explicit service passes through unchanged",
-			hookUnit: "app.service",
-			wantUnit: "app.service",
-		},
+	resolveHookUnit := func(t *testing.T, hookUnit string) string {
+		t.Helper()
+		fsys := hookUnitFleetFS(hookUnit)
+		cfg, err := config.LoadAll(fsys)
+		require.NoError(t, err)
+		r, err := New(Config{FS: fsys, Config: cfg})
+		require.NoError(t, err)
+
+		resolved, err := r.ResolveHost(t.Context(), "server")
+		require.NoError(t, err)
+		require.Len(t, resolved.Hooks, 1)
+		return resolved.Hooks[0].Unit
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, spec := range config.Specs() {
+		if spec.Check != config.CheckQuadlet {
+			continue
+		}
+		t.Run(spec.Category.String(), func(t *testing.T) {
 			t.Parallel()
-
-			fsys := hookUnitFleetFS(tt.hookUnit)
-			cfg, err := config.LoadAll(fsys)
-			require.NoError(t, err)
-			r, err := New(Config{FS: fsys, Config: cfg})
-			require.NoError(t, err)
-
-			resolved, err := r.ResolveHost(t.Context(), "server")
-			require.NoError(t, err)
-			require.Len(t, resolved.Hooks, 1)
-			assert.Equal(t, tt.wantUnit, resolved.Hooks[0].Unit)
+			quadlet, ok := hookUnitQuadlets[spec.Category]
+			require.True(t, ok, "add a hookUnitQuadlets row for the new Quadlet category %q", spec.Category)
+			assert.Equal(t, quadlet.wantUnit, resolveHookUnit(t, quadlet.file))
 		})
 	}
+
+	t.Run("explicit service passes through unchanged", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, "app.service", resolveHookUnit(t, "app.service"))
+	})
 }
 
-// hookUnitFleetFS is a one-host fleet whose "app" bundle carries a container,
-// a pod, a build and an image, plus a hook targeting hookUnit.
+// hookUnitFleetFS is a one-host fleet whose "app" bundle carries one Quadlet
+// of every deployable category (hookUnitQuadlets), plus a hook targeting
+// hookUnit.
 func hookUnitFleetFS(hookUnit string) fstest.MapFS {
-	return fstest.MapFS{
+	fsys := fstest.MapFS{
 		"fleet.yml":       &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml": &fstest.MapFile{Data: []byte("base: {}\nroles:\n  server:\n    services: [app]\nfeatures: {}\n")},
 		"hosts/server/host.yml": &fstest.MapFile{Data: []byte(`
@@ -994,10 +998,6 @@ hostname: server
 role: server
 features: []
 `)},
-		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\nContainerName=app\n")},
-		"services/app/pods/web.pod":             &fstest.MapFile{Data: []byte("[Pod]\n")},
-		"services/app/builds/app.build":         &fstest.MapFile{Data: []byte("[Build]\nImageTag=localhost/app\nFile=/srv/Containerfile\n")},
-		"services/app/images/redis.image":       &fstest.MapFile{Data: []byte("[Image]\nImage=docker.io/library/redis:7\n")},
 		"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
 hooks:
   - name: app-reload
@@ -1006,6 +1006,10 @@ hooks:
     action: restart
 `)},
 	}
+	for _, quadlet := range hookUnitQuadlets {
+		fsys["services/app/"+quadlet.file] = &fstest.MapFile{Data: []byte(quadlet.body)}
+	}
+	return fsys
 }
 
 func TestResolveHostHookUnitQuadletNotFoundErrors(t *testing.T) {
@@ -1019,7 +1023,7 @@ hostname: server
 role: server
 features: []
 `)},
-		"services/app/containers/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\nContainerName=app\n")},
+		"services/app/app.container": &fstest.MapFile{Data: []byte("[Container]\nImage=app\nContainerName=app\n")},
 		"services/app/picolet.yml": &fstest.MapFile{Data: []byte(`
 hooks:
   - name: app-reload
@@ -1099,8 +1103,8 @@ hostname: server
 role: server
 features: []
 `)},
-				"services/app/containers/app.container": &fstest.MapFile{Data: []byte(tt.quadlet)},
-				"services/app/picolet.yml":              &fstest.MapFile{Data: []byte(tt.hookYAML)},
+				"services/app/app.container": &fstest.MapFile{Data: []byte(tt.quadlet)},
+				"services/app/picolet.yml":   &fstest.MapFile{Data: []byte(tt.hookYAML)},
 			}
 			cfg, err := config.LoadAll(fsys)
 			require.NoError(t, err)
@@ -1239,7 +1243,7 @@ features: []
 	assert.NotContains(t, manifest.DestPath, "services/web")
 }
 
-func TestResolveHostBundleAndLegacyMixed(t *testing.T) {
+func TestResolveHostServiceBundleAndPathsMixed(t *testing.T) {
 	t.Parallel()
 
 	fsys := fstest.MapFS{
@@ -1548,7 +1552,7 @@ features: []
 	assert.False(t, readerCalled, "1Password reader must not be invoked on collision")
 }
 
-func TestResolveHostLegacyAssignmentsUnchanged(t *testing.T) {
+func TestResolveHostPathsOnlyAssignments(t *testing.T) {
 	t.Parallel()
 
 	fsys := newTestFS()

@@ -18,10 +18,10 @@ import (
 	pp "github.com/schjan/picolet/pkg/protonpass"
 )
 
-// bundleFilePathFunc returns the spec.PathHelper template func, resolving a
+// dataPathFunc returns the spec.PathHelper template func, resolving a
 // relative path inside a data category's deployed subdirectory (e.g.
 // dataDir/manifests/...).
-func bundleFilePathFunc(dataDir string, spec config.Spec) func(string) (string, error) {
+func dataPathFunc(dataDir string, spec config.Spec) func(string) (string, error) {
 	return func(relPath string) (string, error) {
 		cleaned, err := config.ValidateRelPath(relPath)
 		if err != nil {
@@ -127,7 +127,7 @@ func (c *RefCache) Resolve(ctx context.Context) error {
 		c.resolved = make(map[string]string)
 		return nil
 	}
-	unique := sortedUnique(c.collected)
+	unique := config.SortedUnique(c.collected)
 	slog.Debug("batch-resolving template secrets", "count", len(unique))
 	results, err := c.reader(ctx, unique)
 	if err != nil {
@@ -219,7 +219,7 @@ func buildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, p
 	})
 	for _, spec := range config.Specs() {
 		if spec.PathHelper != "" {
-			funcMap[spec.PathHelper] = bundleFilePathFunc(dataDir, spec)
+			funcMap[spec.PathHelper] = dataPathFunc(dataDir, spec)
 		}
 	}
 
@@ -265,7 +265,7 @@ func loadTemplateSources(fsys fs.FS, include func(string) bool) (map[string]stri
 		if d.IsDir() && d.Name() == ".git" {
 			return fs.SkipDir
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".tmpl") || (include != nil && !include(path)) {
+		if d.IsDir() || !config.IsTemplate(path) || (include != nil && !include(path)) {
 			return nil
 		}
 		data, err := fs.ReadFile(fsys, path)

@@ -7,12 +7,32 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 
 	"go.yaml.in/yaml/v4"
 )
 
 // PicoletMarker is the comment header prepended to systemd unit files managed by picolet.
 const PicoletMarker = "# Managed by picolet"
+
+// TemplateSuffix marks a repo file as a Go template; the suffix is dropped
+// from the deployed file name.
+const TemplateSuffix = ".tmpl"
+
+// IsTemplate reports whether name ends in TemplateSuffix.
+func IsTemplate(name string) bool {
+	return strings.HasSuffix(name, TemplateSuffix)
+}
+
+// TrimTemplateSuffix returns name without a trailing TemplateSuffix.
+func TrimTemplateSuffix(name string) string {
+	return strings.TrimSuffix(name, TemplateSuffix)
+}
+
+// SortedUnique returns a sorted copy of values with duplicates removed.
+func SortedUnique(values []string) []string {
+	return slices.Compact(slices.Sorted(slices.Values(values)))
+}
 
 // DefaultSelfUnits are the conventional units a picolet agent runs under when
 // deployed from its own fleet bundle: "picolet" under the user systemd
