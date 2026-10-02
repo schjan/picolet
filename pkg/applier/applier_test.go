@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -42,37 +43,75 @@ func testHTTPErrorClient(err error) *http.Client {
 	})}
 }
 
+// orderedFileWriter logs file writes into a log shared with the secret store
+// mock, so the relative order of both kinds of write is observable.
+type orderedFileWriter struct {
+	*memFileWriter
+
+	log *[]string
+}
+
+func (w orderedFileWriter) WriteFile(path string, content []byte) error {
+	*w.log = append(*w.log, path)
+	return w.memFileWriter.WriteFile(path, content)
+}
+
+// Writes follow the category rank sequence (network, volume, image, build,
+// secret, systemd, manifest, file, pod, container, kube) whatever order the
+// changeset lists them in; within one rank they follow DestPath.
 func TestApplyPhaseOrdering(t *testing.T) {
 	t.Parallel()
+	var log []string
 	sys := appliermocks.NewMockSystemdManager(t)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
-	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
 	pod := appliermocks.NewMockPodmanClient(t)
-	pod.EXPECT().SecretCreate(mock.Anything, "my_secret", []byte("token=abc"), false).Return(nil)
-	fw := newMemFileWriter()
-	a := applier.New(sys, pod, fw, false, nil)
+	pod.EXPECT().SecretCreate(mock.Anything, "my_secret", []byte("token=abc"), false).
+		Run(func(context.Context, string, []byte, bool) { log = append(log, "secret:my_secret") }).
+		Return(nil)
+	a := applier.New(sys, pod, orderedFileWriter{newMemFileWriter(), &log}, false, nil)
 
-	cs := &reconciler.Changeset{
-		Changes: []reconciler.Change{
-			// Out of order deliberately
-			{DestPath: "/etc/containers/systemd/app.container", Category: "container", Action: reconciler.ActionCreate, NewContent: "[Container]\nImage=foo"},
-			{DestPath: "/etc/containers/systemd/data.volume", Category: "volume", Action: reconciler.ActionCreate, NewContent: "[Volume]"},
-			{DestPath: "secret:my_secret", Category: "secret", Action: reconciler.ActionCreate, NewContent: "token=abc"},
-			{DestPath: "/etc/containers/systemd/net.network", Category: "network", Action: reconciler.ActionCreate, NewContent: "[Network]"},
-			{DestPath: "/var/lib/picolet/manifests/app/deploy.yml", Category: "manifest", Action: reconciler.ActionCreate, NewContent: "apiVersion: v1"},
-			{DestPath: "/etc/containers/systemd/app.kube", Category: "kube", Action: reconciler.ActionCreate, NewContent: "[Kube]\nYaml=foo"},
-		},
-		Summary: map[reconciler.Action]int{reconciler.ActionCreate: 6},
+	// The expected sequence is spelled out from the rank rule, not derived from
+	// config.ApplyOrder. Paths within one rank are listed in sorted order.
+	ranked := []struct {
+		category config.Category
+		paths    []string
+	}{
+		{config.CategoryNetwork, []string{"/etc/containers/systemd/picolet/a.network", "/etc/containers/systemd/picolet/b.network"}},
+		{config.CategoryVolume, []string{"/etc/containers/systemd/picolet/data.volume"}},
+		{config.CategoryImage, []string{"/etc/containers/systemd/picolet/app.image"}},
+		{config.CategoryBuild, []string{"/etc/containers/systemd/picolet/app.build"}},
+		{config.CategorySecret, []string{"secret:my_secret"}},
+		{config.CategorySystemd, []string{"/etc/systemd/system/job.service"}},
+		{config.CategoryManifest, []string{"/var/lib/picolet/manifests/app/deploy.yml"}},
+		{config.CategoryFile, []string{"/var/lib/picolet/files/a.conf", "/var/lib/picolet/files/b.conf"}},
+		{config.CategoryPod, []string{"/etc/containers/systemd/picolet/shop.pod"}},
+		{config.CategoryContainer, []string{"/etc/containers/systemd/picolet/app.container"}},
+		{config.CategoryKube, []string{"/etc/containers/systemd/picolet/app.kube"}},
+	}
+	var want []string
+	cs := &reconciler.Changeset{Summary: map[reconciler.Action]int{}}
+	// Build the changeset back to front, each rank's paths in reverse.
+	for _, r := range slices.Backward(ranked) {
+		for _, path := range slices.Backward(r.paths) {
+			content := "x"
+			if r.category == config.CategorySecret {
+				content = "token=abc"
+			}
+			cs.Changes = append(cs.Changes, reconciler.Change{
+				DestPath: path, Category: r.category,
+				Action: reconciler.ActionCreate, NewContent: content,
+			})
+			cs.Summary[reconciler.ActionCreate]++
+		}
+	}
+	for _, r := range ranked {
+		want = append(want, r.paths...)
 	}
 
-	result, err := a.Apply(context.Background(), cs)
+	result, err := a.ApplyWithoutRestarts(context.Background(), cs)
 	require.NoError(t, err)
-	assert.Equal(t, 6, result.Applied)
-
-	// Verify network was written (file category)
-	assert.Contains(t, fw.written, "/etc/containers/systemd/net.network")
-	// Verify volume was written
-	assert.Contains(t, fw.written, "/etc/containers/systemd/data.volume")
+	assert.Equal(t, len(want), result.Applied)
+	assert.Equal(t, want, log)
 }
 
 func TestApplyDryRun(t *testing.T) {
