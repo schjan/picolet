@@ -27,6 +27,7 @@ a Fleet on v0.1.33 or older needs all of them.
 | Strict Service Bundle rules removed | v0.2.0 | `services/<name>/` | none: typed-subdirectory layouts stay valid, except for the two rows above |
 | `ports.picolet_metrics` / `ports.picolet_system_metrics` required (unless every Host sets `listen_port:`) | v0.2.0 | `fleet.yml` | the Fleet fails to load |
 | A rootless Host needs `user:`; a Host whose `hostname` is not a hostname label needs `machine:` | v0.2.0 | `hosts/<name>/host.yml` | without `user:`, no error, the Host counts as rootful; without `machine:`, the Fleet fails to load |
+| Two Hosts on one Machine with the same `user:` (two rootful Hosts included) or the same listen port are rejected; `machine:` defaults to the `hostname`, compared case-insensitively | v0.2.0 | `hosts/<name>/host.yml`, `fleet.yml` | the collision names both Hosts; the Fleet fails to load |
 
 `state.json` needs nothing: keep it. Its `managed_files[].category` values are
 unchanged rows of the new category table, so an Agent of this release loads the
@@ -62,7 +63,9 @@ load the Fleet applies nothing, its own image included.
 3. **Migrate the schema**, in one commit: every key in
    [Key by key](#key-by-key), the Agent config template, and the `host.yml`
    keys that are required for your Hosts (`user:` on rootless Hosts, `machine:`
-   where the hostname is not a hostname label).
+   where the hostname is not a hostname label, and `machine:`/`user:`/
+   `listen_port:` wherever two Hosts would otherwise collide on one Machine).
+   Run `picolet validate` of v0.2.0 on it before pushing.
 4. **Then add optional `host.yml` keys** (`machine:`, `user:`, `listen_port:`)
    wherever you want them. Never before step 2: an older Agent rejects the
    whole Fleet on a `host.yml` key it does not know. Agents of this release only
