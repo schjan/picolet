@@ -64,7 +64,7 @@ func expectFreshUser(ops *mocks.MockHostOps, u machine.User) {
 	ops.EXPECT().UserManagerRunning(u).Return(false, nil).Once()
 	ops.EXPECT().WaitUserManager(mock.Anything, u).Return(nil).Once()
 	ops.EXPECT().UserManagerRunning(u).Return(true, nil)
-	ops.EXPECT().UserUnitEnabled(mock.Anything, u, "podman.socket").Return(false, nil)
+	ops.EXPECT().UserUnitState(mock.Anything, u, "podman.socket").Return(machine.UnitState{}, nil)
 	ops.EXPECT().EnableUserUnit(mock.Anything, u, "podman.socket").Return(nil).Once()
 	for _, d := range userDirs {
 		ops.EXPECT().Stat(u.Home+"/"+d.rel).Return(machine.PathInfo{}, nil)
@@ -73,20 +73,23 @@ func expectFreshUser(ops *mocks.MockHostOps, u machine.User) {
 }
 
 // expectBootstrappedUser sets ops up as a Machine where every step of u is
-// done.
-func expectBootstrappedUser(ops *mocks.MockHostOps, u machine.User) {
+// done, its podman.socket in state socket.
+func expectBootstrappedUser(ops *mocks.MockHostOps, u machine.User, socket machine.UnitState) {
 	ops.EXPECT().LookupUser(u.Name).Return(u, true, nil)
 	ops.EXPECT().SubIDRanges(u).Return(true, true, nil)
 	ops.EXPECT().LingerEnabled(u).Return(true, nil)
 	ops.EXPECT().UserManagerRunning(u).Return(true, nil)
-	ops.EXPECT().UserUnitEnabled(mock.Anything, u, "podman.socket").Return(true, nil)
+	ops.EXPECT().UserUnitState(mock.Anything, u, "podman.socket").Return(socket, nil)
 	for _, d := range userDirs {
 		ops.EXPECT().Stat(u.Home+"/"+d.rel).Return(dir(u.UID, u.GID, d.mode), nil)
 	}
 }
 
-func expectBootstrappedRootful(ops *mocks.MockHostOps) {
-	ops.EXPECT().SystemUnitEnabled(mock.Anything, "podman.socket").Return(true, nil)
+// running is the state of a unit that is enabled and active.
+var running = machine.UnitState{Enabled: true, Active: true}
+
+func expectBootstrappedRootful(ops *mocks.MockHostOps, socket machine.UnitState) {
+	ops.EXPECT().SystemUnitState(mock.Anything, "podman.socket").Return(socket, nil)
 	for _, d := range rootDirs {
 		ops.EXPECT().Stat(d.path).Return(dir(0, 0, d.mode), nil)
 	}
@@ -102,7 +105,7 @@ func TestRunFreshMachine(t *testing.T) {
 	ops := mocks.NewMockHostOps(t)
 	expectFreshUser(ops, pi)
 	expectFreshUser(ops, runner)
-	ops.EXPECT().SystemUnitEnabled(mock.Anything, "podman.socket").Return(false, nil)
+	ops.EXPECT().SystemUnitState(mock.Anything, "podman.socket").Return(machine.UnitState{}, nil)
 	ops.EXPECT().EnableSystemUnit(mock.Anything, "podman.socket").Return(nil).Once()
 	for _, d := range rootDirs {
 		ops.EXPECT().Stat(d.path).Return(machine.PathInfo{}, nil)
@@ -123,14 +126,34 @@ func TestRunFreshMachine(t *testing.T) {
 func TestRunBootstrappedMachine(t *testing.T) {
 	t.Parallel()
 	ops := mocks.NewMockHostOps(t)
-	expectBootstrappedUser(ops, pi)
-	expectBootstrappedUser(ops, runner)
-	expectBootstrappedRootful(ops)
+	expectBootstrappedUser(ops, pi, running)
+	expectBootstrappedUser(ops, runner, running)
+	expectBootstrappedRootful(ops, running)
 	ops.EXPECT().WorldReadableTree(exampleFleetAbs(t)).Return(true, nil)
 
 	out, err := runMachine(t, ops)
 	require.NoError(t, err)
 	goldie.New(t).Assert(t, "run-bootstrapped-machine", []byte(out))
+}
+
+// An enabled podman.socket that is not running is not done: the run starts
+// it, the user's and the system's.
+func TestRunStartsEnabledStoppedSocket(t *testing.T) {
+	t.Parallel()
+	ops := mocks.NewMockHostOps(t)
+	stopped := machine.UnitState{Enabled: true}
+	expectBootstrappedUser(ops, pi, stopped)
+	ops.EXPECT().EnableUserUnit(mock.Anything, pi, "podman.socket").Return(nil).Once()
+	expectBootstrappedUser(ops, runner, running)
+	expectBootstrappedRootful(ops, stopped)
+	ops.EXPECT().EnableSystemUnit(mock.Anything, "podman.socket").Return(nil).Once()
+	ops.EXPECT().WorldReadableTree(exampleFleetAbs(t)).Return(true, nil)
+
+	out, err := runMachine(t, ops)
+	require.NoError(t, err)
+	require.Regexp(t, `applied\s+vps-1/podman-socket`, out)
+	require.Regexp(t, `applied\s+vps-1-system/podman-socket`, out)
+	require.Contains(t, out, "2 applied, 26 already done")
 }
 
 // A user without subordinate ID ranges stops its Host at the check, with the
@@ -139,10 +162,10 @@ func TestRunBootstrappedMachine(t *testing.T) {
 func TestRunMissingSubIDsStopsOnlyThatHost(t *testing.T) {
 	t.Parallel()
 	ops := mocks.NewMockHostOps(t)
-	expectBootstrappedUser(ops, pi)
+	expectBootstrappedUser(ops, pi, running)
 	ops.EXPECT().LookupUser("runner").Return(runner, true, nil)
 	ops.EXPECT().SubIDRanges(runner).Return(false, false, nil)
-	expectBootstrappedRootful(ops)
+	expectBootstrappedRootful(ops, running)
 	ops.EXPECT().WorldReadableTree(exampleFleetAbs(t)).Return(true, nil)
 
 	out, err := runMachine(t, ops)

@@ -9,7 +9,7 @@ Phase 1: users, sessions and directories
   already done  vps-1/subids                subuid/subgid ranges of pi present
   already done  vps-1/linger                lingering enabled for pi
   already done  vps-1/user-manager          user manager of pi running
-  already done  vps-1/podman-socket         user podman.socket of pi enabled
+  already done  vps-1/podman-socket         user podman.socket of pi enabled and running
   already done  vps-1/dir/secrets           directory ~pi/.config/picolet/secrets, owner pi, mode 0700
   already done  vps-1/dir/data              directory ~pi/.local/share/picolet, owner pi, mode 0700
   already done  vps-1/dir/quadlets          directory ~pi/.config/containers/systemd, owner pi, mode 0755
@@ -19,13 +19,13 @@ Phase 1: users, sessions and directories
   failed        vps-1-runner/subids         subuid/subgid ranges of runner present                                 no subuid/subgid range; add one: usermod --add-subuids 100000-165535 --add-subgids 100000-165535 runner
   skipped       vps-1-runner/linger         lingering enabled for runner                                           vps-1-runner stopped at vps-1-runner/subids
   skipped       vps-1-runner/user-manager   user manager of runner running                                         vps-1-runner stopped at vps-1-runner/subids
-  skipped       vps-1-runner/podman-socket  user podman.socket of runner enabled                                   vps-1-runner stopped at vps-1-runner/subids
+  skipped       vps-1-runner/podman-socket  user podman.socket of runner enabled and running                       vps-1-runner stopped at vps-1-runner/subids
   skipped       vps-1-runner/dir/secrets    directory ~runner/.config/picolet/secrets, owner runner, mode 0700     vps-1-runner stopped at vps-1-runner/subids
   skipped       vps-1-runner/dir/data       directory ~runner/.local/share/picolet, owner runner, mode 0700        vps-1-runner stopped at vps-1-runner/subids
   skipped       vps-1-runner/dir/quadlets   directory ~runner/.config/containers/systemd, owner runner, mode 0755  vps-1-runner stopped at vps-1-runner/subids
   skipped       vps-1-runner/dir/units      directory ~runner/.config/systemd/user, owner runner, mode 0755        vps-1-runner stopped at vps-1-runner/subids
   skipped       vps-1-runner/checkout       Fleet checkout readable by runner (world-readable)                     vps-1-runner stopped at vps-1-runner/subids
-  already done  vps-1-system/podman-socket  system podman.socket enabled
+  already done  vps-1-system/podman-socket  system podman.socket enabled and running
   already done  vps-1-system/dir/secrets    directory /etc/picolet/secrets, owner root, mode 0700
   already done  vps-1-system/dir/data       directory /var/lib/picolet-system, owner root, mode 0700
   already done  vps-1-system/dir/quadlets   directory /etc/containers/systemd, owner root, mode 0755

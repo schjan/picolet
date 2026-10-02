@@ -128,12 +128,12 @@ func (o *OSHostOps) exists(p string) (bool, error) {
 	return info.Exists, err
 }
 
-// UserUnitEnabled implements HostOps. Only root and the user can ask the
+// UserUnitState implements HostOps. Only root and the user can ask the
 // user's manager. Root asks as the user by switching credentials in the
 // child directly: runuser/su would open a PAM session, whose hooks
 // (pam_systemd, pam_mkhomedir) may write to the Machine.
-func (o *OSHostOps) UserUnitEnabled(ctx context.Context, u User, unit string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "systemctl", "--user", "is-enabled", unit)
+func (o *OSHostOps) UserUnitState(ctx context.Context, u User, unit string) (UnitState, error) {
+	cmd := unitStateCommand(ctx, "--user", unit)
 	runtimeDir := fmt.Sprintf("/run/user/%d", u.UID)
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
@@ -144,14 +144,14 @@ func (o *OSHostOps) UserUnitEnabled(ctx context.Context, u User, unit string) (b
 	case 0:
 		cred, err := credential(u)
 		if err != nil {
-			return false, err
+			return UnitState{}, err
 		}
 		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
 	case u.UID:
 	default:
-		return false, fmt.Errorf("%w: systemctl --user of %s", ErrUnprivileged, u.Name)
+		return UnitState{}, fmt.Errorf("%w: systemctl --user of %s", ErrUnprivileged, u.Name)
 	}
-	return unitEnabled(cmd)
+	return unitState(cmd)
 }
 
 // credential is u's uid and primary gid with no supplementary groups, so the
@@ -163,24 +163,35 @@ func credential(u User) (*syscall.Credential, error) {
 	return &syscall.Credential{Uid: uint32(u.UID), Gid: uint32(u.GID), Groups: []uint32{}}, nil
 }
 
-// SystemUnitEnabled implements HostOps.
-func (o *OSHostOps) SystemUnitEnabled(ctx context.Context, unit string) (bool, error) {
-	return unitEnabled(exec.CommandContext(ctx, "systemctl", "is-enabled", unit))
+// SystemUnitState implements HostOps.
+func (o *OSHostOps) SystemUnitState(ctx context.Context, unit string) (UnitState, error) {
+	return unitState(unitStateCommand(ctx, "--system", unit))
 }
 
-// unitEnabled runs a `systemctl is-enabled` command. It exits non-zero for
-// every state but enabled ones and prints the state on stdout; only a run
-// without a state is an error. enabled-runtime does not survive a reboot, so
-// it counts as not enabled.
-func unitEnabled(cmd *exec.Cmd) (bool, error) {
+func unitStateCommand(ctx context.Context, manager, unit string) *exec.Cmd {
+	return exec.CommandContext(ctx, "systemctl", manager, "show", "--property=UnitFileState", "--property=ActiveState", unit)
+}
+
+// unitState runs a unitStateCommand and parses its KEY=value lines. A unit
+// systemd does not know shows as neither enabled nor active.
+func unitState(cmd *exec.Cmd) (UnitState, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
-	state, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
-	if state == "" && err != nil {
-		return false, fmt.Errorf("%s: %w: %s", strings.Join(cmd.Args, " "), err, strings.TrimSpace(stderr.String()))
+	if err != nil {
+		return UnitState{}, fmt.Errorf("%s: %w: %s", strings.Join(cmd.Args, " "), err, strings.TrimSpace(stderr.String()))
 	}
-	return state == "enabled", nil
+	var state UnitState
+	for line := range strings.Lines(string(out)) {
+		key, value, _ := strings.Cut(strings.TrimSpace(line), "=")
+		switch key {
+		case "UnitFileState":
+			state.Enabled = value == "enabled"
+		case "ActiveState":
+			state.Active = value == "active"
+		}
+	}
+	return state, nil
 }
 
 // Stat implements HostOps.

@@ -218,7 +218,7 @@ func (f *hostFacts) userManager() (Result, error) {
 
 func (f *hostFacts) checkPodmanSocket(ctx context.Context) (Result, error) {
 	if f.host.Rootful() {
-		return boolResult(f.ops.SystemUnitEnabled(ctx, podmanSocket))("", "")
+		return unitResult(f.ops.SystemUnitState(ctx, podmanSocket))
 	}
 	manager, err := f.checkUserManager()
 	if err != nil || manager.Status != StatusDone {
@@ -229,7 +229,24 @@ func (f *hostFacts) checkPodmanSocket(ctx context.Context) (Result, error) {
 		}
 		return manager, err
 	}
-	return boolResult(f.ops.UserUnitEnabled(ctx, f.user, podmanSocket))("", "")
+	return unitResult(f.ops.UserUnitState(ctx, f.user, podmanSocket))
+}
+
+// unitResult is done for a unit both enabled and active: enable --now
+// brings about both, and an enabled unit that is not running would leave
+// the Agent without its socket until the next boot.
+func unitResult(state UnitState, err error) (Result, error) {
+	switch {
+	case err != nil:
+		return Result{}, err
+	case state.Enabled && state.Active:
+		return Result{Status: StatusDone}, nil
+	case state.Enabled:
+		return Result{Status: StatusWouldDo, Detail: "enabled, not running"}, nil
+	case state.Active:
+		return Result{Status: StatusWouldDo, Detail: "running, not enabled"}, nil
+	}
+	return Result{Status: StatusWouldDo}, nil
 }
 
 func (f *hostFacts) checkDir(s Step) (Result, error) {

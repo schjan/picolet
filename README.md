@@ -135,7 +135,8 @@ so a second run applies nothing and an interrupted run resumes. Per rootless
 Host it creates the user (`useradd --create-home --shell /usr/sbin/nologin`, no
 password, a regular account so it gets subordinate IDs), verifies its
 subuid/subgid ranges, enables lingering and waits for the user manager, enables
-and starts the user `podman.socket`, and creates the four directories owned by
+and starts the user `podman.socket` (a socket that is enabled but not running
+is started too), and creates the four directories owned by
 the user (never following a symlink out of the home). The rootful Host gets the
 system `podman.socket` and its `/etc` and `/var/lib/picolet-system`
 directories instead. The Fleet checkout is made readable by every user

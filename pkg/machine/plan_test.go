@@ -65,7 +65,7 @@ func expectFreshMachine(t *testing.T, ops *mocks.MockHostOps) {
 	t.Helper()
 	ops.EXPECT().LookupUser("pi").Return(machine.User{}, false, nil)
 	ops.EXPECT().LookupUser("runner").Return(machine.User{}, false, nil)
-	ops.EXPECT().SystemUnitEnabled(mock.Anything, "podman.socket").Return(false, nil)
+	ops.EXPECT().SystemUnitState(mock.Anything, "podman.socket").Return(machine.UnitState{}, nil)
 	for _, p := range []string{"/etc/picolet/secrets", "/var/lib/picolet-system", "/etc/containers/systemd"} {
 		ops.EXPECT().Stat(p).Return(machine.PathInfo{}, nil)
 	}
@@ -108,7 +108,7 @@ func TestShowPlanPartialMachineUnprivileged(t *testing.T) {
 	ops.EXPECT().SubIDRanges(pi).Return(true, true, nil)
 	ops.EXPECT().LingerEnabled(pi).Return(true, nil)
 	ops.EXPECT().UserManagerRunning(pi).Return(true, nil)
-	ops.EXPECT().UserUnitEnabled(mock.Anything, pi, "podman.socket").Return(true, nil)
+	ops.EXPECT().UserUnitState(mock.Anything, pi, "podman.socket").Return(machine.UnitState{Enabled: true, Active: true}, nil)
 	ops.EXPECT().Stat("/home/pi/.config/picolet/secrets").Return(dir(1000, 1000, 0o700), nil)
 	ops.EXPECT().Stat("/home/pi/.local/share/picolet").Return(dir(1000, 1000, 0o755), nil)
 	ops.EXPECT().Stat("/home/pi/.config/containers/systemd").Return(dir(0, 0, 0o755), nil)
@@ -122,7 +122,7 @@ func TestShowPlanPartialMachineUnprivileged(t *testing.T) {
 		ops.EXPECT().Stat("/home/runner/"+p).Return(machine.PathInfo{}, machine.ErrUnprivileged)
 	}
 
-	ops.EXPECT().SystemUnitEnabled(mock.Anything, "podman.socket").Return(true, nil)
+	ops.EXPECT().SystemUnitState(mock.Anything, "podman.socket").Return(machine.UnitState{Enabled: true}, nil)
 	ops.EXPECT().Stat("/etc/picolet/secrets").Return(dir(0, 0, 0o700), nil)
 	ops.EXPECT().Stat("/var/lib/picolet-system").Return(dir(0, 0, 0o700), nil)
 	ops.EXPECT().Stat("/etc/containers/systemd").Return(dir(0, 0, 0o755), nil)

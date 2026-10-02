@@ -56,8 +56,8 @@ const (
 	StepLinger
 	// StepUserManager: the user's systemd manager is running.
 	StepUserManager
-	// StepPodmanSocket: podman.socket is enabled (the user's, or the system's
-	// for the rootful Host).
+	// StepPodmanSocket: podman.socket is enabled and running (the user's, or
+	// the system's for the rootful Host).
 	StepPodmanSocket
 	// StepDir: a directory the Agent quadlet bind-mounts exists with the
 	// Host's owner and Mode.
@@ -224,9 +224,9 @@ func (s Step) Describe() string { //nolint:cyclop // one case per step kind
 		return "user manager of " + s.Host.User + " running"
 	case StepPodmanSocket:
 		if s.Host.Rootful() {
-			return "system " + podmanSocket + " enabled"
+			return "system " + podmanSocket + " enabled and running"
 		}
-		return "user " + podmanSocket + " of " + s.Host.User + " enabled"
+		return "user " + podmanSocket + " of " + s.Host.User + " enabled and running"
 	case StepDir:
 		return fmt.Sprintf("directory %s, owner %s, mode %04o", s.displayPath(), s.Host.owner(), s.Mode)
 	case StepCheckout:

@@ -31,6 +31,15 @@ func (u User) Owner() Owner {
 	return Owner{UID: u.UID, GID: u.GID}
 }
 
+// UnitState is what bootstrap needs to know of a systemd unit.
+type UnitState struct {
+	// Enabled: the unit starts at boot (enabled-runtime does not survive a
+	// reboot and does not count).
+	Enabled bool
+	// Active: the unit is running now; for a socket, listening.
+	Active bool
+}
+
 // PathInfo describes a path on the Machine. Mode carries the type bits
 // (fs.ModeDir, fs.ModeSymlink) and the permission bits of the path itself;
 // symlinks are not followed.
@@ -57,10 +66,10 @@ type HostOps interface {
 	// UserManagerRunning reports whether the user's systemd manager
 	// (user@<uid>.service) is up and accepting connections.
 	UserManagerRunning(user User) (bool, error)
-	// UserUnitEnabled reports whether unit is enabled in the user's manager.
-	UserUnitEnabled(ctx context.Context, user User, unit string) (bool, error)
-	// SystemUnitEnabled reports whether unit is enabled in the system manager.
-	SystemUnitEnabled(ctx context.Context, unit string) (bool, error)
+	// UserUnitState reports the state of unit in the user's manager.
+	UserUnitState(ctx context.Context, user User, unit string) (UnitState, error)
+	// SystemUnitState reports the state of unit in the system manager.
+	SystemUnitState(ctx context.Context, unit string) (UnitState, error)
 	// Stat describes path without following a final symlink.
 	Stat(path string) (PathInfo, error)
 	// FileContentEquals reports whether path is a regular file holding

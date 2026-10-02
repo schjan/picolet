@@ -720,23 +720,23 @@ func (_c *MockHostOps_SubIDRanges_Call) RunAndReturn(run func(user machine.User)
 	return _c
 }
 
-// SystemUnitEnabled provides a mock function for the type MockHostOps
-func (_mock *MockHostOps) SystemUnitEnabled(ctx context.Context, unit string) (bool, error) {
+// SystemUnitState provides a mock function for the type MockHostOps
+func (_mock *MockHostOps) SystemUnitState(ctx context.Context, unit string) (machine.UnitState, error) {
 	ret := _mock.Called(ctx, unit)
 
 	if len(ret) == 0 {
-		panic("no return value specified for SystemUnitEnabled")
+		panic("no return value specified for SystemUnitState")
 	}
 
-	var r0 bool
+	var r0 machine.UnitState
 	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, string) (bool, error)); ok {
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) (machine.UnitState, error)); ok {
 		return returnFunc(ctx, unit)
 	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, string) bool); ok {
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) machine.UnitState); ok {
 		r0 = returnFunc(ctx, unit)
 	} else {
-		r0 = ret.Get(0).(bool)
+		r0 = ret.Get(0).(machine.UnitState)
 	}
 	if returnFunc, ok := ret.Get(1).(func(context.Context, string) error); ok {
 		r1 = returnFunc(ctx, unit)
@@ -746,19 +746,19 @@ func (_mock *MockHostOps) SystemUnitEnabled(ctx context.Context, unit string) (b
 	return r0, r1
 }
 
-// MockHostOps_SystemUnitEnabled_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SystemUnitEnabled'
-type MockHostOps_SystemUnitEnabled_Call struct {
+// MockHostOps_SystemUnitState_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SystemUnitState'
+type MockHostOps_SystemUnitState_Call struct {
 	*mock.Call
 }
 
-// SystemUnitEnabled is a helper method to define mock.On call
+// SystemUnitState is a helper method to define mock.On call
 //   - ctx context.Context
 //   - unit string
-func (_e *MockHostOps_Expecter) SystemUnitEnabled(ctx any, unit any) *MockHostOps_SystemUnitEnabled_Call {
-	return &MockHostOps_SystemUnitEnabled_Call{Call: _e.mock.On("SystemUnitEnabled", ctx, unit)}
+func (_e *MockHostOps_Expecter) SystemUnitState(ctx any, unit any) *MockHostOps_SystemUnitState_Call {
+	return &MockHostOps_SystemUnitState_Call{Call: _e.mock.On("SystemUnitState", ctx, unit)}
 }
 
-func (_c *MockHostOps_SystemUnitEnabled_Call) Run(run func(ctx context.Context, unit string)) *MockHostOps_SystemUnitEnabled_Call {
+func (_c *MockHostOps_SystemUnitState_Call) Run(run func(ctx context.Context, unit string)) *MockHostOps_SystemUnitState_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
@@ -776,12 +776,12 @@ func (_c *MockHostOps_SystemUnitEnabled_Call) Run(run func(ctx context.Context, 
 	return _c
 }
 
-func (_c *MockHostOps_SystemUnitEnabled_Call) Return(b bool, err error) *MockHostOps_SystemUnitEnabled_Call {
-	_c.Call.Return(b, err)
+func (_c *MockHostOps_SystemUnitState_Call) Return(unitState machine.UnitState, err error) *MockHostOps_SystemUnitState_Call {
+	_c.Call.Return(unitState, err)
 	return _c
 }
 
-func (_c *MockHostOps_SystemUnitEnabled_Call) RunAndReturn(run func(ctx context.Context, unit string) (bool, error)) *MockHostOps_SystemUnitEnabled_Call {
+func (_c *MockHostOps_SystemUnitState_Call) RunAndReturn(run func(ctx context.Context, unit string) (machine.UnitState, error)) *MockHostOps_SystemUnitState_Call {
 	_c.Call.Return(run)
 	return _c
 }
@@ -846,23 +846,23 @@ func (_c *MockHostOps_UserManagerRunning_Call) RunAndReturn(run func(user machin
 	return _c
 }
 
-// UserUnitEnabled provides a mock function for the type MockHostOps
-func (_mock *MockHostOps) UserUnitEnabled(ctx context.Context, user machine.User, unit string) (bool, error) {
+// UserUnitState provides a mock function for the type MockHostOps
+func (_mock *MockHostOps) UserUnitState(ctx context.Context, user machine.User, unit string) (machine.UnitState, error) {
 	ret := _mock.Called(ctx, user, unit)
 
 	if len(ret) == 0 {
-		panic("no return value specified for UserUnitEnabled")
+		panic("no return value specified for UserUnitState")
 	}
 
-	var r0 bool
+	var r0 machine.UnitState
 	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, machine.User, string) (bool, error)); ok {
+	if returnFunc, ok := ret.Get(0).(func(context.Context, machine.User, string) (machine.UnitState, error)); ok {
 		return returnFunc(ctx, user, unit)
 	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, machine.User, string) bool); ok {
+	if returnFunc, ok := ret.Get(0).(func(context.Context, machine.User, string) machine.UnitState); ok {
 		r0 = returnFunc(ctx, user, unit)
 	} else {
-		r0 = ret.Get(0).(bool)
+		r0 = ret.Get(0).(machine.UnitState)
 	}
 	if returnFunc, ok := ret.Get(1).(func(context.Context, machine.User, string) error); ok {
 		r1 = returnFunc(ctx, user, unit)
@@ -872,20 +872,20 @@ func (_mock *MockHostOps) UserUnitEnabled(ctx context.Context, user machine.User
 	return r0, r1
 }
 
-// MockHostOps_UserUnitEnabled_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'UserUnitEnabled'
-type MockHostOps_UserUnitEnabled_Call struct {
+// MockHostOps_UserUnitState_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'UserUnitState'
+type MockHostOps_UserUnitState_Call struct {
 	*mock.Call
 }
 
-// UserUnitEnabled is a helper method to define mock.On call
+// UserUnitState is a helper method to define mock.On call
 //   - ctx context.Context
 //   - user machine.User
 //   - unit string
-func (_e *MockHostOps_Expecter) UserUnitEnabled(ctx any, user any, unit any) *MockHostOps_UserUnitEnabled_Call {
-	return &MockHostOps_UserUnitEnabled_Call{Call: _e.mock.On("UserUnitEnabled", ctx, user, unit)}
+func (_e *MockHostOps_Expecter) UserUnitState(ctx any, user any, unit any) *MockHostOps_UserUnitState_Call {
+	return &MockHostOps_UserUnitState_Call{Call: _e.mock.On("UserUnitState", ctx, user, unit)}
 }
 
-func (_c *MockHostOps_UserUnitEnabled_Call) Run(run func(ctx context.Context, user machine.User, unit string)) *MockHostOps_UserUnitEnabled_Call {
+func (_c *MockHostOps_UserUnitState_Call) Run(run func(ctx context.Context, user machine.User, unit string)) *MockHostOps_UserUnitState_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
@@ -908,12 +908,12 @@ func (_c *MockHostOps_UserUnitEnabled_Call) Run(run func(ctx context.Context, us
 	return _c
 }
 
-func (_c *MockHostOps_UserUnitEnabled_Call) Return(b bool, err error) *MockHostOps_UserUnitEnabled_Call {
-	_c.Call.Return(b, err)
+func (_c *MockHostOps_UserUnitState_Call) Return(unitState machine.UnitState, err error) *MockHostOps_UserUnitState_Call {
+	_c.Call.Return(unitState, err)
 	return _c
 }
 
-func (_c *MockHostOps_UserUnitEnabled_Call) RunAndReturn(run func(ctx context.Context, user machine.User, unit string) (bool, error)) *MockHostOps_UserUnitEnabled_Call {
+func (_c *MockHostOps_UserUnitState_Call) RunAndReturn(run func(ctx context.Context, user machine.User, unit string) (machine.UnitState, error)) *MockHostOps_UserUnitState_Call {
 	_c.Call.Return(run)
 	return _c
 }
