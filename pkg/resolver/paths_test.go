@@ -223,6 +223,14 @@ func TestResolveHostPathsPicoletYmlOutsideBundleRootIsOrdinary(t *testing.T) {
 		assert.Empty(t, resolved.Hooks)
 	})
 
+	t.Run("under a directory that cannot be a bundle", func(t *testing.T) {
+		t.Parallel()
+		_, err := resolvePaths(t, "  paths: [services/]\n", map[string]string{
+			"services/a\\b/picolet.yml": "hooks: []\n",
+		})
+		require.ErrorContains(t, err, `unknown extension ".yml"`)
+	})
+
 	t.Run("direct root entry errors", func(t *testing.T) {
 		t.Parallel()
 		_, err := resolvePaths(t, "  paths: [picolet.yml]\n", map[string]string{

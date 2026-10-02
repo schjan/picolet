@@ -240,7 +240,7 @@ func TestFilePathValidatesInputs(t *testing.T) {
 	}
 }
 
-func TestBundleFilePathFuncUsesHostDataDir(t *testing.T) {
+func TestDataPathFuncUsesHostDataDir(t *testing.T) {
 	t.Parallel()
 
 	manifestSpec, _ := config.SpecFor(config.CategoryManifest)

@@ -252,7 +252,7 @@ func (r *Resolver) provider(p ProviderTemplate) ProviderTemplate {
 func serviceTemplatePrefixes(services []string) []string {
 	prefixes := make([]string, 0, len(services))
 	for _, service := range services {
-		prefixes = append(prefixes, path.Join("services", service)+"/")
+		prefixes = append(prefixes, path.Join(servicesRoot, service)+"/")
 	}
 	return prefixes
 }
@@ -432,11 +432,7 @@ func (r *Resolver) destPath(ref fileRef) (string, error) {
 }
 
 func (r *Resolver) dataDestPath(logicalPath string) string {
-	return filepath.Join(r.dataDir, filepath.FromSlash(deployedLogicalPath(logicalPath)))
-}
-
-func deployedLogicalPath(logicalPath string) string {
-	return config.TrimTemplateSuffix(logicalPath)
+	return filepath.Join(r.dataDir, filepath.FromSlash(config.TrimTemplateSuffix(logicalPath)))
 }
 
 // secretDestPath returns the DestPath for either a provider-backed ref

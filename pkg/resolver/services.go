@@ -33,7 +33,7 @@ func newFileRef(srcPath, logical string, category config.Category) fileRef {
 	ref := fileRef{SrcPath: srcPath, Category: category}
 	if spec, _ := config.SpecFor(category); spec.Dest == config.DestData {
 		ref.DataPath = logical
-		ref.RelPath = strings.TrimPrefix(deployedLogicalPath(logical), spec.Subdir+"/")
+		ref.RelPath = strings.TrimPrefix(config.TrimTemplateSuffix(logical), spec.Subdir+"/")
 	}
 	return ref
 }
@@ -68,6 +68,10 @@ type expansion struct {
 	Files []fileRef
 	Hooks []hookRef
 }
+
+// servicesRoot is the Fleet directory holding one Service Bundle per
+// subdirectory.
+const servicesRoot = "services"
 
 // validateServiceName rejects bundle names that would resolve outside
 // services/<name>/ once joined to "services/" and cleaned: a name with a path
@@ -115,7 +119,7 @@ func expandServiceBundle(fsys fs.FS, service string) (*expansion, error) {
 	if err := validateServiceName(service); err != nil {
 		return nil, err
 	}
-	root := path.Join("services", service)
+	root := path.Join(servicesRoot, service)
 	rootEntries, err := readBundleRoot(fsys, root)
 	if err != nil {
 		return nil, err
@@ -189,8 +193,12 @@ func isHookMetadataFile(name string) bool {
 // metadata is read. A file of that name elsewhere (files/picolet.yml, a
 // nested bundle directory) is ordinary content.
 func isBundleMetadataPath(srcPath string) bool {
-	parts := strings.Split(srcPath, "/")
-	return len(parts) == 3 && parts[0] == "services" && isHookMetadataFile(parts[2])
+	rest, ok := strings.CutPrefix(srcPath, servicesRoot+"/")
+	if !ok {
+		return false
+	}
+	name, file, ok := strings.Cut(rest, "/")
+	return ok && validateServiceName(name) == nil && isHookMetadataFile(file)
 }
 
 func (e *expansion) append(other *expansion) {
