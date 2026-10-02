@@ -163,10 +163,10 @@ func TestExpandServiceBundlesRejectsInvalidName(t *testing.T) {
 	t.Parallel()
 
 	// Prepare a filesystem that would be readable under a traversed path, to
-	// prove validation fails fast rather than silently loading from `quadlets/`.
+	// prove validation fails fast rather than loading from `quadlets/`.
 	fsys := fstest.MapFS{
 		"services/web/containers/web.container": &fstest.MapFile{Data: []byte("[Container]\nImage=a\n")},
-		"quadlets/containers/legacy.container":  &fstest.MapFile{Data: []byte("[Container]\nImage=b\n")},
+		"quadlets/other.container":              &fstest.MapFile{Data: []byte("[Container]\nImage=b\n")},
 	}
 
 	tests := []struct {
@@ -337,7 +337,7 @@ func TestResolveHostBundleGenericErrors(t *testing.T) {
 		{
 			name:  "metadata only",
 			base:  "  services: [web]\n",
-			files: map[string]string{"services/web/picolet.yml": "hooks: []\n", "services/web/app/picolet.yml": "hooks: []\n"},
+			files: map[string]string{"services/web/picolet.yml": "hooks: []\n"},
 			want:  "services/web: empty service bundle",
 		},
 		{

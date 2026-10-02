@@ -695,7 +695,10 @@ path. Directories are expanded recursively.
    systemd extensions to the systemd directory.
 4. Any other file — unknown extension or none (`Containerfile`, `README.md`,
    `.gitkeep`) — is an error: move it under `files/` or remove it from the listed
-   directory. `picolet.yml`/`picolet.yml.tmpl` are skipped.
+   directory. The one exception is a Service Bundle's root metadata,
+   `services/<name>/picolet.yml` / `picolet.yml.tmpl`, which is skipped; a
+   `picolet.yml` anywhere else (`files/picolet.yml`) is an ordinary file and takes
+   these rules.
 
 Entries are Fleet-root-relative; `..` is rejected. A symlink below a listed directory
 is an error (directories are walked without following links); a symlinked file listed
