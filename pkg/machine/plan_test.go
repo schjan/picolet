@@ -49,7 +49,7 @@ func linuxHost() machine.Environment {
 func showPlan(t *testing.T, repoDir string, ops machine.HostOps) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	err := machine.ShowPlan(context.Background(), machine.PlanConfig{
+	err := machine.ShowPlan(context.Background(), machine.Config{
 		Machine: "vps-1",
 		RepoDir: repoDir,
 		Env:     linuxHost(),
@@ -65,7 +65,7 @@ func expectFreshMachine(t *testing.T, ops *mocks.MockHostOps) {
 	t.Helper()
 	ops.EXPECT().LookupUser("pi").Return(machine.User{}, false, nil)
 	ops.EXPECT().LookupUser("runner").Return(machine.User{}, false, nil)
-	ops.EXPECT().SystemUnitEnabled(mock.Anything, "podman.socket").Return(false, nil)
+	ops.EXPECT().SystemUnitState(mock.Anything, "podman.socket").Return(machine.UnitState{}, nil)
 	for _, p := range []string{"/etc/picolet/secrets", "/var/lib/picolet-system", "/etc/containers/systemd"} {
 		ops.EXPECT().Stat(p).Return(machine.PathInfo{}, nil)
 	}
@@ -108,7 +108,7 @@ func TestShowPlanPartialMachineUnprivileged(t *testing.T) {
 	ops.EXPECT().SubIDRanges(pi).Return(true, true, nil)
 	ops.EXPECT().LingerEnabled(pi).Return(true, nil)
 	ops.EXPECT().UserManagerRunning(pi).Return(true, nil)
-	ops.EXPECT().UserUnitEnabled(mock.Anything, pi, "podman.socket").Return(true, nil)
+	ops.EXPECT().UserUnitState(mock.Anything, pi, "podman.socket").Return(machine.UnitState{Enabled: true, Active: true}, nil)
 	ops.EXPECT().Stat("/home/pi/.config/picolet/secrets").Return(dir(1000, 1000, 0o700), nil)
 	ops.EXPECT().Stat("/home/pi/.local/share/picolet").Return(dir(1000, 1000, 0o755), nil)
 	ops.EXPECT().Stat("/home/pi/.config/containers/systemd").Return(dir(0, 0, 0o755), nil)
@@ -122,7 +122,7 @@ func TestShowPlanPartialMachineUnprivileged(t *testing.T) {
 		ops.EXPECT().Stat("/home/runner/"+p).Return(machine.PathInfo{}, machine.ErrUnprivileged)
 	}
 
-	ops.EXPECT().SystemUnitEnabled(mock.Anything, "podman.socket").Return(true, nil)
+	ops.EXPECT().SystemUnitState(mock.Anything, "podman.socket").Return(machine.UnitState{Enabled: true}, nil)
 	ops.EXPECT().Stat("/etc/picolet/secrets").Return(dir(0, 0, 0o700), nil)
 	ops.EXPECT().Stat("/var/lib/picolet-system").Return(dir(0, 0, 0o700), nil)
 	ops.EXPECT().Stat("/etc/containers/systemd").Return(dir(0, 0, 0o755), nil)
@@ -138,32 +138,32 @@ func TestShowPlanRejects(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		cfg  machine.PlanConfig
+		cfg  machine.Config
 		want string
 	}{
 		{
 			name: "unknown Machine",
-			cfg:  machine.PlanConfig{Machine: "vps-2", RepoDir: exampleFleet, Env: linuxHost()},
+			cfg:  machine.Config{Machine: "vps-2", RepoDir: exampleFleet, Env: linuxHost()},
 			want: `no Host in the Fleet runs on machine "vps-2" (machines: dev-host, e2e-host, node-1, node-2, vps-1, web-1)`,
 		},
 		{
 			name: "missing machine name",
-			cfg:  machine.PlanConfig{RepoDir: exampleFleet, Env: linuxHost()},
+			cfg:  machine.Config{RepoDir: exampleFleet, Env: linuxHost()},
 			want: "machine name is required",
 		},
 		{
 			name: "missing repo dir",
-			cfg:  machine.PlanConfig{Machine: "vps-1", Env: linuxHost()},
+			cfg:  machine.Config{Machine: "vps-1", Env: linuxHost()},
 			want: "--repo-dir is required",
 		},
 		{
 			name: "not Linux",
-			cfg:  machine.PlanConfig{Machine: "vps-1", RepoDir: exampleFleet, Env: machine.Environment{GOOS: "darwin"}},
+			cfg:  machine.Config{Machine: "vps-1", RepoDir: exampleFleet, Env: machine.Environment{GOOS: "darwin"}},
 			want: "bootstrap machine needs Linux",
 		},
 		{
 			name: "inside a container",
-			cfg:  machine.PlanConfig{Machine: "vps-1", RepoDir: exampleFleet, Env: machine.Environment{GOOS: "linux", InContainer: true}},
+			cfg:  machine.Config{Machine: "vps-1", RepoDir: exampleFleet, Env: machine.Environment{GOOS: "linux", InContainer: true}},
 			want: "not inside a container",
 		},
 	}

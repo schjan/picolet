@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // OSHostOps is HostOps on the Machine the process runs on.
@@ -22,13 +23,16 @@ type OSHostOps struct {
 	// root prefixes every Machine path; "/" outside tests.
 	root string
 	euid int
+	// managerTimeout bounds WaitUserManager, which checks every pollInterval.
+	managerTimeout time.Duration
+	pollInterval   time.Duration
 }
 
 var _ HostOps = (*OSHostOps)(nil)
 
 // NewOSHostOps returns HostOps for this Machine.
 func NewOSHostOps() *OSHostOps {
-	return &OSHostOps{root: "/", euid: os.Geteuid()}
+	return &OSHostOps{root: "/", euid: os.Geteuid(), managerTimeout: defaultManagerTimeout, pollInterval: defaultPollInterval}
 }
 
 func (o *OSHostOps) path(p string) string {
@@ -124,12 +128,12 @@ func (o *OSHostOps) exists(p string) (bool, error) {
 	return info.Exists, err
 }
 
-// UserUnitEnabled implements HostOps. Only root and the user can ask the
+// UserUnitState implements HostOps. Only root and the user can ask the
 // user's manager. Root asks as the user by switching credentials in the
 // child directly: runuser/su would open a PAM session, whose hooks
 // (pam_systemd, pam_mkhomedir) may write to the Machine.
-func (o *OSHostOps) UserUnitEnabled(ctx context.Context, u User, unit string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "systemctl", "--user", "is-enabled", unit)
+func (o *OSHostOps) UserUnitState(ctx context.Context, u User, unit string) (UnitState, error) {
+	cmd := unitStateCommand(ctx, "--user", unit)
 	runtimeDir := fmt.Sprintf("/run/user/%d", u.UID)
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
@@ -140,14 +144,14 @@ func (o *OSHostOps) UserUnitEnabled(ctx context.Context, u User, unit string) (b
 	case 0:
 		cred, err := credential(u)
 		if err != nil {
-			return false, err
+			return UnitState{}, err
 		}
 		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
 	case u.UID:
 	default:
-		return false, fmt.Errorf("%w: systemctl --user of %s", ErrUnprivileged, u.Name)
+		return UnitState{}, fmt.Errorf("%w: systemctl --user of %s", ErrUnprivileged, u.Name)
 	}
-	return unitEnabled(cmd)
+	return unitState(cmd)
 }
 
 // credential is u's uid and primary gid with no supplementary groups, so the
@@ -159,24 +163,35 @@ func credential(u User) (*syscall.Credential, error) {
 	return &syscall.Credential{Uid: uint32(u.UID), Gid: uint32(u.GID), Groups: []uint32{}}, nil
 }
 
-// SystemUnitEnabled implements HostOps.
-func (o *OSHostOps) SystemUnitEnabled(ctx context.Context, unit string) (bool, error) {
-	return unitEnabled(exec.CommandContext(ctx, "systemctl", "is-enabled", unit))
+// SystemUnitState implements HostOps.
+func (o *OSHostOps) SystemUnitState(ctx context.Context, unit string) (UnitState, error) {
+	return unitState(unitStateCommand(ctx, "--system", unit))
 }
 
-// unitEnabled runs a `systemctl is-enabled` command. It exits non-zero for
-// every state but enabled ones and prints the state on stdout; only a run
-// without a state is an error. enabled-runtime does not survive a reboot, so
-// it counts as not enabled.
-func unitEnabled(cmd *exec.Cmd) (bool, error) {
+func unitStateCommand(ctx context.Context, manager, unit string) *exec.Cmd {
+	return exec.CommandContext(ctx, "systemctl", manager, "show", "--property=UnitFileState", "--property=ActiveState", unit)
+}
+
+// unitState runs a unitStateCommand and parses its KEY=value lines. A unit
+// systemd does not know shows as neither enabled nor active.
+func unitState(cmd *exec.Cmd) (UnitState, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
-	state, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
-	if state == "" && err != nil {
-		return false, fmt.Errorf("%s: %w: %s", strings.Join(cmd.Args, " "), err, strings.TrimSpace(stderr.String()))
+	if err != nil {
+		return UnitState{}, fmt.Errorf("%s: %w: %s", strings.Join(cmd.Args, " "), err, strings.TrimSpace(stderr.String()))
 	}
-	return state == "enabled", nil
+	var state UnitState
+	for line := range strings.Lines(string(out)) {
+		key, value, _ := strings.Cut(strings.TrimSpace(line), "=")
+		switch key {
+		case "UnitFileState":
+			state.Enabled = value == "enabled"
+		case "ActiveState":
+			state.Active = value == "active"
+		}
+	}
+	return state, nil
 }
 
 // Stat implements HostOps.
@@ -211,7 +226,7 @@ func (o *OSHostOps) FileContentEquals(p string, content []byte) (bool, error) {
 // WorldReadableTree implements HostOps. Symlinks inside the tree are not
 // followed; their own mode bits mean nothing.
 func (o *OSHostOps) WorldReadableTree(p string) (bool, error) {
-	if ok, err := o.ancestorsSearchable(p); err != nil || !ok {
+	if blocked, err := o.unsearchableAncestor(p); err != nil || blocked != "" {
 		return false, err
 	}
 	readable := true
@@ -238,28 +253,35 @@ func (o *OSHostOps) WorldReadableTree(p string) (bool, error) {
 	return readable, nil
 }
 
-// ancestorsSearchable reports whether every directory above p grants search
-// to others.
-func (o *OSHostOps) ancestorsSearchable(p string) (bool, error) {
+// unsearchableAncestor returns the first directory above p, from p upwards,
+// that is missing or denies search to others; "" when every one grants it.
+func (o *OSHostOps) unsearchableAncestor(p string) (string, error) {
 	for dir := filepath.Dir(p); ; dir = filepath.Dir(dir) {
 		info, err := o.Stat(dir)
-		if err != nil || !info.Exists || info.Mode.Perm()&0o001 == 0 {
-			return false, err
+		if err != nil {
+			return "", err
+		}
+		if !info.Exists || info.Mode.Perm()&0o001 == 0 {
+			return dir, nil
 		}
 		if dir == filepath.Dir(dir) {
-			return true, nil
+			return "", nil
 		}
 	}
 }
 
-// worldReadable reports whether others can read an entry of mode: a
-// directory needs read and search, a symlink's own bits mean nothing.
+// worldReadable reports whether others can read an entry of mode as chmod
+// o+rX would leave it; a symlink's own bits mean nothing.
 func worldReadable(mode fs.FileMode) bool {
-	switch {
-	case mode&fs.ModeSymlink != 0:
-		return true
-	case mode.IsDir():
-		return mode.Perm()&0o005 == 0o005
+	return mode&fs.ModeSymlink != 0 || worldReadableMode(mode) == mode
+}
+
+// worldReadableMode is mode after chmod o+rX: read for others, and search
+// or execute for others on a directory or a file someone may execute.
+func worldReadableMode(mode fs.FileMode) fs.FileMode {
+	add := fs.FileMode(0o004)
+	if mode.IsDir() || mode.Perm()&0o111 != 0 {
+		add |= 0o001
 	}
-	return mode.Perm()&0o004 != 0
+	return mode | add
 }

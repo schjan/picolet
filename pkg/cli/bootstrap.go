@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 
 	"github.com/urfave/cli/v3"
@@ -105,23 +106,33 @@ func bootstrapCreateCmd() *cli.Command {
 func bootstrapMachineCmd() *cli.Command {
 	return &cli.Command{
 		Name:      "machine",
-		Usage:     "bootstrap every Host the Fleet declares on this Machine",
+		Usage:     "bootstrap every Host the Fleet declares on this Machine (as root; idempotent)",
 		ArgsUsage: "<machine>",
 		Before:    setupTextLogging,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "repo-dir", Usage: "Fleet checkout on this Machine"},
-			&cli.BoolFlag{Name: "plan", Required: true, Usage: "print the ordered steps with would do / already done / unknown, change nothing (required: only planning is supported so far)"},
+			&cli.BoolFlag{Name: "plan", Usage: "print the ordered steps with would do / already done / unknown, change nothing"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if cmd.NArg() > 1 {
 				return fmt.Errorf("expected one machine, got %d arguments", cmd.NArg())
 			}
-			return machine.ShowPlan(ctx, machine.PlanConfig{
+			_, lookErr := exec.LookPath("podman")
+			cfg := machine.Config{
 				Machine: cmd.Args().First(),
 				RepoDir: cmd.String("repo-dir"),
-				Env:     machine.Environment{GOOS: runtime.GOOS, InContainer: agentcfg.InContainer()},
-				Stdout:  os.Stdout,
-			}, machine.NewOSHostOps())
+				Env: machine.Environment{
+					GOOS:        runtime.GOOS,
+					InContainer: agentcfg.InContainer(),
+					Root:        os.Geteuid() == 0,
+					Podman:      lookErr == nil,
+				},
+				Stdout: os.Stdout,
+			}
+			if cmd.Bool("plan") {
+				return machine.ShowPlan(ctx, cfg, machine.NewOSHostOps())
+			}
+			return machine.Run(ctx, cfg, machine.NewOSHostOps())
 		},
 	}
 }

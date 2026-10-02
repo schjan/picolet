@@ -78,7 +78,7 @@ Other packages (`agent`, `health`, `rollback`) consume these interfaces. Mocks a
 
 Note: `SocketPodmanClient` stores a `connCtx context.Context` because the Podman binding library embeds the socket connection into the context — this is intentional (`//nolint:containedctx`).
 
-`bootstrap machine` has its own boundary: `machine.HostOps` (`pkg/machine`, implemented by `OSHostOps`, mock in `mocks/machine/`) — the Machine's users, sessions, units and paths. `machine.New` is the pure planner (Fleet + Machine → ordered steps with stable ids, data only); `machine.Evaluate` derives each step's check from its kind and annotates it would do / already done / unknown (`ErrUnprivileged`). Only the read side exists so far.
+`bootstrap machine` has its own boundary: `machine.HostOps` (`pkg/machine`, implemented by `OSHostOps`, mock in `mocks/machine/`) — the Machine's users, sessions, units and paths, a read side (checks) and a write side (applies, root). `machine.New` is the pure planner (Fleet + Machine → ordered steps with stable ids, data only); `machine.Evaluate` derives each step's check from its kind and annotates it would do / already done / unknown (`ErrUnprivileged`); `machine.Run` checks each step the same way and applies it through the write side when not done — a failing step stops its Host only, the per-Host bootstrap phase is not run yet. Writes into a Host user's home go through `os.Root` (`EnsureDir`/`WriteFile` take a base and a path below it), so a symlink the user planted never leads root out of the home. `OSHostOps`' commands (`useradd`, `loginctl`, `runuser`, `systemctl`) are not exercised by CI (no root); verify them on a scratch VM.
 
 ### Function Types as Interfaces
 

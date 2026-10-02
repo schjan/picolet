@@ -11,15 +11,7 @@ import (
 // count per status.
 func Render(w io.Writer, plan *Plan, results []Result) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(tw, "Machine %s: %d Hosts\n", plan.Machine, len(plan.Hosts))
-	for _, h := range plan.Hosts {
-		runsAs := "rootful"
-		if !h.Rootful() {
-			runsAs = "user " + h.User
-		}
-		fmt.Fprintf(tw, "  %s\t%s\tlisten port %d\n", h.Hostname, runsAs, h.ListenPort)
-	}
-	fmt.Fprintf(tw, "Fleet checkout: %s\n", plan.RepoDir)
+	writeHeader(tw, plan)
 
 	counts := map[Status]int{}
 	for i, phase := range Phases {
@@ -48,4 +40,17 @@ func Render(w io.Writer, plan *Plan, results []Result) error {
 		return fmt.Errorf("writing plan: %w", err)
 	}
 	return nil
+}
+
+// writeHeader prints the Machine's Hosts and the Fleet checkout.
+func writeHeader(tw *tabwriter.Writer, plan *Plan) {
+	fmt.Fprintf(tw, "Machine %s: %d Hosts\n", plan.Machine, len(plan.Hosts))
+	for _, h := range plan.Hosts {
+		runsAs := "rootful"
+		if !h.Rootful() {
+			runsAs = "user " + h.User
+		}
+		fmt.Fprintf(tw, "  %s\t%s\tlisten port %d\n", h.Hostname, runsAs, h.ListenPort)
+	}
+	fmt.Fprintf(tw, "Fleet checkout: %s\n", plan.RepoDir)
 }

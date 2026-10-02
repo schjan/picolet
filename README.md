@@ -107,10 +107,10 @@ chmod 600 ~/.config/picolet/config.yml ~/.config/picolet/secrets/git_token
 bash deploy/bootstrap/bootstrap-rootless.sh
 ```
 
-#### Previewing a Machine bootstrap
+#### Bootstrapping a Machine
 
 `picolet bootstrap machine` brings up every Host whose `host.yml` declares a
-Machine. So far it only plans: run on the Machine, with a Fleet checkout there,
+Machine. Run it on the Machine, with a Fleet checkout there. First preview:
 
 ```bash
 picolet bootstrap machine vps-1 --repo-dir /srv/fleet --plan
@@ -123,8 +123,36 @@ credential files; then the per-Host bootstrap), each marked `would do`,
 `already done` or `unknown`. It changes nothing and does not need root; a
 check only root can make (another user's `0700` home, `systemctl --user` of
 another user) shows as `unknown`, so run it with `sudo` for a definitive plan.
-It refuses to run inside a container or on anything but Linux. Each Host listens
-on the port the Fleet declares (`listen_port:`); bootstrap never allocates one.
+
+Without `--plan` the command carries the steps out, as root:
+
+```bash
+sudo picolet bootstrap machine vps-1 --repo-dir /srv/fleet
+```
+
+Every step is checked first and applied only when its end state does not hold,
+so a second run applies nothing and an interrupted run resumes. Per rootless
+Host it creates the user (`useradd --create-home --shell /usr/sbin/nologin`, no
+password, a regular account so it gets subordinate IDs), verifies its
+subuid/subgid ranges, enables lingering and waits for the user manager, enables
+and starts the user `podman.socket` (a socket that is enabled but not running
+is started too), and creates the four directories owned by
+the user (never following a symlink out of the home). The rootful Host gets the
+system `podman.socket` and its `/etc` and `/var/lib/picolet-system`
+directories instead. The Fleet checkout is made readable by every user
+(`chmod -R o+rX`); its parent directories must already grant search to others,
+so keep it out of `/root` (e.g. `/srv/fleet`), and a hard-linked file that needs
+the change stops the step (it would open the other link too: clone with
+`git clone --no-hardlinks`). Bootstrap never allocates
+subuid/subgid ranges: a user without them stops that Host with the command to
+add them (`usermod --add-subuids 100000-165535 --add-subgids 100000-165535 <user>`;
+pick a free range if another user holds that one). The other Hosts go on, and
+the command exits non-zero. It does not start the Agents yet: the per-Host
+bootstrap is not run.
+
+Both forms refuse to run inside a container or on anything but Linux; a run
+also refuses without root or without Podman installed. Each Host listens on the
+port the Fleet declares (`listen_port:`); bootstrap never allocates one.
 
 #### Containerized picolet & `host_data_dir`
 
