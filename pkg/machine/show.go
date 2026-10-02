@@ -99,6 +99,11 @@ func load(cfg Config) (*Plan, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resolving --secrets-dir: %w", err)
 		}
+		// The setup makes the checkout readable by every user.
+		if rel, err := filepath.Rel(repoDir, dir); err == nil && (rel == "." || filepath.IsLocal(rel)) {
+			return nil, fmt.Errorf("--secrets-dir must not lie inside the Fleet checkout %s: "+
+				"bootstrap makes the checkout readable by every user", repoDir)
+		}
 		// An os.Root: a symlink below the directory cannot read, as root,
 		// a file outside it into a Host's secrets.
 		root, err := os.OpenRoot(dir)

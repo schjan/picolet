@@ -282,6 +282,19 @@ func TestOSHostOpsWriteFileStaysBelowBase(t *testing.T) {
 	require.ErrorIs(t, err, fs.ErrNotExist)
 }
 
+// A directory where the file belongs is refused with what to do, never
+// removed: it may hold files someone keeps.
+func TestOSHostOpsWriteFileRefusesDirectory(t *testing.T) {
+	t.Parallel()
+	ops := machineRoot(t, map[string]fs.FileMode{"/home/pi/.config/picolet/secrets/git-token": 0o700}, nil)
+
+	err := ops.WriteFile("/home/pi", ".config/picolet/secrets/git-token", []byte("x"), me(), 0o600)
+	require.ErrorContains(t, err, "is a directory; remove it")
+	entries, err := os.ReadDir(filepath.Join(ops.root, "/home/pi/.config/picolet/secrets"))
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "no temporary file is left behind")
+}
+
 // A file whose content is current gets owner and mode in place: same inode,
 // same content.
 func TestOSHostOpsSetOwnerMode(t *testing.T) {

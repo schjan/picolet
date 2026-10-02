@@ -39,13 +39,21 @@ type Result struct {
 	Status Status
 	// Detail is what the check found, when it adds to Status.
 	Detail string
-	// AgentRestart: applying the step writes a file the Host's running
-	// Agent has not read, so the Agent needs a restart to see it.
-	AgentRestart bool
-	// OwnerModeOnly: the content already holds, applying the step only sets
-	// owner and mode.
-	OwnerModeOnly bool
+	// fix is how a run brings a StepCredential about.
+	fix credentialFix
 }
+
+// credentialFix is how a run brings a credential file about; zero for any
+// other step.
+type credentialFix int
+
+const (
+	// fixContent: write the content, which the Host's running Agent has not
+	// read: the Agent needs a restart.
+	fixContent credentialFix = iota + 1
+	// fixOwnerMode: the content holds; set owner and mode in place.
+	fixOwnerMode
+)
 
 // Evaluate runs every step's check through the read side of ops, in plan
 // order. It writes nothing. A check the invoking user cannot perform yields
@@ -318,6 +326,9 @@ func (f *hostFacts) checkCredential(s Step) (Result, error) {
 		return Result{}, err
 	case !info.Exists:
 		return credentialWrite("missing"), nil
+	case info.Mode.IsDir():
+		// The write fails, with this same advice: nothing is removed.
+		return Result{Status: StatusWouldDo, Detail: "is a directory, which a run refuses to replace: remove it", fix: fixContent}, nil
 	case !info.Mode.IsRegular():
 		return credentialWrite("exists and is not a regular file"), nil
 	}
@@ -329,14 +340,16 @@ func (f *hostFacts) checkCredential(s Step) (Result, error) {
 		return credentialWrite("content differs"), nil
 	}
 	r := ownedResult(info, owner, s.Mode)
-	r.OwnerModeOnly = r.Status == StatusWouldDo
+	if r.Status == StatusWouldDo {
+		r.fix = fixOwnerMode
+	}
 	return r, nil
 }
 
 // credentialWrite is the result of a credential file whose content a run
 // writes.
 func credentialWrite(detail string) Result {
-	return Result{Status: StatusWouldDo, Detail: detail + ", Agent restart required", AgentRestart: true}
+	return Result{Status: StatusWouldDo, Detail: detail + ", Agent restart required", fix: fixContent}
 }
 
 // ownedResult is done for an existing path with owner and permission mode.

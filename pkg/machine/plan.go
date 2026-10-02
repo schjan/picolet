@@ -60,8 +60,8 @@ const (
 	// StepPodmanSocket: podman.socket is enabled and running (the user's, or
 	// the system's for the rootful Host).
 	StepPodmanSocket
-	// StepDir: a directory the Agent quadlet bind-mounts exists with the
-	// Host's owner and Mode.
+	// StepDir: a directory the Agent quadlet bind-mounts, or a subdirectory
+	// of credential files, exists with the Host's owner and Mode.
 	StepDir
 	// StepCheckout: the Fleet checkout is readable by the Host's user.
 	StepCheckout

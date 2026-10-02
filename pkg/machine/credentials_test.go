@@ -88,8 +88,9 @@ func TestRunPlacesSecretsDirFiles(t *testing.T) {
 	ops.EXPECT().Stat("/home/pi/.config/picolet/secrets/git-token").Return(machine.PathInfo{}, nil)
 	ops.EXPECT().WriteFile("/home/pi", ".config/picolet/secrets/git-token", []byte("pi-token"), piOwner, os.FileMode(0o600)).
 		Return(nil).Once()
-	ops.EXPECT().Stat("/home/pi/.config/picolet/secrets/github/app.pem").Return(machine.PathInfo{}, nil)
+	ops.EXPECT().Stat("/home/pi/.config/picolet/secrets/github").Return(machine.PathInfo{}, nil)
 	ops.EXPECT().EnsureDir("/home/pi", ".config/picolet/secrets/github", piOwner, os.FileMode(0o700)).Return(nil).Once()
+	ops.EXPECT().Stat("/home/pi/.config/picolet/secrets/github/app.pem").Return(machine.PathInfo{}, nil)
 	ops.EXPECT().WriteFile("/home/pi", ".config/picolet/secrets/github/app.pem", []byte("pi-app-key"), piOwner, os.FileMode(0o600)).
 		Return(nil).Once()
 	ops.EXPECT().Stat("/home/runner/.config/picolet/secrets/git-token").Return(machine.PathInfo{}, nil)
@@ -110,9 +111,11 @@ func TestRunPlacesRootfulSecretsDirFiles(t *testing.T) {
 	ops.EXPECT().Stat("/etc/picolet/secrets/git-token").Return(machine.PathInfo{}, nil)
 	ops.EXPECT().WriteFile("/", "etc/picolet/secrets/git-token", []byte("system-token"), machine.Owner{}, os.FileMode(0o600)).
 		Return(nil).Once()
-	ops.EXPECT().Stat("/etc/picolet/secrets/mqtt/tls/key.pem").Return(machine.PathInfo{}, nil)
+	ops.EXPECT().Stat("/etc/picolet/secrets/mqtt").Return(machine.PathInfo{}, nil)
 	ops.EXPECT().EnsureDir("/", "etc/picolet/secrets/mqtt", machine.Owner{}, os.FileMode(0o700)).Return(nil).Once()
+	ops.EXPECT().Stat("/etc/picolet/secrets/mqtt/tls").Return(machine.PathInfo{}, nil)
 	ops.EXPECT().EnsureDir("/", "etc/picolet/secrets/mqtt/tls", machine.Owner{}, os.FileMode(0o700)).Return(nil).Once()
+	ops.EXPECT().Stat("/etc/picolet/secrets/mqtt/tls/key.pem").Return(machine.PathInfo{}, nil)
 	ops.EXPECT().WriteFile("/", "etc/picolet/secrets/mqtt/tls/key.pem", []byte("tls-key"), machine.Owner{}, os.FileMode(0o600)).
 		Return(nil).Once()
 
@@ -156,12 +159,13 @@ func TestRunInterruptedAfterCredentialWriteReportsRestart(t *testing.T) {
 }
 
 // expectPlacedSecrets sets ops up as a Machine holding the credential files
-// of operatorSecrets as a previous run left them, but for two: runner's
-// git-token holds an older token, and pi's app.pem has the right content
-// with a mode someone loosened.
+// of operatorSecrets as a previous run left them, but for three: runner's
+// git-token holds an older token, pi's app.pem has the right content with a
+// mode someone loosened, and so has its github directory.
 func expectPlacedSecrets(ops *mocks.MockHostOps) {
 	ops.EXPECT().Stat("/home/pi/.config/picolet/secrets/git-token").Return(secretFile(pi), nil)
 	ops.EXPECT().FileContentEquals("/home/pi/.config/picolet/secrets/git-token", []byte("pi-token")).Return(true, nil)
+	ops.EXPECT().Stat("/home/pi/.config/picolet/secrets/github").Return(dir(1000, 1000, 0o755), nil)
 	loosened := secretFile(pi)
 	loosened.Mode = 0o644
 	ops.EXPECT().Stat("/home/pi/.config/picolet/secrets/github/app.pem").Return(loosened, nil)
@@ -172,13 +176,16 @@ func expectPlacedSecrets(ops *mocks.MockHostOps) {
 
 // A re-run leaves a current file alone, rewrites a changed one and marks its
 // Host for an Agent restart; a file whose content is current but whose mode
-// is not gets the mode in place, neither rewritten nor restarting its Agent.
+// is not gets the mode in place, neither rewritten nor restarting its Agent,
+// and so does its directory.
 func TestRunRewritesChangedSecretsDirFiles(t *testing.T) {
 	t.Parallel()
 	ops := mocks.NewMockHostOps(t)
 	expectBootstrappedMachine(t, ops)
 	expectPlacedSecrets(ops)
-	ops.EXPECT().SetOwnerMode("/home/pi", ".config/picolet/secrets/github/app.pem", machine.Owner{UID: 1000, GID: 1000}, os.FileMode(0o600)).
+	piOwner := machine.Owner{UID: 1000, GID: 1000}
+	ops.EXPECT().EnsureDir("/home/pi", ".config/picolet/secrets/github", piOwner, os.FileMode(0o700)).Return(nil).Once()
+	ops.EXPECT().SetOwnerMode("/home/pi", ".config/picolet/secrets/github/app.pem", piOwner, os.FileMode(0o600)).
 		Return(nil).Once()
 	ops.EXPECT().WriteFile("/home/runner", ".config/picolet/secrets/git-token", []byte("runner-token"),
 		machine.Owner{UID: 1001, GID: 1001}, os.FileMode(0o600)).Return(nil).Once()
@@ -186,10 +193,30 @@ func TestRunRewritesChangedSecretsDirFiles(t *testing.T) {
 	out, err := runWithSecrets(t, secretsDir(t, operatorSecrets), ops)
 	require.NoError(t, err)
 	require.Regexp(t, `already done\s+vps-1/credential/git-token\s`, out)
+	require.Regexp(t, `applied\s+vps-1/credential-dir/github\s`, out)
 	require.Regexp(t, `applied\s+vps-1/credential/github/app.pem\s.*set owner and mode of /home/pi/.config/picolet/secrets/github/app.pem\n`, out)
 	require.Regexp(t, `applied\s+vps-1-runner/credential/git-token\s.*`+
 		`wrote /home/runner/.config/picolet/secrets/git-token, Agent restart required\n`, out)
-	require.Contains(t, out, "\n2 applied, 26 already done\nAgent restart required (credential files written): vps-1-runner\n")
+	require.Contains(t, out, "\n3 applied, 26 already done\nAgent restart required (credential files written): vps-1-runner\n")
+}
+
+// A --secrets-dir at or below the Fleet checkout is refused: making the
+// checkout readable by every user would make the credentials readable too.
+func TestRejectsSecretsDirInsideCheckout(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	require.NoError(t, os.CopyFS(repo, os.DirFS(exampleFleet)))
+	secrets := filepath.Join(repo, "operator-secrets")
+	require.NoError(t, os.MkdirAll(filepath.Join(secrets, "vps-1"), 0o700))
+
+	for _, dir := range []string{secrets, repo} {
+		var out bytes.Buffer
+		err := machine.Run(context.Background(), machine.Config{
+			Machine: "vps-1", RepoDir: repo, SecretsDir: dir, Env: rootOnLinux(), Stdout: &out,
+		}, mocks.NewMockHostOps(t))
+		require.ErrorContains(t, err, "--secrets-dir must not lie inside the Fleet checkout", dir)
+		require.Empty(t, out.String())
+	}
 }
 
 // The plan shows each credential file as would do or already done, why, and

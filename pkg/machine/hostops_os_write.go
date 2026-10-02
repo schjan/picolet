@@ -212,13 +212,17 @@ func setFileOwnerMode(f *os.File, owner Owner, mode fs.FileMode) error {
 }
 
 // WriteFile implements HostOps: a temporary file in the same directory,
-// renamed over rel once complete.
+// renamed over rel once complete. A directory at rel is refused, never
+// removed: it may hold files someone keeps.
 func (o *OSHostOps) WriteFile(base, rel string, content []byte, owner Owner, mode fs.FileMode) error {
 	root, err := o.openBelow(base, rel)
 	if err != nil {
 		return err
 	}
 	defer root.Close()
+	if info, err := root.Lstat(rel); err == nil && info.IsDir() {
+		return fmt.Errorf("writing %s: is a directory; remove it", filepath.Join(base, rel))
+	}
 	dir, name := filepath.Split(rel)
 	tmp := filepath.Join(dir, "."+name+".picolet-"+rand.Text())
 	if err := writeTemp(root, tmp, content, owner, mode); err != nil {

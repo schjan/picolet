@@ -141,10 +141,10 @@ func (r *runner) step(ctx context.Context, s Step) error {
 	}
 	if err == nil {
 		var detail string
-		detail, err = r.apply(ctx, f, s, res)
+		detail, err = r.apply(ctx, f, s, res.fix)
 		f.forget()
 		if err == nil {
-			r.applied(s, res, detail)
+			r.applied(s, res.fix, detail)
 		}
 	}
 	if ctx.Err() != nil {
@@ -159,9 +159,9 @@ func (r *runner) step(ctx context.Context, s Step) error {
 }
 
 // applied records and prints s as applied, its Host marked for an Agent
-// restart when res says so.
-func (r *runner) applied(s Step, res Result, detail string) {
-	if res.AgentRestart {
+// restart when fix wrote a credential file's content.
+func (r *runner) applied(s Step, fix credentialFix, detail string) {
+	if fix == fixContent {
 		detail += ", Agent restart required"
 		if !slices.Contains(r.restart, s.Host.Hostname) {
 			r.restart = append(r.restart, s.Host.Hostname)
@@ -170,17 +170,17 @@ func (r *runner) applied(s Step, res Result, detail string) {
 	r.print(outcomeApplied, s, detail)
 }
 
-// apply brings s's end state about, as found by its check res. The detail is
+// apply brings s's end state about, a StepCredential by fix. The detail is
 // what the operator should see of it beyond the step: the path a credential
 // file was placed at.
-func (r *runner) apply(ctx context.Context, f *hostFacts, s Step, res Result) (detail string, err error) {
+func (r *runner) apply(ctx context.Context, f *hostFacts, s Step, fix credentialFix) (detail string, err error) {
 	switch {
 	case s.Kind == StepUser:
 		return "", r.ops.CreateUser(ctx, s.Host.User)
 	case s.Kind == StepCheckout:
 		return "", r.ops.MakeWorldReadable(s.Path)
 	case s.Kind == StepCredential:
-		return r.placeCredential(f, s, res)
+		return r.placeCredential(f, s, fix)
 	case s.Host.Rootful():
 		return r.applyRootful(ctx, s)
 	}
@@ -222,28 +222,19 @@ func (r *runner) applyUser(ctx context.Context, f *hostFacts, s Step) (string, e
 	return "", fmt.Errorf("step kind %d cannot be applied", s.Kind)
 }
 
-// placeCredential places s's file: owner and mode alone when its content
-// already holds, else the content, every directory between the secrets
-// directory and the file created first, private like the secrets directory.
-func (r *runner) placeCredential(f *hostFacts, s Step, res Result) (string, error) {
+// placeCredential places s's file: owner and mode alone for fixOwnerMode,
+// else the content. Its directory is an earlier step.
+func (r *runner) placeCredential(f *hostFacts, s Step, fix credentialFix) (string, error) {
 	base, owner, err := f.existingBase()
 	if err != nil {
 		return "", err
 	}
 	rel := strings.TrimPrefix(s.Path, "/")
-	if res.OwnerModeOnly {
+	if fix == fixOwnerMode {
 		if err := r.ops.SetOwnerMode(base, rel, owner, s.Mode); err != nil {
 			return "", err
 		}
 		return "set owner and mode of " + path.Join(base, rel), nil
-	}
-	dir := strings.TrimPrefix(secretsAgentDir.path(s.Host), "/")
-	sub := strings.TrimPrefix(path.Dir(rel), dir)
-	for _, name := range strings.Split(sub, "/")[1:] {
-		dir = path.Join(dir, name)
-		if err := r.ops.EnsureDir(base, dir, owner, secretsAgentDir.mode); err != nil {
-			return "", err
-		}
 	}
 	if err := r.ops.WriteFile(base, rel, s.Content, owner, s.Mode); err != nil {
 		return "", err

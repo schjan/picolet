@@ -12,9 +12,11 @@ import (
 // credentialMode is the permission of every credential file placed.
 const credentialMode fs.FileMode = 0o600
 
-// credentialSteps plans a step per file below <hostname>/ of src, in lexical
-// order, each placing the file at the same relative path in h's secrets
-// directory. A Host without a directory in src gets a warning instead.
+// credentialSteps plans, in lexical order, a step per entry below
+// <hostname>/ of src at the same relative path in h's secrets directory: a
+// private directory for each subdirectory, ahead of its files, and the file
+// itself for each file. A Host without a directory in src gets a warning
+// instead.
 func credentialSteps(h Host, src *SecretsDir) (steps []Step, warning string, err error) {
 	if src == nil {
 		return nil, "", nil
@@ -31,22 +33,24 @@ func credentialSteps(h Host, src *SecretsDir) (steps []Step, warning string, err
 	}
 	secrets := secretsAgentDir.path(h)
 	err = fs.WalkDir(src.FS, h.Hostname, func(name string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil || name == h.Hostname {
 			return err
+		}
+		rel := strings.TrimPrefix(name, h.Hostname+"/")
+		if d.IsDir() {
+			steps = append(steps, Step{
+				ID: h.Hostname + "/credential-dir/" + rel, Phase: PhaseCredentials, Kind: StepDir, Host: h,
+				Path: path.Join(secrets, rel), Mode: secretsAgentDir.mode,
+			})
+			return nil
 		}
 		content, err := readCredential(src.FS, name)
 		if err != nil {
 			return fmt.Errorf("%s: %w", filepath.Join(src.Path, filepath.FromSlash(name)), err)
 		}
-		rel := strings.TrimPrefix(name, h.Hostname+"/")
 		steps = append(steps, Step{
-			ID:      h.Hostname + "/credential/" + rel,
-			Phase:   PhaseCredentials,
-			Kind:    StepCredential,
-			Host:    h,
-			Path:    path.Join(secrets, rel),
-			Mode:    credentialMode,
-			Content: content,
+			ID: h.Hostname + "/credential/" + rel, Phase: PhaseCredentials, Kind: StepCredential, Host: h,
+			Path: path.Join(secrets, rel), Mode: credentialMode, Content: content,
 		})
 		return nil
 	})
