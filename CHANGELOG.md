@@ -32,7 +32,8 @@ kept as is.
   needs `machine:` ([#157](https://github.com/schjan/picolet/issues/157)).
 - Shipped in v0.1.34 and part of the same migration: `pi_type:` → `role:`,
   `pi_types:` → `roles:`, `.Host.PiType` → `.Host.Role`,
-  `picolet_host_info{pi_type}` → `{role}`, `fleet.yml` `prometheus:` removed
+  `picolet_host_info{pi_type}` → `{role}`, `fleet.yml` `prometheus:` and the
+  `.Fleet.Config.Prometheus` template field removed
   ([#168](https://github.com/schjan/picolet/pull/168)); the Agent listener
   binds loopback by default, `listen_addr` to expose it
   ([#171](https://github.com/schjan/picolet/pull/171)).

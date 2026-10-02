@@ -18,7 +18,7 @@ a Fleet on v0.1.33 or older needs all of them.
 | `pi_types:` → `roles:` | v0.1.34 | `assignments.yml` | `assignments.yml: 'pi_types:' was renamed to 'roles:'` |
 | `prometheus:` removed | v0.1.34 | `fleet.yml` | `fleet.yml: 'prometheus:' was removed from the schema; delete it` |
 | Agent listener binds loopback by default | v0.1.34 | Agent config (`/etc/picolet/config.yml`) | none: the Agent starts and is unreachable from other machines |
-| `.Host.PiType` → `.Host.Role`, `.Fleet.Hosts[].PiType` → `.Role` | v0.1.34 | templates | template execution error (`can't evaluate field PiType`) |
+| `.Host.PiType` → `.Host.Role`, `.Fleet.Hosts[].PiType` → `.Role`, `.Fleet.Config.Prometheus` removed | v0.1.34 | templates | template execution error (`can't evaluate field PiType` / `Prometheus`) |
 | `picolet_host_info{pi_type}` → `picolet_host_info{role}` | v0.1.34 | alert rules, dashboards | none: queries on `pi_type` match nothing |
 | Typed lists removed: `networks:`, `volumes:`, `containers:`, `kube:`, `systemd:`, `manifests:`, `files:` (and `pods:`, `images:`, `builds:`, which no release shipped) | v0.2.0 | `assignments.yml` | `assignments.yml: <group>: '<key>:' was removed; list these files under 'paths:', which derives the category from the file name` (one line per occurrence) |
 | A file with an unknown extension outside `files/`/`manifests/`/`secrets/` is rejected | v0.2.0 | `paths:` entries, Service Bundles | names the file |
@@ -78,15 +78,19 @@ then `systemctl daemon-reload && systemctl restart picolet-system`
 (`systemctl --user …` and `picolet` for rootless). The upgraded Agent loads the
 migrated Fleet and takes its Quadlet back over.
 
-**Fleets that need no stop.** A Fleet is valid for v0.1.34 and v0.2.0 alike,
-so steps 1 and 2 upgrade it without a stop, when all of these hold: it uses
-`role:`/`roles:` (v0.1.34) and no `prometheus:` key; it assigns everything
-through `services:` and `secrets:`; its bundles keep the old typed
-subdirectories and contain neither a systemd unit with an extension v0.2.0
-rejects nor a nested `files/`/`manifests/`/`secrets/` directory; every
-`hostname` is a hostname label (otherwise v0.2.0 needs `machine:`, which v0.1.34
-rejects); and `fleet.yml` has both Agent ports after step 1. Flatten bundles
-(see [Service Bundles](#service-bundles-v020)) only after step 2.
+**Fleets that need no stop.** A Fleet that v0.1.34 and v0.2.0 both accept
+upgrades through steps 1 and 2 without a stop. The test is direct: run
+`picolet validate` of v0.2.0 (the release binary, or
+`podman run --rm -v "$PWD:/repo:ro" ghcr.io/schjan/picolet:v0.2.0 --repo-dir /repo validate`)
+on the step-1 commit; if it passes, no Host stops. It can pass only when the Fleet
+uses `role:`/`roles:` (v0.1.34) and no `prometheus:` key, assigns everything
+through `services:` and `secrets:`, keeps its bundles in the old typed
+subdirectories (no systemd unit with an extension v0.2.0 rejects, no nested
+`files/`/`manifests/`/`secrets/` directory), and needs no new `host.yml` key:
+every `hostname` is a hostname label, and no two Hosts collide on a Machine
+(Machines default to the hostname and compare case-insensitively, so `node`
+and `NODE` are one Machine with two rootful Hosts). Flatten bundles (see
+[Service Bundles](#service-bundles-v020)) only after step 2.
 
 ## Key by key
 
@@ -118,8 +122,12 @@ roles:
 
 ### `fleet.yml`: `prometheus:` removed (v0.1.34)
 
-Delete the key. picolet never read it; `fleet.yml` holds `images:` and `ports:`
-only. A `ports:` entry named `prometheus` is a port name and still loads.
+Delete the key, and replace every template reference to it
+(`.Fleet.Config.Prometheus`, e.g. `{{ .Fleet.Config.Prometheus.scrape_interval }}`)
+with a literal value or a `ports:`/`images:` entry: the field is gone, so such a
+template fails to render (`can't evaluate field Prometheus`). `fleet.yml` holds
+`images:` and `ports:` only. A `ports:` entry named `prometheus` is a port name
+and still loads.
 
 ### `fleet.yml`: Agent ports (v0.2.0)
 
@@ -230,6 +238,7 @@ services/picolet-system/secrets/                services/picolet-system/secrets/
 |--------|-------|
 | `.Host.PiType` | `.Host.Role` |
 | `.Fleet.Hosts[].PiType` | `.Fleet.Hosts[].Role` |
+| `.Fleet.Config.Prometheus` | removed; use literals or `.Fleet.Config.Ports` / `.Ports` |
 
 New in v0.2.0, readable only by v0.2.0 Agents (so use them from step 3 on):
 `.Host.Machine`, `.Host.User`, `.Host.ListenPort` (also on every
