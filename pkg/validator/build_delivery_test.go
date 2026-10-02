@@ -96,9 +96,16 @@ func TestAnalyzeFilesBuildReferencesDeliveredFiles(t *testing.T) {
 			wantErr: "app.build: WorkingDirectory=" + testHostDataDir + "/files/ap is not delivered by the Fleet",
 		},
 		{
-			// Podman's URL pattern matches any File= starting with "http".
-			name:  "File= Podman takes for a URL",
-			build: "File=http-app/Containerfile\n\n[Service]\nWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			// Quadlet takes a File= starting with "http" for a URL and passes
+			// no context, but podman build reads it locally.
+			name:    "File= only Quadlet takes for a URL",
+			build:   "File=http-app/Containerfile\n\n[Service]\nWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files:   []resolver.ResolvedFile{deliveredFile("app/Containerfile")},
+			wantErr: "app.build: File=http-app/Containerfile (" + testHostDataDir + "/files/app/http-app/Containerfile) is not delivered by the Fleet",
+		},
+		{
+			name:  "File= podman build fetches",
+			build: "File=https://example.com/app/Containerfile\n\n[Service]\nWorkingDirectory=" + testHostDataDir + "/files/app\n",
 			files: []resolver.ResolvedFile{deliveredFile("app/Containerfile")},
 		},
 		{
@@ -176,6 +183,34 @@ func TestAnalyzeFilesBuildReferencesDeliveredFiles(t *testing.T) {
 			build:   "\n[Service]\nWorkingDirectory=" + testHostDataDir + "/files/app\n",
 			files:   []resolver.ResolvedFile{deliveredFile("app")},
 			wantErr: "app.build: WorkingDirectory=" + testHostDataDir + "/files/app is not delivered by the Fleet",
+		},
+		{
+			// podman build looks for a Containerfile, then a Dockerfile, in
+			// the context.
+			name:  "no File= and no Containerfile delivered to the context",
+			build: "SetWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files: []resolver.ResolvedFile{deliveredFile("app/src/main.go")},
+			wantErr: "app.build: no File=, and neither " + testHostDataDir + "/files/app/Containerfile nor " +
+				testHostDataDir + "/files/app/Dockerfile is delivered by the Fleet",
+		},
+		{
+			name:  "no File= and a Dockerfile delivered to the context",
+			build: "SetWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files: []resolver.ResolvedFile{deliveredFile("app/Dockerfile")},
+		},
+		{
+			// Quadlet passes it on as a URL; podman build reads it relative
+			// to the working directory.
+			name: "context only Quadlet takes for a URL the Fleet delivers nothing to",
+			build: "File=" + testHostDataDir + "/files/app/Containerfile\nSetWorkingDirectory=httpctx\n\n" +
+				"[Service]\nWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files:   []resolver.ResolvedFile{deliveredFile("app/Containerfile")},
+			wantErr: "app.build: SetWorkingDirectory=httpctx (" + testHostDataDir + "/files/app/httpctx) is not delivered by the Fleet",
+		},
+		{
+			name:  "Containerfile on stdin",
+			build: "File=-\n\n[Service]\nWorkingDirectory=" + testHostDataDir + "/files/app\n",
+			files: []resolver.ResolvedFile{deliveredFile("app/src/main.go")},
 		},
 	}
 	for _, tt := range tests {

@@ -263,6 +263,9 @@ type Applier struct {
 	selfUnits map[string]struct{}
 	// deps are the generated unit dependencies (WithDependencies).
 	deps map[string]status.UnitDependencies
+	// dataDir and hostDataDir map written data paths to the paths the Host
+	// sees (WithHostDataDir).
+	dataDir, hostDataDir string
 }
 
 // New creates a new Applier. Hooks may be nil if no change-triggered actions are needed.
@@ -408,7 +411,7 @@ func (a *Applier) ApplyWithPending(ctx context.Context, cs *reconciler.Changeset
 	if a.dryRun {
 		return result, nil
 	}
-	phase.Builds, phase.BuildTags = triggeredBuilds(cs.Changes)
+	phase.Builds, phase.BuildTags = a.triggeredBuilds(cs.Changes)
 	hookRestartUnits := a.runHooksWithPending(ctx, phase.ChangedSecrets, phase.ChangedRels, phase.ChangedUnits, pendingNames, result)
 	maps.Copy(phase.ChangedUnits, hookRestartUnits)
 	return result, a.restartUnits(ctx, phase, result)

@@ -51,8 +51,10 @@ type ResolvedHost struct {
 	Host     *config.HostConfig
 	Files    []ResolvedFile
 	Hooks    []config.Hook
-	// HostDataDir is the host-visible data directory the filePath and
-	// manifestPath helpers emit (Config.HostDataDir, else the data dir).
+	// DataDir is the data directory picolet writes files and manifests to
+	// (their DestPath). HostDataDir is the host-visible path of it that the
+	// filePath and manifestPath helpers emit (Config.HostDataDir, else DataDir).
+	DataDir     string
 	HostDataDir string
 }
 
@@ -237,6 +239,7 @@ func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host
 		Host:        host,
 		Files:       files,
 		Hooks:       hooks,
+		DataDir:     r.dataDir,
 		HostDataDir: r.hostDataDir,
 	}, nil
 }

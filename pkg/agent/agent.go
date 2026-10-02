@@ -727,7 +727,8 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset, resolved.Hooks, pendingHookNames(st.PendingHooks), deps)
+	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset, resolved.Hooks, pendingHookNames(st.PendingHooks), deps,
+		resolved.DataDir, resolved.HostDataDir)
 	recordHookMetrics(applyResult)
 	if errors.Is(err, applier.ErrApplyIncomplete) {
 		a.savePartialState(headSHA, st, store, changeset, applyResult, deps, resolved.Hooks)
@@ -1008,13 +1009,16 @@ func enforceRetryBudget(pending map[string]int, hooks []config.Hook) map[string]
 	return pending
 }
 
-func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset, hooks []config.Hook, pendingNames []string, deps map[string]status.UnitDependencies) (*applier.ApplyResult, error) {
+// applyWithRollback applies changeset and rolls back on a fatal error.
+// dataDir and hostDataDir are the resolved host's (applier.WithHostDataDir).
+func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset, hooks []config.Hook, pendingNames []string, deps map[string]status.UnitDependencies, dataDir, hostDataDir string) (*applier.ApplyResult, error) {
 	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile)
 	if err != nil {
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
-	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, hooks, applier.WithDependencies(deps))
+	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, hooks,
+		applier.WithDependencies(deps), applier.WithHostDataDir(dataDir, hostDataDir))
 	result, err := app.ApplyWithPending(ctx, changeset, pendingNames)
 	if err != nil {
 		slog.Error("apply failed, rolling back", "error", err)

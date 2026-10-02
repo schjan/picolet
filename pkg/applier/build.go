@@ -10,9 +10,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/containers/podman/v5/pkg/systemd/parser"
 	"github.com/containers/podman/v5/pkg/systemd/quadlet"
 
+	"github.com/schjan/picolet/pkg/buildunit"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/status"
@@ -29,16 +29,37 @@ func WithDependencies(deps map[string]status.UnitDependencies) Option {
 	}
 }
 
+// WithHostDataDir names the host-visible path (hostDataDir) of the data
+// directory picolet writes files and manifests to (dataDir), both from
+// resolver.ResolvedHost. A .build names its Containerfile and build context
+// by host path; without this option the two are the same, and a containerized
+// Agent would never rebuild on a changed input.
+func WithHostDataDir(dataDir, hostDataDir string) Option {
+	return func(a *Applier) {
+		a.dataDir, a.hostDataDir = dataDir, hostDataDir
+	}
+}
+
+// hostPath returns the path the Host sees for a file picolet writes at path.
+func (a *Applier) hostPath(path string) string {
+	if a.dataDir == a.hostDataDir || !isWithin(path, a.dataDir) {
+		return path
+	}
+	rel, _ := filepath.Rel(a.dataDir, path)
+	return filepath.Join(a.hostDataDir, rel)
+}
+
 // triggeredBuilds returns the services of the RestartRebuild units (.build)
 // that must run, sorted, and the image tags they write (ImageTag=): those
 // whose own file was created or updated, and those one of whose local inputs
-// (buildInputs) was created, updated or deleted. Podman generates no trigger
-// for either; a build otherwise runs only when a consumer next starts.
-func triggeredBuilds(changes []reconciler.Change) (builds, tags []string) {
+// (buildunit.Resolve: Containerfile, anything under the build context) was
+// created, updated or deleted. Podman generates no trigger for either; a
+// build otherwise runs only when a consumer next starts.
+func (a *Applier) triggeredBuilds(changes []reconciler.Change) (builds, tags []string) {
 	var changed []string
 	for _, c := range changes {
 		if c.Action != reconciler.ActionNoop && destination(c.Category) != config.DestSecret {
-			changed = append(changed, c.DestPath)
+			changed = append(changed, a.hostPath(c.DestPath))
 		}
 	}
 	for _, c := range changes {
@@ -65,85 +86,14 @@ func buildTriggered(c reconciler.Change, changed []string) bool {
 		return false
 	case reconciler.ActionNoop:
 	}
-	file, contextDir := buildInputs(parseUnitFile(filepath.Base(c.DestPath), c.NewContent), c.DestPath)
-	return slices.ContainsFunc(changed, func(p string) bool {
-		return p == file || isWithin(p, contextDir)
-	})
-}
-
-// buildInputs returns the local paths a .build unit at unitPath builds from:
-// its Containerfile (File=) and its build context directory, "" for either
-// when it is remote (a URL), starts with a systemd specifier, or is unset.
-// A relative File= is relative to the unit's directory for
-// SetWorkingDirectory=file without a [Service] WorkingDirectory=, to the
-// build service's working directory otherwise (buildDirs).
-func buildInputs(u *parser.UnitFile, unitPath string) (file, contextDir string) {
+	u := parseUnitFile(filepath.Base(c.DestPath), c.NewContent)
 	if u == nil {
-		return "", ""
+		return false
 	}
-	file, _ = u.Lookup(quadlet.BuildGroup, quadlet.KeyFile)
-	setWorkDir, _ := u.Lookup(quadlet.BuildGroup, quadlet.KeySetWorkingDirectory)
-	serviceWorkDir, _ := u.Lookup(quadlet.ServiceGroup, quadlet.ServiceKeyWorkingDirectory)
-	unitDir := filepath.Dir(unitPath)
-	if strings.EqualFold(setWorkDir, "file") && serviceWorkDir == "" && isRelative(file) {
-		file = filepath.Join(unitDir, file)
-	}
-	workDir, contextDir := buildDirs(serviceWorkDir, setWorkDir, file, unitDir)
-	if isRelative(file) && workDir != "" {
-		file = filepath.Join(workDir, file)
-	}
-	return localPath(file), localPath(contextDir)
-}
-
-// buildDirs returns a .build service's working directory and build context,
-// following Quadlet's ConvertBuild (handleSetWorkingDirectory). workDir is
-// the [Service] WorkingDirectory=; when set, it is the context unless
-// SetWorkingDirectory= names an absolute path or URL. Otherwise
-// SetWorkingDirectory=file and =unit make the Containerfile's or the unit's
-// directory the working directory and so the context, and a relative path is
-// the context relative to the unit's directory. Without either key there is
-// no context: only File= counts.
-func buildDirs(workDir, setWorkDir, file, unitDir string) (string, string) {
-	switch strings.ToLower(setWorkDir) {
-	case "":
-		return workDir, workDir
-	case "file":
-		if workDir == "" && file != "" {
-			workDir = filepath.Dir(file)
-		}
-		return workDir, workDir
-	case "unit":
-		if workDir == "" {
-			workDir = unitDir
-		}
-		return workDir, workDir
-	}
-	if !isRelative(setWorkDir) {
-		return workDir, setWorkDir
-	}
-	if workDir != "" {
-		return workDir, workDir
-	}
-	return unitDir, filepath.Join(unitDir, setWorkDir)
-}
-
-// isRelative reports whether p is a relative local path: not absolute, not a
-// URL, not starting with a systemd specifier (which Quadlet leaves alone).
-func isRelative(p string) bool {
-	return p != "" && !filepath.IsAbs(p) && !isRemote(p) && !strings.HasPrefix(p, "%")
-}
-
-// localPath returns p cleaned when it is an absolute local path, "" otherwise.
-func localPath(p string) string {
-	if !filepath.IsAbs(p) || isRemote(p) {
-		return ""
-	}
-	return filepath.Clean(p)
-}
-
-// isRemote reports whether a Quadlet build source is a URL (Quadlet's isURL).
-func isRemote(p string) bool {
-	return strings.Contains(p, "://") || strings.HasPrefix(p, "github.com/")
+	inputs := buildunit.Resolve(u, c.DestPath)
+	return slices.ContainsFunc(changed, func(p string) bool {
+		return slices.Contains(inputs.Containerfiles, p) || isWithin(p, inputs.Context)
+	})
 }
 
 // isWithin reports whether path lies strictly inside dir.
