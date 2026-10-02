@@ -171,15 +171,73 @@ func TestResolveHostPathsRejectsUncategorizableFiles(t *testing.T) {
 
 func TestResolveHostPathsSkipsBundleMetadata(t *testing.T) {
 	t.Parallel()
-	resolved, err := resolvePaths(t, "  paths:\n    - units/\n", map[string]string{
-		"units/picolet.yml":          "hooks: []\n",
-		"units/web/picolet.yml.tmpl": "hooks: []\n",
-		"units/web/web.network":      "[Network]\n",
+	resolved, err := resolvePaths(t, "  paths:\n    - services/\n", map[string]string{
+		"services/web/picolet.yml":      "hooks: []\n",
+		"services/api/picolet.yml.tmpl": "hooks: []\n",
+		"services/web/web.network":      "[Network]\n",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []pathsDeployment{
-		{SrcPath: "units/web/web.network", DestPath: "/etc/containers/systemd/picolet/web.network", Category: config.CategoryNetwork},
+		{SrcPath: "services/web/web.network", DestPath: "/etc/containers/systemd/picolet/web.network", Category: config.CategoryNetwork},
 	}, pathsDeployments(resolved.Files))
+}
+
+// Only a bundle's root metadata is skipped: picolet.yml anywhere else is
+// ordinary content and takes the normal categorization.
+func TestResolveHostPathsPicoletYmlOutsideBundleRootIsOrdinary(t *testing.T) {
+	t.Parallel()
+
+	t.Run("files/ entry resolves as a File", func(t *testing.T) {
+		t.Parallel()
+		resolved, err := resolvePaths(t, "  paths: [files/picolet.yml]\n", map[string]string{
+			"files/picolet.yml": "listen: :9418\n",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []pathsDeployment{
+			{SrcPath: "files/picolet.yml", DestPath: "/var/lib/picolet/files/picolet.yml", Category: config.CategoryFile, RelPath: "picolet.yml"},
+		}, pathsDeployments(resolved.Files))
+	})
+
+	t.Run("nested in a listed directory", func(t *testing.T) {
+		t.Parallel()
+		resolved, err := resolvePaths(t, "  paths: [files/]\n", map[string]string{
+			"files/agent/picolet.yml.tmpl": "host: {{ .Host.Hostname }}\n",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []pathsDeployment{
+			{SrcPath: "files/agent/picolet.yml.tmpl", DestPath: "/var/lib/picolet/files/agent/picolet.yml", Category: config.CategoryFile, RelPath: "agent/picolet.yml"},
+		}, pathsDeployments(resolved.Files))
+		assert.Equal(t, "host: test-host\n", resolved.Files[0].Content)
+	})
+
+	t.Run("in a bundle subdirectory", func(t *testing.T) {
+		t.Parallel()
+		resolved, err := resolvePaths(t, "  services: [agent]\n", map[string]string{
+			"services/agent/picolet.yml":       "hooks: []\n",
+			"services/agent/files/picolet.yml": "listen: :9418\n",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []pathsDeployment{
+			{SrcPath: "services/agent/files/picolet.yml", DestPath: "/var/lib/picolet/files/picolet.yml", Category: config.CategoryFile, RelPath: "picolet.yml"},
+		}, pathsDeployments(resolved.Files))
+		assert.Empty(t, resolved.Hooks)
+	})
+
+	t.Run("under a directory that cannot be a bundle", func(t *testing.T) {
+		t.Parallel()
+		_, err := resolvePaths(t, "  paths: [services/]\n", map[string]string{
+			"services/a\\b/picolet.yml": "hooks: []\n",
+		})
+		require.ErrorContains(t, err, `unknown extension ".yml"`)
+	})
+
+	t.Run("direct root entry errors", func(t *testing.T) {
+		t.Parallel()
+		_, err := resolvePaths(t, "  paths: [picolet.yml]\n", map[string]string{
+			"picolet.yml": "hooks: []\n",
+		})
+		require.ErrorContains(t, err, `picolet.yml: unknown extension ".yml"`)
+	})
 }
 
 // A file reached twice — by two `paths:` entries, by a `paths:` entry and the

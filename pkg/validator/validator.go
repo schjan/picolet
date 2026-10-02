@@ -313,7 +313,7 @@ func validateFile(f resolver.ResolvedFile) error {
 // isYAMLSource reports whether a source path's effective extension (after
 // stripping a trailing .tmpl) is .yml or .yaml.
 func isYAMLSource(srcPath string) bool {
-	effective := strings.TrimSuffix(srcPath, ".tmpl")
+	effective := config.TrimTemplateSuffix(srcPath)
 	switch strings.ToLower(filepath.Ext(effective)) {
 	case ".yml", ".yaml":
 		return true

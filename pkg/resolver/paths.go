@@ -34,15 +34,16 @@ func expandPathEntries(fsys fs.FS, entries []string) (*expansion, error) {
 // expandTree walks root (a file or a directory, recursively, in lexical order)
 // and categorizes every regular file by its logical path: the source path with
 // prefix stripped. `paths:` entries use prefix "", Service Bundles
-// "services/<name>/". Bundle metadata (picolet.yml, picolet.yml.tmpl) is
-// skipped at any depth.
+// "services/<name>/". A bundle's root metadata (services/<name>/picolet.yml,
+// picolet.yml.tmpl) is skipped, however it was reached; a file of that name
+// anywhere else is an ordinary file.
 func (e *expansion) expandTree(fsys fs.FS, root, prefix string) error {
 	var errs []error
 	walkErr := fs.WalkDir(fsys, root, func(srcPath string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return fmt.Errorf("walking %s: %w", srcPath, err)
 		}
-		if d.IsDir() || isHookMetadataFile(d.Name()) {
+		if d.IsDir() || isBundleMetadataPath(srcPath) {
 			return nil
 		}
 		if !d.Type().IsRegular() {

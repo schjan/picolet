@@ -47,6 +47,9 @@ kept as is.
   ([#127](https://github.com/schjan/picolet/issues/127)); `validate` checks that
   a `.build`'s Containerfile and context are delivered
   ([#128](https://github.com/schjan/picolet/issues/128)).
+- Hook `unit:` resolves `.pod`, `.build` and `.image` to their generated
+  services, and `.Host.SystemdUnits` lists them
+  ([#138](https://github.com/schjan/picolet/issues/138)).
 - `host.yml` `machine:`, `user:`, `listen_port:`; `.Host.Machine`, `.Host.User`,
   `.Host.ListenPort` and the `siblings` template function
   ([#157](https://github.com/schjan/picolet/issues/157)).

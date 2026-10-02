@@ -109,6 +109,44 @@ func TestGroupByCategory(t *testing.T) {
 	}
 }
 
+// Pod, build and image rows are grouped in rank order (image, build, pod,
+// container). A generated-unit row with no service mapping has an empty unit
+// and a muted status: its unit name is never derived from the file name.
+func TestBuildViewModel_PodBuildImageGroups(t *testing.T) {
+	t.Parallel()
+	in, _, _, _ := fixtureBuildViewModel()
+	in.FailedCount = 0
+	files := map[string]state.ManagedFile{
+		"/p/shop.container": {Hash: "sha256:cccc1111", Category: "container"},
+		"/p/shop.pod":       {Hash: "sha256:pppp1111", Category: "pod"},
+		"/p/shop.build":     {Hash: "sha256:bbbb1111", Category: "build"},
+		"/p/shop.image":     {Hash: "sha256:iiii1111", Category: "image"},
+	}
+	services := map[string]string{
+		"/p/shop.container": "shop.service",
+		"/p/shop.pod":       "shop-pod.service",
+		"/p/shop.image":     "shop-image.service",
+	}
+	statuses := map[string]status.UnitRuntimeStatus{
+		"shop-pod.service": {ActiveState: "active", SubState: "running"},
+	}
+	vm := buildViewModel(in, files, services, statuses, nil, nil, status.OrphanScan{}, nil, fixtureNow, true)
+
+	var order []string
+	for _, g := range vm.Groups {
+		order = append(order, g.Category)
+	}
+	if want := []string{"image", "build", "pod", "container"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("category order = %v, want %v", order, want)
+	}
+	if build := vm.Groups[1].Rows[0]; build.Service != "" || build.Status != mutedStatus {
+		t.Errorf("build row without a service mapping should have no unit and a muted status, got %+v", build)
+	}
+	if pod := vm.Groups[2].Rows[0]; pod.Status.Token != "active" {
+		t.Errorf("pod row status should come from its generated service, got %+v", pod.Status)
+	}
+}
+
 // fixtureNow is the reference clock used by the buildViewModel tests below so
 // each focused test stays small.
 var fixtureNow = time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)

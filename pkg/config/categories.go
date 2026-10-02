@@ -204,10 +204,13 @@ var categories = []Spec{
 		Category: CategorySecret, Dest: DestSecret, Subdir: "secrets", Check: CheckSecret,
 		ApplyRank: 50,
 	},
-	// Known to Podman, not deployable yet: rejected by the validator.
+	// Known to Podman, not deployable yet: rejected by the validator. The rest
+	// of the row follows Podman's ConvertArtifact, which (like ConvertImage)
+	// sets ResourceName and generates a oneshot pull service with
+	// RemainAfterExit=yes, so enabling it is Check: CheckQuadlet plus a converter.
 	{
 		Category: CategoryArtifact, Dest: DestQuadlet, Check: CheckUnsupported,
-		ApplyRank: 35, ConvertOrder: 1, Health: HealthDaemon, Restart: RestartChanged, Unit: GeneratedUnit,
+		ApplyRank: 35, ConvertOrder: 1, Health: HealthReportOnly, Restart: RestartChanged, PreConvert: true, Unit: GeneratedUnit,
 	},
 }
 
@@ -313,7 +316,7 @@ func categoryForSegment(dir string) (c Category, ok bool, err error) {
 // categoryForFileName looks up the extension before any final .tmpl.
 func categoryForFileName(file string) (Category, error) {
 	const hint = "move it under files/ or remove it from the listed directory"
-	name := strings.TrimSuffix(file, ".tmpl")
+	name := TrimTemplateSuffix(file)
 	ext := path.Ext(name)
 	if c, ok := extensions[ext]; ok {
 		return c, nil

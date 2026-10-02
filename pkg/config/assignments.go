@@ -118,15 +118,10 @@ func (a *Assignments) Resolve(host *HostConfig) *ResolvedFileSet {
 			slog.Warn("no assignments for feature", "feature", feature, "host", host.Hostname)
 		}
 	}
-	result.Paths = sortedUnique(result.Paths)
-	result.Secrets = sortedUnique(result.Secrets)
-	result.Services = sortedUnique(result.Services)
+	result.Paths = SortedUnique(result.Paths)
+	result.Secrets = SortedUnique(result.Secrets)
+	result.Services = SortedUnique(result.Services)
 	return result
-}
-
-// sortedUnique returns a sorted copy with duplicates removed.
-func sortedUnique(s []string) []string {
-	return slices.Compact(slices.Sorted(slices.Values(s)))
 }
 
 func (r *ResolvedFileSet) merge(g *AssignmentGroup) {

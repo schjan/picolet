@@ -54,7 +54,7 @@ func validateManifest(path string, content []byte) error {
 		}
 
 		if meta.Kind == "" {
-			errs = append(errs, fmt.Errorf("%s: document %d: missing 'kind' field", path, docNum))
+			errs = append(errs, fmt.Errorf("%s: document %d: missing 'kind' field (manifests/ holds Kubernetes manifests only; move other files under files/)", path, docNum))
 			continue
 		}
 		if meta.APIVersion == "" {
