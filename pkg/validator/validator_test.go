@@ -302,6 +302,12 @@ invalid: [yaml: broken
 			errMsg:  "YAML parse error",
 		},
 		{
+			name:    "non-Kubernetes file is pointed to files/",
+			content: "port=8080\n",
+			wantErr: true,
+			errMsg:  "move other files under files/",
+		},
+		{
 			name: "unknown field in Deployment (strict)",
 			content: `apiVersion: apps/v1
 kind: Deployment

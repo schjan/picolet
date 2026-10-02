@@ -49,7 +49,7 @@ func validateManifest(path string, content []byte) error {
 		// First pass: extract kind for dispatch
 		var meta k8sMeta
 		if err := yaml.Unmarshal(doc, &meta); err != nil {
-			errs = append(errs, fmt.Errorf("%s: document %d: YAML parse error: %w", path, docNum, err))
+			errs = append(errs, fmt.Errorf("%s: document %d: YAML parse error: %w (manifests/ holds Kubernetes manifests only; move other files under files/)", path, docNum, err))
 			continue
 		}
 
