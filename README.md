@@ -593,8 +593,8 @@ a unit sits in is up to you.
 
 `.artifact` is known to Podman but not deployable yet: `validate` rejects it.
 
-A new Quadlet type is a table row in `pkg/config/categories.go`, never an
-`assignments.yml` schema change — see
+A new Quadlet type is a table row in `pkg/config/categories.go` plus its
+converter in `pkg/validator/quadlet.go`, never an `assignments.yml` schema change — see
 [ADR 0001: Quadlet is the config](docs/adr/0001-quadlet-is-the-config.md).
 
 A `.pod` generates `<name>-pod.service` (hooks may target it as `unit: <name>.pod`).

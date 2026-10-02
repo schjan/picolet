@@ -10,7 +10,6 @@ import (
 	"math"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
@@ -318,14 +317,11 @@ func (a *Applier) isSelfUnit(name string) bool {
 	return ok
 }
 
-// isSelfContainer reports whether destPath is the quadlet container file of a
-// self unit (e.g. picolet.container -> picolet.service).
-func (a *Applier) isSelfContainer(destPath string) bool {
-	unit, ok := strings.CutSuffix(filepath.Base(destPath), ".container")
-	if !ok {
-		return false
-	}
-	return a.isSelfUnit(unit + ".service")
+// isSelfContainer reports whether change is the quadlet container of a self
+// unit. It compares the generated service name (which honours ServiceName=),
+// not the file name.
+func (a *Applier) isSelfContainer(change reconciler.Change) bool {
+	return change.Category == config.CategoryContainer && a.isSelfUnit(change.ServiceName)
 }
 
 // systemdActivation is one post-reload operation on a raw systemd unit.
@@ -386,12 +382,16 @@ func (a *Applier) ApplyWithoutRestarts(ctx context.Context, cs *reconciler.Chang
 	return result, a.reloadIfNeeded(ctx, phase.NeedsReload)
 }
 
-// sortedByCategory orders changes by the category table's ApplyRank. Categories
-// missing from the table sort last.
+// sortedByCategory orders changes by the category table's ApplyRank, then by
+// DestPath, so the order is deterministic (deletes come from a map walk in
+// reconciler.Diff). Categories missing from the table sort last.
 func sortedByCategory(changes []reconciler.Change) []reconciler.Change {
 	sorted := slices.Clone(changes)
 	slices.SortFunc(sorted, func(x, y reconciler.Change) int {
-		return cmp.Compare(applyRank(x.Category), applyRank(y.Category))
+		return cmp.Or(
+			cmp.Compare(applyRank(x.Category), applyRank(y.Category)),
+			cmp.Compare(x.DestPath, y.DestPath),
+		)
 	})
 	return sorted
 }
@@ -491,7 +491,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 			}
 		case config.RestartRebuild, config.RestartNone: // builds: triggeredBuilds
 		}
-		if a.isSelfContainer(change.DestPath) {
+		if a.isSelfContainer(change) {
 			result.NeedsSelfRestart = true
 		}
 	}

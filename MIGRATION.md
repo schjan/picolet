@@ -335,7 +335,7 @@ no `paths:` move.
        - picolet-system
 ```
 
-`hosts/example-host/host.yml`: a rootful Host whose hostname is a hostname
+`hosts/rpi5-1/host.yml`: a rootful Host whose hostname is a hostname
 label, so `machine:` and `user:` are optional; its Agent listens on
 `ports.picolet_system_metrics`.
 

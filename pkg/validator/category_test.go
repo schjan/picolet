@@ -1,6 +1,8 @@
 package validator
 
 import (
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
@@ -24,6 +26,25 @@ func TestEveryQuadletExtensionHasCategoryRow(t *testing.T) {
 		require.True(t, ok, "category %s (from %s) has no row", category, ext)
 		assert.Equal(t, config.DestQuadlet, spec.Dest, "%s must deploy to the Quadlet directory", ext)
 		assert.Equal(t, order, spec.ConvertOrder, "%s conversion order must match quadlet.SupportedExtensions", ext)
+	}
+}
+
+// The reverse direction: every Quadlet row's extension must be one Podman
+// still supports, so a Podman removal or rename fails here instead of leaving
+// a row whose files the generator ignores.
+func TestEveryQuadletRowExtensionIsSupported(t *testing.T) {
+	t.Parallel()
+	for _, spec := range config.Specs() {
+		if spec.Dest != config.DestQuadlet {
+			continue
+		}
+		var exts []string
+		for _, ext := range slices.Sorted(maps.Keys(quadlet.SupportedExtensions)) {
+			if category, ok := config.CategoryForExtension(ext); ok && category == spec.Category {
+				exts = append(exts, ext)
+			}
+		}
+		assert.NotEmpty(t, exts, "Quadlet row %s has no extension in quadlet.SupportedExtensions", spec.Category)
 	}
 }
 
