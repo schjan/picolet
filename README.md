@@ -162,10 +162,12 @@ Subdirectories are created `0700`. A file already current is left alone; a
 new or changed one is written and the run's summary lists its Host as needing
 an Agent restart; a file with current content but another owner or mode gets
 them in place, without a rewrite or restart. Files on the Machine that
-`<dir>` does not hold are kept. A Host without a directory below `<dir>` gets
-a warning and the run goes on; a symlink in `<dir>` that leads out of it, or
-anything but regular files and directories, stops the command before its first
-step. `--plan` compares the files too and shows each as `would do` (missing,
+`<dir>` does not hold are kept. Only the directories of this Machine's Hosts
+are read; other entries of `<dir>` are ignored. A Host without a directory
+below `<dir>` gets a warning and the run goes on; within a Host's directory, a
+symlink that leads out of `<dir>`, or anything but regular files and
+directories, stops the command before its first step. `--plan` compares the
+files too and shows each as `would do` (missing,
 content differs, owner/mode differ) or `already done`, never their values.
 
 ```bash
