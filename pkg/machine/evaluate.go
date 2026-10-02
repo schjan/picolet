@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"path"
 	"strings"
 )
@@ -38,7 +39,21 @@ type Result struct {
 	Status Status
 	// Detail is what the check found, when it adds to Status.
 	Detail string
+	// fix is how a run brings a StepCredential about.
+	fix credentialFix
 }
+
+// credentialFix is how a run brings a credential file about; zero for any
+// other step.
+type credentialFix int
+
+const (
+	// fixContent: write the content, which the Host's running Agent has not
+	// read: the Agent needs a restart.
+	fixContent credentialFix = iota + 1
+	// fixOwnerMode: the content holds; set owner and mode in place.
+	fixOwnerMode
+)
 
 // Evaluate runs every step's check through the read side of ops, in plan
 // order. It writes nothing. A check the invoking user cannot perform yields
@@ -131,8 +146,8 @@ func (f *hostFacts) check(ctx context.Context, s Step) (Result, error) {
 		return f.checkDir(s)
 	case StepCheckout:
 		return boolResult(f.ops.WorldReadableTree(s.Path))("", "not readable by every user")
-	case StepCredentials:
-		return Result{Status: StatusDone, Detail: "no credential source given, nothing to place"}, nil
+	case StepCredential:
+		return f.checkCredential(s)
 	case StepHostBootstrap:
 		return Result{Status: StatusWouldDo}, nil
 	}
@@ -249,14 +264,40 @@ func unitResult(state UnitState, err error) (Result, error) {
 	return Result{Status: StatusWouldDo}, nil
 }
 
+// base is the directory the Host's step paths are below, the user's home or
+// / for the rootful Host, and the owner what it places gets; ok is false
+// when the Host's user, and so its home, does not exist yet.
+func (f *hostFacts) base() (dir string, owner Owner, ok bool, err error) {
+	if f.host.Rootful() {
+		return "/", Owner{}, true, nil
+	}
+	user, found, err := f.lookupUser()
+	if err != nil || !found {
+		return "", Owner{}, false, err
+	}
+	return user.Home, user.Owner(), true, nil
+}
+
+// existingBase is base for a step that needs the Host's user to exist.
+func (f *hostFacts) existingBase() (string, Owner, error) {
+	dir, owner, ok, err := f.base()
+	if err == nil && !ok {
+		err = fmt.Errorf("user %s does not exist", f.host.User)
+	}
+	return dir, owner, err
+}
+
+// onMachine is the absolute path of s.Path and the owner it should have; ok
+// as for base.
+func (f *hostFacts) onMachine(s Step) (p string, owner Owner, ok bool, err error) {
+	dir, owner, ok, err := f.base()
+	return path.Join(dir, s.Path), owner, ok, err
+}
+
 func (f *hostFacts) checkDir(s Step) (Result, error) {
-	dir, uid, gid := s.Path, 0, 0
-	if !f.host.Rootful() {
-		user, found, err := f.lookupUser()
-		if err != nil || !found {
-			return createdLater, err
-		}
-		dir, uid, gid = path.Join(user.Home, s.Path), user.UID, user.GID
+	dir, owner, ok, err := f.onMachine(s)
+	if err != nil || !ok {
+		return createdLater, err
 	}
 	info, err := f.ops.Stat(dir)
 	switch {
@@ -266,8 +307,55 @@ func (f *hostFacts) checkDir(s Step) (Result, error) {
 		return Result{Status: StatusWouldDo, Detail: "missing"}, nil
 	case !info.Mode.IsDir():
 		return Result{Status: StatusWouldDo, Detail: "exists and is not a directory"}, nil
-	case info.UID != uid || info.GID != gid || info.Mode.Perm() != s.Mode:
-		return Result{Status: StatusWouldDo, Detail: fmt.Sprintf("is %d:%d %04o", info.UID, info.GID, info.Mode.Perm())}, nil
 	}
-	return Result{Status: StatusDone}, nil
+	return ownedResult(info, owner, s.Mode), nil
+}
+
+// checkCredential compares the file with the step's content without ever
+// showing either. Writing the content, new or changed, needs an Agent
+// restart; a file with current content but another owner or mode gets them
+// in place.
+func (f *hostFacts) checkCredential(s Step) (Result, error) {
+	file, owner, ok, err := f.onMachine(s)
+	if err != nil || !ok {
+		return createdLater, err
+	}
+	info, err := f.ops.Stat(file)
+	switch {
+	case err != nil:
+		return Result{}, err
+	case !info.Exists:
+		return credentialWrite("missing"), nil
+	case info.Mode.IsDir():
+		// The write fails, with this same advice: nothing is removed.
+		return Result{Status: StatusWouldDo, Detail: "is a directory, which a run refuses to replace: remove it", fix: fixContent}, nil
+	case !info.Mode.IsRegular():
+		return credentialWrite("exists and is not a regular file"), nil
+	}
+	same, err := f.ops.FileContentEquals(file, s.Content)
+	switch {
+	case err != nil:
+		return Result{}, err
+	case !same:
+		return credentialWrite("content differs"), nil
+	}
+	r := ownedResult(info, owner, s.Mode)
+	if r.Status == StatusWouldDo {
+		r.fix = fixOwnerMode
+	}
+	return r, nil
+}
+
+// credentialWrite is the result of a credential file whose content a run
+// writes.
+func credentialWrite(detail string) Result {
+	return Result{Status: StatusWouldDo, Detail: detail + ", Agent restart required", fix: fixContent}
+}
+
+// ownedResult is done for an existing path with owner and permission mode.
+func ownedResult(info PathInfo, owner Owner, mode fs.FileMode) Result {
+	if info.UID != owner.UID || info.GID != owner.GID || info.Mode.Perm() != mode {
+		return Result{Status: StatusWouldDo, Detail: fmt.Sprintf("is %d:%d %04o", info.UID, info.GID, info.Mode.Perm())}
+	}
+	return Result{Status: StatusDone}
 }

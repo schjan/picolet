@@ -111,6 +111,7 @@ func bootstrapMachineCmd() *cli.Command {
 		Before:    setupTextLogging,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "repo-dir", Usage: "Fleet checkout on this Machine"},
+			&cli.StringFlag{Name: "secrets-dir", Usage: "credential files per Host: <dir>/<hostname>/<file> goes to the Host's secrets directory"},
 			&cli.BoolFlag{Name: "plan", Usage: "print the ordered steps with would do / already done / unknown, change nothing"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -119,8 +120,9 @@ func bootstrapMachineCmd() *cli.Command {
 			}
 			_, lookErr := exec.LookPath("podman")
 			cfg := machine.Config{
-				Machine: cmd.Args().First(),
-				RepoDir: cmd.String("repo-dir"),
+				Machine:    cmd.Args().First(),
+				RepoDir:    cmd.String("repo-dir"),
+				SecretsDir: cmd.String("secrets-dir"),
 				Env: machine.Environment{
 					GOOS:        runtime.GOOS,
 					InContainer: agentcfg.InContainer(),

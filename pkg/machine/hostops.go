@@ -103,8 +103,13 @@ type HostOps interface {
 	EnsureDir(base, rel string, owner Owner, mode fs.FileMode) error
 	// WriteFile atomically replaces rel, below the directory base, with a
 	// regular file holding content, with owner and permission mode. Its
-	// directory must exist; nothing outside base is touched.
+	// directory must exist; nothing outside base is touched. A directory at
+	// rel is an error, never removed.
 	WriteFile(base, rel string, content []byte, owner Owner, mode fs.FileMode) error
+	// SetOwnerMode gives the regular file rel, below the directory base,
+	// owner and permission mode in place, its content untouched. A symlink
+	// at rel is not followed; nothing outside base is touched.
+	SetOwnerMode(base, rel string, owner Owner, mode fs.FileMode) error
 	// MakeWorldReadable grants every user on the Machine read access to the
 	// tree at path, like chmod -R o+rX; symlinks are not followed. It fails,
 	// changing nothing, when a directory above path denies search to others.

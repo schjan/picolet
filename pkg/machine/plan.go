@@ -1,6 +1,7 @@
 // Package machine plans and runs `picolet bootstrap machine`: bringing up
-// every Host a Fleet declares on one Machine. New is the pure planner (Fleet +
-// Machine + options → ordered steps with stable ids); Evaluate annotates each
+// every Host a Fleet declares on one Machine. New is the planner (Fleet +
+// Machine + options → ordered steps with stable ids, writing nothing);
+// Evaluate annotates each
 // step through the read side of HostOps and Render prints the result; Run
 // checks each step the same way and applies it through the write side.
 package machine
@@ -59,14 +60,14 @@ const (
 	// StepPodmanSocket: podman.socket is enabled and running (the user's, or
 	// the system's for the rootful Host).
 	StepPodmanSocket
-	// StepDir: a directory the Agent quadlet bind-mounts exists with the
-	// Host's owner and Mode.
+	// StepDir: a directory the Agent quadlet bind-mounts, or a subdirectory
+	// of credential files, exists with the Host's owner and Mode.
 	StepDir
 	// StepCheckout: the Fleet checkout is readable by the Host's user.
 	StepCheckout
-	// StepCredentials: the Host's credential files are in place. Without a
-	// credential source there is nothing to place.
-	StepCredentials
+	// StepCredential: a credential file in the Host's secrets directory
+	// holds Content, with the Host's owner and Mode.
+	StepCredential
 	// StepHostBootstrap: the containerized per-Host bootstrap has run.
 	StepHostBootstrap
 )
@@ -96,28 +97,50 @@ type Step struct {
 	Phase Phase
 	Kind  StepKind
 	Host  Host
-	// Path is the directory of a StepDir (relative to the user's home for a
-	// rootless Host, absolute for the rootful Host) or the checkout of a
-	// StepCheckout.
+	// Path is the directory of a StepDir or the file of a StepCredential
+	// (relative to the user's home for a rootless Host, absolute for the
+	// rootful Host), or the checkout of a StepCheckout.
 	Path string
-	// Mode is the permission of a StepDir.
+	// Mode is the permission of a StepDir or a StepCredential.
 	Mode fs.FileMode
+	// Content is what a StepCredential's file holds: a credential value,
+	// never printed.
+	Content []byte
 }
 
 // Plan is the ordered work for one Machine.
 type Plan struct {
 	Machine string
 	RepoDir string
+	// SecretsDir is the --secrets-dir the credential files come from; empty
+	// when none was given.
+	SecretsDir string
 	// Hosts are the Machine's Hosts, sorted by hostname.
 	Hosts []Host
 	// Steps are in execution order.
 	Steps []Step
+	// Warnings are what the operator should know before the steps run but
+	// what stops nothing.
+	Warnings []string
 }
 
 // Options are the operator's inputs beyond the Fleet.
 type Options struct {
 	// RepoDir is the absolute path of the Fleet checkout on the Machine.
 	RepoDir string
+	// SecretsDir holds each Host's credential files below <hostname>/;
+	// nil when the operator gave none.
+	SecretsDir *SecretsDir
+}
+
+// SecretsDir is the operator's --secrets-dir: <dir>/<hostname>/<file> is a
+// credential file of the Host.
+type SecretsDir struct {
+	// Path is the directory, as shown to the operator.
+	Path string
+	// FS reads the directory. It must keep symlinks from leading out of it
+	// (an os.Root's FS does): New reads it as root and follows symlinks.
+	FS fs.FS
 }
 
 // agentDir is a directory the Agent quadlet bind-mounts, at its path for a
@@ -129,26 +152,51 @@ type agentDir struct {
 	mode     fs.FileMode
 }
 
+// secretsAgentDir is the Host's secrets directory: the Fleet convention the
+// reference quadlets bind-mount to /etc/picolet/secrets, not derived from
+// their Volume= lines.
+var secretsAgentDir = agentDir{name: "secrets", userPath: ".config/picolet/secrets", rootPath: "/etc/picolet/secrets", mode: 0o700}
+
 var agentDirs = []agentDir{
-	{name: "secrets", userPath: ".config/picolet/secrets", rootPath: "/etc/picolet/secrets", mode: 0o700},
+	secretsAgentDir,
 	{name: "data", userPath: ".local/share/picolet", rootPath: "/var/lib/picolet-system", mode: 0o700},
 	{name: "quadlets", userPath: ".config/containers/systemd", rootPath: "/etc/containers/systemd", mode: 0o755},
 	{name: "units", userPath: ".config/systemd/user", rootPath: "/etc/systemd/system", mode: 0o755},
 }
 
+// path is d's path for h: relative to the home for a rootless Host,
+// absolute for the rootful Host.
+func (d agentDir) path(h Host) string {
+	if h.Rootful() {
+		return d.rootPath
+	}
+	return d.userPath
+}
+
 // New plans the bootstrap of machine: every Host of the Fleet declaring it,
-// phase by phase. It errors when no Host runs on machine.
+// phase by phase. It reads the Hosts' credential files from opts.SecretsDir
+// and writes nothing. It errors when no Host runs on machine.
 func New(cfg *config.Config, machine string, opts Options) (*Plan, error) {
 	hosts, err := machineHosts(cfg, machine)
 	if err != nil {
 		return nil, err
 	}
 	plan := &Plan{Machine: machine, RepoDir: opts.RepoDir, Hosts: hosts}
+	if opts.SecretsDir != nil {
+		plan.SecretsDir = opts.SecretsDir.Path
+	}
 	for _, h := range hosts {
 		plan.Steps = append(plan.Steps, setupSteps(h, opts.RepoDir)...)
 	}
 	for _, h := range hosts {
-		plan.Steps = append(plan.Steps, Step{ID: h.Hostname + "/credentials", Phase: PhaseCredentials, Kind: StepCredentials, Host: h})
+		steps, warning, err := credentialSteps(h, opts.SecretsDir)
+		if err != nil {
+			return nil, err
+		}
+		if warning != "" {
+			plan.Warnings = append(plan.Warnings, warning)
+		}
+		plan.Steps = append(plan.Steps, steps...)
 	}
 	for _, h := range hosts {
 		plan.Steps = append(plan.Steps, Step{ID: h.Hostname + "/bootstrap", Phase: PhaseHostBootstrap, Kind: StepHostBootstrap, Host: h})
@@ -197,10 +245,7 @@ func setupSteps(h Host, repoDir string) []Step {
 	steps = append(steps, step("podman-socket", StepPodmanSocket))
 	for _, d := range agentDirs {
 		s := step("dir/"+d.name, StepDir)
-		s.Path, s.Mode = d.rootPath, d.mode
-		if !h.Rootful() {
-			s.Path = d.userPath
-		}
+		s.Path, s.Mode = d.path(h), d.mode
 		steps = append(steps, s)
 	}
 	if !h.Rootful() {
@@ -231,8 +276,8 @@ func (s Step) Describe() string { //nolint:cyclop // one case per step kind
 		return fmt.Sprintf("directory %s, owner %s, mode %04o", s.displayPath(), s.Host.owner(), s.Mode)
 	case StepCheckout:
 		return "Fleet checkout readable by " + s.Host.User + " (world-readable)"
-	case StepCredentials:
-		return "credential files placed"
+	case StepCredential:
+		return fmt.Sprintf("credential file %s, owner %s, mode %04o", s.displayPath(), s.Host.owner(), s.Mode)
 	case StepHostBootstrap:
 		if s.Host.Rootful() {
 			return "per-Host bootstrap as root (--systemd system)"
@@ -242,8 +287,8 @@ func (s Step) Describe() string { //nolint:cyclop // one case per step kind
 	return s.ID
 }
 
-// displayPath is a StepDir's path as ~user/... for a rootless Host: exact
-// whatever the home turns out to be.
+// displayPath is a StepDir's or StepCredential's path as ~user/... for a
+// rootless Host: exact whatever the home turns out to be.
 func (s Step) displayPath() string {
 	if s.Host.Rootful() {
 		return s.Path

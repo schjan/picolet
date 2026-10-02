@@ -3,6 +3,7 @@ Machine vps-1: 3 Hosts
   vps-1-runner  user runner  listen port 9419
   vps-1-system  rootful      listen port 9418
 Fleet checkout: <repo>
+Credential files: none (no --secrets-dir)
 
 Phase 1: users, sessions and directories
   would do      vps-1/user                  Linux user pi present                                                  missing
@@ -32,13 +33,11 @@ Phase 1: users, sessions and directories
   already done  vps-1-system/dir/units      directory /etc/systemd/system, owner root, mode 0755
 
 Phase 2: credential files
-  already done  vps-1/credentials         credential files placed  no credential source given, nothing to place
-  already done  vps-1-runner/credentials  credential files placed  no credential source given, nothing to place
-  already done  vps-1-system/credentials  credential files placed  no credential source given, nothing to place
+  nothing to do
 
 Phase 3: per-Host bootstrap
   would do  vps-1/bootstrap         per-Host bootstrap as pi (--systemd user)
   would do  vps-1-runner/bootstrap  per-Host bootstrap as runner (--systemd user)
   would do  vps-1-system/bootstrap  per-Host bootstrap as root (--systemd system)
 
-27 would do, 4 already done
+27 would do, 1 already done

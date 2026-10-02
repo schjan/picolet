@@ -3,6 +3,7 @@ Machine vps-1: 3 Hosts
   vps-1-runner  user runner  listen port 9419
   vps-1-system  rootful      listen port 9418
 Fleet checkout: <repo>
+Credential files: none (no --secrets-dir)
 
 Phase 1: users, sessions and directories
   already done  vps-1/user                  Linux user pi present                                                  uid 1000
@@ -32,9 +33,7 @@ Phase 1: users, sessions and directories
   already done  vps-1-system/dir/units      directory /etc/systemd/system, owner root, mode 0755
 
 Phase 2: credential files
-  already done  vps-1/credentials           credential files placed                                                no credential source given, nothing to place
-  skipped       vps-1-runner/credentials    credential files placed                                                vps-1-runner stopped at vps-1-runner/subids
-  already done  vps-1-system/credentials    credential files placed                                                no credential source given, nothing to place
+  nothing to do
 
-18 already done, 1 failed, 9 skipped
+16 already done, 1 failed, 8 skipped
 No Agent started: the per-Host bootstrap is not run yet.
