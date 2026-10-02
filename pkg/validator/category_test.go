@@ -38,13 +38,11 @@ func TestEveryQuadletRowExtensionIsSupported(t *testing.T) {
 		if spec.Dest != config.DestQuadlet {
 			continue
 		}
-		var exts []string
-		for _, ext := range slices.Sorted(maps.Keys(quadlet.SupportedExtensions)) {
-			if category, ok := config.CategoryForExtension(ext); ok && category == spec.Category {
-				exts = append(exts, ext)
-			}
-		}
-		assert.NotEmpty(t, exts, "Quadlet row %s has no extension in quadlet.SupportedExtensions", spec.Category)
+		found := slices.ContainsFunc(slices.Collect(maps.Keys(quadlet.SupportedExtensions)), func(ext string) bool {
+			category, ok := config.CategoryForExtension(ext)
+			return ok && category == spec.Category
+		})
+		assert.True(t, found, "Quadlet row %s has no extension in quadlet.SupportedExtensions", spec.Category)
 	}
 }
 

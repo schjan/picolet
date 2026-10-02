@@ -110,8 +110,8 @@ func TestGroupByCategory(t *testing.T) {
 }
 
 // Pod, build and image rows are grouped in rank order (image, build, pod,
-// container) and their unit-name column is the generated service name, not
-// one derived from the file name.
+// container). A generated-unit row with no service mapping has an empty unit
+// and a muted status: its unit name is never derived from the file name.
 func TestBuildViewModel_PodBuildImageGroups(t *testing.T) {
 	t.Parallel()
 	in, _, _, _ := fixtureBuildViewModel()
@@ -125,7 +125,6 @@ func TestBuildViewModel_PodBuildImageGroups(t *testing.T) {
 	services := map[string]string{
 		"/p/shop.container": "shop.service",
 		"/p/shop.pod":       "shop-pod.service",
-		"/p/shop.build":     "shop-build.service",
 		"/p/shop.image":     "shop-image.service",
 	}
 	statuses := map[string]status.UnitRuntimeStatus{
@@ -134,20 +133,14 @@ func TestBuildViewModel_PodBuildImageGroups(t *testing.T) {
 	vm := buildViewModel(in, files, services, statuses, nil, nil, status.OrphanScan{}, nil, fixtureNow, true)
 
 	var order []string
-	units := map[string]string{}
 	for _, g := range vm.Groups {
 		order = append(order, g.Category)
-		units[g.Category] = g.Rows[0].Service
 	}
 	if want := []string{"image", "build", "pod", "container"}; !reflect.DeepEqual(order, want) {
 		t.Fatalf("category order = %v, want %v", order, want)
 	}
-	wantUnits := map[string]string{
-		"image": "shop-image.service", "build": "shop-build.service",
-		"pod": "shop-pod.service", "container": "shop.service",
-	}
-	if !reflect.DeepEqual(units, wantUnits) {
-		t.Errorf("unit names = %v, want %v", units, wantUnits)
+	if build := vm.Groups[1].Rows[0]; build.Service != "" || build.Status != mutedStatus {
+		t.Errorf("build row without a service mapping should have no unit and a muted status, got %+v", build)
 	}
 	if pod := vm.Groups[2].Rows[0]; pod.Status.Token != "active" {
 		t.Errorf("pod row status should come from its generated service, got %+v", pod.Status)
