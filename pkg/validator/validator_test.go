@@ -302,10 +302,10 @@ invalid: [yaml: broken
 			errMsg:  "YAML parse error",
 		},
 		{
-			name:    "non-Kubernetes file is pointed to files/",
-			content: "port=8080\n",
+			name:    "valid non-Kubernetes YAML is pointed to files/",
+			content: "listen: :9418\n",
 			wantErr: true,
-			errMsg:  "move other files under files/",
+			errMsg:  "missing 'kind' field (manifests/ holds Kubernetes manifests only; move other files under files/)",
 		},
 		{
 			name: "unknown field in Deployment (strict)",
