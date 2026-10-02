@@ -174,6 +174,8 @@ images:
 
 Push to git. Picolet detects the change, writes the updated Quadlet, and restarts itself with the new image.
 
+An upgrade that changes the Fleet schema (v0.2.0) needs a fixed rollout order; see [MIGRATION.md](MIGRATION.md).
+
 ### 5. Monitoring
 
 The agent serves `/metrics`, `/health`, `/webhook` and the dashboard on
@@ -277,6 +279,8 @@ Notes:
 
 Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a complete example.
 
+**Upgrading from v0.1.x?** v0.2.0 replaces the typed `assignments.yml` lists with `paths:` and requires the Agent ports in `fleet.yml`; v0.1.34 already renamed `pi_type` to `role` and removed `prometheus:`. [MIGRATION.md](MIGRATION.md) lists every change with before/after and the order to roll it out in.
+
 ### Config Files
 
 | File | Purpose |
@@ -338,7 +342,8 @@ e.g. to scrape their Agents over loopback
 **Upgrading.** Every Agent parses every `host.yml`. Agents from this release on
 log a warning for a key they do not know and carry on (`picolet validate` still
 fails on it, so typos break CI), but older Agents stop loading the whole Fleet
-on any new key. Roll out in this order:
+on any new key. Roll out in this order (the full v0.2.0 migration is in
+[MIGRATION.md](MIGRATION.md#rollout-order)):
 
 1. Add `picolet_metrics` / `picolet_system_metrics` to `fleet.yml` `ports` — the
    only change that is safe for older Agents, and required by new ones.
