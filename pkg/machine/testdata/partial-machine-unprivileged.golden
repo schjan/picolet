@@ -16,7 +16,7 @@ Phase 1: users, sessions and directories
   would do      vps-1/dir/units             directory ~pi/.config/systemd/user, owner pi, mode 0755        missing
   already done  vps-1/checkout              Fleet checkout readable by pi (world-readable)
   already done  vps-1-runner/user           Linux user runner present               uid 1001
-  would do      vps-1-runner/subids         subuid/subgid ranges of runner present  no subgid range, a run stops this Host; add one: usermod --add-subgids <first>-<last> runner
+  would do      vps-1-runner/subids         subuid/subgid ranges of runner present  a run stops this Host: no subgid range; add one: usermod --add-subuids 100000-165535 --add-subgids 100000-165535 runner
   would do      vps-1-runner/linger         lingering enabled for runner
   unknown       vps-1-runner/user-manager   user manager of runner running                                         needs root to check
   unknown       vps-1-runner/podman-socket  user podman.socket of runner enabled                                   needs root to check

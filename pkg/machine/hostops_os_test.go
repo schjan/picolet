@@ -1,10 +1,12 @@
 package machine
 
 import (
+	"context"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -165,4 +167,165 @@ func TestOSHostOpsWorldReadableTreeMissing(t *testing.T) {
 	readable, err := ops.WorldReadableTree("/srv/fleet")
 	require.NoError(t, err)
 	assert.False(t, readable, "a checkout that does not exist is not readable")
+}
+
+// me is the Owner the tests can chown to without root.
+func me() Owner {
+	return Owner{UID: os.Getuid(), GID: os.Getgid()}
+}
+
+// myDir is a directory owned by me with permission perm.
+func myDir(perm fs.FileMode) PathInfo {
+	return PathInfo{Exists: true, UID: me().UID, GID: me().GID, Mode: fs.ModeDir | perm}
+}
+
+func TestOSHostOpsEnsureDir(t *testing.T) {
+	t.Parallel()
+	ops := machineRoot(t, map[string]fs.FileMode{"/home/pi": 0o700, "/home/pi/.config": 0o700, "/home/pi/.config/systemd": 0o750}, nil)
+
+	require.NoError(t, ops.EnsureDir("/home/pi", ".config/picolet/secrets", me(), 0o700))
+	require.NoError(t, ops.EnsureDir("/home/pi", ".local/share/picolet", me(), 0o775))
+	require.NoError(t, ops.EnsureDir("/home/pi", ".config/systemd", me(), 0o755))
+
+	for p, want := range map[string]PathInfo{
+		"/home/pi/.config/picolet/secrets": myDir(0o700),
+		"/home/pi/.config/picolet":         myDir(0o755),
+		"/home/pi/.local/share/picolet":    myDir(0o775),
+		"/home/pi/.local/share":            myDir(0o755),
+		"/home/pi/.config":                 myDir(0o700),
+		"/home/pi/.config/systemd":         myDir(0o755),
+	} {
+		info, err := ops.Stat(p)
+		require.NoError(t, err)
+		assert.Equal(t, want, info, p)
+	}
+}
+
+func TestOSHostOpsEnsureDirRejects(t *testing.T) {
+	t.Parallel()
+	ops := machineRoot(t, map[string]fs.FileMode{"/home/pi": 0o700, "/etc": 0o755}, map[string]string{
+		"/home/pi/.local": "a file",
+	})
+	home := filepath.Join(ops.root, "/home/pi")
+	require.NoError(t, os.Symlink(filepath.Join(ops.root, "/etc"), filepath.Join(home, ".config")))
+	require.NoError(t, os.Mkdir(filepath.Join(home, "elsewhere"), 0o700))
+	require.NoError(t, os.Symlink("elsewhere", filepath.Join(home, "link")))
+
+	for rel, want := range map[string]string{
+		".config/picolet/secrets": "",
+		".local/share/picolet":    "not a directory",
+		".local":                  "not a directory",
+		"link":                    "not a directory",
+	} {
+		err := ops.EnsureDir("/home/pi", rel, me(), 0o755)
+		require.ErrorContains(t, err, want, rel)
+	}
+	_, err := os.Lstat(filepath.Join(ops.root, "/etc/picolet"))
+	require.ErrorIs(t, err, fs.ErrNotExist, "a symlink out of the home is not followed")
+	info, err := ops.Stat("/home/pi/elsewhere")
+	require.NoError(t, err)
+	assert.Equal(t, myDir(0o700), info, "a symlink's target is not changed")
+}
+
+func TestOSHostOpsWriteFile(t *testing.T) {
+	t.Parallel()
+	ops := machineRoot(t, map[string]fs.FileMode{"/home/pi/.config/picolet/secrets": 0o700}, map[string]string{
+		"/home/pi/.config/picolet/secrets/git-token": "old",
+	})
+
+	require.NoError(t, ops.WriteFile("/home/pi", ".config/picolet/secrets/git-token", []byte("rotated"), me(), 0o600))
+	require.NoError(t, ops.WriteFile("/home/pi", ".config/picolet/secrets/provider-token", []byte("new"), me(), 0o640))
+
+	for p, want := range map[string]struct {
+		content string
+		mode    fs.FileMode
+	}{
+		"/home/pi/.config/picolet/secrets/git-token":      {"rotated", 0o600},
+		"/home/pi/.config/picolet/secrets/provider-token": {"new", 0o640},
+	} {
+		equal, err := ops.FileContentEquals(p, []byte(want.content))
+		require.NoError(t, err)
+		assert.True(t, equal, p)
+		info, err := ops.Stat(p)
+		require.NoError(t, err)
+		assert.Equal(t, PathInfo{Exists: true, UID: me().UID, GID: me().GID, Mode: want.mode}, info, p)
+	}
+	entries, err := os.ReadDir(filepath.Join(ops.root, "/home/pi/.config/picolet/secrets"))
+	require.NoError(t, err)
+	assert.Len(t, entries, 2, "no temporary file is left behind")
+}
+
+func TestOSHostOpsWriteFileStaysBelowBase(t *testing.T) {
+	t.Parallel()
+	ops := machineRoot(t, map[string]fs.FileMode{"/home/pi": 0o700, "/etc": 0o755}, nil)
+	require.NoError(t, os.Symlink(filepath.Join(ops.root, "/etc"), filepath.Join(ops.root, "/home/pi/.config")))
+
+	require.Error(t, ops.WriteFile("/home/pi", ".config/passwd", []byte("x"), me(), 0o600))
+	require.Error(t, ops.WriteFile("/home/pi", "missing/file", []byte("x"), me(), 0o600))
+	_, err := os.Lstat(filepath.Join(ops.root, "/etc/passwd"))
+	require.ErrorIs(t, err, fs.ErrNotExist)
+}
+
+func TestOSHostOpsMakeWorldReadable(t *testing.T) {
+	t.Parallel()
+	ops := machineRoot(t, map[string]fs.FileMode{"/srv": 0o755}, map[string]string{
+		"/srv/fleet/fleet.yml":       "",
+		"/srv/fleet/hosts/host.yml":  "",
+		"/srv/fleet/bin/hook.sh":     "",
+		"/etc/shadow":                "",
+		"/srv/fleet/.git/objects/ab": "",
+	})
+	for p, mode := range map[string]fs.FileMode{
+		"/srv/fleet/fleet.yml": 0o600, "/srv/fleet/bin/hook.sh": 0o700, "/srv/fleet/hosts": 0o700,
+		"/srv/fleet/.git/objects/ab": 0o440, "/srv/fleet": 0o750, "/etc/shadow": 0o600,
+	} {
+		require.NoError(t, os.Chmod(filepath.Join(ops.root, p), mode))
+	}
+	require.NoError(t, os.Symlink(filepath.Join(ops.root, "/etc/shadow"), filepath.Join(ops.root, "/srv/fleet/shadow")))
+
+	require.NoError(t, ops.MakeWorldReadable("/srv/fleet"))
+
+	readable, err := ops.WorldReadableTree("/srv/fleet")
+	require.NoError(t, err)
+	assert.True(t, readable)
+	for p, want := range map[string]fs.FileMode{
+		"/srv/fleet/fleet.yml":       0o604,
+		"/srv/fleet/bin/hook.sh":     0o705,
+		"/srv/fleet/hosts":           fs.ModeDir | 0o705,
+		"/srv/fleet/.git/objects/ab": 0o444,
+		"/srv/fleet":                 fs.ModeDir | 0o755,
+		"/etc/shadow":                0o600,
+	} {
+		info, err := ops.Stat(p)
+		require.NoError(t, err)
+		assert.Equal(t, want, info.Mode, p)
+	}
+}
+
+func TestOSHostOpsMakeWorldReadableNeedsSearchableAncestors(t *testing.T) {
+	t.Parallel()
+	ops := machineRoot(t, map[string]fs.FileMode{"/root": 0o700}, map[string]string{"/root/fleet/fleet.yml": ""})
+	require.NoError(t, os.Chmod(filepath.Join(ops.root, "/root/fleet/fleet.yml"), 0o600))
+
+	err := ops.MakeWorldReadable("/root/fleet")
+	require.ErrorContains(t, err, "/root")
+	info, err := ops.Stat("/root/fleet/fleet.yml")
+	require.NoError(t, err)
+	assert.Equal(t, fs.FileMode(0o600), info.Mode, "nothing is changed")
+}
+
+func TestOSHostOpsWaitUserManager(t *testing.T) {
+	t.Parallel()
+	ops := machineRoot(t, map[string]fs.FileMode{"/run/user/1000/systemd": 0o755}, nil)
+	ops.pollInterval, ops.managerTimeout = time.Millisecond, 5*time.Second
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_ = os.WriteFile(filepath.Join(ops.root, "/run/user/1000/systemd/private"), nil, 0o600)
+	}()
+	require.NoError(t, ops.WaitUserManager(context.Background(), User{Name: "pi", UID: 1000}))
+
+	ops.managerTimeout = 20 * time.Millisecond
+	err := ops.WaitUserManager(context.Background(), User{Name: "runner", UID: 1001})
+	require.ErrorContains(t, err, "user manager of runner")
+	require.ErrorContains(t, err, "user@1001.service")
 }

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // OSHostOps is HostOps on the Machine the process runs on.
@@ -22,13 +23,16 @@ type OSHostOps struct {
 	// root prefixes every Machine path; "/" outside tests.
 	root string
 	euid int
+	// managerTimeout bounds WaitUserManager, which checks every pollInterval.
+	managerTimeout time.Duration
+	pollInterval   time.Duration
 }
 
 var _ HostOps = (*OSHostOps)(nil)
 
 // NewOSHostOps returns HostOps for this Machine.
 func NewOSHostOps() *OSHostOps {
-	return &OSHostOps{root: "/", euid: os.Geteuid()}
+	return &OSHostOps{root: "/", euid: os.Geteuid(), managerTimeout: defaultManagerTimeout, pollInterval: defaultPollInterval}
 }
 
 func (o *OSHostOps) path(p string) string {
@@ -211,7 +215,7 @@ func (o *OSHostOps) FileContentEquals(p string, content []byte) (bool, error) {
 // WorldReadableTree implements HostOps. Symlinks inside the tree are not
 // followed; their own mode bits mean nothing.
 func (o *OSHostOps) WorldReadableTree(p string) (bool, error) {
-	if ok, err := o.ancestorsSearchable(p); err != nil || !ok {
+	if blocked, err := o.unsearchableAncestor(p); err != nil || blocked != "" {
 		return false, err
 	}
 	readable := true
@@ -238,16 +242,19 @@ func (o *OSHostOps) WorldReadableTree(p string) (bool, error) {
 	return readable, nil
 }
 
-// ancestorsSearchable reports whether every directory above p grants search
-// to others.
-func (o *OSHostOps) ancestorsSearchable(p string) (bool, error) {
+// unsearchableAncestor returns the first directory above p, from p upwards,
+// that is missing or denies search to others; "" when every one grants it.
+func (o *OSHostOps) unsearchableAncestor(p string) (string, error) {
 	for dir := filepath.Dir(p); ; dir = filepath.Dir(dir) {
 		info, err := o.Stat(dir)
-		if err != nil || !info.Exists || info.Mode.Perm()&0o001 == 0 {
-			return false, err
+		if err != nil {
+			return "", err
+		}
+		if !info.Exists || info.Mode.Perm()&0o001 == 0 {
+			return dir, nil
 		}
 		if dir == filepath.Dir(dir) {
-			return true, nil
+			return "", nil
 		}
 	}
 }

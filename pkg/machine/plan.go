@@ -1,7 +1,8 @@
-// Package machine plans `picolet bootstrap machine`: bringing up every Host a
-// Fleet declares on one Machine. New is the pure planner (Fleet + Machine +
-// options → ordered steps with stable ids); Evaluate annotates each step
-// through the read side of HostOps; Render prints the result.
+// Package machine plans and runs `picolet bootstrap machine`: bringing up
+// every Host a Fleet declares on one Machine. New is the pure planner (Fleet +
+// Machine + options → ordered steps with stable ids); Evaluate annotates each
+// step through the read side of HostOps and Render prints the result; Run
+// checks each step the same way and applies it through the write side.
 package machine
 
 import (

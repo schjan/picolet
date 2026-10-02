@@ -47,11 +47,7 @@ func Evaluate(ctx context.Context, plan *Plan, ops HostOps) ([]Result, error) {
 	facts := map[string]*hostFacts{}
 	results := make([]Result, 0, len(plan.Steps))
 	for _, step := range plan.Steps {
-		f, ok := facts[step.Host.Hostname]
-		if !ok {
-			f = &hostFacts{host: step.Host, ops: ops}
-			facts[step.Host.Hostname] = f
-		}
+		f := factsOf(facts, step.Host, ops)
 		r, err := f.check(ctx, step)
 		if errors.Is(err, ErrUnprivileged) {
 			r, err = Result{Status: StatusUnknown, Detail: "needs root to check"}, nil
@@ -80,6 +76,21 @@ type hostFacts struct {
 	managerErr     error
 }
 
+// factsOf returns the facts of h in facts, created on first use.
+func factsOf(facts map[string]*hostFacts, h Host, ops HostOps) *hostFacts {
+	f, ok := facts[h.Hostname]
+	if !ok {
+		f = &hostFacts{host: h, ops: ops}
+		facts[h.Hostname] = f
+	}
+	return f
+}
+
+// forget drops the cached facts: a step was applied and may have changed them.
+func (f *hostFacts) forget() {
+	f.userChecked, f.managerChecked = false, false
+}
+
 func (f *hostFacts) lookupUser() (User, bool, error) {
 	if !f.userChecked {
 		user, found, err := f.ops.LookupUser(f.host.User)
@@ -89,6 +100,15 @@ func (f *hostFacts) lookupUser() (User, bool, error) {
 		f.user, f.userFound, f.userChecked = user, found, true
 	}
 	return f.user, f.userFound, nil
+}
+
+// existingUser is the Host's user, which a user-level step needs to exist.
+func (f *hostFacts) existingUser() (User, error) {
+	user, found, err := f.lookupUser()
+	if err == nil && !found {
+		err = fmt.Errorf("user %s does not exist", f.host.User)
+	}
+	return user, err
 }
 
 // createdLater is the result of a check on something of a user that does
@@ -145,22 +165,31 @@ func (f *hostFacts) checkSubIDs() (Result, error) {
 		return createdLater, err
 	}
 	subuid, subgid, err := f.ops.SubIDRanges(user)
-	if err != nil || (subuid && subgid) {
-		return boolResult(true, err)("", "")
+	if err != nil {
+		return Result{}, err
 	}
-	var missing, flags []string
+	if err := missingSubIDs(user.Name, subuid, subgid); err != nil {
+		return Result{Status: StatusWouldDo, Detail: "a run stops this Host: " + err.Error()}, nil
+	}
+	return Result{Status: StatusDone}, nil
+}
+
+// missingSubIDs is the error of a user without a subuid or subgid range,
+// with the command that adds them; nil when both exist. Bootstrap verifies
+// ranges and never allocates them: the operator adds them.
+func missingSubIDs(user string, subuid, subgid bool) error {
+	var missing []string
 	if !subuid {
 		missing = append(missing, "subuid")
-		flags = append(flags, "--add-subuids <first>-<last>")
 	}
 	if !subgid {
 		missing = append(missing, "subgid")
-		flags = append(flags, "--add-subgids <first>-<last>")
 	}
-	// Bootstrap verifies ranges and never allocates them: the run stops this
-	// Host here until the operator adds them.
-	return Result{Status: StatusWouldDo, Detail: fmt.Sprintf("no %s range, a run stops this Host; add one: usermod %s %s",
-		strings.Join(missing, "/"), strings.Join(flags, " "), user.Name)}, nil
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("no %s range; add one: usermod --add-subuids 100000-165535 --add-subgids 100000-165535 %s",
+		strings.Join(missing, "/"), user)
 }
 
 func (f *hostFacts) checkLinger() (Result, error) {

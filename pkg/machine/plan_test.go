@@ -49,7 +49,7 @@ func linuxHost() machine.Environment {
 func showPlan(t *testing.T, repoDir string, ops machine.HostOps) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	err := machine.ShowPlan(context.Background(), machine.PlanConfig{
+	err := machine.ShowPlan(context.Background(), machine.Config{
 		Machine: "vps-1",
 		RepoDir: repoDir,
 		Env:     linuxHost(),
@@ -138,32 +138,32 @@ func TestShowPlanRejects(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		cfg  machine.PlanConfig
+		cfg  machine.Config
 		want string
 	}{
 		{
 			name: "unknown Machine",
-			cfg:  machine.PlanConfig{Machine: "vps-2", RepoDir: exampleFleet, Env: linuxHost()},
+			cfg:  machine.Config{Machine: "vps-2", RepoDir: exampleFleet, Env: linuxHost()},
 			want: `no Host in the Fleet runs on machine "vps-2" (machines: dev-host, e2e-host, node-1, node-2, vps-1, web-1)`,
 		},
 		{
 			name: "missing machine name",
-			cfg:  machine.PlanConfig{RepoDir: exampleFleet, Env: linuxHost()},
+			cfg:  machine.Config{RepoDir: exampleFleet, Env: linuxHost()},
 			want: "machine name is required",
 		},
 		{
 			name: "missing repo dir",
-			cfg:  machine.PlanConfig{Machine: "vps-1", Env: linuxHost()},
+			cfg:  machine.Config{Machine: "vps-1", Env: linuxHost()},
 			want: "--repo-dir is required",
 		},
 		{
 			name: "not Linux",
-			cfg:  machine.PlanConfig{Machine: "vps-1", RepoDir: exampleFleet, Env: machine.Environment{GOOS: "darwin"}},
+			cfg:  machine.Config{Machine: "vps-1", RepoDir: exampleFleet, Env: machine.Environment{GOOS: "darwin"}},
 			want: "bootstrap machine needs Linux",
 		},
 		{
 			name: "inside a container",
-			cfg:  machine.PlanConfig{Machine: "vps-1", RepoDir: exampleFleet, Env: machine.Environment{GOOS: "linux", InContainer: true}},
+			cfg:  machine.Config{Machine: "vps-1", RepoDir: exampleFleet, Env: machine.Environment{GOOS: "linux", InContainer: true}},
 			want: "not inside a container",
 		},
 	}
