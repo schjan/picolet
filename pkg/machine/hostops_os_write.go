@@ -132,10 +132,9 @@ func ensureDirEntry(root *os.Root, p string, last bool, owner Owner, mode fs.Fil
 	case !last:
 		return nil
 	}
-	// Through a handle on the directory: if the user swaps p after the
-	// check, the chown cannot land on another inode (a hard link to a
-	// root-owned file).
-	dir, err := root.OpenFile(p, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	// Through a handle on the directory itself: if the user swaps p after
+	// the check, the chown cannot land on another directory or inode.
+	dir, err := openDirNoFollow(root, p)
 	if err != nil {
 		return err
 	}
@@ -144,6 +143,34 @@ func ensureDirEntry(root *os.Root, p string, last bool, owner Owner, mode fs.Fil
 		err = dir.Chmod(perm)
 	}
 	return errors.Join(err, dir.Close())
+}
+
+// openDirNoFollow opens the directory p below root without following a
+// symlink at p: os.Root follows in-root symlinks even under O_NOFOLLOW, so
+// only p's parent is resolved through root and p itself is opened with
+// openat(O_NOFOLLOW) on the parent's descriptor.
+func openDirNoFollow(root *os.Root, p string) (*os.File, error) {
+	parent, err := root.OpenFile(filepath.Dir(p), os.O_RDONLY|syscall.O_DIRECTORY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer parent.Close()
+	conn, err := parent.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+	fd, openErr := -1, error(nil)
+	err = conn.Control(func(parentFD uintptr) {
+		fd, openErr = syscall.Openat(int(parentFD), filepath.Base(p),
+			syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	})
+	if err == nil {
+		err = openErr
+	}
+	if err != nil {
+		return nil, &fs.PathError{Op: "openat", Path: p, Err: err}
+	}
+	return os.NewFile(uintptr(fd), p), nil
 }
 
 // WriteFile implements HostOps: a temporary file in the same directory,
@@ -187,7 +214,9 @@ func writeTemp(root *os.Root, tmp string, content []byte, owner Owner, mode fs.F
 
 // MakeWorldReadable implements HostOps. The walk runs in an os.Root, so a
 // directory swapped for a symlink mid-walk cannot lead a chmod out of the
-// tree.
+// tree. A regular file with more than one link shares its inode with a path
+// that may lie outside the tree; one that needs a chmod fails the call
+// before anything is changed.
 func (o *OSHostOps) MakeWorldReadable(p string) error {
 	blocked, err := o.unsearchableAncestor(p)
 	if err != nil {
@@ -202,16 +231,34 @@ func (o *OSHostOps) MakeWorldReadable(p string) error {
 		return fmt.Errorf("opening %s: %w", p, err)
 	}
 	defer root.Close()
-	if err := fs.WalkDir(root.FS(), ".", grantWorldRead(root)); err != nil {
+	changes, linked, err := worldReadableChanges(root)
+	if err != nil {
 		return fmt.Errorf("making %s readable by every user: %w", p, err)
+	}
+	if len(linked) > 0 {
+		return fmt.Errorf("making %s readable by every user: %s: hard-linked, a chmod would also open the other links' "+
+			"files to every user; clone without hard links (git clone --no-hardlinks) or make them readable yourself",
+			p, strings.Join(linked, ", "))
+	}
+	for _, c := range changes {
+		if err := root.Chmod(c.name, c.mode&(fs.ModePerm|fs.ModeSetuid|fs.ModeSetgid|fs.ModeSticky)); err != nil {
+			return fmt.Errorf("making %s readable by every user: %w", p, err)
+		}
 	}
 	return nil
 }
 
-// grantWorldRead adds o+r to every entry it visits, and o+x to directories
-// and to files someone may execute (chmod's X); symlinks are skipped.
-func grantWorldRead(root *os.Root) fs.WalkDirFunc {
-	return func(name string, d fs.DirEntry, err error) error {
+// modeChange is an entry of a tree and the mode it gets.
+type modeChange struct {
+	name string
+	mode fs.FileMode
+}
+
+// worldReadableChanges walks the tree at root and returns the chmod o+rX
+// changes it needs, and the hard-linked regular files among them, which are
+// not in changes. Symlinks are skipped.
+func worldReadableChanges(root *os.Root) (changes []modeChange, linked []string, err error) {
+	err = fs.WalkDir(root.FS(), ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil || d.Type()&fs.ModeSymlink != 0 {
 			return err
 		}
@@ -219,14 +266,23 @@ func grantWorldRead(root *os.Root) fs.WalkDirFunc {
 		if err != nil {
 			return err
 		}
-		mode := info.Mode()
-		want := mode.Perm() | 0o004
-		if mode.IsDir() || mode.Perm()&0o111 != 0 {
-			want |= 0o001
+		want := worldReadableMode(info.Mode())
+		switch {
+		case want == info.Mode():
+		case info.Mode().IsRegular() && linkCount(info) > 1:
+			linked = append(linked, name)
+		default:
+			changes = append(changes, modeChange{name: name, mode: want})
 		}
-		if want == mode.Perm() {
-			return nil
-		}
-		return root.Chmod(name, mode&(fs.ModeSetuid|fs.ModeSetgid|fs.ModeSticky)|want)
+		return nil
+	})
+	return changes, linked, err
+}
+
+// linkCount is the number of hard links to info's inode; 1 when unknown.
+func linkCount(info fs.FileInfo) uint64 {
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		return uint64(st.Nlink)
 	}
+	return 1
 }

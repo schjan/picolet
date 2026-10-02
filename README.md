@@ -141,7 +141,9 @@ the user (never following a symlink out of the home). The rootful Host gets the
 system `podman.socket` and its `/etc` and `/var/lib/picolet-system`
 directories instead. The Fleet checkout is made readable by every user
 (`chmod -R o+rX`); its parent directories must already grant search to others,
-so keep it out of `/root` (e.g. `/srv/fleet`). bootstrap never allocates
+so keep it out of `/root` (e.g. `/srv/fleet`), and a hard-linked file that needs
+the change stops the step (it would open the other link too: clone with
+`git clone --no-hardlinks`). bootstrap never allocates
 subuid/subgid ranges: a user without them stops that Host with the command to
 add them (`usermod --add-subuids 100000-165535 --add-subgids 100000-165535 <user>`;
 pick a free range if another user holds that one). The other Hosts go on, and

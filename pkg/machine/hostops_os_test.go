@@ -161,6 +161,22 @@ func TestOSHostOpsWorldReadableTree(t *testing.T) {
 	assert.False(t, readable, "a file others cannot read")
 }
 
+// The check agrees with chmod o+rX: an executable others cannot execute is
+// not done, so a run grants it.
+func TestOSHostOpsWorldReadableTreeExecutable(t *testing.T) {
+	t.Parallel()
+	ops := machineRoot(t, map[string]fs.FileMode{"/srv": 0o755}, map[string]string{"/srv/fleet/bin/hook.sh": ""})
+	require.NoError(t, os.Chmod(filepath.Join(ops.root, "/srv/fleet/bin/hook.sh"), 0o744))
+	readable, err := ops.WorldReadableTree("/srv/fleet")
+	require.NoError(t, err)
+	assert.False(t, readable, "an executable without o+x")
+
+	require.NoError(t, ops.MakeWorldReadable("/srv/fleet"))
+	readable, err = ops.WorldReadableTree("/srv/fleet")
+	require.NoError(t, err)
+	assert.True(t, readable, "made readable, the check is done")
+}
+
 func TestOSHostOpsWorldReadableTreeMissing(t *testing.T) {
 	t.Parallel()
 	ops := machineRoot(t, map[string]fs.FileMode{"/srv": 0o755}, nil)
@@ -299,6 +315,30 @@ func TestOSHostOpsMakeWorldReadable(t *testing.T) {
 		info, err := ops.Stat(p)
 		require.NoError(t, err)
 		assert.Equal(t, want, info.Mode, p)
+	}
+}
+
+// A hard link in the checkout shares its inode with a file elsewhere: a chmod
+// through it would open that file to every user. The run refuses and changes
+// nothing.
+func TestOSHostOpsMakeWorldReadableRefusesHardLinks(t *testing.T) {
+	t.Parallel()
+	ops := machineRoot(t, map[string]fs.FileMode{"/srv": 0o755}, map[string]string{
+		"/srv/fleet/fleet.yml": "",
+		"/etc/shadow":          "",
+	})
+	for _, p := range []string{"/srv/fleet/fleet.yml", "/etc/shadow"} {
+		require.NoError(t, os.Chmod(filepath.Join(ops.root, p), 0o600))
+	}
+	require.NoError(t, os.Link(filepath.Join(ops.root, "/etc/shadow"), filepath.Join(ops.root, "/srv/fleet/shadow")))
+
+	err := ops.MakeWorldReadable("/srv/fleet")
+	require.ErrorContains(t, err, "shadow")
+	require.ErrorContains(t, err, "--no-hardlinks")
+	for _, p := range []string{"/etc/shadow", "/srv/fleet/fleet.yml"} {
+		info, err := ops.Stat(p)
+		require.NoError(t, err)
+		assert.Equal(t, fs.FileMode(0o600), info.Mode, "%s unchanged", p)
 	}
 }
 

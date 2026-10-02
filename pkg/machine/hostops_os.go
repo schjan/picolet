@@ -270,14 +270,18 @@ func (o *OSHostOps) unsearchableAncestor(p string) (string, error) {
 	}
 }
 
-// worldReadable reports whether others can read an entry of mode: a
-// directory needs read and search, a symlink's own bits mean nothing.
+// worldReadable reports whether others can read an entry of mode as chmod
+// o+rX would leave it; a symlink's own bits mean nothing.
 func worldReadable(mode fs.FileMode) bool {
-	switch {
-	case mode&fs.ModeSymlink != 0:
-		return true
-	case mode.IsDir():
-		return mode.Perm()&0o005 == 0o005
+	return mode&fs.ModeSymlink != 0 || worldReadableMode(mode) == mode
+}
+
+// worldReadableMode is mode after chmod o+rX: read for others, and search
+// or execute for others on a directory or a file someone may execute.
+func worldReadableMode(mode fs.FileMode) fs.FileMode {
+	add := fs.FileMode(0o004)
+	if mode.IsDir() || mode.Perm()&0o111 != 0 {
+		add |= 0o001
 	}
-	return mode.Perm()&0o004 != 0
+	return mode | add
 }
