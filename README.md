@@ -150,6 +150,28 @@ pick a free range if another user holds that one). The other Hosts go on, and
 the command exits non-zero. It does not start the Agents yet: the per-Host
 bootstrap is not run.
 
+Credential files come from `--secrets-dir <dir>`, a directory laid out per
+Host: every file below `<dir>/<hostname>/` (subdirectories included) is placed
+at the same relative path in that Host's secrets directory,
+`~<user>/.config/picolet/secrets` for a rootless Host and
+`/etc/picolet/secrets` for the rootful one, owned by the Host's user (root for
+the rootful Host), mode `0600`. These paths are the Fleet convention the
+reference quadlets bind-mount to `/etc/picolet/secrets`; bootstrap does not
+read them from `Volume=` lines, and the run prints the path it wrote.
+Subdirectories are created `0700`. A file already current is left alone; a
+new or changed one is written and the run's summary lists its Host as needing
+an Agent restart; a file with current content but another owner or mode gets
+them in place, without a rewrite or restart. Files on the Machine that
+`<dir>` does not hold are kept. A Host without a directory below `<dir>` gets
+a warning and the run goes on; a symlink in `<dir>` that leads out of it, or
+anything but regular files and directories, stops the command before its first
+step. `--plan` compares the files too and shows each as `would do` (missing,
+content differs, owner/mode differ) or `already done`, never their values.
+
+```bash
+sudo picolet bootstrap machine vps-1 --repo-dir /srv/fleet --secrets-dir /root/fleet-secrets
+```
+
 Both forms refuse to run inside a container or on anything but Linux; a run
 also refuses without root or without Podman installed. Each Host listens on the
 port the Fleet declares (`listen_port:`); bootstrap never allocates one.

@@ -56,6 +56,10 @@ kept as is.
 - `picolet_files_managed_total{category}` values `pod`, `image`, `build`.
 - `picolet bootstrap machine --plan` (read-only)
   ([#151](https://github.com/schjan/picolet/issues/151)).
+- `picolet bootstrap machine --secrets-dir <dir>` places `<dir>/<hostname>/`
+  into each Host's secrets directory (`0600`, the Host's user), writing only
+  new or changed files and listing their Hosts as needing an Agent restart
+  ([#153](https://github.com/schjan/picolet/issues/153)).
 
 ### Changed
 

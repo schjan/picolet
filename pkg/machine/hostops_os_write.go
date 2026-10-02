@@ -134,7 +134,7 @@ func ensureDirEntry(root *os.Root, p string, last bool, owner Owner, mode fs.Fil
 	}
 	// Through a handle on the directory itself: if the user swaps p after
 	// the check, the chown cannot land on another directory or inode.
-	dir, err := openDirNoFollow(root, p)
+	dir, err := openNoFollow(root, p, syscall.O_DIRECTORY)
 	if err != nil {
 		return err
 	}
@@ -145,11 +145,11 @@ func ensureDirEntry(root *os.Root, p string, last bool, owner Owner, mode fs.Fil
 	return errors.Join(err, dir.Close())
 }
 
-// openDirNoFollow opens the directory p below root without following a
-// symlink at p: os.Root follows in-root symlinks even under O_NOFOLLOW, so
-// only p's parent is resolved through root and p itself is opened with
-// openat(O_NOFOLLOW) on the parent's descriptor.
-func openDirNoFollow(root *os.Root, p string) (*os.File, error) {
+// openNoFollow opens p below root read-only, with the extra open flags,
+// without following a symlink at p: os.Root follows in-root symlinks even
+// under O_NOFOLLOW, so only p's parent is resolved through root and p itself
+// is opened with openat(O_NOFOLLOW) on the parent's descriptor.
+func openNoFollow(root *os.Root, p string, flags int) (*os.File, error) {
 	parent, err := root.OpenFile(filepath.Dir(p), os.O_RDONLY|syscall.O_DIRECTORY, 0)
 	if err != nil {
 		return nil, err
@@ -162,7 +162,7 @@ func openDirNoFollow(root *os.Root, p string) (*os.File, error) {
 	fd, openErr := -1, error(nil)
 	err = conn.Control(func(parentFD uintptr) {
 		fd, openErr = syscall.Openat(int(parentFD), filepath.Base(p),
-			syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+			syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|flags, 0)
 	})
 	if err == nil {
 		err = openErr
@@ -171,6 +171,44 @@ func openDirNoFollow(root *os.Root, p string) (*os.File, error) {
 		return nil, &fs.PathError{Op: "openat", Path: p, Err: err}
 	}
 	return os.NewFile(uintptr(fd), p), nil
+}
+
+// SetOwnerMode implements HostOps, through a handle on the file itself so a
+// file swapped after the check cannot redirect the change. O_NONBLOCK keeps
+// a FIFO planted at rel from blocking the open. A file with more than one
+// link is refused: the change would also reach the other links, which may
+// lie outside base.
+func (o *OSHostOps) SetOwnerMode(base, rel string, owner Owner, mode fs.FileMode) error {
+	root, err := o.openBelow(base, rel)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	f, err := openNoFollow(root, filepath.Clean(rel), syscall.O_NONBLOCK)
+	if err != nil {
+		return fmt.Errorf("setting owner and mode of %s: %w", filepath.Join(base, rel), err)
+	}
+	err = setFileOwnerMode(f, owner, mode)
+	if err = errors.Join(err, f.Close()); err != nil {
+		return fmt.Errorf("setting owner and mode of %s: %w", filepath.Join(base, rel), err)
+	}
+	return nil
+}
+
+func setFileOwnerMode(f *os.File, owner Owner, mode fs.FileMode) error {
+	info, err := f.Stat()
+	switch {
+	case err != nil:
+		return err
+	case !info.Mode().IsRegular():
+		return errors.New("not a regular file")
+	case linkCount(info) > 1:
+		return errors.New("hard-linked, the change would also reach the other links")
+	}
+	if err := f.Chown(owner.UID, owner.GID); err != nil {
+		return err
+	}
+	return f.Chmod(mode)
 }
 
 // WriteFile implements HostOps: a temporary file in the same directory,

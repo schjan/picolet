@@ -16,6 +16,9 @@ func Render(w io.Writer, plan *Plan, results []Result) error {
 	counts := map[Status]int{}
 	for i, phase := range Phases {
 		fmt.Fprintf(tw, "\nPhase %d: %s\n", i+1, phase)
+		if !hasPhase(plan, phase) {
+			fmt.Fprintln(tw, nothingToDo)
+		}
 		for _, r := range results {
 			if r.Step.Phase != phase {
 				continue
@@ -42,7 +45,8 @@ func Render(w io.Writer, plan *Plan, results []Result) error {
 	return nil
 }
 
-// writeHeader prints the Machine's Hosts and the Fleet checkout.
+// writeHeader prints the Machine's Hosts, the Fleet checkout, the credential
+// source and the plan's warnings.
 func writeHeader(tw *tabwriter.Writer, plan *Plan) {
 	fmt.Fprintf(tw, "Machine %s: %d Hosts\n", plan.Machine, len(plan.Hosts))
 	for _, h := range plan.Hosts {
@@ -53,4 +57,12 @@ func writeHeader(tw *tabwriter.Writer, plan *Plan) {
 		fmt.Fprintf(tw, "  %s\t%s\tlisten port %d\n", h.Hostname, runsAs, h.ListenPort)
 	}
 	fmt.Fprintf(tw, "Fleet checkout: %s\n", plan.RepoDir)
+	if plan.SecretsDir == "" {
+		fmt.Fprintln(tw, "Credential files: none (no --secrets-dir)")
+	} else {
+		fmt.Fprintf(tw, "Credential files: --secrets-dir %s\n", plan.SecretsDir)
+	}
+	for _, w := range plan.Warnings {
+		fmt.Fprintf(tw, "warning: %s\n", w)
+	}
 }

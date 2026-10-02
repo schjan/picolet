@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 
 	"github.com/schjan/picolet/pkg/config"
@@ -51,8 +52,11 @@ type Config struct {
 	Machine string
 	// RepoDir is the Fleet checkout on the Machine.
 	RepoDir string
-	Env     Environment
-	Stdout  io.Writer
+	// SecretsDir is the operator's --secrets-dir, <dir>/<hostname>/<file>;
+	// empty when not given.
+	SecretsDir string
+	Env        Environment
+	Stdout     io.Writer
 }
 
 // ShowPlan prints what bootstrapping cfg.Machine would do, checking every
@@ -73,16 +77,14 @@ func ShowPlan(ctx context.Context, cfg Config, ops HostOps) error {
 	return Render(cfg.Stdout, plan, results)
 }
 
-// load plans cfg.Machine from the Fleet checked out at cfg.RepoDir.
+// load plans cfg.Machine from the Fleet checked out at cfg.RepoDir, with the
+// credential files of cfg.SecretsDir.
 func load(cfg Config) (*Plan, error) {
 	if cfg.RepoDir == "" {
 		return nil, errors.New("--repo-dir is required: the Fleet checkout on this Machine")
 	}
 	// The readability check walks the real tree, not a symlink to it.
-	repoDir, err := filepath.Abs(cfg.RepoDir)
-	if err == nil {
-		repoDir, err = filepath.EvalSymlinks(repoDir)
-	}
+	repoDir, err := realPath(cfg.RepoDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving --repo-dir: %w", err)
 	}
@@ -91,5 +93,29 @@ func load(cfg Config) (*Plan, error) {
 		return nil, err
 	}
 	defer repo.Close()
-	return New(repo.Config, cfg.Machine, Options{RepoDir: repoDir})
+	opts := Options{RepoDir: repoDir}
+	if cfg.SecretsDir != "" {
+		dir, err := realPath(cfg.SecretsDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolving --secrets-dir: %w", err)
+		}
+		// An os.Root: a symlink below the directory cannot read, as root,
+		// a file outside it into a Host's secrets.
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			return nil, fmt.Errorf("opening --secrets-dir: %w", err)
+		}
+		defer root.Close()
+		opts.SecretsDir = &SecretsDir{Path: dir, FS: root.FS()}
+	}
+	return New(repo.Config, cfg.Machine, opts)
+}
+
+// realPath is p absolute, with symlinks resolved.
+func realPath(p string) (string, error) {
+	p, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(p)
 }

@@ -282,6 +282,51 @@ func TestOSHostOpsWriteFileStaysBelowBase(t *testing.T) {
 	require.ErrorIs(t, err, fs.ErrNotExist)
 }
 
+// A file whose content is current gets owner and mode in place: same inode,
+// same content.
+func TestOSHostOpsSetOwnerMode(t *testing.T) {
+	t.Parallel()
+	ops := machineRoot(t, map[string]fs.FileMode{"/home/pi/.config/picolet/secrets": 0o700}, map[string]string{
+		"/home/pi/.config/picolet/secrets/git-token": "token",
+	})
+	full := filepath.Join(ops.root, "/home/pi/.config/picolet/secrets/git-token")
+	before, err := os.Stat(full)
+	require.NoError(t, err)
+
+	require.NoError(t, ops.SetOwnerMode("/home/pi", ".config/picolet/secrets/git-token", me(), 0o600))
+
+	after, err := os.Stat(full)
+	require.NoError(t, err)
+	assert.True(t, os.SameFile(before, after), "the file is not replaced")
+	info, err := ops.Stat("/home/pi/.config/picolet/secrets/git-token")
+	require.NoError(t, err)
+	assert.Equal(t, PathInfo{Exists: true, UID: me().UID, GID: me().GID, Mode: 0o600}, info)
+	equal, err := ops.FileContentEquals("/home/pi/.config/picolet/secrets/git-token", []byte("token"))
+	require.NoError(t, err)
+	assert.True(t, equal)
+}
+
+// Only a regular file below base is changed: a symlink in its place, even
+// one within base, is not followed.
+func TestOSHostOpsSetOwnerModeRejects(t *testing.T) {
+	t.Parallel()
+	ops := machineRoot(t, map[string]fs.FileMode{"/home/pi/.config": 0o700}, map[string]string{
+		"/etc/shadow":           "x",
+		"/home/pi/.config/file": "y",
+	})
+	require.NoError(t, os.Symlink(filepath.Join(ops.root, "/etc/shadow"), filepath.Join(ops.root, "/home/pi/.config/out")))
+	require.NoError(t, os.Symlink("file", filepath.Join(ops.root, "/home/pi/.config/in")))
+
+	for _, rel := range []string{".config/out", ".config/in", ".config", "../../etc/shadow", ".config/missing"} {
+		require.Error(t, ops.SetOwnerMode("/home/pi", rel, me(), 0o600), rel)
+	}
+	for _, p := range []string{"/etc/shadow", "/home/pi/.config/file"} {
+		info, err := os.Stat(filepath.Join(ops.root, p))
+		require.NoError(t, err)
+		assert.Equal(t, fs.FileMode(0o644), info.Mode().Perm(), p)
+	}
+}
+
 func TestOSHostOpsMakeWorldReadable(t *testing.T) {
 	t.Parallel()
 	ops := machineRoot(t, map[string]fs.FileMode{"/srv": 0o755}, map[string]string{

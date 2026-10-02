@@ -153,7 +153,7 @@ func TestRunStartsEnabledStoppedSocket(t *testing.T) {
 	require.NoError(t, err)
 	require.Regexp(t, `applied\s+vps-1/podman-socket`, out)
 	require.Regexp(t, `applied\s+vps-1-system/podman-socket`, out)
-	require.Contains(t, out, "2 applied, 26 already done")
+	require.Contains(t, out, "2 applied, 23 already done")
 }
 
 // A user without subordinate ID ranges stops its Host at the check, with the
