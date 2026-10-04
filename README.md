@@ -465,14 +465,16 @@ graph LR
   challenges on socket-activated listeners
   ([caddyserver/caddy#7525](https://github.com/caddyserver/caddy/issues/7525)).
 - **`forge`** (`services/forge/`) — `forge.container` on its own
-  `forge.network`, volumes for data and `app.ini`, and a config File
-  (`files/forge/forge.env.tmpl`, `EnvironmentFile=`, restarted by the
-  `forge-config` hook). Its HTTP port is published on `127.0.0.1:3000` only,
-  labelled `prometheus.scrape=true`, so the metrics bundle's Podman service
-  discovery scrapes it; the proxy answers `/metrics` with 404. It uses SQLite,
-  a file in `forge-data`: **never copy the database file or the volume while the
-  forge runs — use the application's dump** (`forgejo dump`, run in the
-  container), or stop `forge.service` first. The web installer is locked:
+  `forge.network`, one data volume (`forge-data`, which also holds `app.ini`),
+  and a config File (`files/forge/forge.env.tmpl`, `EnvironmentFile=`,
+  restarted by the `forge-config` hook). Its HTTP port is published on
+  `127.0.0.1:3000` only, labelled `prometheus.scrape=true`, so the metrics
+  bundle's Podman service discovery scrapes it; the proxy answers `/metrics`
+  with 404. It uses SQLite, a file in `forge-data`: **never copy the database
+  file or the volume while the forge runs — use the application's dump**
+  (`forgejo dump`, run in the container, see
+  [backup, restore-verify](#reference-bundles-backup-restore-verify)), or stop
+  `forge.service` first. The web installer is locked:
   create the first admin with `forgejo admin user create` in the container.
   With the installer locked Forgejo generates no `SECRET_KEY` (it would fall
   back to a publicly known default), so the key comes from the Host: the
