@@ -29,7 +29,7 @@ type Agent struct {
 // Credential files are not read: the Agent config needs none to say where the
 // Agent listens.
 func ResolveAgent(ctx context.Context, repoDir, hostname string) (Agent, error) {
-	repo, err := openRepo(repoDir)
+	repo, err := openRepo(hostname, repoDir)
 	if err != nil {
 		return Agent{}, err
 	}

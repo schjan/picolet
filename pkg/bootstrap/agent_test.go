@@ -42,10 +42,27 @@ func TestResolveAgentWithoutAgentBundle(t *testing.T) {
 	require.ErrorContains(t, err, "host node-1 has no picolet-system service assigned")
 }
 
+// Missing inputs are reported in the bootstrap's order, hostname before repo
+// dir, before the Fleet is opened.
+func TestMissingInputsReportedInOrder(t *testing.T) {
+	t.Parallel()
+	_, err := ResolveAgent(t.Context(), "", "")
+	require.EqualError(t, err, "hostname is required")
+	_, err = prepare(t.Context(), RunConfig{})
+	require.EqualError(t, err, "hostname is required")
+	_, err = prepare(t.Context(), RunConfig{Hostname: "vps-1"})
+	require.EqualError(t, err, "repo dir is required")
+}
+
 // The per-Host bootstrap run as `bootstrap machine` starts it in the Host's
 // container (no --rootless, no --data-dir) seeds state at the paths the Agent
 // sees inside its own container, never below a home: the Agent's first
 // Reconciliation then finds its own quadlet already managed.
+//
+// An intentional exception to testing through public seams: the issue's
+// acceptance criterion asks for the seeded keys, which no public seam shows
+// without systemd and Podman. prepare and changeset are what Run itself
+// builds the saved state from.
 func TestHostBootstrapSeedsContainerInternalStateKeys(t *testing.T) {
 	t.Parallel()
 	p, err := prepare(t.Context(), RunConfig{

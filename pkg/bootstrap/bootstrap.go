@@ -138,7 +138,7 @@ func prepare(ctx context.Context, cfg RunConfig) (*prepared, error) {
 	if err != nil {
 		return nil, err
 	}
-	repo, err := openRepo(cfg.RepoDir)
+	repo, err := openRepo(cfg.Hostname, cfg.RepoDir)
 	if err != nil {
 		return nil, err
 	}

@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/schjan/picolet/pkg/config"
@@ -24,10 +25,18 @@ type resolveConfig struct {
 	FileMode   fileReaderMode
 }
 
-// openRepo opens the Fleet checked out at dir; close it when done.
-func openRepo(dir string) (*config.Repo, error) {
+// errHostnameRequired: the first input the bootstrap checks.
+var errHostnameRequired = errors.New("hostname is required")
+
+// openRepo opens the Fleet checked out at dir to resolve hostname from;
+// close it when done. Missing inputs are reported in the bootstrap's
+// order: hostname, then repo dir.
+func openRepo(hostname, dir string) (*config.Repo, error) {
+	if hostname == "" {
+		return nil, errHostnameRequired
+	}
 	if dir == "" {
-		return nil, fmt.Errorf("repo dir is required")
+		return nil, errors.New("repo dir is required")
 	}
 	return config.OpenRepo(dir)
 }
@@ -36,7 +45,7 @@ func openRepo(dir string) (*config.Repo, error) {
 // which the caller opened and closes.
 func resolveBootstrapHost(ctx context.Context, repo *config.Repo, cfg resolveConfig) (*resolver.ResolvedHost, error) {
 	if cfg.Hostname == "" {
-		return nil, fmt.Errorf("hostname is required")
+		return nil, errHostnameRequired
 	}
 	if cfg.Service == "" {
 		return nil, fmt.Errorf("service is required")
