@@ -114,6 +114,9 @@ type Step struct {
 	// Source is where a StepCredential's content comes from beyond
 	// --secrets-dir: the provider token's flag or the Secret Reference.
 	Source string
+	// ref is the Secret Reference of a bootstrap: file, whose Content
+	// Plan.resolve fills in.
+	ref string
 }
 
 // Plan is the ordered work for one Machine.
@@ -144,8 +147,6 @@ type Options struct {
 	// Token is the Machine's provider token, placed for every Host without
 	// bootstrap: files; nil when the operator gave none.
 	Token *ProviderToken
-	// Refs holds the values of the Hosts' bootstrap: references.
-	Refs Resolved
 }
 
 // SecretsDir is the operator's --secrets-dir: <dir>/<hostname>/<file> is a
@@ -190,7 +191,8 @@ func (d agentDir) path(h Host) string {
 
 // New plans the bootstrap of machine: every Host of the Fleet declaring it,
 // phase by phase. It reads the Hosts' credential files from opts.SecretsDir
-// and writes nothing. It errors when no Host runs on machine, and when two
+// and writes nothing. A bootstrap: file is planned without its value, which
+// resolve fills in. It errors when no Host runs on machine, and when two
 // sources place the same credential file.
 func New(cfg *config.Config, machine string, opts Options) (*Plan, error) {
 	hosts, err := machineHosts(cfg, machine)
@@ -203,9 +205,6 @@ func New(cfg *config.Config, machine string, opts Options) (*Plan, error) {
 	}
 	if opts.Token != nil {
 		plan.Sources = append(plan.Sources, opts.Token.provider.flag+" "+opts.Token.Path)
-	}
-	if opts.Refs.Warning != "" {
-		plan.Warnings = append(plan.Warnings, opts.Refs.Warning)
 	}
 	for _, h := range hosts {
 		plan.Steps = append(plan.Steps, setupSteps(h, opts.RepoDir)...)
@@ -225,8 +224,7 @@ func New(cfg *config.Config, machine string, opts Options) (*Plan, error) {
 
 // hostCredentialSteps plans h's credential files, in order: its
 // --secrets-dir files, the Machine's provider token for a Host without a
-// bootstrap: block, and the block's files whose reference was resolved. It
-// records on plan the warnings and the files not placed.
+// bootstrap: block, and the block's files. It records on plan the warnings.
 func hostCredentialSteps(plan *Plan, h Host, opts Options) ([]Step, error) {
 	steps, warning, err := credentialSteps(h, opts.SecretsDir)
 	if err != nil {
@@ -238,23 +236,37 @@ func hostCredentialSteps(plan *Plan, h Host, opts Options) ([]Step, error) {
 	if t := opts.Token; t != nil && h.Bootstrap == nil {
 		steps = append(steps, credentialStep(h, t.provider.tokenName, t.Content, t.provider.flag))
 	}
-	// An unresolved file still claims its path: it collides with a
-	// --secrets-dir file as a resolved one would.
-	claims := slices.Clone(steps)
 	for _, name := range slices.Sorted(maps.Keys(h.Bootstrap)) {
 		ref := h.Bootstrap[name]
-		value, ok := opts.Refs.Values[ref]
-		if !ok {
-			plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s: %s not placed: %s %s", h.Hostname, name, ref, opts.Refs.Missing[ref]))
-			plan.Unresolved = append(plan.Unresolved, h.Hostname+"/"+name)
-			claims = append(claims, credentialStep(h, name, nil, ref))
-			continue
-		}
-		step := credentialStep(h, name, []byte(value), ref)
-		steps = append(steps, step)
-		claims = append(claims, step)
+		s := credentialStep(h, name, nil, ref)
+		s.ref = ref
+		steps = append(steps, s)
 	}
-	return steps, oneSourcePerPath(h, claims)
+	return steps, oneSourcePerPath(h, steps)
+}
+
+// resolve fills each bootstrap: file with its reference's value from res.
+// A file whose reference was not resolved is dropped from the steps, with
+// a warning and an entry in Unresolved.
+func (p *Plan) resolve(res Resolved) {
+	if res.Warning != "" {
+		p.Warnings = append(p.Warnings, res.Warning)
+	}
+	steps := p.Steps[:0]
+	for _, s := range p.Steps {
+		if s.ref != "" {
+			value, ok := res.Values[s.ref]
+			if !ok {
+				name := strings.TrimPrefix(s.ID, s.Host.Hostname+"/credential/")
+				p.Warnings = append(p.Warnings, fmt.Sprintf("%s: %s not placed: %s %s", s.Host.Hostname, name, s.ref, res.Missing[s.ref]))
+				p.Unresolved = append(p.Unresolved, s.Host.Hostname+"/"+name)
+				continue
+			}
+			s.Content = []byte(value)
+		}
+		steps = append(steps, s)
+	}
+	p.Steps = steps
 }
 
 // oneSourcePerPath rejects two of h's credential steps placing one path.

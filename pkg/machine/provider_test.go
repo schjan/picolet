@@ -415,9 +415,10 @@ func TestRejectsCredentialSources(t *testing.T) {
 			want: "vps-1: ~pi/.config/picolet/secrets/op-service-account-token comes from both --secrets-dir and --onepassword-token-file",
 		},
 		{
+			// Found before the provider opens: a failing one never gets to.
 			name: "reference and --secrets-dir place one file",
 			cfg: machine.Config{
-				RepoDir: ciRepo, OnePasswordTokenFile: token, Providers: (&fakeOnePassword{values: map[string]string{"op://ci/git/token": "v"}}).providers(t),
+				RepoDir: ciRepo, OnePasswordTokenFile: token, Providers: failing,
 				SecretsDir: secretsDir(t, map[string]string{"vps-1-runner/git_token": "other"}),
 			},
 			want: "vps-1-runner: ~runner/.config/picolet/secrets/git_token comes from both --secrets-dir and op://ci/git/token",

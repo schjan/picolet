@@ -120,14 +120,18 @@ func load(ctx context.Context, cfg Config) (*Plan, error) {
 	if opts.Token, err = readToken(repoDir, prov, tokenFile); err != nil {
 		return nil, err
 	}
-	hosts, err := machineHosts(repo.Config, cfg.Machine)
+	// Planning first: a credential file with two sources stops the command
+	// before the provider is opened.
+	plan, err := New(repo.Config, cfg.Machine, opts)
 	if err != nil {
 		return nil, err
 	}
-	if opts.Refs, err = resolveRefs(ctx, cfg.Providers, opts.Token, hosts); err != nil {
+	res, err := resolveRefs(ctx, cfg.Providers, opts.Token, plan.Hosts)
+	if err != nil {
 		return nil, err
 	}
-	return New(repo.Config, cfg.Machine, opts)
+	plan.resolve(res)
+	return plan, nil
 }
 
 // openSecretsDir opens the --secrets-dir p as an os.Root: a symlink below
