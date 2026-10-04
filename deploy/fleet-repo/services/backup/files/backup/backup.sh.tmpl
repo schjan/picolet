@@ -27,7 +27,7 @@ dump=$!
 if ! podman run --rm --pull=missing \
 	--secret restic_env \
 	--volume restic-cache:/root/.cache/restic \
-	--volume "{{ filePath "backup" }}:/etc/backup:ro" \
+	--volume {{ filePath "backup" }}:/etc/backup:ro \
 	--volume "$dir:/dump" \
 	--entrypoint /bin/sh \
 	{{ index .Images "restic" }} /etc/backup/restic.sh \

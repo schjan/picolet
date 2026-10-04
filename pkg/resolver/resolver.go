@@ -123,6 +123,9 @@ func New(rc Config) (*Resolver, error) {
 	if rc.HostDataDir != "" {
 		hostDataDir = rc.HostDataDir
 	}
+	if err := checkHostDataDir(hostDataDir); err != nil {
+		return nil, err
+	}
 	return &Resolver{
 		fsys:           rc.FS,
 		cfg:            rc.Config,
@@ -136,6 +139,33 @@ func New(rc Config) (*Resolver, error) {
 		rootless:       rc.Rootless,
 		strict:         rc.Strict,
 	}, nil
+}
+
+// checkHostDataDir enforces the contract that lets Fleet templates emit
+// filePath/manifestPath unquoted into Quadlet, systemd and shell lines: an
+// absolute path of letters, digits and . _ - + @ / only. Anything else
+// (whitespace, quotes, $ and backticks, systemd's %, Volume='s :) would be
+// split or expanded by one of those parsers.
+func checkHostDataDir(dir string) error {
+	if !strings.HasPrefix(dir, "/") {
+		return fmt.Errorf("host data dir %q must be an absolute path", dir)
+	}
+	for _, r := range dir {
+		if !isPlainPathRune(r) {
+			return fmt.Errorf("host data dir %q: only letters, digits and . _ - + @ / are allowed; "+
+				"filePath and manifestPath emit it unquoted into units and scripts", dir)
+		}
+	}
+	return nil
+}
+
+func isPlainPathRune(r rune) bool {
+	switch {
+	case 'a' <= r && r <= 'z', 'A' <= r && r <= 'Z', '0' <= r && r <= '9':
+		return true
+	default:
+		return strings.ContainsRune("._-+@/", r)
+	}
 }
 
 // ResolveDirs computes destination directories based on rootless mode.

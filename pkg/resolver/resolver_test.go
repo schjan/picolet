@@ -612,6 +612,39 @@ func TestResolveHostHostDataDirDefaultsToDataDir(t *testing.T) {
 	assert.Contains(t, container.Content, "Volume=/internal/files/app.conf:/etc/app.conf:ro")
 }
 
+// TestNewRejectsUnsafeHostDataDir pins the contract that makes filePath and
+// manifestPath safe to emit unquoted into Quadlet, systemd and shell lines: the
+// path they emit holds no whitespace, quoting, expansion, specifier or option
+// separator characters, whichever setting it comes from.
+func TestNewRejectsUnsafeHostDataDir(t *testing.T) {
+	t.Parallel()
+	tests := map[string]Config{
+		"whitespace":           {HostDataDir: "/srv/picolet data"},
+		"shell expansion":      {HostDataDir: "/srv/$HOME/picolet"},
+		"command substitution": {HostDataDir: "/srv/`id`/picolet"},
+		"systemd specifier":    {HostDataDir: "/srv/%h/picolet"},
+		"volume option colon":  {HostDataDir: "/srv/a:b"},
+		"relative":             {HostDataDir: "srv/picolet"},
+		"data dir as fallback": {DataDir: "/var/lib/pico let"},
+		"quote":                {HostDataDir: `/srv/"picolet`},
+	}
+	for name, rc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := New(rc)
+			require.ErrorContains(t, err, "host data dir")
+		})
+	}
+}
+
+func TestNewAcceptsPlainHostDataDir(t *testing.T) {
+	t.Parallel()
+	for _, dir := range []string{"/var/lib/picolet", "/home/pi.user/.local/share/picolet", "/srv/picolet-2_a+b@c"} {
+		_, err := New(Config{HostDataDir: dir})
+		require.NoError(t, err, dir)
+	}
+}
+
 //nolint:funlen // fixture setup is clearer inline for equivalence coverage
 func TestResolveHostBundleEquivalentToExplicit(t *testing.T) {
 	t.Parallel()

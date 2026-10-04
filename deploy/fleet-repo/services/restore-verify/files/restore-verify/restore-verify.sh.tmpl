@@ -19,7 +19,7 @@ restic() {
 	podman run --rm --pull=missing \
 		--secret restic_env \
 		--volume restic-cache:/root/.cache/restic \
-		--volume "{{ filePath "backup" }}:/etc/backup:ro" \
+		--volume {{ filePath "backup" }}:/etc/backup:ro \
 		--volume "$vol:/restore" \
 		--entrypoint /bin/sh \
 		{{ index .Images "restic" }} /etc/backup/restic.sh "$@"
@@ -29,7 +29,7 @@ restic() {
 # failed restic leaves the selection empty input, which fails it too.
 snapshot="$(restic snapshots --host {{ .Host.Hostname }} --tag forge --latest 1 --json |
 	podman run --rm -i --pull=missing --network none \
-		--volume "{{ filePath "restore-verify" }}:/etc/restore-verify:ro" \
+		--volume {{ filePath "restore-verify" }}:/etc/restore-verify:ro \
 		{{ index .Images "python" }} python3 /etc/restore-verify/latest-snapshot.py 2)"
 
 echo "restoring forge snapshot $snapshot of {{ .Host.Hostname }}"
@@ -37,7 +37,7 @@ restic restore "$snapshot" --target /restore/.restic
 
 echo "unpacking the dump and importing its database"
 podman run --rm --pull=missing --network none \
-	--volume "{{ filePath "restore-verify" }}:/etc/restore-verify:ro" \
+	--volume {{ filePath "restore-verify" }}:/etc/restore-verify:ro \
 	--volume "$vol:/restore" \
 	{{ index .Images "python" }} /bin/sh /etc/restore-verify/prepare.sh
 

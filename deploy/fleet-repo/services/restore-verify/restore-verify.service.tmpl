@@ -15,7 +15,7 @@ Type=oneshot
 # and those of every run, whatever its outcome.
 ExecStartPre=-/usr/bin/podman rm --force --ignore restore-verify-forge
 ExecStartPre=-/usr/bin/podman volume rm --force restore-verify-scratch
-ExecStart=/bin/sh "{{ filePath "restore-verify/restore-verify.sh" }}"
+ExecStart=/bin/sh {{ filePath "restore-verify/restore-verify.sh" }}
 ExecStopPost=-/usr/bin/podman rm --force --ignore restore-verify-forge
 ExecStopPost=-/usr/bin/podman volume rm --force restore-verify-scratch
 Restart=on-failure

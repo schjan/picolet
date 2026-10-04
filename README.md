@@ -154,6 +154,12 @@ unrelated `data_dir` option which overrides picolet's own repo/state/lock dir).
 The first reconcile after setting it re-renders affected quadlets, causing a
 one-time restart of the units that reference `filePath`/`manifestPath` paths.
 
+The path those helpers emit — `host_data_dir`, else picolet's internal data dir —
+must be absolute and consist of letters, digits and `. _ - + @ /` only: templates
+put it unquoted into Quadlet, systemd and shell lines, where whitespace, quotes,
+`$`, backticks, `%` or `:` would be split or expanded. Picolet refuses to render
+with any other path.
+
 > `picolet resolve` / `picolet validate` (run without `--config`) cannot read
 > `host_data_dir` and will preview picolet's internal paths.
 
