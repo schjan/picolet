@@ -123,3 +123,17 @@ Template data root: `.Host` (hostname, role, features, machine, user, rootful, l
 `pkg/metrics` exposes Prometheus collectors. Custom collectors that read runtime state accept a `*status.Store` at construction (`metrics.Register(store)`); no package-level mutable state. `pkg/metrics` imports `pkg/status` (one direction; no cycle).
 
 Everything else flows through `pkg/agent` which orchestrates the pipeline.
+
+## Agent skills
+
+### Issue tracker
+
+For issue/spec reads and writes, use GitHub Issues through `gh`; see `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+For triage state changes and ticket publication, use the canonical roles mapped in `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Before codebase exploration or domain decisions, read the single-context glossary and relevant ADRs as described in `docs/agents/domain.md`.
