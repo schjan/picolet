@@ -4,5 +4,5 @@
 hostname: vps-1
 external_hostname: vps-1.example.net
 role: vps
-features: []
+features: [agent]
 user: pi

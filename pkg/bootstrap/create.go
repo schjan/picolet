@@ -78,8 +78,7 @@ func buildCreateScriptData(ctx context.Context, cfg CreateConfig) (createScriptD
 		}
 	}
 
-	resolved, err := resolveBootstrapHost(ctx, resolveConfig{
-		RepoDir:    cfg.FleetDir,
+	resolved, err := resolveBootstrapHost(ctx, repo, resolveConfig{
 		Hostname:   cfg.Hostname,
 		Service:    service,
 		Rootless:   false,

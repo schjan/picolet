@@ -11,17 +11,27 @@ import (
 
 const maxHealthProbeTimeout = 5 * time.Second
 
-var healthHTTPClient = http.DefaultClient
-
 // WaitForHealth polls the agent's /health endpoint at addr (host:port) until it
 // reports healthy or timeout expires.
 func WaitForHealth(ctx context.Context, addr, healthPath string, timeout time.Duration) error {
+	return waitForHealth(ctx, http.DefaultClient, addr, healthPath, timeout)
+}
+
+// WaitAgentHealthy waits for the Agent at addr as the per-Host bootstrap
+// does: its /health, for as long as the bootstrap's default timeout.
+func WaitAgentHealthy(ctx context.Context, addr string) error {
+	return WaitForHealth(ctx, addr, defaultHealthPath, defaultTimeout)
+}
+
+// waitForHealth takes its client explicitly so tests can drive it without
+// touching a package-level default other tests read in parallel.
+func waitForHealth(ctx context.Context, client *http.Client, addr, healthPath string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		remaining := time.Until(deadline)
 		probeCtx, cancel := context.WithTimeout(ctx, min(maxHealthProbeTimeout, remaining))
-		err := probeOnce(probeCtx, healthHTTPClient, addr, healthPath)
+		err := probeOnce(probeCtx, client, addr, healthPath)
 		cancel()
 		if err == nil {
 			return nil

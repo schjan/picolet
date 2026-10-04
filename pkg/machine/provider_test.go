@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sebdah/goldie/v2"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	mocks "github.com/schjan/picolet/mocks/machine"
@@ -44,11 +45,14 @@ func unusedProviders(t *testing.T) machine.Providers {
 
 // The Machine's provider token lands in every Host's secrets directory like
 // a --secrets-dir file, beside the --secrets-dir files: the sources add up.
-// No Host has a reference to resolve, so no provider is opened.
+// No Host has a reference to resolve, so no provider is opened. Every Agent
+// is restarted: none has read the token.
 func TestRunPlacesProviderToken(t *testing.T) {
 	t.Parallel()
 	ops := mocks.NewMockHostOps(t)
 	expectBootstrappedMachine(t, ops)
+	expectAgentsStarted(t, ops)
+	expectAgentsRestarted(ops, true, true, true)
 	piOwner, runnerOwner := machine.Owner{UID: 1000, GID: 1000}, machine.Owner{UID: 1001, GID: 1001}
 	ops.EXPECT().Stat("/home/pi/.config/picolet/secrets/git-token").Return(secretFile(pi), nil)
 	ops.EXPECT().FileContentEquals("/home/pi/.config/picolet/secrets/git-token", []byte("pi-token")).Return(true, nil)
@@ -158,6 +162,20 @@ func expectBootstrappedMachineAt(ops *mocks.MockHostOps, repo string) {
 	ops.EXPECT().WorldReadableTree(repo).Return(true, nil)
 }
 
+// expectAgentsRestarted sets ops up to restart the Agents of vps-1, of
+// runner and of vps-1-system that need it.
+func expectAgentsRestarted(ops *mocks.MockHostOps, piAgent, runnerAgent, systemAgent bool) {
+	if piAgent {
+		ops.EXPECT().RestartUserUnit(mock.Anything, pi, "picolet.service").Return(nil).Once()
+	}
+	if runnerAgent {
+		ops.EXPECT().RestartUserUnit(mock.Anything, runner, "picolet.service").Return(nil).Once()
+	}
+	if systemAgent {
+		ops.EXPECT().RestartSystemUnit(mock.Anything, "picolet-system.service").Return(nil).Once()
+	}
+}
+
 // A Host with bootstrap: files gets them from their references, resolved in
 // one batch with the operator's token, owned by the Host's user, mode 0600,
 // and never the Machine's token. A reference left unresolved, or of a
@@ -168,6 +186,8 @@ func TestRunPlacesBootstrapRefs(t *testing.T) {
 	repo := fleetWithBootstrap(t, ciBlocks)
 	ops := mocks.NewMockHostOps(t)
 	expectBootstrappedMachineAt(ops, repo)
+	expectAgentsStartedAt(ops, repo)
+	expectAgentsRestarted(ops, true, true, true)
 	ops.EXPECT().Stat("/home/pi/.config/picolet/secrets/op-service-account-token").Return(machine.PathInfo{}, nil)
 	ops.EXPECT().WriteFile("/home/pi", ".config/picolet/secrets/op-service-account-token", []byte("ops_machine-token"),
 		machine.Owner{UID: 1000, GID: 1000}, os.FileMode(0o600)).Return(nil).Once()
@@ -237,6 +257,7 @@ func TestRunWithoutProviderSkipsBootstrapRefs(t *testing.T) {
 	repo := fleetWithBootstrap(t, ciBlocks)
 	ops := mocks.NewMockHostOps(t)
 	expectBootstrappedMachineAt(ops, repo)
+	expectAgentsStartedAt(ops, repo)
 
 	var buf bytes.Buffer
 	err := machine.Run(context.Background(), machine.Config{
@@ -288,6 +309,8 @@ func TestRunEmptyBootstrapKeepsHostOffProvider(t *testing.T) {
 	repo := fleetWithBootstrap(t, map[string]string{"vps-1-runner": "  {}\n", "vps-1-system": "  {}\n"})
 	ops := mocks.NewMockHostOps(t)
 	expectBootstrappedMachineAt(ops, repo)
+	expectAgentsStartedAt(ops, repo)
+	expectAgentsRestarted(ops, true, false, false)
 	ops.EXPECT().Stat("/home/pi/.config/picolet/secrets/op-service-account-token").Return(machine.PathInfo{}, nil)
 	ops.EXPECT().WriteFile("/home/pi", ".config/picolet/secrets/op-service-account-token", []byte("ops_machine-token"),
 		machine.Owner{UID: 1000, GID: 1000}, os.FileMode(0o600)).Return(nil).Once()
@@ -298,7 +321,8 @@ func TestRunEmptyBootstrapKeepsHostOffProvider(t *testing.T) {
 		Providers: unusedProviders(t), Env: rootOnLinux(), Stdout: &buf,
 	}, ops)
 	require.NoError(t, err)
-	require.Contains(t, buf.String(), "Agent restart required (credential files written): vps-1\n")
+	require.Regexp(t, `\nvps-1\s+pi\s+9417\s+healthy\s+restarted \(credential files written\)\n`, buf.String())
+	require.Regexp(t, `\nvps-1-runner\s+runner\s+9419\s+healthy\s+not needed\n`, buf.String())
 }
 
 // protonPassOpener opens a fake Proton Pass that logs in like pass-cli, a

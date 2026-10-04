@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sebdah/goldie/v2"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	mocks "github.com/schjan/picolet/mocks/machine"
@@ -84,6 +85,9 @@ func TestRunPlacesSecretsDirFiles(t *testing.T) {
 	t.Parallel()
 	ops := mocks.NewMockHostOps(t)
 	expectBootstrappedMachine(t, ops)
+	expectAgentsStarted(t, ops)
+	ops.EXPECT().RestartUserUnit(mock.Anything, pi, "picolet.service").Return(nil).Once()
+	ops.EXPECT().RestartUserUnit(mock.Anything, runner, "picolet.service").Return(nil).Once()
 	piOwner, runnerOwner := machine.Owner{UID: 1000, GID: 1000}, machine.Owner{UID: 1001, GID: 1001}
 	ops.EXPECT().Stat("/home/pi/.config/picolet/secrets/git-token").Return(machine.PathInfo{}, nil)
 	ops.EXPECT().WriteFile("/home/pi", ".config/picolet/secrets/git-token", []byte("pi-token"), piOwner, os.FileMode(0o600)).
@@ -108,6 +112,8 @@ func TestRunPlacesRootfulSecretsDirFiles(t *testing.T) {
 	t.Parallel()
 	ops := mocks.NewMockHostOps(t)
 	expectBootstrappedMachine(t, ops)
+	expectAgentsStarted(t, ops)
+	ops.EXPECT().RestartSystemUnit(mock.Anything, "picolet-system.service").Return(nil).Once()
 	ops.EXPECT().Stat("/etc/picolet/secrets/git-token").Return(machine.PathInfo{}, nil)
 	ops.EXPECT().WriteFile("/", "etc/picolet/secrets/git-token", []byte("system-token"), machine.Owner{}, os.FileMode(0o600)).
 		Return(nil).Once()
@@ -128,13 +134,13 @@ func TestRunPlacesRootfulSecretsDirFiles(t *testing.T) {
 		`wrote /etc/picolet/secrets/git-token, Agent restart required\n`, out)
 	require.Contains(t, out, "warning: no credential files for vps-1: <secrets>/vps-1 does not exist\n")
 	require.Contains(t, out, "warning: no credential files for vps-1-runner: <secrets>/vps-1-runner does not exist\n")
-	require.Contains(t, out, "Agent restart required (credential files written): vps-1-system\n")
+	require.Regexp(t, `\nvps-1-system\s+root\s+9418\s+healthy\s+restarted \(credential files written\)\n`, out)
 	require.NotContains(t, out, "system-token")
 }
 
 // A run interrupted just after writing a credential file still reports the
-// Host for an Agent restart: the next run finds the file current and could
-// not tell.
+// Host's Agent as needing a restart: the next run finds the file current and
+// could not tell.
 func TestRunInterruptedAfterCredentialWriteReportsRestart(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -155,7 +161,7 @@ func TestRunInterruptedAfterCredentialWriteReportsRestart(t *testing.T) {
 	}, ops)
 	require.ErrorIs(t, err, context.Canceled)
 	require.Regexp(t, `applied\s+vps-1-system/credential/git-token\s`, out.String())
-	require.Contains(t, out.String(), "Agent restart required (credential files written): vps-1-system\n")
+	require.Regexp(t, `\nvps-1-system\s+root\s+9418\s+not checked\s+required \(credential files written\)\n`, out.String())
 }
 
 // expectPlacedSecrets sets ops up as a Machine holding the credential files
@@ -183,6 +189,8 @@ func TestRunRewritesChangedSecretsDirFiles(t *testing.T) {
 	ops := mocks.NewMockHostOps(t)
 	expectBootstrappedMachine(t, ops)
 	expectPlacedSecrets(ops)
+	expectAgentsStarted(t, ops)
+	ops.EXPECT().RestartUserUnit(mock.Anything, runner, "picolet.service").Return(nil).Once()
 	piOwner := machine.Owner{UID: 1000, GID: 1000}
 	ops.EXPECT().EnsureDir("/home/pi", ".config/picolet/secrets/github", piOwner, os.FileMode(0o700)).Return(nil).Once()
 	ops.EXPECT().SetOwnerMode("/home/pi", ".config/picolet/secrets/github/app.pem", piOwner, os.FileMode(0o600)).
@@ -197,7 +205,9 @@ func TestRunRewritesChangedSecretsDirFiles(t *testing.T) {
 	require.Regexp(t, `applied\s+vps-1/credential/github/app.pem\s.*set owner and mode of /home/pi/.config/picolet/secrets/github/app.pem\n`, out)
 	require.Regexp(t, `applied\s+vps-1-runner/credential/git-token\s.*`+
 		`wrote /home/runner/.config/picolet/secrets/git-token, Agent restart required\n`, out)
-	require.Contains(t, out, "\n3 applied, 26 already done\nAgent restart required (credential files written): vps-1-runner\n")
+	require.Contains(t, out, "\n6 applied, 26 already done\n")
+	require.Regexp(t, `\nvps-1-runner\s+runner\s+9419\s+healthy\s+restarted \(credential files written\)\n`, out)
+	require.Regexp(t, `\nvps-1\s+pi\s+9417\s+healthy\s+not needed\n`, out)
 }
 
 // A --secrets-dir at or below the Fleet checkout is refused: making the

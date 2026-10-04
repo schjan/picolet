@@ -49,3 +49,11 @@ features:
   app-a:
     paths:
       - quadlets/containers/nginx.container.tmpl
+  # The Agents of Machine vps-1's Hosts: picolet for a Host with user:,
+  # picolet-system for the rootful one.
+  agent:
+    services:
+      - picolet
+  agent-system:
+    services:
+      - picolet-system

@@ -160,24 +160,29 @@ type SecretsDir struct {
 }
 
 // agentDir is a directory the Agent quadlet bind-mounts, at its path for a
-// rootless Host (relative to the home) and for the rootful Host.
+// rootless Host (relative to the home) and for the rootful Host, and at mount
+// inside the Agent's container (with the bind mount's options).
 type agentDir struct {
 	name     string
 	userPath string
 	rootPath string
 	mode     fs.FileMode
+	mount    string
 }
 
 // secretsAgentDir is the Host's secrets directory: the Fleet convention the
 // reference quadlets bind-mount to /etc/picolet/secrets, not derived from
 // their Volume= lines.
-var secretsAgentDir = agentDir{name: "secrets", userPath: ".config/picolet/secrets", rootPath: "/etc/picolet/secrets", mode: 0o700}
+var secretsAgentDir = agentDir{
+	name: "secrets", userPath: ".config/picolet/secrets", rootPath: "/etc/picolet/secrets", mode: 0o700,
+	mount: "/etc/picolet/secrets:ro",
+}
 
 var agentDirs = []agentDir{
 	secretsAgentDir,
-	{name: "data", userPath: ".local/share/picolet", rootPath: "/var/lib/picolet-system", mode: 0o700},
-	{name: "quadlets", userPath: ".config/containers/systemd", rootPath: "/etc/containers/systemd", mode: 0o755},
-	{name: "units", userPath: ".config/systemd/user", rootPath: "/etc/systemd/system", mode: 0o755},
+	{name: "data", userPath: ".local/share/picolet", rootPath: "/var/lib/picolet-system", mode: 0o700, mount: "/var/lib/picolet"},
+	{name: "quadlets", userPath: ".config/containers/systemd", rootPath: "/etc/containers/systemd", mode: 0o755, mount: "/etc/containers/systemd"},
+	{name: "units", userPath: ".config/systemd/user", rootPath: "/etc/systemd/system", mode: 0o755, mount: "/etc/systemd/system"},
 }
 
 // path is d's path for h: relative to the home for a rootless Host,

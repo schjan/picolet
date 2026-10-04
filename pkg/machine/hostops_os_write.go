@@ -22,7 +22,11 @@ const (
 
 // runCommand runs a command, its output part of the error.
 func runCommand(ctx context.Context, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
+	return run(exec.CommandContext(ctx, name, args...))
+}
+
+// run runs cmd, its output part of the error.
+func run(cmd *exec.Cmd) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s: %w: %s", strings.Join(cmd.Args, " "), err, strings.TrimSpace(string(out)))
 	}
@@ -64,13 +68,20 @@ func (o *OSHostOps) WaitUserManager(ctx context.Context, u User) error {
 	}
 }
 
-// EnableUserUnit implements HostOps. runuser reaches the user's manager
-// through the user's own bus; systemctl --user -M needs systemd-container.
+// EnableUserUnit implements HostOps.
 func (o *OSHostOps) EnableUserUnit(ctx context.Context, u User, unit string) error {
-	runtimeDir := fmt.Sprintf("/run/user/%d", u.UID)
-	return runCommand(ctx, "runuser", "-u", u.Name, "--", "env",
-		"XDG_RUNTIME_DIR="+runtimeDir, "DBUS_SESSION_BUS_ADDRESS=unix:path="+runtimeDir+"/bus",
-		"systemctl", "--user", "enable", "--now", unit)
+	return o.userSystemctl(ctx, u, "enable", "--now", unit)
+}
+
+// userSystemctl runs systemctl --user with args in u's manager. runuser
+// reaches the manager through the user's own bus; systemctl --user -M needs
+// systemd-container.
+func (o *OSHostOps) userSystemctl(ctx context.Context, u User, args ...string) error {
+	runtimeDir := u.runtimeDir()
+	return o.RunAsUser(ctx, u, Command{
+		Args: append([]string{"systemctl", "--user"}, args...),
+		Env:  []string{"XDG_RUNTIME_DIR=" + runtimeDir, "DBUS_SESSION_BUS_ADDRESS=unix:path=" + runtimeDir + "/bus"},
+	})
 }
 
 // EnableSystemUnit implements HostOps.

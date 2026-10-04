@@ -58,19 +58,32 @@ func TestDiffBootstrapScopePreservesNonPicoletState(t *testing.T) {
 
 func TestWaitForHealthBoundsHungProbe(t *testing.T) {
 	t.Parallel()
-	oldClient := healthHTTPClient
-	healthHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	hung := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		<-req.Context().Done()
 		return nil, req.Context().Err()
 	})}
-	t.Cleanup(func() { healthHTTPClient = oldClient })
 
 	start := time.Now()
-	err := WaitForHealth(context.Background(), "127.0.0.1:1", "/health", 50*time.Millisecond)
+	err := waitForHealth(context.Background(), hung, "127.0.0.1:1", "/health", 50*time.Millisecond)
 
 	require.Error(t, err)
 	require.ErrorContains(t, err, "did not report healthy")
 	assert.Less(t, time.Since(start), 500*time.Millisecond)
+}
+
+// bootstrap machine passes --skip-health-wait: it restarts an Agent whose
+// credentials it wrote before it waits for health, so the per-Host
+// bootstrap must not fail on the old Agent's health first. Standalone, the
+// bootstrap still waits.
+func TestRunHealthWaitSkippable(t *testing.T) {
+	t.Parallel()
+	unreachable := "127.0.0.1:1"
+	cfg := RunConfig{HealthPath: "/health", Timeout: 50 * time.Millisecond}
+
+	require.ErrorContains(t, cfg.waitHealthy(t.Context(), unreachable), "did not report healthy")
+
+	cfg.SkipHealthWait = true
+	require.NoError(t, cfg.waitHealthy(t.Context(), unreachable))
 }
 
 func TestProbeOnceDialsGivenAddr(t *testing.T) {

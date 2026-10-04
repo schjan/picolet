@@ -36,13 +36,13 @@ Phase 2: credential files
   nothing to do
 
 Phase 3: per-Host bootstrap
-  applied       vps-1/bootstrap             per-Host bootstrap as pi (--systemd user)                              healthy on 127.0.0.1:9417
-  applied       vps-1-runner/bootstrap      per-Host bootstrap as runner (--systemd user)                          healthy on 127.0.0.1:9419
+  failed        vps-1/bootstrap             per-Host bootstrap as pi (--systemd user)                              picolet did not report healthy within 1m30s
+  failed        vps-1-runner/bootstrap      per-Host bootstrap as runner (--systemd user)                          podman run: exit status 125: image not known
   applied       vps-1-system/bootstrap      per-Host bootstrap as root (--systemd system)                          healthy on 127.0.0.1:9418
 
-3 applied, 25 already done
+1 applied, 25 already done, 2 failed
 
-Host          User    Port  Health   Agent restart
-vps-1         pi      9417  healthy  not needed
-vps-1-runner  runner  9419  healthy  not needed
-vps-1-system  root    9418  healthy  not needed
+Host          User    Port  Health       Agent restart
+vps-1         pi      9417  unhealthy    not needed
+vps-1-runner  runner  9419  not checked  not needed
+vps-1-system  root    9418  healthy      not needed

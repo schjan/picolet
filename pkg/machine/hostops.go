@@ -3,6 +3,7 @@ package machine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 )
 
@@ -31,6 +32,12 @@ func (u User) Owner() Owner {
 	return Owner{UID: u.UID, GID: u.GID}
 }
 
+// runtimeDir is the user's XDG_RUNTIME_DIR, which logind creates for a
+// lingering user: the home of its manager's sockets and its Podman socket.
+func (u User) runtimeDir() string {
+	return fmt.Sprintf("/run/user/%d", u.UID)
+}
+
 // UnitState is what bootstrap needs to know of a systemd unit.
 type UnitState struct {
 	// Enabled: the unit starts at boot (enabled-runtime does not survive a
@@ -48,6 +55,16 @@ type PathInfo struct {
 	UID    int
 	GID    int
 	Mode   fs.FileMode
+}
+
+// Command is a program run on the Machine.
+type Command struct {
+	// Args are the program and its arguments.
+	Args []string
+	// Env are KEY=value pairs added to the environment.
+	Env []string
+	// Dir is the working directory.
+	Dir string
 }
 
 // HostOps is the Machine seen by bootstrap machine. The read side answers a
@@ -114,4 +131,17 @@ type HostOps interface {
 	// tree at path, like chmod -R o+rX; symlinks are not followed. It fails,
 	// changing nothing, when a directory above path denies search to others.
 	MakeWorldReadable(path string) error
+	// RunAsUser runs cmd as the user, through runuser: a session of the
+	// user's own, so rootless Podman runs as the user, with the user's
+	// storage and runtime directory. Its output is part of the error.
+	RunAsUser(ctx context.Context, user User, cmd Command) error
+	// RunAsRoot runs cmd as root. Its output is part of the error.
+	RunAsRoot(ctx context.Context, cmd Command) error
+	// RestartUserUnit restarts unit in the user's manager.
+	RestartUserUnit(ctx context.Context, user User, unit string) error
+	// RestartSystemUnit restarts unit in the system manager.
+	RestartSystemUnit(ctx context.Context, unit string) error
+	// WaitHealthy waits, bounded, until the Agent at addr (host:port)
+	// answers its /health with 200.
+	WaitHealthy(ctx context.Context, addr string) error
 }

@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/schjan/picolet/pkg/config"
@@ -16,7 +17,6 @@ const (
 )
 
 type resolveConfig struct {
-	RepoDir    string
 	Hostname   string
 	Service    string
 	Rootless   bool
@@ -25,22 +25,32 @@ type resolveConfig struct {
 	FileMode   fileReaderMode
 }
 
-func resolveBootstrapHost(ctx context.Context, cfg resolveConfig) (*resolver.ResolvedHost, error) {
-	if cfg.Hostname == "" {
-		return nil, fmt.Errorf("hostname is required")
+// errHostnameRequired: the first input the bootstrap checks.
+var errHostnameRequired = errors.New("hostname is required")
+
+// openRepo opens the Fleet checked out at dir to resolve hostname from;
+// close it when done. Missing inputs are reported in the bootstrap's
+// order: hostname, then repo dir.
+func openRepo(hostname, dir string) (*config.Repo, error) {
+	if hostname == "" {
+		return nil, errHostnameRequired
 	}
-	if cfg.RepoDir == "" {
-		return nil, fmt.Errorf("repo dir is required")
+	if dir == "" {
+		return nil, errors.New("repo dir is required")
+	}
+	return config.OpenRepo(dir)
+}
+
+// resolveBootstrapHost resolves cfg.Service for cfg.Hostname from repo,
+// which the caller opened and closes.
+func resolveBootstrapHost(ctx context.Context, repo *config.Repo, cfg resolveConfig) (*resolver.ResolvedHost, error) {
+	if cfg.Hostname == "" {
+		return nil, errHostnameRequired
 	}
 	if cfg.Service == "" {
 		return nil, fmt.Errorf("service is required")
 	}
 
-	repo, err := config.OpenRepo(cfg.RepoDir)
-	if err != nil {
-		return nil, err
-	}
-	defer repo.Close()
 	readSecret, closeSecrets := secretReader(cfg.SecretsDir, cfg.FileMode)
 	defer closeSecrets()
 	r, err := resolver.New(resolver.Config{

@@ -35,5 +35,14 @@ Phase 1: users, sessions and directories
 Phase 2: credential files
   nothing to do
 
-22 applied, 3 already done
-No Agent started: the per-Host bootstrap is not run yet.
+Phase 3: per-Host bootstrap
+  applied       vps-1/bootstrap             per-Host bootstrap as pi (--systemd user)                              healthy on 127.0.0.1:9417
+  applied       vps-1-runner/bootstrap      per-Host bootstrap as runner (--systemd user)                          healthy on 127.0.0.1:9419
+  applied       vps-1-system/bootstrap      per-Host bootstrap as root (--systemd system)                          healthy on 127.0.0.1:9418
+
+25 applied, 3 already done
+
+Host          User    Port  Health   Agent restart
+vps-1         pi      9417  healthy  not needed
+vps-1-runner  runner  9419  healthy  not needed
+vps-1-system  root    9418  healthy  not needed

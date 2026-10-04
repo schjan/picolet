@@ -9,6 +9,15 @@ A minimal, single-binary GitOps agent for managing Podman Quadlet files on hosts
 ### Binary (GitHub Releases)
 
 Download the latest release for your platform from [GitHub Releases](https://github.com/schjan/picolet/releases).
+On a Machine you bootstrap, place it at `/usr/local/bin/picolet`, or copy it
+out of the image your Fleet pins (the binary is static, at `/picolet`):
+
+```bash
+sudo sh -c 'podman run --rm --entrypoint cat ghcr.io/schjan/picolet:<tag> /picolet > /usr/local/bin/picolet'
+sudo chmod 0755 /usr/local/bin/picolet
+```
+
+This is step zero of [Bootstrapping a Machine](#bootstrapping-a-machine).
 
 ### Container (GHCR)
 
@@ -110,7 +119,20 @@ bash deploy/bootstrap/bootstrap-rootless.sh
 #### Bootstrapping a Machine
 
 `picolet bootstrap machine` brings up every Host whose `host.yml` declares a
-Machine. Run it on the Machine, with a Fleet checkout there. First preview:
+Machine. Run it on the Machine, with a Fleet checkout there.
+
+Step zero is the `picolet` binary on the Machine (bootstrap installs no
+packages and no binary). Take the release artifact for the Machine's
+architecture from [GitHub Releases](https://github.com/schjan/picolet/releases),
+or copy it out of the Agent image the Fleet pins (`fleet.yml`
+`images.picolet`; the binary is static):
+
+```bash
+sudo sh -c 'podman run --rm --entrypoint cat ghcr.io/schjan/picolet:v0.2.0 /picolet > /usr/local/bin/picolet'
+sudo chmod 0755 /usr/local/bin/picolet
+```
+
+First preview:
 
 ```bash
 picolet bootstrap machine vps-1 --repo-dir /srv/fleet --plan
@@ -147,8 +169,7 @@ the change stops the step (it would open the other link too: clone with
 subuid/subgid ranges: a user without them stops that Host with the command to
 add them (`usermod --add-subuids 100000-165535 --add-subgids 100000-165535 <user>`;
 pick a free range if another user holds that one). The other Hosts go on, and
-the command exits non-zero. It does not start the Agents yet: the per-Host
-bootstrap is not run.
+the command exits non-zero.
 
 Credential files come from `--secrets-dir <dir>`, a directory laid out per
 Host: every file below `<dir>/<hostname>/` (subdirectories included) is placed
@@ -160,7 +181,7 @@ reference quadlets bind-mount to `/etc/picolet/secrets`; bootstrap does not
 read them from `Volume=` lines, and the run prints the path it wrote.
 Subdirectories get the Host's owner and `0700`, checked and repaired on every
 run. A file already current is left alone; a new or changed one is written and
-the run's summary lists its Host as needing an Agent restart; a file with
+its Host's Agent restarted (see below); a file with
 current content but another owner or mode gets them in place, without a
 rewrite or restart. A directory where a file belongs stops that Host with the
 advice to remove it; bootstrap removes nothing, and files on the Machine that
@@ -244,6 +265,60 @@ packages); without it the command fails before its first step. Its session and
 `local.key` live in a private temporary directory removed when the command
 exits, on failure too. 1Password needs only network egress. Nothing the
 operator passed persists on the Machine but the placed token.
+
+Once every Host is set up and its credential files are placed, each Host's
+Agent is started by the per-Host bootstrap (`picolet bootstrap`), run **in a
+container of the Host's own Podman**: as the Host's user through `runuser`
+(`XDG_RUNTIME_DIR=/run/user/<uid>`, in the user's home), as root for the
+rootful Host. The container runs `images.picolet` from `fleet.yml` with
+`--network host` and the bind mounts of the reference Agent quadlet, so it
+sees every path where the Agent will see it:
+
+```
+runuser -u <user> -- env XDG_RUNTIME_DIR=/run/user/<uid> podman run --rm --network host \
+  -v <repo>:/repo:ro \
+  -v ~<user>/.config/picolet/secrets:/etc/picolet/secrets:ro \
+  -v ~<user>/.local/share/picolet:/var/lib/picolet \
+  -v ~<user>/.config/containers/systemd:/etc/containers/systemd \
+  -v ~<user>/.config/systemd/user:/etc/systemd/system \
+  -v /run/user/<uid>/systemd:/run/user/<uid>/systemd \
+  -v /run/user/<uid>/podman/podman.sock:/run/podman/podman.sock \
+  -e XDG_RUNTIME_DIR=/run/user/<uid> \
+  <images.picolet> bootstrap --hostname <host> --repo-dir /repo --service picolet --systemd user --skip-health-wait
+```
+
+The rootful Host gets the same shape with `/etc/picolet/secrets`,
+`/var/lib/picolet-system`, `/etc/containers/systemd`, `/etc/systemd/system`,
+the system bus (`/run/dbus/system_bus_socket`), `/run/podman/podman.sock`,
+`--security-opt apparmor=unconfined`, `--service picolet-system --systemd system --skip-health-wait`.
+The state it seeds is therefore keyed by the container's paths
+(`/etc/containers/systemd/picolet/...`), as the Agent's own state is; run
+natively as the user, it would be keyed by `$HOME/...` and the Agent's first
+Reconciliation would recreate and then delete its own quadlet. A Host's Agent
+is the `picolet` Service Bundle for a Host with `user:` and `picolet-system`
+for the rootful Host; one that is not assigned stops that Host.
+
+The per-Host bootstrap leaves a running Agent whose files are current alone
+(and refuses to change the files of a running one: stop it first). With
+`--skip-health-wait` it does not wait for the Agent's health itself: an Agent
+still running with old credentials might never report healthy, and the
+restart that fixes it comes next. A Host whose credential files this run
+wrote has its Agent restarted
+(`runuser -u <user> -- systemctl --user restart picolet.service`, or
+`systemctl restart picolet-system.service`), so it reads them. Then the
+command waits for the Agent's `/health` at the listen address of its
+Fleet-rendered config (`127.0.0.1` when that address is `0.0.0.0` or `::`).
+It ends with a summary of every Host: hostname, user, the port the Agent was
+probed on (the declared `listen_port` for a Host that stopped before), health
+(`healthy`, `unhealthy`, `not checked` when the Host stopped earlier) and
+whether its Agent was restarted, followed by the `bootstrap:` files not placed.
+A file not placed does not skip the Host's per-Host bootstrap. If the Agent
+bundle reads it while rendering (`readSecretFile`), the bootstrap fails before
+the Agent starts and the Host shows `not checked`; if the Agent needs it at
+runtime, its health wait fails and the Host shows `unhealthy`. A failing Host
+does not stop the others; the command exits non-zero if any Host failed. Run
+standalone, `picolet bootstrap` still waits for health unless given
+`--skip-health-wait`.
 
 Both forms refuse to run inside a container or on anything but Linux; a run
 also refuses without root or without Podman installed. Each Host listens on the
