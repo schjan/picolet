@@ -126,9 +126,24 @@ func resolveRefs(ctx context.Context, open Providers, token *ProviderToken, host
 		}
 	}
 	if readErr != nil && len(res.Values) < len(refs) {
-		res.Warning = fmt.Sprintf("%s: %v", prov.name, readErr)
+		res.Warning = prov.name + ": " + redact(readErr.Error(), token, slices.Collect(maps.Values(values)))
 	}
 	return res, nil
+}
+
+// redact replaces the token and every value in msg with <redacted>: a
+// provider's error text is shown for its diagnosis, never a credential
+// bootstrap holds, whatever the provider put into it.
+func redact(msg string, token *ProviderToken, values []string) string {
+	secrets := slices.Concat(values, []string{string(token.Content), strings.TrimSpace(string(token.Content))})
+	// Longest first, so a secret containing another is replaced whole.
+	slices.SortFunc(secrets, func(a, b string) int { return len(b) - len(a) })
+	for _, s := range secrets {
+		if s != "" {
+			msg = strings.ReplaceAll(msg, s, "<redacted>")
+		}
+	}
+	return msg
 }
 
 // batchRefs is every reference of hosts' bootstrap: blocks prov resolves,
@@ -172,7 +187,7 @@ func readBatch(ctx context.Context, open Providers, token *ProviderToken, refs [
 		reader, err = open.ProtonPass(ctx, token.Path, sessionDir)
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("opening %s with %s: %w", prov.name, prov.flag, err)
+		return nil, nil, fmt.Errorf("opening %s with %s: %s", prov.name, prov.flag, redact(err.Error(), token, nil))
 	}
 	values, readErr = reader(ctx, refs)
 	return values, readErr, nil

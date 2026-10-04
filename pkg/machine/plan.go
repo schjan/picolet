@@ -238,17 +238,23 @@ func hostCredentialSteps(plan *Plan, h Host, opts Options) ([]Step, error) {
 	if t := opts.Token; t != nil && h.Bootstrap == nil {
 		steps = append(steps, credentialStep(h, t.provider.tokenName, t.Content, t.provider.flag))
 	}
+	// An unresolved file still claims its path: it collides with a
+	// --secrets-dir file as a resolved one would.
+	claims := slices.Clone(steps)
 	for _, name := range slices.Sorted(maps.Keys(h.Bootstrap)) {
 		ref := h.Bootstrap[name]
 		value, ok := opts.Refs.Values[ref]
 		if !ok {
 			plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s: %s not placed: %s %s", h.Hostname, name, ref, opts.Refs.Missing[ref]))
 			plan.Unresolved = append(plan.Unresolved, h.Hostname+"/"+name)
+			claims = append(claims, credentialStep(h, name, nil, ref))
 			continue
 		}
-		steps = append(steps, credentialStep(h, name, []byte(value), ref))
+		step := credentialStep(h, name, []byte(value), ref)
+		steps = append(steps, step)
+		claims = append(claims, step)
 	}
-	return steps, oneSourcePerPath(h, steps)
+	return steps, oneSourcePerPath(h, claims)
 }
 
 // oneSourcePerPath rejects two of h's credential steps placing one path.

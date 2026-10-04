@@ -251,6 +251,36 @@ func TestRunWithoutProviderSkipsBootstrapRefs(t *testing.T) {
 		"vps-1-runner/forge_token, vps-1-runner/git_token, vps-1-runner/mqtt_password, vps-1-system/git_token\n")
 }
 
+// A provider error is shown, but never the token or a value it resolved,
+// whatever the provider puts into it.
+func TestProviderErrorsRedactSecrets(t *testing.T) {
+	t.Parallel()
+	repo := fleetWithBootstrap(t, ciBlocks)
+	ops := mocks.NewMockHostOps(t)
+	expectBootstrappedMachineAt(ops, repo)
+	for _, p := range []string{
+		"/home/pi/.config/picolet/secrets/op-service-account-token",
+		"/home/runner/.config/picolet/secrets/git_token",
+		"/etc/picolet/secrets/git_token",
+	} {
+		ops.EXPECT().Stat(p).Return(machine.PathInfo{}, nil)
+	}
+	leaky := unusedProviders(t)
+	leaky.OnePassword = func(context.Context, string) (machine.RefReader, error) {
+		return func(context.Context, []string) (map[string]string, error) {
+			return map[string]string{"op://ci/git/token": "ghp_ci"},
+				errors.New("forge_token failed after ghp_ci with token ops_machine-token")
+		}, nil
+	}
+	var buf bytes.Buffer
+	err := machine.ShowPlan(context.Background(), machine.Config{
+		Machine: "vps-1", RepoDir: repo, OnePasswordTokenFile: tokenFile(t, "ops_machine-token\n"),
+		Providers: leaky, Env: linuxHost(), Stdout: &buf,
+	}, ops)
+	require.NoError(t, err)
+	require.Contains(t, buf.String(), "warning: 1Password: forge_token failed after <redacted> with token <redacted>\n")
+}
+
 // An empty bootstrap: is a declared block: the Host runs without a
 // provider and has nothing to place, so it gets no Machine token either.
 func TestRunEmptyBootstrapKeepsHostOffProvider(t *testing.T) {
@@ -391,6 +421,22 @@ func TestRejectsCredentialSources(t *testing.T) {
 				SecretsDir: secretsDir(t, map[string]string{"vps-1-runner/git_token": "other"}),
 			},
 			want: "vps-1-runner: ~runner/.config/picolet/secrets/git_token comes from both --secrets-dir and op://ci/git/token",
+		},
+		{
+			name: "unresolved reference and --secrets-dir place one file",
+			cfg: machine.Config{
+				RepoDir: ciRepo, SecretsDir: secretsDir(t, map[string]string{"vps-1-runner/git_token": "other"}),
+			},
+			want: "vps-1-runner: ~runner/.config/picolet/secrets/git_token comes from both --secrets-dir and op://ci/git/token",
+		},
+		{
+			name: "provider error naming the token",
+			cfg: machine.Config{RepoDir: ciRepo, OnePasswordTokenFile: token, Providers: machine.Providers{
+				OnePassword: func(context.Context, string) (machine.RefReader, error) {
+					return nil, errors.New("token ops_machine-token rejected")
+				},
+			}},
+			want: "opening 1Password with --onepassword-token-file: token <redacted> rejected",
 		},
 		{
 			name: "malformed reference",
