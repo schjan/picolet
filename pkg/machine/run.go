@@ -95,7 +95,7 @@ func (r *runner) summary() error {
 		if status == "" {
 			status = healthUnchecked
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", h.Hostname, h.owner(), a.port(h), status, r.restartColumn(h.Hostname, a))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", h.Hostname, h.owner(), a.port(h), status, a.restartColumn())
 	}
 	if err := tw.Flush(); err != nil {
 		return fmt.Errorf("writing summary: %w", err)
@@ -104,13 +104,15 @@ func (r *runner) summary() error {
 	return nil
 }
 
-// agentReport is what the run found of a Host's Agent.
+// agentReport is what the run found of, and did to, a Host's Agent.
 type agentReport struct {
 	// addr is the address the Agent was probed at; empty until its
 	// per-Host bootstrap resolved it.
-	addr      string
-	health    health
-	restarted bool
+	addr   string
+	health health
+	// restartRequired: this run wrote a credential file of the Host, which
+	// its running Agent has not read. restarted: the Agent got the restart.
+	restartRequired, restarted bool
 }
 
 // port is the port the Agent was probed on, which its rendered config
@@ -132,13 +134,13 @@ func (r *runner) agent(hostname string) *agentReport {
 	return a
 }
 
-// restartColumn says whether the Host's Agent was restarted for a
-// credential file written by this run, or still needs to be.
-func (r *runner) restartColumn(hostname string, a *agentReport) string {
+// restartColumn says whether the Agent was restarted for a credential file
+// written by this run, or still needs to be.
+func (a *agentReport) restartColumn() string {
 	switch {
 	case a.restarted:
 		return "restarted (credential files written)"
-	case r.restartRequired[hostname]:
+	case a.restartRequired:
 		return "required (credential files written)"
 	}
 	return "not needed"
@@ -165,10 +167,7 @@ type runner struct {
 	stopped map[string]string
 	errs    []error
 	counts  map[outcome]int
-	// restartRequired holds the Hosts whose Agent needs a restart: this
-	// run wrote a credential file of theirs.
-	restartRequired map[string]bool
-	agents          map[string]*agentReport
+	agents  map[string]*agentReport
 }
 
 // outcomeWidth is the width of the outcome column: its longest label.
@@ -178,7 +177,7 @@ func newRunner(plan *Plan, ops HostOps, w io.Writer) *runner {
 	r := &runner{
 		plan: plan, ops: ops, w: w,
 		facts: map[string]*hostFacts{}, stopped: map[string]string{}, counts: map[outcome]int{},
-		restartRequired: map[string]bool{}, agents: map[string]*agentReport{},
+		agents: map[string]*agentReport{},
 	}
 	for _, s := range plan.Steps {
 		r.idWidth = max(r.idWidth, len(s.ID))
@@ -227,7 +226,7 @@ func (r *runner) step(ctx context.Context, s Step) error {
 func (r *runner) applied(s Step, fix credentialFix, detail string) {
 	if fix == fixContent {
 		detail += ", Agent restart required"
-		r.restartRequired[s.Host.Hostname] = true
+		r.agent(s.Host.Hostname).restartRequired = true
 	}
 	r.print(outcomeApplied, s, detail)
 }

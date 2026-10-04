@@ -138,8 +138,12 @@ func prepare(ctx context.Context, cfg RunConfig) (*prepared, error) {
 	if err != nil {
 		return nil, err
 	}
-	resolved, err := resolveBootstrapHost(ctx, resolveConfig{
-		RepoDir:    cfg.RepoDir,
+	repo, err := openRepo(cfg.RepoDir)
+	if err != nil {
+		return nil, err
+	}
+	defer repo.Close()
+	resolved, err := resolveBootstrapHost(ctx, repo, resolveConfig{
 		Hostname:   cfg.Hostname,
 		Service:    tgt.service,
 		Rootless:   cfg.Rootless,

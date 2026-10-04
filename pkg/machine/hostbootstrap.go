@@ -65,11 +65,11 @@ func (r *runner) bootstrapHost(ctx context.Context, f *hostFacts, s Step) (strin
 	}
 	report := r.agent(h.Hostname)
 	report.addr = agent.DialAddr
-	if err := r.startAgent(ctx, f, h, agent); err != nil {
+	if err := r.startAgent(ctx, f, h, agent, report.restartRequired); err != nil {
 		return "", err
 	}
 	detail := ""
-	if r.restartRequired[h.Hostname] {
+	if report.restartRequired {
 		report.restarted = true
 		detail = agent.Unit + " restarted (credential files written), "
 	}
@@ -82,14 +82,14 @@ func (r *runner) bootstrapHost(ctx context.Context, f *hostFacts, s Step) (strin
 }
 
 // startAgent runs the per-Host bootstrap as the Host's user, or root, and
-// then restarts the Agent if it needs one: the bootstrap leaves a running
+// then restarts the Agent if restart says so: the bootstrap leaves a running
 // Agent with unchanged files alone, so it would keep the old credentials.
-func (r *runner) startAgent(ctx context.Context, f *hostFacts, h Host, agent bootstrap.Agent) error {
+func (r *runner) startAgent(ctx context.Context, f *hostFacts, h Host, agent bootstrap.Agent, restart bool) error {
 	if h.Rootful() {
 		if err := r.ops.RunAsRoot(ctx, hostBootstrapCommand(r.plan.RepoDir, h, User{}, agent)); err != nil {
 			return err
 		}
-		if r.restartRequired[h.Hostname] {
+		if restart {
 			return r.ops.RestartSystemUnit(ctx, agent.Unit)
 		}
 		return nil
@@ -101,7 +101,7 @@ func (r *runner) startAgent(ctx context.Context, f *hostFacts, h Host, agent boo
 	if err := r.ops.RunAsUser(ctx, user, hostBootstrapCommand(r.plan.RepoDir, h, user, agent)); err != nil {
 		return err
 	}
-	if r.restartRequired[h.Hostname] {
+	if restart {
 		return r.ops.RestartUserUnit(ctx, user, agent.Unit)
 	}
 	return nil

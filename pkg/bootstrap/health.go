@@ -17,6 +17,12 @@ func WaitForHealth(ctx context.Context, addr, healthPath string, timeout time.Du
 	return waitForHealth(ctx, http.DefaultClient, addr, healthPath, timeout)
 }
 
+// WaitAgentHealthy waits for the Agent at addr as the per-Host bootstrap
+// does: its /health, for as long as the bootstrap's default timeout.
+func WaitAgentHealthy(ctx context.Context, addr string) error {
+	return WaitForHealth(ctx, addr, defaultHealthPath, defaultTimeout)
+}
+
 // waitForHealth takes its client explicitly so tests can drive it without
 // touching a package-level default other tests read in parallel.
 func waitForHealth(ctx context.Context, client *http.Client, addr, healthPath string, timeout time.Duration) error {

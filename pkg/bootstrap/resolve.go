@@ -16,7 +16,6 @@ const (
 )
 
 type resolveConfig struct {
-	RepoDir    string
 	Hostname   string
 	Service    string
 	Rootless   bool
@@ -25,22 +24,24 @@ type resolveConfig struct {
 	FileMode   fileReaderMode
 }
 
-func resolveBootstrapHost(ctx context.Context, cfg resolveConfig) (*resolver.ResolvedHost, error) {
+// openRepo opens the Fleet checked out at dir; close it when done.
+func openRepo(dir string) (*config.Repo, error) {
+	if dir == "" {
+		return nil, fmt.Errorf("repo dir is required")
+	}
+	return config.OpenRepo(dir)
+}
+
+// resolveBootstrapHost resolves cfg.Service for cfg.Hostname from repo,
+// which the caller opened and closes.
+func resolveBootstrapHost(ctx context.Context, repo *config.Repo, cfg resolveConfig) (*resolver.ResolvedHost, error) {
 	if cfg.Hostname == "" {
 		return nil, fmt.Errorf("hostname is required")
-	}
-	if cfg.RepoDir == "" {
-		return nil, fmt.Errorf("repo dir is required")
 	}
 	if cfg.Service == "" {
 		return nil, fmt.Errorf("service is required")
 	}
 
-	repo, err := config.OpenRepo(cfg.RepoDir)
-	if err != nil {
-		return nil, err
-	}
-	defer repo.Close()
 	readSecret, closeSecrets := secretReader(cfg.SecretsDir, cfg.FileMode)
 	defer closeSecrets()
 	r, err := resolver.New(resolver.Config{

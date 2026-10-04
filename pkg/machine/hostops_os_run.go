@@ -5,14 +5,9 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"time"
 
 	"github.com/schjan/picolet/pkg/bootstrap"
 )
-
-// defaultHealthTimeout bounds WaitHealthy: as long as the per-Host bootstrap
-// waits for the Agent it starts.
-const defaultHealthTimeout = 90 * time.Second
 
 // RunAsUser implements HostOps. runuser opens a PAM session of the user, as
 // rootless Podman expects; cmd.Env goes through env, since runuser resets
@@ -50,5 +45,5 @@ func (o *OSHostOps) RestartSystemUnit(ctx context.Context, unit string) error {
 
 // WaitHealthy implements HostOps.
 func (o *OSHostOps) WaitHealthy(ctx context.Context, addr string) error {
-	return bootstrap.WaitForHealth(ctx, addr, "/health", defaultHealthTimeout)
+	return bootstrap.WaitAgentHealthy(ctx, addr)
 }

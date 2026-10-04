@@ -29,7 +29,7 @@ type Agent struct {
 // Credential files are not read: the Agent config needs none to say where the
 // Agent listens.
 func ResolveAgent(ctx context.Context, repoDir, hostname string) (Agent, error) {
-	repo, err := config.OpenRepo(repoDir)
+	repo, err := openRepo(repoDir)
 	if err != nil {
 		return Agent{}, err
 	}
@@ -38,27 +38,29 @@ func ResolveAgent(ctx context.Context, repoDir, hostname string) (Agent, error) 
 	if !ok {
 		return Agent{}, fmt.Errorf("host not found: %s", hostname)
 	}
-	service := defaultService(!host.Rootful())
-	if assigned := repo.Config.Assignments.Resolve(host).Services; !slices.Contains(assigned, service) {
+	// The container's layout: no --rootless, no --data-dir, and the default
+	// service of the Host's systemd instance.
+	mode := SystemdUser
+	if host.Rootful() {
+		mode = SystemdSystem
+	}
+	tgt, err := Target{SystemdMode: mode}.resolve()
+	if err != nil {
+		return Agent{}, err
+	}
+	if assigned := repo.Config.Assignments.Resolve(host).Services; !slices.Contains(assigned, tgt.service) {
 		return Agent{}, fmt.Errorf("host %s has no %s service assigned, the Agent of a %s (assigned: %s)",
-			hostname, service, agentKind(host), strings.Join(assigned, ", "))
+			hostname, tgt.service, agentKind(host), strings.Join(assigned, ", "))
 	}
 	image := repo.Config.Fleet.Images["picolet"]
 	if image == "" {
 		return Agent{}, fmt.Errorf("fleet.yml images has no picolet key: the image the per-Host bootstrap of %s runs", hostname)
 	}
 
-	// The container's layout: no --rootless, no --data-dir.
-	containerDataDir, err := dataDir(false, "")
-	if err != nil {
-		return Agent{}, err
-	}
-	tgt := resolvedTarget{service: service, unitName: service + ".service"}
-	resolved, err := resolveBootstrapHost(ctx, resolveConfig{
-		RepoDir:    repoDir,
+	resolved, err := resolveBootstrapHost(ctx, repo, resolveConfig{
 		Hostname:   hostname,
-		Service:    service,
-		DataDir:    containerDataDir,
+		Service:    tgt.service,
+		DataDir:    tgt.dataDir,
 		SecretsDir: defaultSecretsDir,
 		FileMode:   fileReaderPlaceholder,
 	})
@@ -72,7 +74,7 @@ func ResolveAgent(ctx context.Context, repoDir, hostname string) (Agent, error) 
 	if err != nil {
 		return Agent{}, err
 	}
-	return Agent{Service: service, Unit: tgt.unitName, Image: image, DialAddr: addr}, nil
+	return Agent{Service: tgt.service, Unit: tgt.unitName, Image: image, DialAddr: addr}, nil
 }
 
 func agentKind(host *config.HostConfig) string {
