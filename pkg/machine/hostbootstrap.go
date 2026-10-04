@@ -19,38 +19,59 @@ const repoMount = "/repo"
 // and delete its own quadlet. user is the Host's user; ignored for the
 // rootful Host.
 func hostBootstrapCommand(repoDir string, h Host, user User, agent bootstrap.Agent) Command {
-	args := []string{"podman", "run", "--rm", "--network", "host", "-v", repoDir + ":" + repoMount + ":ro"}
+	// --skip-health-wait: the inner wait would time out on an old Agent
+	// before bootstrapHost restarts it with the credentials this run wrote;
+	// bootstrapHost waits for health itself, after the restart.
+	return agentContainerCommand(h, user, agent, []string{"-v", repoDir + ":" + repoMount + ":ro"},
+		"bootstrap", "--hostname", h.Hostname, "--repo-dir", repoMount, "--service", agent.Service, "--systemd", systemdMode(h),
+		"--skip-health-wait")
+}
+
+// hostTeardownCommand is the per-Host teardown of h, in the per-Host
+// bootstrap's container: the state it reads is keyed by the container's
+// paths. It needs no Fleet checkout.
+func hostTeardownCommand(h Host, user User, agent bootstrap.Agent) Command {
+	return agentContainerCommand(h, user, agent, nil,
+		"bootstrap", "teardown", "--hostname", h.Hostname, "--service", agent.Service, "--systemd", systemdMode(h))
+}
+
+// systemdMode is the --systemd of h's per-Host bootstrap and teardown.
+func systemdMode(h Host) string {
+	if h.Rootful() {
+		return bootstrap.SystemdSystem
+	}
+	return bootstrap.SystemdUser
+}
+
+// agentContainerCommand runs picolet with args in the Agent image, by h's
+// own Podman, with the mounts and then the Agent quadlet's bind mounts, the
+// Host's systemd and its Podman socket. user is the Host's user; ignored for
+// the rootful Host.
+func agentContainerCommand(h Host, user User, agent bootstrap.Agent, mounts []string, args ...string) Command {
+	run := append([]string{"podman", "run", "--rm", "--network", "host"}, mounts...)
 	base := "/"
 	if !h.Rootful() {
 		base = user.Home
 	}
 	for _, d := range agentDirs {
-		args = append(args, "-v", path.Join(base, d.path(h))+":"+d.mount)
+		run = append(run, "-v", path.Join(base, d.path(h))+":"+d.mount)
 	}
 	var cmd Command
-	systemd := bootstrap.SystemdSystem
 	if h.Rootful() {
-		args = append(args,
+		run = append(run,
 			"-v", "/run/dbus/system_bus_socket:/run/dbus/system_bus_socket",
 			"-v", "/run/podman/podman.sock:/run/podman/podman.sock",
 			"--security-opt", "apparmor=unconfined")
 	} else {
 		runtimeDir := user.runtimeDir()
-		args = append(args,
+		run = append(run,
 			"-v", runtimeDir+"/systemd:"+runtimeDir+"/systemd",
 			"-v", runtimeDir+"/podman/podman.sock:/run/podman/podman.sock",
 			"-e", "XDG_RUNTIME_DIR="+runtimeDir)
-		systemd = bootstrap.SystemdUser
 		cmd.Env = []string{"XDG_RUNTIME_DIR=" + runtimeDir}
 		cmd.Dir = user.Home
 	}
-	// --skip-health-wait: the inner wait would time out on an old Agent
-	// before bootstrapHost restarts it with the credentials this run wrote;
-	// bootstrapHost waits for health itself, after the restart.
-	args = append(args, agent.Image, "bootstrap",
-		"--hostname", h.Hostname, "--repo-dir", repoMount, "--service", agent.Service, "--systemd", systemd,
-		"--skip-health-wait")
-	cmd.Args = args
+	cmd.Args = append(append(run, agent.Image), args...)
 	return cmd
 }
 
