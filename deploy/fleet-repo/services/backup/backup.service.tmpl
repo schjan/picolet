@@ -12,7 +12,7 @@ StartLimitBurst=4
 Type=oneshot
 # The FIFO between the dump and restic ($RUNTIME_DIRECTORY, see backup.sh).
 RuntimeDirectory=backup
-ExecStart=/bin/sh {{ filePath "backup/backup.sh" }}
+ExecStart=/bin/sh "{{ filePath "backup/backup.sh" }}"
 Restart=on-failure
 RestartSec=15min
 # A one-shot has no start timeout by default: bound a hung dump or upload.

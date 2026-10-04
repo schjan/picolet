@@ -3,7 +3,10 @@ Description=Verify the forge backup: restore it and start a throwaway forge from
 # Fired by restore-verify.timer only: no [Install], so Picolet never starts it,
 # and never re-runs it when it fails. Retries belong to the unit: up to three
 # attempts, 30 minutes apart; then it stays failed until the next timer run.
-StartLimitIntervalSec=6h
+# The window opens at the first start and must outlast three attempts whose
+# commands each run into TimeoutStartSec (two ExecStartPre= and ExecStart=:
+# 3h, plus cleanup and RestartSec=), or slow failures would reset it.
+StartLimitIntervalSec=12h
 StartLimitBurst=3
 
 [Service]
@@ -12,7 +15,7 @@ Type=oneshot
 # and those of every run, whatever its outcome.
 ExecStartPre=-/usr/bin/podman rm --force --ignore restore-verify-forge
 ExecStartPre=-/usr/bin/podman volume rm --force restore-verify-scratch
-ExecStart=/bin/sh {{ filePath "restore-verify/restore-verify.sh" }}
+ExecStart=/bin/sh "{{ filePath "restore-verify/restore-verify.sh" }}"
 ExecStopPost=-/usr/bin/podman rm --force --ignore restore-verify-forge
 ExecStopPost=-/usr/bin/podman volume rm --force restore-verify-scratch
 Restart=on-failure

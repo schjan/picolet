@@ -646,11 +646,13 @@ instead of writing elsewhere). Keep the repository password and
 units' own, bounded per [Raw systemd units](#raw-systemd-units-timers-sockets-services):
 `backup.service` retries every 15 minutes, at most 4 starts in 10 hours
 (`StartLimitIntervalSec=10h`, `StartLimitBurst=4`), `TimeoutStartSec=2h`;
-`restore-verify.service` every 30 minutes, at most 3 starts in 6 hours,
+`restore-verify.service` every 30 minutes, at most 3 starts in 12 hours,
 `TimeoutStartSec=1h`. systemd's start-limit window opens at the first start, so
-it must outlast every attempt running into its timeout plus `RestartSec=`
-(4 × 2h15m, 3 × 1h30m); a shorter window resets during slow failures and the
-retries never stop. Then the unit stays failed until its timer fires again.
+it must outlast every attempt running into its timeout plus `RestartSec=`;
+`TimeoutStartSec=` applies to each `ExecStartPre=` command and to `ExecStart=`
+separately, so a `restore-verify` attempt can take 3 hours plus cleanup
+(4 × 2h15m, 3 × about 3h35m). A shorter window resets during slow failures and
+the retries never stop. Then the unit stays failed until its timer fires again.
 
 **`Persistent=true` trade-off.** A persistent timer remembers its last trigger
 across a reboot and, when a scheduled run fell into the downtime, starts the
@@ -674,7 +676,8 @@ SIGHUP by the `metrics-config-reload` hook); route them through your
 Alertmanager.
 
 **Restoring for real** follows `prepare.sh`: take `forge-dump.tar` from the
-snapshot (`restic restore latest --host srv-1 --tag forge`), stop
+snapshot (`restic restore latest --host srv-1 --tag forge --target
+/tmp/forge-restore` writes `/tmp/forge-restore/forge-dump.tar`), stop
 `forge.service`, empty the `forge-data` volume, unpack the dump's `data/` into
 it, move its top-level `attachments/` to `data/attachments/` (the dump stores
 attachments apart from the work directory) and the dump's `repos/` to
