@@ -58,15 +58,13 @@ func TestDiffBootstrapScopePreservesNonPicoletState(t *testing.T) {
 
 func TestWaitForHealthBoundsHungProbe(t *testing.T) {
 	t.Parallel()
-	oldClient := healthHTTPClient
-	healthHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	hung := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		<-req.Context().Done()
 		return nil, req.Context().Err()
 	})}
-	t.Cleanup(func() { healthHTTPClient = oldClient })
 
 	start := time.Now()
-	err := WaitForHealth(context.Background(), "127.0.0.1:1", "/health", 50*time.Millisecond)
+	err := waitForHealth(context.Background(), hung, "127.0.0.1:1", "/health", 50*time.Millisecond)
 
 	require.Error(t, err)
 	require.ErrorContains(t, err, "did not report healthy")
