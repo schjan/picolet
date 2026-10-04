@@ -20,12 +20,12 @@ const repoMount = "/repo"
 // rootful Host.
 func hostBootstrapCommand(repoDir string, h Host, user User, agent bootstrap.Agent) Command {
 	args := []string{"podman", "run", "--rm", "--network", "host", "-v", repoDir + ":" + repoMount + ":ro"}
+	base := "/"
+	if !h.Rootful() {
+		base = user.Home
+	}
 	for _, d := range agentDirs {
-		src := d.rootPath
-		if !h.Rootful() {
-			src = path.Join(user.Home, d.userPath)
-		}
-		args = append(args, "-v", src+":"+d.mount)
+		args = append(args, "-v", path.Join(base, d.path(h))+":"+d.mount)
 	}
 	var cmd Command
 	systemd := bootstrap.SystemdSystem
@@ -35,13 +35,13 @@ func hostBootstrapCommand(repoDir string, h Host, user User, agent bootstrap.Age
 			"-v", "/run/podman/podman.sock:/run/podman/podman.sock",
 			"--security-opt", "apparmor=unconfined")
 	} else {
-		run := user.runtimeDir()
+		runtimeDir := user.runtimeDir()
 		args = append(args,
-			"-v", run+"/systemd:"+run+"/systemd",
-			"-v", run+"/podman/podman.sock:/run/podman/podman.sock",
-			"-e", "XDG_RUNTIME_DIR="+run)
+			"-v", runtimeDir+"/systemd:"+runtimeDir+"/systemd",
+			"-v", runtimeDir+"/podman/podman.sock:/run/podman/podman.sock",
+			"-e", "XDG_RUNTIME_DIR="+runtimeDir)
 		systemd = bootstrap.SystemdUser
-		cmd.Env = []string{"XDG_RUNTIME_DIR=" + run}
+		cmd.Env = []string{"XDG_RUNTIME_DIR=" + runtimeDir}
 		cmd.Dir = user.Home
 	}
 	args = append(args, agent.Image, "bootstrap",

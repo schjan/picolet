@@ -91,17 +91,24 @@ func (l *callLog) record(call string) func(mock.Arguments) {
 	return func(mock.Arguments) { l.calls = append(l.calls, call) }
 }
 
-// Phases run Machine-wide in order: every credential file is placed before
-// the first per-Host bootstrap. A Host whose credential file this run wrote
-// gets its Agent restarted after its per-Host bootstrap, which leaves a
-// running Agent with unchanged files alone, and before its health wait: the
-// health that counts is the Agent's with the new credentials.
+// Phases run Machine-wide in order: every Host is set up, then every
+// credential file is placed, before the first per-Host bootstrap. A Host
+// whose credential file this run wrote gets its Agent restarted after its
+// per-Host bootstrap, which leaves a running Agent with unchanged files
+// alone, and before its health wait: the health that counts is the Agent's
+// with the new credentials.
 func TestRunRestartsAgentsWithNewCredentialsBeforeHealthWait(t *testing.T) {
 	t.Parallel()
 	ops := mocks.NewMockHostOps(t)
-	expectBootstrappedMachine(t, ops)
 	repo := exampleFleetAbs(t)
 	var log callLog
+	stopped := machine.UnitState{Enabled: true}
+	expectBootstrappedUser(ops, pi, stopped)
+	ops.EXPECT().EnableUserUnit(mock.Anything, pi, "podman.socket").Call.Run(log.record("socket vps-1")).Return(nil).Once()
+	expectBootstrappedUser(ops, runner, running)
+	expectBootstrappedRootful(ops, stopped)
+	ops.EXPECT().EnableSystemUnit(mock.Anything, "podman.socket").Call.Run(log.record("socket vps-1-system")).Return(nil).Once()
+	ops.EXPECT().WorldReadableTree(repo).Return(true, nil)
 	ops.EXPECT().Stat("/home/pi/.config/picolet/secrets/git-token").Return(machine.PathInfo{}, nil)
 	ops.EXPECT().WriteFile("/home/pi", ".config/picolet/secrets/git-token", []byte("pi-token"), pi.Owner(), os.FileMode(0o600)).
 		Call.Run(log.record("write pi git-token")).Return(nil).Once()
@@ -124,6 +131,7 @@ func TestRunRestartsAgentsWithNewCredentialsBeforeHealthWait(t *testing.T) {
 	}), ops)
 	require.NoError(t, err)
 	require.Equal(t, []string{
+		"socket vps-1", "socket vps-1-system",
 		"write pi git-token", "write system git-token",
 		"bootstrap vps-1", "restart vps-1", "health vps-1",
 		"bootstrap vps-1-runner", "health vps-1-runner",

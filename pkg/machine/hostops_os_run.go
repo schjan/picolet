@@ -40,7 +40,7 @@ func (o *OSHostOps) RunAsRoot(ctx context.Context, c Command) error {
 
 // RestartUserUnit implements HostOps.
 func (o *OSHostOps) RestartUserUnit(ctx context.Context, u User, unit string) error {
-	return userSystemctl(ctx, u, "restart", unit)
+	return o.userSystemctl(ctx, u, "restart", unit)
 }
 
 // RestartSystemUnit implements HostOps.

@@ -55,8 +55,9 @@ func TestHostBootstrapSeedsContainerInternalStateKeys(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// What Run applies and then records in the state it saves at statePath.
 	st := state.NewState()
-	reconciler.MergeChangeset(st, diffBootstrapScope(p.resolved.Files, st, p.tgt.unitName))
+	reconciler.MergeChangeset(st, p.changeset(st))
 
 	assert.Equal(t, "/var/lib/picolet/state.json", p.statePath())
 	keys := make([]string, 0, len(st.ManagedFiles))

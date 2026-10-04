@@ -88,11 +88,11 @@ func (r *runner) summary() error {
 	tw := tabwriter.NewWriter(r.w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "Host\tUser\tPort\tHealth\tAgent restart")
 	for _, h := range r.plan.Hosts {
-		health := r.health[h.Hostname]
-		if health == "" {
-			health = healthUnchecked
+		status := r.health[h.Hostname]
+		if status == "" {
+			status = healthUnchecked
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", h.Hostname, h.owner(), h.ListenPort, health, r.restartColumn(h))
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", h.Hostname, h.owner(), h.ListenPort, status, r.restartColumn(h))
 	}
 	if err := tw.Flush(); err != nil {
 		return fmt.Errorf("writing summary: %w", err)

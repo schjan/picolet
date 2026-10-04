@@ -113,6 +113,12 @@ func (p *prepared) statePath() string {
 	return filepath.Join(p.tgt.dataDir, "state.json")
 }
 
+// changeset is what the bootstrap applies against st and then records in
+// it: the Agent bundle's files, scoped to the Agent's own unit.
+func (p *prepared) changeset(st *state.State) *reconciler.Changeset {
+	return diffBootstrapScope(p.resolved.Files, st, p.tgt.unitName)
+}
+
 // prepare resolves and validates the Host's Agent bundle as cfg describes
 // it; it reads the Fleet and the secrets and writes nothing.
 func prepare(ctx context.Context, cfg RunConfig) (*prepared, error) {
@@ -194,7 +200,7 @@ func Run(ctx context.Context, cfg RunConfig) error { //nolint:cyclop,funlen // o
 	if err != nil {
 		return fmt.Errorf("loading state: %w", err)
 	}
-	changeset := diffBootstrapScope(resolved.Files, st, tgt.unitName)
+	changeset := p.changeset(st)
 
 	podman, err := applier.NewSocketPodmanClient(ctx, cfg.podmanSocket())
 	if err != nil {

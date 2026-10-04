@@ -70,19 +70,18 @@ func (o *OSHostOps) WaitUserManager(ctx context.Context, u User) error {
 
 // EnableUserUnit implements HostOps.
 func (o *OSHostOps) EnableUserUnit(ctx context.Context, u User, unit string) error {
-	return userSystemctl(ctx, u, "enable", "--now", unit)
+	return o.userSystemctl(ctx, u, "enable", "--now", unit)
 }
 
 // userSystemctl runs systemctl --user with args in u's manager. runuser
 // reaches the manager through the user's own bus; systemctl --user -M needs
 // systemd-container.
-func userSystemctl(ctx context.Context, u User, args ...string) error {
+func (o *OSHostOps) userSystemctl(ctx context.Context, u User, args ...string) error {
 	runtimeDir := u.runtimeDir()
-	return runCommand(ctx, "runuser", append([]string{
-		"-u", u.Name, "--", "env",
-		"XDG_RUNTIME_DIR=" + runtimeDir, "DBUS_SESSION_BUS_ADDRESS=unix:path=" + runtimeDir + "/bus",
-		"systemctl", "--user",
-	}, args...)...)
+	return o.RunAsUser(ctx, u, Command{
+		Args: append([]string{"systemctl", "--user"}, args...),
+		Env:  []string{"XDG_RUNTIME_DIR=" + runtimeDir, "DBUS_SESSION_BUS_ADDRESS=unix:path=" + runtimeDir + "/bus"},
+	})
 }
 
 // EnableSystemUnit implements HostOps.
