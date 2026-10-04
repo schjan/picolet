@@ -311,9 +311,11 @@ Fleet-rendered config (`127.0.0.1` when that address is `0.0.0.0` or `::`).
 It ends with a summary of every Host: hostname, user, the port the Agent was
 probed on (the declared `listen_port` for a Host that stopped before), health
 (`healthy`, `unhealthy`, `not checked` when the Host stopped earlier) and
-whether its Agent was restarted. A failing Host does not stop the others; the
-command exits non-zero if any Host failed. Run standalone, `picolet bootstrap`
-still waits for health unless given `--skip-health-wait`.
+whether its Agent was restarted, followed by the `bootstrap:` files not placed.
+A Host with such a file still has its Agent started: if the Agent needs the
+file, its health wait fails that Host. A failing Host does not stop the others;
+the command exits non-zero if any Host failed. Run standalone,
+`picolet bootstrap` still waits for health unless given `--skip-health-wait`.
 
 Both forms refuse to run inside a container or on anything but Linux; a run
 also refuses without root or without Podman installed. Each Host listens on the
