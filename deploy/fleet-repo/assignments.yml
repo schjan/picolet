@@ -37,3 +37,15 @@ features:
   runner:
     services:
       - runner
+  # Daily backup of the forge: its dump streamed into a restic repository
+  # (S3 or rest-server, from the Host's restic_env secret). Needs the forge
+  # bundle on the same Host.
+  backup:
+    services:
+      - backup
+  # Weekly proof that the backup restores: restic restore into a scratch
+  # volume, a throwaway forge from it, an HTTP check. Needs the backup and
+  # forge bundles on the same Host.
+  restore-verify:
+    services:
+      - restore-verify

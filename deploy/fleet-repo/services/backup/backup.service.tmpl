@@ -1,0 +1,19 @@
+[Unit]
+Description=Back up the forge: stream its dump into the restic repository
+# Fired by backup.timer only: no [Install], so Picolet never starts it, and
+# never re-runs it when it fails. Retries belong to the unit: up to four
+# attempts, 15 minutes apart; then it stays failed until the next timer run.
+# The window opens at the first start and must outlast four attempts that each
+# run into TimeoutStartSec (4 x 2h15m), or slow failures would reset it.
+StartLimitIntervalSec=10h
+StartLimitBurst=4
+
+[Service]
+Type=oneshot
+# The FIFO between the dump and restic ($RUNTIME_DIRECTORY, see backup.sh).
+RuntimeDirectory=backup
+ExecStart=/bin/sh {{ filePath "backup/backup.sh" }}
+Restart=on-failure
+RestartSec=15min
+# A one-shot has no start timeout by default: bound a hung dump or upload.
+TimeoutStartSec=2h

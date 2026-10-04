@@ -124,7 +124,10 @@ leaves the Fleet its series goes away, so remove its rules with it.
 must be checked — without it the companion fires only when *no* Host reports the
 series.
 
-Example: a daily `backup.service` and a weekly `restore-verify.service`.
+Example: a daily `backup.service` and a weekly `restore-verify.service`. The
+reference fleet ships both units (README "Reference bundles: backup,
+restore-verify") and these rules for them in `deploy/fleet-repo/rules/`, pinned
+to the Host's `host` scrape label and loaded by its metrics bundle.
 
 ```yaml
 groups:

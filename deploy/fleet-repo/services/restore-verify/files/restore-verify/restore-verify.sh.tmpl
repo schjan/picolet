@@ -1,0 +1,82 @@
+{{- /* restic_env and restic.sh come from the backup bundle, forge_secret_key and the image from the forge bundle. */ -}}
+{{- if not (and (has "backup" .Host.Services) (has "forge" .Host.Services)) }}{{ fail "restore-verify: the backup and forge bundles must be assigned to the same Host" }}{{ end -}}
+# Proves the latest forge backup of Host {{ .Host.Hostname }} restores: restores
+# it into a scratch volume, starts a throwaway forge from it with no network,
+# and checks it over HTTP. Exits non-zero on any failure, including a latest
+# snapshot older than two days (backup.timer is daily). Run by
+# restore-verify.service, which removes the throwaway container and the scratch
+# volume afterwards.
+set -eu
+
+vol=restore-verify-scratch
+ctr=restore-verify-forge
+
+podman volume create "$vol" >/dev/null
+
+# restic in the restic container, with the repository from restic_env and the
+# scratch volume at /restore.
+restic() {
+	podman run --rm --pull=missing \
+		--secret restic_env \
+		--volume restic-cache:/root/.cache/restic \
+		--volume {{ filePath "backup" }}:/etc/backup:ro \
+		--volume "$vol:/restore" \
+		--entrypoint /bin/sh \
+		{{ index .Images "restic" }} /etc/backup/restic.sh "$@"
+}
+
+# The newest forge snapshot of this Host, unless the backups have stopped. A
+# failed restic leaves the selection empty input, which fails it too.
+snapshot="$(restic snapshots --host {{ .Host.Hostname }} --tag forge --latest 1 --json |
+	podman run --rm -i --pull=missing --network none \
+		--volume {{ filePath "restore-verify" }}:/etc/restore-verify:ro \
+		{{ index .Images "python" }} python3 /etc/restore-verify/latest-snapshot.py 2)"
+
+echo "restoring forge snapshot $snapshot of {{ .Host.Hostname }}"
+restic restore "$snapshot" --target /restore/.restic
+
+echo "unpacking the dump and importing its database"
+podman run --rm --pull=missing --network none \
+	--volume {{ filePath "restore-verify" }}:/etc/restore-verify:ro \
+	--volume "$vol:/restore" \
+	{{ index .Images "python" }} /bin/sh /etc/restore-verify/prepare.sh
+
+# The deployed forge image, its SECRET_KEY (a dump restored without it cannot
+# decrypt 2FA seeds and Actions secrets) and no network: the restored forge
+# must not send mail, call webhooks or mirror anything. Anonymous reads are
+# switched on for the user check below.
+echo "starting a throwaway forge from the restored data"
+podman run --detach --name "$ctr" --network none \
+	--secret forge_secret_key \
+	--volume "$vol:/var/lib/gitea" \
+	--env FORGEJO__service__REQUIRE_SIGNIN_VIEW=false \
+	{{ index .Images "forge" }} >/dev/null
+
+# Forgejo answers /api/healthz with 200 once its database answers.
+healthy=false
+for _ in $(seq 60); do
+	if [ -z "$(podman ps --quiet --filter "name=^$ctr\$" --filter status=running)" ]; then
+		echo "the throwaway forge exited:" >&2
+		podman logs --tail 50 "$ctr" >&2
+		exit 1
+	fi
+	if podman exec "$ctr" curl -fsS http://127.0.0.1:3000/api/healthz >/dev/null 2>&1; then
+		healthy=true
+		break
+	fi
+	sleep 5
+done
+if [ "$healthy" != true ]; then
+	echo "the throwaway forge did not report healthy within 5 minutes:" >&2
+	podman logs --tail 50 "$ctr" >&2
+	exit 1
+fi
+
+# An empty database passes the health check too: the restored forge must know
+# the users of the dump.
+if ! podman exec "$ctr" curl -fsS 'http://127.0.0.1:3000/api/v1/users/search?limit=1' | grep -q '"login"'; then
+	echo "the restored forge lists no users: the dump's database is empty or was not imported" >&2
+	exit 1
+fi
+
+echo "restore verified: the latest forge backup restores and serves"
