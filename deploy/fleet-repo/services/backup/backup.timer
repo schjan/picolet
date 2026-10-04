@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily forge backup (backup.service)
+
+[Timer]
+OnCalendar=*-*-* 02:00
+RandomizedDelaySec=30min
+# A daily backup missed while the Machine was down runs right after boot: a
+# missed restore point is worse than a backup racing the containers that start
+# at boot, and the retries in backup.service absorb a forge that is not up yet.
+# restore-verify.timer makes the opposite choice; see README "Reference
+# bundles: backup, restore-verify".
+Persistent=true
+
+[Install]
+WantedBy=timers.target

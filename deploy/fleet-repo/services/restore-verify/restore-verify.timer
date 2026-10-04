@@ -1,0 +1,15 @@
+[Unit]
+Description=Weekly restore check of the forge backup (restore-verify.service)
+
+[Timer]
+# Sunday morning, after that night's backup.
+OnCalendar=Sun *-*-* 05:00
+RandomizedDelaySec=30min
+# No Persistent=true: a run missed while the Machine was down waits for next
+# week instead of restoring and booting a second forge right after boot. The
+# 14-day alert threshold (rules/restore-verify.yml.tmpl) tolerates one missed
+# run. backup.timer makes the opposite choice; see README "Reference bundles:
+# backup, restore-verify".
+
+[Install]
+WantedBy=timers.target

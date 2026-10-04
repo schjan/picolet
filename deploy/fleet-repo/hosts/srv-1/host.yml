@@ -11,6 +11,8 @@ role: rootless
 # The metrics stack (Prometheus) runs on this Host only. The proxy and the forge
 # share it: the proxy joins forge.network, which exists only in this user's
 # Podman. The proxy's ports 80/443 need net.ipv4.ip_unprivileged_port_start=80
-# on the Machine (README "Reference bundles: proxy, forge, runner").
-features: [metrics, proxy, forge]
+# on the Machine (README "Reference bundles: proxy, forge, runner"). backup and
+# restore-verify go where the forge is: they reach it through this user's
+# Podman (README "Reference bundles: backup, restore-verify").
+features: [metrics, proxy, forge, backup, restore-verify]
 user: app

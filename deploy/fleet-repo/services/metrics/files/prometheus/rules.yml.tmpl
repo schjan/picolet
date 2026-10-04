@@ -1,0 +1,11 @@
+# Prometheus alert rules of Host {{ .Host.Hostname }}, composed like
+# prometheus.yml's scrape jobs: rules/<bundle>.yml.tmpl at the Fleet root, one
+# per Service Bundle assigned to this Host, named after it. Snippets are
+# unindented lists of rule groups (- name: ...) rendered with the Host's
+# template data.
+groups:
+{{- range glob "rules/*.yml.tmpl" }}
+{{- if has (trimSuffix ".yml.tmpl" (base .)) $.Host.Services }}
+{{ renderTemplate . $ | trim | nindent 2 }}
+{{- end }}
+{{- end }}

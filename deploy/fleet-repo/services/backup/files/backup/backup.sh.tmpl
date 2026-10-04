@@ -1,0 +1,42 @@
+{{- /* The forge runs in this user's Podman: a backup without it has nothing to dump. */ -}}
+{{- if not (has "forge" .Host.Services) }}{{ fail "backup: the forge bundle must be assigned to the same Host" }}{{ end -}}
+# Streams the forge's dump on Host {{ .Host.Hostname }} into the restic
+# repository named by the restic_env secret. Run by backup.service.
+#
+# `forgejo dump` (in the running forge container) writes a tar to a FIFO; restic
+# reads the FIFO through --stdin-from-command (read-dump.sh), so nothing lands
+# on disk. restic saves a snapshot only when that command exits 0, and
+# read-dump.sh does so only when the dump itself exited 0: a failed or
+# truncated dump never becomes the latest snapshot.
+set -eu
+
+dir="${RUNTIME_DIRECTORY:?run by backup.service (RuntimeDirectory=backup)}"
+rm -f "$dir/forge-dump.tar" "$dir/dump.rc"
+mkfifo "$dir/forge-dump.tar"
+
+# The dump's exit code lands in dump.rc before the FIFO's write end closes (the
+# group's stdout closes when the group exits), so read-dump.sh sees EOF only
+# once dump.rc exists.
+{
+	rc=0
+	podman exec forge forgejo dump --quiet --skip-log --type tar --file - || rc=$?
+	echo "$rc" >"$dir/dump.rc"
+} >"$dir/forge-dump.tar" &
+dump=$!
+
+if ! podman run --rm --pull=missing \
+	--secret restic_env \
+	--volume restic-cache:/root/.cache/restic \
+	--volume {{ filePath "backup" }}:/etc/backup:ro \
+	--volume "$dir:/dump" \
+	--entrypoint /bin/sh \
+	{{ index .Images "restic" }} /etc/backup/restic.sh \
+	backup --host {{ .Host.Hostname }} --tag forge \
+	--stdin-filename forge-dump.tar \
+	--stdin-from-command -- /bin/sh /etc/backup/read-dump.sh; then
+	# restic failed before or while reading: unblock a producer still waiting
+	# for a reader on the FIFO.
+	kill "$dump" 2>/dev/null || true
+	exit 1
+fi
+wait "$dump"

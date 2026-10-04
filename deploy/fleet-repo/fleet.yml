@@ -8,6 +8,10 @@ images:
   # The last release before `forgejo-runner register` was deprecated (12.8.0);
   # the runner bundle's registration one-shot relies on it.
   runner: "data.forgejo.org/forgejo/runner:12.7.3"
+  # The backup and restore-verify bundles: restic runs the repository side; the
+  # python image's sqlite3 module imports the forge's SQL dump on restore.
+  restic: "docker.io/restic/restic:0.18.1"
+  python: "docker.io/library/python:3.13-alpine"
 
 ports:
   # The Agents' listen ports (Network=host, bound to 127.0.0.1). A Host

@@ -1,0 +1,23 @@
+# The restore-verify bundle's alert rules (docs/alerting.md "Alerting on
+# timer-triggered one-shots"): no success of restore-verify.service for twice its
+# weekly schedule. A passing restore-verify run is what "backed up" means, so
+# this is the alert that says the forge is no longer backed up.
+- name: restore-verify
+  rules:
+    - alert: PicoletOneShotStale
+      expr: time() - picolet_unit_last_success_timestamp_seconds{host="{{ .Host.Hostname }}", unit="restore-verify.service"} > 14 * 86400
+      for: 15m
+      labels:
+        severity: warning
+        schedule: weekly
+      annotations:
+        summary: restore-verify.service on {{ .Host.Hostname }} has not succeeded for over two weeks
+        description: The forge is not proven backed up. Check picolet_unit_last_result and `journalctl --user -u restore-verify.service`.
+    - alert: PicoletOneShotSuccessAbsent
+      expr: absent_over_time(picolet_unit_last_success_timestamp_seconds{host="{{ .Host.Hostname }}", unit="restore-verify.service"}[14d])
+      labels:
+        severity: warning
+        schedule: weekly
+      annotations:
+        summary: No success of restore-verify.service on {{ .Host.Hostname }} reported for two weeks
+        description: It has never succeeded, has not succeeded since an Agent or Machine restart, or the Agent is not being scraped.

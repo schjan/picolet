@@ -356,9 +356,11 @@ commit it right after step 2 completes.
 `deploy/fleet-repo/` follows these conventions; they are not enforced by
 picolet unless stated. It is one Machine, `srv-1`, with three Hosts — `srv-1`
 (default user `app`), `srv-1-system` (rootful) and `srv-1-runner` (user
-`runner`) — plus the Service Bundles `metrics`, `proxy`, `forge` and `runner`
-(see [Reference bundles](#reference-bundles-proxy-forge-runner)), all under the
-generic domain `example.net`.
+`runner`) — plus the Service Bundles `metrics`, `proxy`, `forge`, `runner`,
+`backup` and `restore-verify` (see
+[Reference bundles](#reference-bundles-proxy-forge-runner) and
+[backup, restore-verify](#reference-bundles-backup-restore-verify)), all under
+the generic domain `example.net`.
 
 - **Host naming.** See [Machines, users and ports](#machines-users-and-ports):
   `srv-1`, `srv-1-system` and `srv-1-runner` follow it.
@@ -392,17 +394,21 @@ generic domain `example.net`.
     `127.0.0.1:<port>`, so the metrics stack scrapes them over loopback.
   - The reverse proxy takes ports 80 and 443 through `.socket` units and
     publishes no port at all.
-- **Scrape snippets stay out of the bundles.** A bundle's files are delivered to
-  every Host that carries it, so a bundle's scrape jobs live at the Fleet root as
-  `scrape/<bundle>.yml.tmpl` - registered as a template, never delivered, and
-  collision-free because the file is named after its bundle. The metrics
-  bundle's `prometheus.yml.tmpl` composes the snippets of the bundles assigned
-  to its Host.
+- **Scrape and rule snippets stay out of the bundles.** A bundle's files are
+  delivered to every Host that carries it, so a bundle's scrape jobs and alert
+  rules live at the Fleet root as `scrape/<bundle>.yml.tmpl` and
+  `rules/<bundle>.yml.tmpl` - registered as templates, never delivered, and
+  collision-free because each file is named after its bundle. The metrics
+  bundle's `prometheus.yml.tmpl` and `rules.yml.tmpl` compose the snippets of
+  the bundles assigned to its Host.
 - **Never copy a live database.** Back up with the application's own dump (the
   forge: `forgejo dump`, see
-  [Reference bundles](#reference-bundles-proxy-forge-runner)) or the database's
-  snapshot tool, or stop the service first; a file-level copy of a running
-  database — or of the volume holding it — is not a backup.
+  [backup, restore-verify](#reference-bundles-backup-restore-verify)) or the
+  database's snapshot tool, or stop the service first; a file-level copy of a
+  running database — or of the volume holding it — is not a backup.
+- **Backed up means restore-verified.** A service is backed up when its latest
+  restore-verify run passed, not when a backup job exited 0: see
+  [backup, restore-verify](#reference-bundles-backup-restore-verify).
 - **Validate in CI with the exact image the Fleet deploys.** Run
   `picolet validate` in CI with the `images.picolet` reference from `fleet.yml`,
   so validation sees the same Podman `quadlet.Convert*()` as the Agents:
@@ -570,6 +576,111 @@ the target Machine and adopt only if every step passes:
 6. Rotate the registration token in the forge, update `runner_token` on
    `srv-1-runner`, and let a Reconciliation run: the `runner-registration` hook
    fires, the new runner comes online, and the echo workflow still passes.
+
+### Reference bundles: backup, restore-verify
+
+**Definition: the forge is backed up when its latest `restore-verify` run
+passed.** A backup job that exits 0 proves only that bytes reached the
+repository; `restore-verify` proves that they restore into a forge that starts
+and serves its data. Alert on `restore-verify.service`, not only on
+`backup.service`.
+
+Both bundles run on `srv-1`, next to the forge (features `backup` and
+`restore-verify`): they reach it through that user's Podman. Each is a raw
+`.timer` plus a static `Type=oneshot` `.service` (no `[Install]`, so Picolet
+never starts or re-runs it, see [Raw systemd units](#raw-systemd-units-timers-sockets-services))
+running a script delivered as a File; the script drives the user's `podman`.
+
+- **`backup`** (`services/backup/`) — `backup.timer` fires daily at 02:00
+  (up to 30 minutes later). `backup.sh` runs `forgejo dump --type tar --file -`
+  in the running forge container and streams it into restic
+  (`restic backup --stdin-from-command`, snapshot host `srv-1`, tag `forge`,
+  file `forge-dump.tar`) through a FIFO in the unit's `RuntimeDirectory=`:
+  nothing lands on disk. restic saves a snapshot only when the dump exited 0, so
+  a failed or truncated dump never becomes the latest snapshot.
+- **`restore-verify`** (`services/restore-verify/`) — `restore-verify.timer`
+  fires on Sundays at 05:00. `restore-verify.sh` fails when the newest `srv-1`
+  `forge` snapshot is older than two days (the backups have stopped:
+  `latest-snapshot.py`), restores it (`restic restore`) into the scratch volume
+  `restore-verify-scratch`, unpacks the dump into a forge work directory and
+  imports its SQL database (`prepare.sh`, in the `python` image: its `sqlite3`
+  module stands in for the `sqlite3` CLI the forge image lacks), starts the
+  throwaway container `restore-verify-forge` from the deployed forge image with
+  `--network none` and the Host's `forge_secret_key`, and passes only when
+  `/api/healthz` answers 200 within 5 minutes and the restored forge lists at
+  least one user (an empty database passes the health check too). Any failure
+  exits non-zero. `ExecStartPre=`/`ExecStopPost=` remove the container and the
+  volume around every run; the volume needs room for the dump and its unpacked
+  copy.
+
+**Repository and credentials.** `RESTIC_REPOSITORY`, the repository password and
+the backend's credentials come from the Host: the Podman secret `restic_env`
+(`services/backup/secrets/restic_env.tmpl` reads `restic_env` from the Host's
+secrets directory; switch it to `readOpSecret`/`readProtonPassSecret` for a
+provider). It holds shell `KEY=value` lines, sourced in the restic container,
+so single-quote the values. An S3 bucket and an append-only rest-server take the
+same secret, only its lines differ:
+
+```sh
+# S3
+RESTIC_REPOSITORY='s3:https://s3.example.net/forge-backup'
+RESTIC_PASSWORD='…'
+AWS_ACCESS_KEY_ID='…'
+AWS_SECRET_ACCESS_KEY='…'
+
+# rest-server started with --append-only
+RESTIC_REPOSITORY='rest:https://backup.example.net:8000/srv-1/'
+RESTIC_PASSWORD='…'
+RESTIC_REST_USERNAME='srv-1'
+RESTIC_REST_PASSWORD='…'
+```
+
+An append-only rest-server keeps a compromised Machine from deleting its own
+backups; run `forget`/`prune` from a trusted machine with full access. The
+repository must exist before the first run: `restic init` it once, by hand (the
+backup never initialises a repository, so a typo in `RESTIC_REPOSITORY` fails
+instead of writing elsewhere). Keep the repository password and
+`forge_secret_key` outside the repository they protect: a restore needs both.
+
+**Retries.** Picolet never re-runs a timer-fired one-shot, so retries are the
+units' own, bounded per [Raw systemd units](#raw-systemd-units-timers-sockets-services):
+`backup.service` retries every 15 minutes, at most 4 starts in 10 hours
+(`StartLimitIntervalSec=10h`, `StartLimitBurst=4`), `TimeoutStartSec=2h`;
+`restore-verify.service` every 30 minutes, at most 3 starts in 6 hours,
+`TimeoutStartSec=1h`. systemd's start-limit window opens at the first start, so
+it must outlast every attempt running into its timeout plus `RestartSec=`
+(4 × 2h15m, 3 × 1h30m); a shorter window resets during slow failures and the
+retries never stop. Then the unit stays failed until its timer fires again.
+
+**`Persistent=true` trade-off.** A persistent timer remembers its last trigger
+across a reboot and, when a scheduled run fell into the downtime, starts the
+job right after boot, competing with everything else starting then.
+`backup.timer` sets it: a missed restore point is worse than a backup racing
+the containers at boot, and the retries absorb a forge that is not up yet.
+`restore-verify.timer` does not: restoring and booting a second forge at boot is
+the wrong moment, and the 14-day alert threshold tolerates one missed weekly
+run. Without `Persistent=true` a reboot also leaves systemd without the
+pre-reboot run, so only the `absent_over_time()` alerts cover the gap (see
+[docs/alerting.md](docs/alerting.md#alerting-on-timer-triggered-one-shots)).
+
+**Alerts.** Each bundle carries its rules from
+[docs/alerting.md](docs/alerting.md#alerting-on-timer-triggered-one-shots) as
+`rules/backup.yml.tmpl` and `rules/restore-verify.yml.tmpl`, pinned to
+`host="srv-1"` and the real units `backup.service` (stale after 2 days) and
+`restore-verify.service` (stale after 14 days), each with its
+`absent_over_time()` companion on `picolet_unit_last_success_timestamp_seconds`.
+The metrics bundle on the same Host loads them (`rules.yml`, reloaded with
+SIGHUP by the `metrics-config-reload` hook); route them through your
+Alertmanager.
+
+**Restoring for real** follows `prepare.sh`: take `forge-dump.tar` from the
+snapshot (`restic restore latest --host srv-1 --tag forge`), stop
+`forge.service`, empty the `forge-data` volume, unpack the dump's `data/` into
+it, move its top-level `attachments/` to `data/attachments/` (the dump stores
+attachments apart from the work directory) and the dump's `repos/` to
+`git/repositories`, drop the dump's copy of the live `data/forgejo.db*` and
+import `forgejo-db.sql` into `data/forgejo.db`, `chown -R 1000:1000`, start the
+forge with the same `forge_secret_key`.
 
 ### File Categories
 

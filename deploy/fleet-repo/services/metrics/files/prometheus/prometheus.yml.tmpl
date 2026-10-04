@@ -12,6 +12,10 @@ global:
   external_labels:
     machine: {{ .Host.Machine }}
 
+# Alert rules of the bundles assigned to this Host (rules.yml.tmpl).
+rule_files:
+  - /etc/prometheus/rules.yml
+
 scrape_configs:
 {{- range glob "scrape/*.yml.tmpl" }}
 {{- if has (trimSuffix ".yml.tmpl" (base .)) $.Host.Services }}
