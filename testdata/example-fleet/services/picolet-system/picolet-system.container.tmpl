@@ -1,0 +1,17 @@
+# The Agent of the rootful Host (Machine vps-1).
+[Container]
+Image={{ index .Images "picolet" }}
+ContainerName=picolet-system
+Secret=picolet_system_config,target=/etc/picolet/config.yml
+Volume=/etc/picolet/secrets:/etc/picolet/secrets:ro
+Volume=/var/lib/picolet-system:/var/lib/picolet
+Volume=/etc/containers/systemd:/etc/containers/systemd
+Volume=/etc/systemd/system:/etc/systemd/system
+Volume=/run/podman/podman.sock:/run/podman/podman.sock:ro
+Volume=/run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
+Network=host
+Environment=PICOLET_CONFIG=/etc/picolet/config.yml
+PodmanArgs=--security-opt apparmor=unconfined
+
+[Install]
+WantedBy=multi-user.target

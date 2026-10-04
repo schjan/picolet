@@ -3,5 +3,5 @@
 hostname: vps-1-system
 external_hostname: vps-1.example.net
 role: vps
-features: []
+features: [agent-system]
 machine: vps-1

@@ -1,0 +1,102 @@
+package machine
+
+import (
+	"context"
+	"path"
+
+	"github.com/schjan/picolet/pkg/bootstrap"
+)
+
+// repoMount is where the per-Host bootstrap container sees the Fleet
+// checkout.
+const repoMount = "/repo"
+
+// hostBootstrapCommand is the per-Host bootstrap of h: the Agent image run
+// by the Host's own Podman with the Agent quadlet's bind mounts, so the
+// container sees every path where the Agent will see it and the state it
+// seeds is keyed by those paths. Running it natively as the user would seed
+// keys below the home, and the Agent's first Reconciliation would recreate
+// and delete its own quadlet. user is the Host's user; ignored for the
+// rootful Host.
+func hostBootstrapCommand(repoDir string, h Host, user User, agent bootstrap.Agent) Command {
+	args := []string{"podman", "run", "--rm", "--network", "host", "-v", repoDir + ":" + repoMount + ":ro"}
+	for _, d := range agentDirs {
+		src := d.rootPath
+		if !h.Rootful() {
+			src = path.Join(user.Home, d.userPath)
+		}
+		args = append(args, "-v", src+":"+d.mount)
+	}
+	var cmd Command
+	systemd := bootstrap.SystemdSystem
+	if h.Rootful() {
+		args = append(args,
+			"-v", "/run/dbus/system_bus_socket:/run/dbus/system_bus_socket",
+			"-v", "/run/podman/podman.sock:/run/podman/podman.sock",
+			"--security-opt", "apparmor=unconfined")
+	} else {
+		run := user.runtimeDir()
+		args = append(args,
+			"-v", run+"/systemd:"+run+"/systemd",
+			"-v", run+"/podman/podman.sock:/run/podman/podman.sock",
+			"-e", "XDG_RUNTIME_DIR="+run)
+		systemd = bootstrap.SystemdUser
+		cmd.Env = []string{"XDG_RUNTIME_DIR=" + run}
+		cmd.Dir = user.Home
+	}
+	args = append(args, agent.Image, "bootstrap",
+		"--hostname", h.Hostname, "--repo-dir", repoMount, "--service", agent.Service, "--systemd", systemd)
+	cmd.Args = args
+	return cmd
+}
+
+// bootstrapHost runs the per-Host bootstrap of s's Host, restarts its Agent
+// when this run wrote a credential file of it, and waits for the Agent's
+// health at the address its Fleet-rendered config listens on.
+func (r *runner) bootstrapHost(ctx context.Context, f *hostFacts, s Step) (string, error) {
+	h := s.Host
+	agent, err := bootstrap.ResolveAgent(ctx, r.plan.RepoDir, h.Hostname)
+	if err != nil {
+		return "", err
+	}
+	if err := r.startAgent(ctx, f, h, agent); err != nil {
+		return "", err
+	}
+	detail := ""
+	if r.restartRequired[h.Hostname] {
+		r.restarted[h.Hostname] = true
+		detail = agent.Unit + " restarted (credential files written), "
+	}
+	if err := r.ops.WaitHealthy(ctx, agent.DialAddr); err != nil {
+		r.health[h.Hostname] = healthUnhealthy
+		return "", err
+	}
+	r.health[h.Hostname] = healthHealthy
+	return detail + "healthy on " + agent.DialAddr, nil
+}
+
+// startAgent runs the per-Host bootstrap as the Host's user, or root, and
+// then restarts the Agent if it needs one: the bootstrap leaves a running
+// Agent with unchanged files alone, so it would keep the old credentials.
+func (r *runner) startAgent(ctx context.Context, f *hostFacts, h Host, agent bootstrap.Agent) error {
+	if h.Rootful() {
+		if err := r.ops.RunAsRoot(ctx, hostBootstrapCommand(r.plan.RepoDir, h, User{}, agent)); err != nil {
+			return err
+		}
+		if r.restartRequired[h.Hostname] {
+			return r.ops.RestartSystemUnit(ctx, agent.Unit)
+		}
+		return nil
+	}
+	user, err := f.existingUser()
+	if err != nil {
+		return err
+	}
+	if err := r.ops.RunAsUser(ctx, user, hostBootstrapCommand(r.plan.RepoDir, h, user, agent)); err != nil {
+		return err
+	}
+	if r.restartRequired[h.Hostname] {
+		return r.ops.RestartUserUnit(ctx, user, agent.Unit)
+	}
+	return nil
+}

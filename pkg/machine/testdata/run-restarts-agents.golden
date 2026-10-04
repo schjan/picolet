@@ -4,10 +4,10 @@ Machine vps-1: 3 Hosts
   vps-1-system  rootful      listen port 9418
 Fleet checkout: <repo>
 Credential sources: --secrets-dir <secrets>
-warning: no credential files for vps-1-system: <secrets>/vps-1-system does not exist
+warning: no credential files for vps-1-runner: <secrets>/vps-1-runner does not exist
 
 Phase 1: users, sessions and directories
-  already done  vps-1/user                         Linux user pi present                                                               uid 1000
+  already done  vps-1/user                         Linux user pi present                                                       uid 1000
   already done  vps-1/subids                       subuid/subgid ranges of pi present
   already done  vps-1/linger                       lingering enabled for pi
   already done  vps-1/user-manager                 user manager of pi running
@@ -17,7 +17,7 @@ Phase 1: users, sessions and directories
   already done  vps-1/dir/quadlets                 directory ~pi/.config/containers/systemd, owner pi, mode 0755
   already done  vps-1/dir/units                    directory ~pi/.config/systemd/user, owner pi, mode 0755
   already done  vps-1/checkout                     Fleet checkout readable by pi (world-readable)
-  already done  vps-1-runner/user                  Linux user runner present                                                           uid 1001
+  already done  vps-1-runner/user                  Linux user runner present                                                   uid 1001
   already done  vps-1-runner/subids                subuid/subgid ranges of runner present
   already done  vps-1-runner/linger                lingering enabled for runner
   already done  vps-1-runner/user-manager          user manager of runner running
@@ -34,19 +34,17 @@ Phase 1: users, sessions and directories
   already done  vps-1-system/dir/units             directory /etc/systemd/system, owner root, mode 0755
 
 Phase 2: credential files
-  applied       vps-1/credential/git-token         credential file ~pi/.config/picolet/secrets/git-token, owner pi, mode 0600          wrote /home/pi/.config/picolet/secrets/git-token, Agent restart required
-  applied       vps-1/credential-dir/github        directory ~pi/.config/picolet/secrets/github, owner pi, mode 0700
-  applied       vps-1/credential/github/app.pem    credential file ~pi/.config/picolet/secrets/github/app.pem, owner pi, mode 0600     wrote /home/pi/.config/picolet/secrets/github/app.pem, Agent restart required
-  applied       vps-1-runner/credential/git-token  credential file ~runner/.config/picolet/secrets/git-token, owner runner, mode 0600  wrote /home/runner/.config/picolet/secrets/git-token, Agent restart required
+  applied       vps-1/credential/git-token         credential file ~pi/.config/picolet/secrets/git-token, owner pi, mode 0600  wrote /home/pi/.config/picolet/secrets/git-token, Agent restart required
+  applied       vps-1-system/credential/git-token  credential file /etc/picolet/secrets/git-token, owner root, mode 0600       wrote /etc/picolet/secrets/git-token, Agent restart required
 
 Phase 3: per-Host bootstrap
-  applied       vps-1/bootstrap                    per-Host bootstrap as pi (--systemd user)                                           picolet.service restarted (credential files written), healthy on 127.0.0.1:9417
-  applied       vps-1-runner/bootstrap             per-Host bootstrap as runner (--systemd user)                                       picolet.service restarted (credential files written), healthy on 127.0.0.1:9419
-  applied       vps-1-system/bootstrap             per-Host bootstrap as root (--systemd system)                                       healthy on 127.0.0.1:9418
+  applied       vps-1/bootstrap                    per-Host bootstrap as pi (--systemd user)                                   picolet.service restarted (credential files written), healthy on 127.0.0.1:9417
+  applied       vps-1-runner/bootstrap             per-Host bootstrap as runner (--systemd user)                               healthy on 127.0.0.1:9419
+  applied       vps-1-system/bootstrap             per-Host bootstrap as root (--systemd system)                               picolet-system.service restarted (credential files written), healthy on 127.0.0.1:9418
 
-7 applied, 25 already done
+5 applied, 25 already done
 
 Host          User    Port  Health   Agent restart
 vps-1         pi      9417  healthy  restarted (credential files written)
-vps-1-runner  runner  9419  healthy  restarted (credential files written)
-vps-1-system  root    9418  healthy  not needed
+vps-1-runner  runner  9419  healthy  not needed
+vps-1-system  root    9418  healthy  restarted (credential files written)

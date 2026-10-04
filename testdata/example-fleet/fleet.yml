@@ -4,6 +4,7 @@ images:
   app: "myapp:v2.1"
   simple: "docker.io/library/alpine:3.23"
   web-app: "ghcr.io/example/web-app:v1.2.3"
+  picolet: "ghcr.io/schjan/picolet:v0.2.0"
 ports:
   http: 8080
   metrics: 9090

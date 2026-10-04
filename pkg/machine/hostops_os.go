@@ -120,7 +120,7 @@ func (o *OSHostOps) LingerEnabled(u User) (bool, error) {
 // UserManagerRunning implements HostOps: the manager's private socket exists
 // once user@<uid>.service accepts connections.
 func (o *OSHostOps) UserManagerRunning(u User) (bool, error) {
-	return o.exists(fmt.Sprintf("/run/user/%d/systemd/private", u.UID))
+	return o.exists(u.runtimeDir() + "/systemd/private")
 }
 
 func (o *OSHostOps) exists(p string) (bool, error) {
@@ -134,7 +134,7 @@ func (o *OSHostOps) exists(p string) (bool, error) {
 // (pam_systemd, pam_mkhomedir) may write to the Machine.
 func (o *OSHostOps) UserUnitState(ctx context.Context, u User, unit string) (UnitState, error) {
 	cmd := unitStateCommand(ctx, "--user", unit)
-	runtimeDir := fmt.Sprintf("/run/user/%d", u.UID)
+	runtimeDir := u.runtimeDir()
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + u.Home, "USER=" + u.Name, "LOGNAME=" + u.Name,

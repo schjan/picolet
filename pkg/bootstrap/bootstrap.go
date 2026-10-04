@@ -100,13 +100,26 @@ func (t Target) podmanSocket() string {
 	return t.PodmanSocket
 }
 
-func Run(ctx context.Context, cfg RunConfig) error { //nolint:cyclop,funlen // orchestration mirrors the documented bootstrap sequence.
-	cfg = normalizeRunConfig(cfg)
+// prepared is what Run settles before it touches systemd: the target, the
+// Host's resolved Agent bundle and the address its health is probed at.
+type prepared struct {
+	tgt        resolvedTarget
+	resolved   *resolver.ResolvedHost
+	healthAddr string
+}
+
+// statePath is where the Agent's state lives, seeded by the bootstrap.
+func (p *prepared) statePath() string {
+	return filepath.Join(p.tgt.dataDir, "state.json")
+}
+
+// prepare resolves and validates the Host's Agent bundle as cfg describes
+// it; it reads the Fleet and the secrets and writes nothing.
+func prepare(ctx context.Context, cfg RunConfig) (*prepared, error) {
 	tgt, err := cfg.resolve()
 	if err != nil {
-		return err
+		return nil, err
 	}
-
 	resolved, err := resolveBootstrapHost(ctx, resolveConfig{
 		RepoDir:    cfg.RepoDir,
 		Hostname:   cfg.Hostname,
@@ -117,21 +130,31 @@ func Run(ctx context.Context, cfg RunConfig) error { //nolint:cyclop,funlen // o
 		FileMode:   fileReaderStrict,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := validator.ValidateFiles(resolved.Files, validator.Target{Rootless: cfg.Rootless, HostDataDir: resolved.HostDataDir}); err != nil {
-		return fmt.Errorf("validation failed: %w", err)
+		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 	if err := verifyUnitResolved(resolved.Files, tgt); err != nil {
-		return err
+		return nil, err
 	}
 	healthAddr := cfg.HealthAddr
 	if healthAddr == "" {
 		healthAddr, err = healthAddrFromResolved(resolved.Files, tgt.unitName)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
+	return &prepared{tgt: tgt, resolved: resolved, healthAddr: healthAddr}, nil
+}
+
+func Run(ctx context.Context, cfg RunConfig) error { //nolint:cyclop,funlen // orchestration mirrors the documented bootstrap sequence.
+	cfg = normalizeRunConfig(cfg)
+	p, err := prepare(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	tgt, resolved, healthAddr := p.tgt, p.resolved, p.healthAddr
 
 	systemd, err := applier.NewDBusSystemdManager(ctx, tgt.useSystemdUser)
 	if err != nil {
@@ -143,7 +166,7 @@ func Run(ctx context.Context, cfg RunConfig) error { //nolint:cyclop,funlen // o
 	if err != nil {
 		return fmt.Errorf("checking %s state: %w", tgt.unitName, err)
 	}
-	store := state.NewStore(filepath.Join(tgt.dataDir, "state.json"))
+	store := state.NewStore(p.statePath())
 	if slices.Contains([]string{"active", "activating", "reloading"}, status.ActiveState) {
 		done, err := handleActiveBootstrap(ctx, systemd, store, resolved.Files, tgt.unitName, healthAddr, cfg)
 		if err != nil {

@@ -99,7 +99,7 @@ func expectBootstrappedRootful(ops *mocks.MockHostOps, socket machine.UnitState)
 // once. Two are found done: subids is only verified (useradd allocated the
 // ranges), and the shared checkout, made readable for pi, is already
 // readable for runner. The rootful Host has no user steps and gets the
-// system socket.
+// system socket. Every Agent is then started and found healthy.
 func TestRunFreshMachine(t *testing.T) {
 	t.Parallel()
 	ops := mocks.NewMockHostOps(t)
@@ -115,21 +115,21 @@ func TestRunFreshMachine(t *testing.T) {
 	ops.EXPECT().WorldReadableTree(repo).Return(false, nil).Once()
 	ops.EXPECT().MakeWorldReadable(repo).Return(nil).Once()
 	ops.EXPECT().WorldReadableTree(repo).Return(true, nil)
+	expectAgentsStarted(t, ops)
 
 	out, err := runMachine(t, ops)
 	require.NoError(t, err)
 	goldie.New(t).Assert(t, "run-fresh-machine", []byte(out))
 }
 
-// A second run finds every step done and writes nothing: the mock has no
-// write expectations.
+// A second run finds every step done and changes nothing but re-running the
+// per-Host bootstraps, which leave a current Agent alone: the mock has no
+// other write expectations.
 func TestRunBootstrappedMachine(t *testing.T) {
 	t.Parallel()
 	ops := mocks.NewMockHostOps(t)
-	expectBootstrappedUser(ops, pi, running)
-	expectBootstrappedUser(ops, runner, running)
-	expectBootstrappedRootful(ops, running)
-	ops.EXPECT().WorldReadableTree(exampleFleetAbs(t)).Return(true, nil)
+	expectBootstrappedMachine(t, ops)
+	expectAgentsStarted(t, ops)
 
 	out, err := runMachine(t, ops)
 	require.NoError(t, err)
@@ -148,17 +148,18 @@ func TestRunStartsEnabledStoppedSocket(t *testing.T) {
 	expectBootstrappedRootful(ops, stopped)
 	ops.EXPECT().EnableSystemUnit(mock.Anything, "podman.socket").Return(nil).Once()
 	ops.EXPECT().WorldReadableTree(exampleFleetAbs(t)).Return(true, nil)
+	expectAgentsStarted(t, ops)
 
 	out, err := runMachine(t, ops)
 	require.NoError(t, err)
 	require.Regexp(t, `applied\s+vps-1/podman-socket`, out)
 	require.Regexp(t, `applied\s+vps-1-system/podman-socket`, out)
-	require.Contains(t, out, "2 applied, 23 already done")
+	require.Contains(t, out, "5 applied, 23 already done")
 }
 
 // A user without subordinate ID ranges stops its Host at the check, with the
-// command that adds them; the other Hosts are bootstrapped, and the run
-// fails. Nothing of runner past the check is touched.
+// command that adds them; the other Hosts are bootstrapped and their Agents
+// started, and the run fails. Nothing of runner past the check is touched.
 func TestRunMissingSubIDsStopsOnlyThatHost(t *testing.T) {
 	t.Parallel()
 	ops := mocks.NewMockHostOps(t)
@@ -167,6 +168,8 @@ func TestRunMissingSubIDsStopsOnlyThatHost(t *testing.T) {
 	ops.EXPECT().SubIDRanges(runner).Return(false, false, nil)
 	expectBootstrappedRootful(ops, running)
 	ops.EXPECT().WorldReadableTree(exampleFleetAbs(t)).Return(true, nil)
+	expectUserAgentStarted(ops, exampleFleetAbs(t), pi, "vps-1", "127.0.0.1:9417")
+	expectRootfulAgentStarted(ops, exampleFleetAbs(t))
 
 	out, err := runMachine(t, ops)
 	require.EqualError(t, err, "vps-1-runner/subids: no subuid/subgid range; add one: "+

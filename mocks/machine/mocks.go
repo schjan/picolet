@@ -594,6 +594,246 @@ func (_c *MockHostOps_MakeWorldReadable_Call) RunAndReturn(run func(path string)
 	return _c
 }
 
+// RestartSystemUnit provides a mock function for the type MockHostOps
+func (_mock *MockHostOps) RestartSystemUnit(ctx context.Context, unit string) error {
+	ret := _mock.Called(ctx, unit)
+
+	if len(ret) == 0 {
+		panic("no return value specified for RestartSystemUnit")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) error); ok {
+		r0 = returnFunc(ctx, unit)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockHostOps_RestartSystemUnit_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RestartSystemUnit'
+type MockHostOps_RestartSystemUnit_Call struct {
+	*mock.Call
+}
+
+// RestartSystemUnit is a helper method to define mock.On call
+//   - ctx context.Context
+//   - unit string
+func (_e *MockHostOps_Expecter) RestartSystemUnit(ctx any, unit any) *MockHostOps_RestartSystemUnit_Call {
+	return &MockHostOps_RestartSystemUnit_Call{Call: _e.mock.On("RestartSystemUnit", ctx, unit)}
+}
+
+func (_c *MockHostOps_RestartSystemUnit_Call) Run(run func(ctx context.Context, unit string)) *MockHostOps_RestartSystemUnit_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockHostOps_RestartSystemUnit_Call) Return(err error) *MockHostOps_RestartSystemUnit_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockHostOps_RestartSystemUnit_Call) RunAndReturn(run func(ctx context.Context, unit string) error) *MockHostOps_RestartSystemUnit_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// RestartUserUnit provides a mock function for the type MockHostOps
+func (_mock *MockHostOps) RestartUserUnit(ctx context.Context, user machine.User, unit string) error {
+	ret := _mock.Called(ctx, user, unit)
+
+	if len(ret) == 0 {
+		panic("no return value specified for RestartUserUnit")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, machine.User, string) error); ok {
+		r0 = returnFunc(ctx, user, unit)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockHostOps_RestartUserUnit_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RestartUserUnit'
+type MockHostOps_RestartUserUnit_Call struct {
+	*mock.Call
+}
+
+// RestartUserUnit is a helper method to define mock.On call
+//   - ctx context.Context
+//   - user machine.User
+//   - unit string
+func (_e *MockHostOps_Expecter) RestartUserUnit(ctx any, user any, unit any) *MockHostOps_RestartUserUnit_Call {
+	return &MockHostOps_RestartUserUnit_Call{Call: _e.mock.On("RestartUserUnit", ctx, user, unit)}
+}
+
+func (_c *MockHostOps_RestartUserUnit_Call) Run(run func(ctx context.Context, user machine.User, unit string)) *MockHostOps_RestartUserUnit_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 machine.User
+		if args[1] != nil {
+			arg1 = args[1].(machine.User)
+		}
+		var arg2 string
+		if args[2] != nil {
+			arg2 = args[2].(string)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+		)
+	})
+	return _c
+}
+
+func (_c *MockHostOps_RestartUserUnit_Call) Return(err error) *MockHostOps_RestartUserUnit_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockHostOps_RestartUserUnit_Call) RunAndReturn(run func(ctx context.Context, user machine.User, unit string) error) *MockHostOps_RestartUserUnit_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// RunAsRoot provides a mock function for the type MockHostOps
+func (_mock *MockHostOps) RunAsRoot(ctx context.Context, cmd machine.Command) error {
+	ret := _mock.Called(ctx, cmd)
+
+	if len(ret) == 0 {
+		panic("no return value specified for RunAsRoot")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, machine.Command) error); ok {
+		r0 = returnFunc(ctx, cmd)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockHostOps_RunAsRoot_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RunAsRoot'
+type MockHostOps_RunAsRoot_Call struct {
+	*mock.Call
+}
+
+// RunAsRoot is a helper method to define mock.On call
+//   - ctx context.Context
+//   - cmd machine.Command
+func (_e *MockHostOps_Expecter) RunAsRoot(ctx any, cmd any) *MockHostOps_RunAsRoot_Call {
+	return &MockHostOps_RunAsRoot_Call{Call: _e.mock.On("RunAsRoot", ctx, cmd)}
+}
+
+func (_c *MockHostOps_RunAsRoot_Call) Run(run func(ctx context.Context, cmd machine.Command)) *MockHostOps_RunAsRoot_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 machine.Command
+		if args[1] != nil {
+			arg1 = args[1].(machine.Command)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockHostOps_RunAsRoot_Call) Return(err error) *MockHostOps_RunAsRoot_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockHostOps_RunAsRoot_Call) RunAndReturn(run func(ctx context.Context, cmd machine.Command) error) *MockHostOps_RunAsRoot_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// RunAsUser provides a mock function for the type MockHostOps
+func (_mock *MockHostOps) RunAsUser(ctx context.Context, user machine.User, cmd machine.Command) error {
+	ret := _mock.Called(ctx, user, cmd)
+
+	if len(ret) == 0 {
+		panic("no return value specified for RunAsUser")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, machine.User, machine.Command) error); ok {
+		r0 = returnFunc(ctx, user, cmd)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockHostOps_RunAsUser_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RunAsUser'
+type MockHostOps_RunAsUser_Call struct {
+	*mock.Call
+}
+
+// RunAsUser is a helper method to define mock.On call
+//   - ctx context.Context
+//   - user machine.User
+//   - cmd machine.Command
+func (_e *MockHostOps_Expecter) RunAsUser(ctx any, user any, cmd any) *MockHostOps_RunAsUser_Call {
+	return &MockHostOps_RunAsUser_Call{Call: _e.mock.On("RunAsUser", ctx, user, cmd)}
+}
+
+func (_c *MockHostOps_RunAsUser_Call) Run(run func(ctx context.Context, user machine.User, cmd machine.Command)) *MockHostOps_RunAsUser_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 machine.User
+		if args[1] != nil {
+			arg1 = args[1].(machine.User)
+		}
+		var arg2 machine.Command
+		if args[2] != nil {
+			arg2 = args[2].(machine.Command)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+		)
+	})
+	return _c
+}
+
+func (_c *MockHostOps_RunAsUser_Call) Return(err error) *MockHostOps_RunAsUser_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockHostOps_RunAsUser_Call) RunAndReturn(run func(ctx context.Context, user machine.User, cmd machine.Command) error) *MockHostOps_RunAsUser_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // SetOwnerMode provides a mock function for the type MockHostOps
 func (_mock *MockHostOps) SetOwnerMode(base string, rel string, owner machine.Owner, mode fs.FileMode) error {
 	ret := _mock.Called(base, rel, owner, mode)
@@ -983,6 +1223,63 @@ func (_c *MockHostOps_UserUnitState_Call) Return(unitState machine.UnitState, er
 }
 
 func (_c *MockHostOps_UserUnitState_Call) RunAndReturn(run func(ctx context.Context, user machine.User, unit string) (machine.UnitState, error)) *MockHostOps_UserUnitState_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// WaitHealthy provides a mock function for the type MockHostOps
+func (_mock *MockHostOps) WaitHealthy(ctx context.Context, addr string) error {
+	ret := _mock.Called(ctx, addr)
+
+	if len(ret) == 0 {
+		panic("no return value specified for WaitHealthy")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) error); ok {
+		r0 = returnFunc(ctx, addr)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockHostOps_WaitHealthy_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'WaitHealthy'
+type MockHostOps_WaitHealthy_Call struct {
+	*mock.Call
+}
+
+// WaitHealthy is a helper method to define mock.On call
+//   - ctx context.Context
+//   - addr string
+func (_e *MockHostOps_Expecter) WaitHealthy(ctx any, addr any) *MockHostOps_WaitHealthy_Call {
+	return &MockHostOps_WaitHealthy_Call{Call: _e.mock.On("WaitHealthy", ctx, addr)}
+}
+
+func (_c *MockHostOps_WaitHealthy_Call) Run(run func(ctx context.Context, addr string)) *MockHostOps_WaitHealthy_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockHostOps_WaitHealthy_Call) Return(err error) *MockHostOps_WaitHealthy_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockHostOps_WaitHealthy_Call) RunAndReturn(run func(ctx context.Context, addr string) error) *MockHostOps_WaitHealthy_Call {
 	_c.Call.Return(run)
 	return _c
 }

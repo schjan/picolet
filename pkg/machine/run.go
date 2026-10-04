@@ -11,9 +11,16 @@ import (
 	"text/tabwriter"
 )
 
-// runPhases are the phases a run carries out. The per-Host bootstrap, which
-// starts the Agents, is not run yet.
-var runPhases = []Phase{PhaseSetup, PhaseCredentials}
+// health is what a run found of a Host's Agent.
+type health string
+
+const (
+	healthHealthy   health = "healthy"
+	healthUnhealthy health = "unhealthy"
+	// healthUnchecked: the Host stopped, or the run was interrupted, before
+	// the health wait.
+	healthUnchecked health = "not checked"
+)
 
 // outcome is what a run did with a step.
 type outcome string
@@ -25,15 +32,17 @@ const (
 	outcomeSkipped outcome = "skipped"
 )
 
-// Run bootstraps cfg.Machine as root: every step of runPhases, in plan order,
-// is checked through the read side of ops and, when its end state does not
-// hold, applied through the write side. A run on a bootstrapped Machine
-// applies nothing; an interrupted one resumes where it stopped. A failing
-// step stops its Host, skipping the Host's later steps, while the other Hosts
-// go on; Run then returns the error of every stopped Host. It fails before
-// the first step when the Machine is not fit for a run. The summary, printed
-// for an interrupted run too, lists the Hosts whose Agent needs a restart
-// because a credential file was written.
+// Run bootstraps cfg.Machine as root: every step, in plan order, is checked
+// through the read side of ops and, when its end state does not hold, applied
+// through the write side. A run on a bootstrapped Machine changes nothing but
+// re-runs the per-Host bootstraps, which leave a current Agent alone; an
+// interrupted one resumes where it stopped. A failing step stops its Host,
+// skipping the Host's later steps, while the other Hosts go on; Run then
+// returns the error of every stopped Host. It fails before the first step
+// when the Machine is not fit for a run. The summary, printed for an
+// interrupted run too, lists every Host with its user, port, Agent health
+// and whether its Agent was, or still needs to be, restarted because a
+// credential file was written.
 func Run(ctx context.Context, cfg Config, ops HostOps) error {
 	if err := cfg.Env.checkRun(); err != nil {
 		return err
@@ -49,7 +58,7 @@ func Run(ctx context.Context, cfg Config, ops HostOps) error {
 	}
 
 	r := newRunner(plan, ops, cfg.Stdout)
-	for i, phase := range runPhases {
+	for i, phase := range Phases {
 		fmt.Fprintf(r.w, "\nPhase %d: %s\n", i+1, phase)
 		if !hasPhase(plan, phase) {
 			fmt.Fprintln(r.w, nothingToDo)
@@ -59,31 +68,49 @@ func Run(ctx context.Context, cfg Config, ops HostOps) error {
 				continue
 			}
 			if err := r.step(ctx, step); err != nil {
-				r.summary()
-				return errors.Join(append(r.errs, err)...)
+				return errors.Join(append(r.errs, err, r.summary())...)
 			}
 		}
 	}
-
-	r.summary()
-	return errors.Join(r.errs...)
+	return errors.Join(append(r.errs, r.summary())...)
 }
 
-// summary prints the count per outcome, the Hosts whose Agent needs a
-// restart and the bootstrap: files not placed.
-func (r *runner) summary() {
+// summary prints the count per outcome, a line per Host (its user, port,
+// Agent health and Agent restart) and the bootstrap: files not placed.
+func (r *runner) summary() error {
 	var counts []string
 	for _, o := range []outcome{outcomeApplied, outcomeDone, outcomeFailed, outcomeSkipped} {
 		if r.counts[o] > 0 {
 			counts = append(counts, fmt.Sprintf("%d %s", r.counts[o], o))
 		}
 	}
-	fmt.Fprintf(r.w, "\n%s\n", strings.Join(counts, ", "))
-	if len(r.restart) > 0 {
-		fmt.Fprintf(r.w, "Agent restart required (credential files written): %s\n", strings.Join(r.restart, ", "))
+	fmt.Fprintf(r.w, "\n%s\n\n", strings.Join(counts, ", "))
+	tw := tabwriter.NewWriter(r.w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "Host\tUser\tPort\tHealth\tAgent restart")
+	for _, h := range r.plan.Hosts {
+		health := r.health[h.Hostname]
+		if health == "" {
+			health = healthUnchecked
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", h.Hostname, h.owner(), h.ListenPort, health, r.restartColumn(h))
+	}
+	if err := tw.Flush(); err != nil {
+		return fmt.Errorf("writing summary: %w", err)
 	}
 	writeUnresolved(r.w, r.plan)
-	fmt.Fprintln(r.w, "No Agent started: the per-Host bootstrap is not run yet.")
+	return nil
+}
+
+// restartColumn says whether h's Agent was restarted for a credential file
+// written by this run, or still needs to be.
+func (r *runner) restartColumn(h Host) string {
+	switch {
+	case r.restarted[h.Hostname]:
+		return "restarted (credential files written)"
+	case r.restartRequired[h.Hostname]:
+		return "required (credential files written)"
+	}
+	return "not needed"
 }
 
 // nothingToDo is the line of a phase without steps.
@@ -107,20 +134,25 @@ type runner struct {
 	stopped map[string]string
 	errs    []error
 	counts  map[outcome]int
-	// restart lists, in plan order, the Hosts whose Agent needs a restart.
-	restart []string
+	// restartRequired holds the Hosts whose Agent needs a restart: this
+	// run wrote a credential file of theirs. restarted holds those whose
+	// Agent got it.
+	restartRequired, restarted map[string]bool
+	health                     map[string]health
 }
 
 // outcomeWidth is the width of the outcome column: its longest label.
 var outcomeWidth = len(outcomeDone)
 
 func newRunner(plan *Plan, ops HostOps, w io.Writer) *runner {
-	r := &runner{plan: plan, ops: ops, w: w, facts: map[string]*hostFacts{}, stopped: map[string]string{}, counts: map[outcome]int{}}
+	r := &runner{
+		plan: plan, ops: ops, w: w,
+		facts: map[string]*hostFacts{}, stopped: map[string]string{}, counts: map[outcome]int{},
+		restartRequired: map[string]bool{}, restarted: map[string]bool{}, health: map[string]health{},
+	}
 	for _, s := range plan.Steps {
-		if slices.Contains(runPhases, s.Phase) {
-			r.idWidth = max(r.idWidth, len(s.ID))
-			r.describeWidth = max(r.describeWidth, len(s.Describe()))
-		}
+		r.idWidth = max(r.idWidth, len(s.ID))
+		r.describeWidth = max(r.describeWidth, len(s.Describe()))
 	}
 	return r
 }
@@ -165,16 +197,14 @@ func (r *runner) step(ctx context.Context, s Step) error {
 func (r *runner) applied(s Step, fix credentialFix, detail string) {
 	if fix == fixContent {
 		detail += ", Agent restart required"
-		if !slices.Contains(r.restart, s.Host.Hostname) {
-			r.restart = append(r.restart, s.Host.Hostname)
-		}
+		r.restartRequired[s.Host.Hostname] = true
 	}
 	r.print(outcomeApplied, s, detail)
 }
 
 // apply brings s's end state about, a StepCredential by fix. The detail is
 // what the operator should see of it beyond the step: the path a credential
-// file was placed at.
+// file was placed at, the Agent's restart and health.
 func (r *runner) apply(ctx context.Context, f *hostFacts, s Step, fix credentialFix) (detail string, err error) {
 	switch {
 	case s.Kind == StepUser:
@@ -183,6 +213,8 @@ func (r *runner) apply(ctx context.Context, f *hostFacts, s Step, fix credential
 		return "", r.ops.MakeWorldReadable(s.Path)
 	case s.Kind == StepCredential:
 		return r.placeCredential(f, s, fix)
+	case s.Kind == StepHostBootstrap:
+		return r.bootstrapHost(ctx, f, s)
 	case s.Host.Rootful():
 		return r.applyRootful(ctx, s)
 	}

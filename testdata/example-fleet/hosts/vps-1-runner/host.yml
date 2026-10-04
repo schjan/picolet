@@ -3,7 +3,7 @@
 hostname: vps-1-runner
 external_hostname: vps-1.example.net
 role: vps
-features: []
+features: [agent]
 machine: vps-1
 user: runner
 listen_port: 9419
