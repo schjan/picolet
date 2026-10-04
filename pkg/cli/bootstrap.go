@@ -24,14 +24,15 @@ func bootstrapCmd() *cli.Command {
 		Before: jsonLogging,
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			return bootstrap.Run(ctx, bootstrap.RunConfig{
-				Target:       bootstrapTarget(cmd),
-				Hostname:     cmd.String("hostname"),
-				RepoDir:      cmd.String("repo-dir"),
-				SecretsDir:   cmd.String("secrets-dir"),
-				HealthPath:   cmd.String("health-path"),
-				HealthAddr:   cmd.String("health-addr"),
-				Timeout:      cmd.Duration("timeout"),
-				AllowRestart: cmd.Bool("allow-restart"),
+				Target:         bootstrapTarget(cmd),
+				Hostname:       cmd.String("hostname"),
+				RepoDir:        cmd.String("repo-dir"),
+				SecretsDir:     cmd.String("secrets-dir"),
+				HealthPath:     cmd.String("health-path"),
+				HealthAddr:     cmd.String("health-addr"),
+				Timeout:        cmd.Duration("timeout"),
+				AllowRestart:   cmd.Bool("allow-restart"),
+				SkipHealthWait: cmd.Bool("skip-health-wait"),
 			})
 		},
 		Commands: []*cli.Command{
@@ -72,6 +73,7 @@ func bootstrapRunFlags() []cli.Flag {
 		&cli.StringFlag{Name: "health-addr", Usage: "health endpoint address override (host:port; default: the agent config's listen_addr)"},
 		&cli.DurationFlag{Name: "timeout", Value: 0, Usage: "health wait timeout"},
 		&cli.BoolFlag{Name: "allow-restart", Usage: "allow restarting an already-active picolet when files changed"},
+		&cli.BoolFlag{Name: "skip-health-wait", Usage: "do not wait for picolet's health (bootstrap machine waits itself, after restarts)"},
 	)
 }
 

@@ -77,7 +77,9 @@ kept as is.
   as root) with the Agent quadlet's bind mounts, so it seeds `state.json` with
   the Agent's container paths; an Agent whose credential files the run wrote is
   restarted, every Agent's health is waited for, and a per-Host summary
-  (user, port, health, restart) ends the run
+  (user, probed port, health, restart) ends the run. `picolet bootstrap`
+  gains `--skip-health-wait`, which `bootstrap machine` passes so an Agent
+  needing a restart for new credentials is restarted before any health wait
   ([#155](https://github.com/schjan/picolet/issues/155)).
 
 ### Changed

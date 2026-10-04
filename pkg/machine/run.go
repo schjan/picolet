@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 )
@@ -88,11 +90,12 @@ func (r *runner) summary() error {
 	tw := tabwriter.NewWriter(r.w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "Host\tUser\tPort\tHealth\tAgent restart")
 	for _, h := range r.plan.Hosts {
-		status := r.health[h.Hostname]
+		a := r.agent(h.Hostname)
+		status := a.health
 		if status == "" {
 			status = healthUnchecked
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", h.Hostname, h.owner(), h.ListenPort, status, r.restartColumn(h))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", h.Hostname, h.owner(), a.port(h), status, r.restartColumn(h.Hostname, a))
 	}
 	if err := tw.Flush(); err != nil {
 		return fmt.Errorf("writing summary: %w", err)
@@ -101,13 +104,41 @@ func (r *runner) summary() error {
 	return nil
 }
 
-// restartColumn says whether h's Agent was restarted for a credential file
-// written by this run, or still needs to be.
-func (r *runner) restartColumn(h Host) string {
+// agentReport is what the run found of a Host's Agent.
+type agentReport struct {
+	// addr is the address the Agent was probed at; empty until its
+	// per-Host bootstrap resolved it.
+	addr      string
+	health    health
+	restarted bool
+}
+
+// port is the port the Agent was probed on, which its rendered config
+// decides; h's declared listen port when the run never resolved the Agent.
+func (a *agentReport) port(h Host) string {
+	if _, port, err := net.SplitHostPort(a.addr); err == nil {
+		return port
+	}
+	return strconv.Itoa(h.ListenPort)
+}
+
+// agent returns the report of hostname's Agent, created on first use.
+func (r *runner) agent(hostname string) *agentReport {
+	a, ok := r.agents[hostname]
+	if !ok {
+		a = &agentReport{}
+		r.agents[hostname] = a
+	}
+	return a
+}
+
+// restartColumn says whether the Host's Agent was restarted for a
+// credential file written by this run, or still needs to be.
+func (r *runner) restartColumn(hostname string, a *agentReport) string {
 	switch {
-	case r.restarted[h.Hostname]:
+	case a.restarted:
 		return "restarted (credential files written)"
-	case r.restartRequired[h.Hostname]:
+	case r.restartRequired[hostname]:
 		return "required (credential files written)"
 	}
 	return "not needed"
@@ -135,10 +166,9 @@ type runner struct {
 	errs    []error
 	counts  map[outcome]int
 	// restartRequired holds the Hosts whose Agent needs a restart: this
-	// run wrote a credential file of theirs. restarted holds those whose
-	// Agent got it.
-	restartRequired, restarted map[string]bool
-	health                     map[string]health
+	// run wrote a credential file of theirs.
+	restartRequired map[string]bool
+	agents          map[string]*agentReport
 }
 
 // outcomeWidth is the width of the outcome column: its longest label.
@@ -148,7 +178,7 @@ func newRunner(plan *Plan, ops HostOps, w io.Writer) *runner {
 	r := &runner{
 		plan: plan, ops: ops, w: w,
 		facts: map[string]*hostFacts{}, stopped: map[string]string{}, counts: map[outcome]int{},
-		restartRequired: map[string]bool{}, restarted: map[string]bool{}, health: map[string]health{},
+		restartRequired: map[string]bool{}, agents: map[string]*agentReport{},
 	}
 	for _, s := range plan.Steps {
 		r.idWidth = max(r.idWidth, len(s.ID))

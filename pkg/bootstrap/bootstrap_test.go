@@ -73,6 +73,21 @@ func TestWaitForHealthBoundsHungProbe(t *testing.T) {
 	assert.Less(t, time.Since(start), 500*time.Millisecond)
 }
 
+// bootstrap machine passes --skip-health-wait: it restarts an Agent whose
+// credentials it wrote before it waits for health, so the per-Host
+// bootstrap must not fail on the old Agent's health first. Standalone, the
+// bootstrap still waits.
+func TestRunHealthWaitSkippable(t *testing.T) {
+	t.Parallel()
+	unreachable := "127.0.0.1:1"
+	cfg := RunConfig{HealthPath: "/health", Timeout: 50 * time.Millisecond}
+
+	require.ErrorContains(t, cfg.waitHealthy(t.Context(), unreachable), "did not report healthy")
+
+	cfg.SkipHealthWait = true
+	require.NoError(t, cfg.waitHealthy(t.Context(), unreachable))
+}
+
 func TestProbeOnceDialsGivenAddr(t *testing.T) {
 	t.Parallel()
 	paths := make(chan string, 1)

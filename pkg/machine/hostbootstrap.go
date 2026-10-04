@@ -44,8 +44,12 @@ func hostBootstrapCommand(repoDir string, h Host, user User, agent bootstrap.Age
 		cmd.Env = []string{"XDG_RUNTIME_DIR=" + runtimeDir}
 		cmd.Dir = user.Home
 	}
+	// --skip-health-wait: the inner wait would time out on an old Agent
+	// before bootstrapHost restarts it with the credentials this run wrote;
+	// bootstrapHost waits for health itself, after the restart.
 	args = append(args, agent.Image, "bootstrap",
-		"--hostname", h.Hostname, "--repo-dir", repoMount, "--service", agent.Service, "--systemd", systemd)
+		"--hostname", h.Hostname, "--repo-dir", repoMount, "--service", agent.Service, "--systemd", systemd,
+		"--skip-health-wait")
 	cmd.Args = args
 	return cmd
 }
@@ -59,19 +63,21 @@ func (r *runner) bootstrapHost(ctx context.Context, f *hostFacts, s Step) (strin
 	if err != nil {
 		return "", err
 	}
+	report := r.agent(h.Hostname)
+	report.addr = agent.DialAddr
 	if err := r.startAgent(ctx, f, h, agent); err != nil {
 		return "", err
 	}
 	detail := ""
 	if r.restartRequired[h.Hostname] {
-		r.restarted[h.Hostname] = true
+		report.restarted = true
 		detail = agent.Unit + " restarted (credential files written), "
 	}
 	if err := r.ops.WaitHealthy(ctx, agent.DialAddr); err != nil {
-		r.health[h.Hostname] = healthUnhealthy
+		report.health = healthUnhealthy
 		return "", err
 	}
-	r.health[h.Hostname] = healthHealthy
+	report.health = healthHealthy
 	return detail + "healthy on " + agent.DialAddr, nil
 }
 

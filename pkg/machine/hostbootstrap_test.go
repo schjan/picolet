@@ -1,9 +1,12 @@
 package machine_test
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,7 +36,7 @@ func userBootstrap(repo string, u machine.User, hostname string) machine.Command
 			" -v " + run + "/systemd:" + run + "/systemd" +
 			" -v " + run + "/podman/podman.sock:/run/podman/podman.sock" +
 			" -e XDG_RUNTIME_DIR=" + run +
-			" " + agentImage + " bootstrap --hostname " + hostname + " --repo-dir /repo --service picolet --systemd user"),
+			" " + agentImage + " bootstrap --hostname " + hostname + " --repo-dir /repo --service picolet --systemd user --skip-health-wait"),
 		Env: []string{"XDG_RUNTIME_DIR=" + run},
 		Dir: u.Home,
 	}
@@ -53,7 +56,7 @@ func rootBootstrap(repo string) machine.Command {
 			" -v /run/dbus/system_bus_socket:/run/dbus/system_bus_socket" +
 			" -v /run/podman/podman.sock:/run/podman/podman.sock" +
 			" --security-opt apparmor=unconfined" +
-			" " + agentImage + " bootstrap --hostname vps-1-system --repo-dir /repo --service picolet-system --systemd system"),
+			" " + agentImage + " bootstrap --hostname vps-1-system --repo-dir /repo --service picolet-system --systemd system --skip-health-wait"),
 	}
 }
 
@@ -159,4 +162,40 @@ func TestRunFailingAgentFailsOnlyItsHost(t *testing.T) {
 	require.EqualError(t, err, "vps-1/bootstrap: picolet did not report healthy within 1m30s\n"+
 		"vps-1-runner/bootstrap: podman run: exit status 125: image not known")
 	goldie.New(t).Assert(t, "run-failing-agent", []byte(out))
+}
+
+// The summary shows the port each Agent was probed on, which its rendered
+// config decides; the Host's declared listen_port only stands in for a Host
+// whose Agent was never resolved.
+func TestRunSummaryShowsProbedPort(t *testing.T) {
+	t.Parallel()
+	fleet := t.TempDir()
+	require.NoError(t, os.CopyFS(fleet, os.DirFS(exampleFleet)))
+	root, err := os.OpenRoot(fleet)
+	require.NoError(t, err)
+	defer root.Close()
+	const cfg = "services/picolet-system/secrets/picolet_system_config.yml.tmpl"
+	data, err := root.ReadFile(cfg)
+	require.NoError(t, err)
+	data = []byte(strings.ReplaceAll(string(data), "0.0.0.0:{{ .Host.ListenPort }}", "0.0.0.0:9500"))
+	require.NoError(t, root.WriteFile(cfg, data, 0o600))
+	repo, err := filepath.EvalSymlinks(fleet)
+	require.NoError(t, err)
+
+	ops := mocks.NewMockHostOps(t)
+	expectBootstrappedUser(ops, pi, running)
+	ops.EXPECT().LookupUser("runner").Return(runner, true, nil)
+	ops.EXPECT().SubIDRanges(runner).Return(false, false, nil)
+	expectBootstrappedRootful(ops, running)
+	ops.EXPECT().WorldReadableTree(repo).Return(true, nil)
+	ops.EXPECT().RunAsUser(mock.Anything, pi, userBootstrap(repo, pi, "vps-1")).Return(nil).Once()
+	ops.EXPECT().WaitHealthy(mock.Anything, "127.0.0.1:9417").Return(nil).Once()
+	ops.EXPECT().RunAsRoot(mock.Anything, rootBootstrap(repo)).Return(nil).Once()
+	ops.EXPECT().WaitHealthy(mock.Anything, "127.0.0.1:9500").Return(nil).Once()
+
+	var out bytes.Buffer
+	err = machine.Run(context.Background(), machine.Config{Machine: "vps-1", RepoDir: fleet, Env: rootOnLinux(), Stdout: &out}, ops)
+	require.Error(t, err, "runner stops at its subids")
+	require.Regexp(t, `\nvps-1-system\s+root\s+9500\s+healthy\s`, out.String())
+	require.Regexp(t, `\nvps-1-runner\s+runner\s+9419\s+not checked\s`, out.String())
 }

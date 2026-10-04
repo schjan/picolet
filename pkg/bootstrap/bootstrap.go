@@ -56,6 +56,18 @@ type RunConfig struct {
 	HealthAddr   string
 	Timeout      time.Duration
 	AllowRestart bool
+	// SkipHealthWait leaves the Agent's health to the caller: bootstrap
+	// machine restarts an Agent whose credentials it wrote before it waits.
+	SkipHealthWait bool
+}
+
+// waitHealthy waits for the Agent's health at addr unless the caller waits
+// itself.
+func (cfg RunConfig) waitHealthy(ctx context.Context, addr string) error {
+	if cfg.SkipHealthWait {
+		return nil
+	}
+	return WaitForHealth(ctx, addr, cfg.HealthPath, cfg.Timeout)
 }
 
 type TeardownConfig struct {
@@ -236,7 +248,7 @@ func Run(ctx context.Context, cfg RunConfig) error { //nolint:cyclop,funlen // o
 	if err := systemd.StartUnit(ctx, tgt.unitName); err != nil {
 		return err
 	}
-	return WaitForHealth(ctx, healthAddr, cfg.HealthPath, cfg.Timeout)
+	return cfg.waitHealthy(ctx, healthAddr)
 }
 
 // handleActiveBootstrap guards against re-bootstrapping under a live agent.
@@ -249,7 +261,7 @@ func handleActiveBootstrap(ctx context.Context, systemd applier.SystemdManager, 
 	}
 	guardChangeset := diffBootstrapScope(files, st, unitName)
 	if !guardChangeset.HasChanges() {
-		return true, WaitForHealth(ctx, healthAddr, cfg.HealthPath, cfg.Timeout)
+		return true, cfg.waitHealthy(ctx, healthAddr)
 	}
 	if !cfg.AllowRestart {
 		return false, fmt.Errorf("%s is already active and bootstrap would change its managed files; stop it first or pass --allow-restart", unitName)

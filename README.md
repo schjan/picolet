@@ -284,13 +284,13 @@ runuser -u <user> -- env XDG_RUNTIME_DIR=/run/user/<uid> podman run --rm --netwo
   -v /run/user/<uid>/systemd:/run/user/<uid>/systemd \
   -v /run/user/<uid>/podman/podman.sock:/run/podman/podman.sock \
   -e XDG_RUNTIME_DIR=/run/user/<uid> \
-  <images.picolet> bootstrap --hostname <host> --repo-dir /repo --service picolet --systemd user
+  <images.picolet> bootstrap --hostname <host> --repo-dir /repo --service picolet --systemd user --skip-health-wait
 ```
 
 The rootful Host gets the same shape with `/etc/picolet/secrets`,
 `/var/lib/picolet-system`, `/etc/containers/systemd`, `/etc/systemd/system`,
 the system bus (`/run/dbus/system_bus_socket`), `/run/podman/podman.sock`,
-`--security-opt apparmor=unconfined`, `--service picolet-system --systemd system`.
+`--security-opt apparmor=unconfined`, `--service picolet-system --systemd system --skip-health-wait`.
 The state it seeds is therefore keyed by the container's paths
 (`/etc/containers/systemd/picolet/...`), as the Agent's own state is; run
 natively as the user, it would be keyed by `$HOME/...` and the Agent's first
@@ -299,16 +299,21 @@ is the `picolet` Service Bundle for a Host with `user:` and `picolet-system`
 for the rootful Host; one that is not assigned stops that Host.
 
 The per-Host bootstrap leaves a running Agent whose files are current alone
-(and refuses to change the files of a running one: stop it first). A Host
-whose credential files this run wrote has its Agent restarted
+(and refuses to change the files of a running one: stop it first). With
+`--skip-health-wait` it does not wait for the Agent's health itself: an Agent
+still running with old credentials might never report healthy, and the
+restart that fixes it comes next. A Host whose credential files this run
+wrote has its Agent restarted
 (`runuser -u <user> -- systemctl --user restart picolet.service`, or
 `systemctl restart picolet-system.service`), so it reads them. Then the
 command waits for the Agent's `/health` at the listen address of its
 Fleet-rendered config (`127.0.0.1` when that address is `0.0.0.0` or `::`).
-It ends with a summary of every Host: hostname, user, port, health (`healthy`,
-`unhealthy`, `not checked` when the Host stopped earlier) and whether its
-Agent was restarted. A failing Host does not stop the others; the command
-exits non-zero if any Host failed.
+It ends with a summary of every Host: hostname, user, the port the Agent was
+probed on (the declared `listen_port` for a Host that stopped before), health
+(`healthy`, `unhealthy`, `not checked` when the Host stopped earlier) and
+whether its Agent was restarted. A failing Host does not stop the others; the
+command exits non-zero if any Host failed. Run standalone, `picolet bootstrap`
+still waits for health unless given `--skip-health-wait`.
 
 Both forms refuse to run inside a container or on anything but Linux; a run
 also refuses without root or without Podman installed. Each Host listens on the
