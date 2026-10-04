@@ -39,6 +39,7 @@ func Render(w io.Writer, plan *Plan, results []Result) error {
 		}
 	}
 	fmt.Fprintf(tw, "\n%s\n", strings.Join(summary, ", "))
+	writeUnresolved(tw, plan)
 	if err := tw.Flush(); err != nil {
 		return fmt.Errorf("writing plan: %w", err)
 	}
@@ -57,12 +58,19 @@ func writeHeader(tw *tabwriter.Writer, plan *Plan) {
 		fmt.Fprintf(tw, "  %s\t%s\tlisten port %d\n", h.Hostname, runsAs, h.ListenPort)
 	}
 	fmt.Fprintf(tw, "Fleet checkout: %s\n", plan.RepoDir)
-	if plan.SecretsDir == "" {
-		fmt.Fprintln(tw, "Credential files: none (no --secrets-dir)")
+	if len(plan.Sources) == 0 {
+		fmt.Fprintln(tw, "Credential sources: none (no --secrets-dir, --onepassword-token-file or --protonpass-pat-file)")
 	} else {
-		fmt.Fprintf(tw, "Credential files: --secrets-dir %s\n", plan.SecretsDir)
+		fmt.Fprintf(tw, "Credential sources: %s\n", strings.Join(plan.Sources, ", "))
 	}
 	for _, w := range plan.Warnings {
 		fmt.Fprintf(tw, "warning: %s\n", w)
+	}
+}
+
+// writeUnresolved prints the bootstrap: files not placed.
+func writeUnresolved(w io.Writer, plan *Plan) {
+	if len(plan.Unresolved) > 0 {
+		fmt.Fprintf(w, "Not placed (Secret Reference not resolved): %s\n", strings.Join(plan.Unresolved, ", "))
 	}
 }

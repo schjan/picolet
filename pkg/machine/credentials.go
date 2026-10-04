@@ -48,16 +48,22 @@ func credentialSteps(h Host, src *SecretsDir) (steps []Step, warning string, err
 		if err != nil {
 			return fmt.Errorf("%s: %w", filepath.Join(src.Path, filepath.FromSlash(name)), err)
 		}
-		steps = append(steps, Step{
-			ID: h.Hostname + "/credential/" + rel, Phase: PhaseCredentials, Kind: StepCredential, Host: h,
-			Path: path.Join(secrets, rel), Mode: credentialMode, Content: content,
-		})
+		steps = append(steps, credentialStep(h, rel, content, ""))
 		return nil
 	})
 	if err != nil {
 		return nil, "", fmt.Errorf("reading --secrets-dir: %w", err)
 	}
 	return steps, "", nil
+}
+
+// credentialStep places content at rel in h's secrets directory; source is
+// where it comes from beyond --secrets-dir.
+func credentialStep(h Host, rel string, content []byte, source string) Step {
+	return Step{
+		ID: h.Hostname + "/credential/" + rel, Phase: PhaseCredentials, Kind: StepCredential, Host: h,
+		Path: path.Join(secretsAgentDir.path(h), rel), Mode: credentialMode, Content: content, Source: source,
+	}
 }
 
 // readCredential reads the regular file name, following a symlink that

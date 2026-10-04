@@ -100,7 +100,7 @@ func LoadAll(fsys fs.FS, opts ...LoadOption) (*Config, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	hosts, err := loadHosts(fsys, fleet.Ports, o)
+	hosts, err := loadHosts(fsys, fleet, o)
 	if err != nil {
 		return nil, fmt.Errorf("loading hosts: %w", err)
 	}
@@ -130,7 +130,7 @@ func (c *Config) FindHost(name string) (*HostConfig, bool) {
 	return nil, false
 }
 
-func loadHosts(fsys fs.FS, ports map[string]int, o loadOptions) (map[string]*HostConfig, error) {
+func loadHosts(fsys fs.FS, fleet *FleetConfig, o loadOptions) (map[string]*HostConfig, error) {
 	hosts := make(map[string]*HostConfig)
 	entries, err := fs.ReadDir(fsys, "hosts")
 	if err != nil {
@@ -149,7 +149,7 @@ func loadHosts(fsys fs.FS, ports map[string]int, o loadOptions) (map[string]*Hos
 		if err := host.Validate(); err != nil {
 			return nil, fmt.Errorf("host %s: %w", name, err)
 		}
-		if err := host.applyDefaults(ports); err != nil {
+		if err := host.applyDefaults(fleet); err != nil {
 			return nil, fmt.Errorf("host %s: %w", name, err)
 		}
 		if host.Hostname != name {

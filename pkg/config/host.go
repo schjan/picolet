@@ -47,6 +47,16 @@ type HostConfig struct {
 	// DeclaredListenPort is listen_port: as written; nil when absent.
 	DeclaredListenPort *int `yaml:"listen_port"`
 
+	// Bootstrap is the files bootstrap machine materializes for the Host:
+	// bootstrap: when declared, otherwise its Role's or the Fleet's from
+	// fleet.yml (see FleetBootstrap). Nil when no level declares a block:
+	// only such a Host runs with a secret provider; an empty block
+	// (bootstrap: {}) keeps it off the provider with nothing to place. Set
+	// by LoadAll.
+	Bootstrap BootstrapFiles `yaml:"-"`
+	// DeclaredBootstrap is bootstrap: as written; nil when absent.
+	DeclaredBootstrap BootstrapFiles `yaml:"bootstrap"`
+
 	// RetiredPiType captures the pre-rename `pi_type:` key so Validate can
 	// reject it with a migration message instead of the generic unknown-field
 	// error WithKnownFields() would produce. Reject-only — see keyPresent.
@@ -86,6 +96,9 @@ func (h *HostConfig) Validate() error {
 	if p := h.DeclaredListenPort; p != nil && !validPort(*p) {
 		return fmt.Errorf("listen_port must be between 1 and %d: %d", maxPort, *p)
 	}
+	if err := h.DeclaredBootstrap.validate(); err != nil {
+		return fmt.Errorf("bootstrap: %w", err)
+	}
 	return nil
 }
 
@@ -111,12 +124,17 @@ func (h *HostConfig) validateMachine() error {
 	return nil
 }
 
-// applyDefaults fills Machine and ListenPort from the Hostname and the
-// Fleet's ports. A Host with no listen_port: whose Agent port key is missing
-// from ports is an error: the Fleet is the sole owner of the Agent's port.
-func (h *HostConfig) applyDefaults(ports map[string]int) error {
+// applyDefaults fills Machine, Bootstrap and ListenPort from the Hostname
+// and the Fleet. A Host with no listen_port: whose Agent port key is missing
+// from the Fleet's ports is an error: the Fleet is the sole owner of the
+// Agent's port.
+func (h *HostConfig) applyDefaults(fleet *FleetConfig) error {
 	if h.Machine == "" {
 		h.Machine = h.Hostname
+	}
+	h.Bootstrap = h.DeclaredBootstrap
+	if h.Bootstrap == nil {
+		h.Bootstrap = fleet.Bootstrap.files(h.Role)
 	}
 	if h.DeclaredListenPort != nil {
 		h.ListenPort = *h.DeclaredListenPort
@@ -126,7 +144,7 @@ func (h *HostConfig) applyDefaults(ports map[string]int) error {
 	if h.Rootful() {
 		key = rootfulAgentPortKey
 	}
-	port, ok := ports[key]
+	port, ok := fleet.Ports[key]
 	if !ok {
 		return fmt.Errorf("listen_port: is not set and fleet.yml ports has no %s key", key)
 	}
