@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/schjan/picolet/pkg/config"
 )
@@ -19,6 +20,8 @@ type Environment struct {
 	Root bool
 	// Podman: the podman binary is installed.
 	Podman bool
+	// PassCLI: the pass-cli binary is on PATH.
+	PassCLI bool
 }
 
 func (e Environment) check() error {
@@ -55,8 +58,15 @@ type Config struct {
 	// SecretsDir is the operator's --secrets-dir, <dir>/<hostname>/<file>;
 	// empty when not given.
 	SecretsDir string
-	Env        Environment
-	Stdout     io.Writer
+	// OnePasswordTokenFile and ProtonPassPATFile hold the Machine's provider
+	// token, at most one of them; empty when not given.
+	OnePasswordTokenFile string
+	ProtonPassPATFile    string
+	// Providers opens the provider of the token to resolve the Hosts'
+	// bootstrap: references.
+	Providers Providers
+	Env       Environment
+	Stdout    io.Writer
 }
 
 // ShowPlan prints what bootstrapping cfg.Machine would do, checking every
@@ -66,7 +76,7 @@ func ShowPlan(ctx context.Context, cfg Config, ops HostOps) error {
 	if err := cfg.Env.check(); err != nil {
 		return err
 	}
-	plan, err := load(cfg)
+	plan, err := load(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -78,8 +88,13 @@ func ShowPlan(ctx context.Context, cfg Config, ops HostOps) error {
 }
 
 // load plans cfg.Machine from the Fleet checked out at cfg.RepoDir, with the
-// credential files of cfg.SecretsDir.
-func load(cfg Config) (*Plan, error) {
+// credential files of cfg.SecretsDir, the provider token and the values of
+// the Hosts' bootstrap: references, resolved before load returns.
+func load(ctx context.Context, cfg Config) (*Plan, error) {
+	prov, tokenFile, err := cfg.tokenFlag()
+	if err != nil {
+		return nil, err
+	}
 	if cfg.RepoDir == "" {
 		return nil, errors.New("--repo-dir is required: the Fleet checkout on this Machine")
 	}
@@ -95,25 +110,70 @@ func load(cfg Config) (*Plan, error) {
 	defer repo.Close()
 	opts := Options{RepoDir: repoDir}
 	if cfg.SecretsDir != "" {
-		dir, err := realPath(cfg.SecretsDir)
+		root, err := openSecretsDir(repoDir, cfg.SecretsDir)
 		if err != nil {
-			return nil, fmt.Errorf("resolving --secrets-dir: %w", err)
-		}
-		// The setup makes the checkout readable by every user.
-		if rel, err := filepath.Rel(repoDir, dir); err == nil && (rel == "." || filepath.IsLocal(rel)) {
-			return nil, fmt.Errorf("--secrets-dir must not lie inside the Fleet checkout %s: "+
-				"bootstrap makes the checkout readable by every user", repoDir)
-		}
-		// An os.Root: a symlink below the directory cannot read, as root,
-		// a file outside it into a Host's secrets.
-		root, err := os.OpenRoot(dir)
-		if err != nil {
-			return nil, fmt.Errorf("opening --secrets-dir: %w", err)
+			return nil, err
 		}
 		defer root.Close()
-		opts.SecretsDir = &SecretsDir{Path: dir, FS: root.FS()}
+		opts.SecretsDir = &SecretsDir{Path: root.Name(), FS: root.FS()}
+	}
+	if opts.Token, err = readToken(repoDir, prov, tokenFile); err != nil {
+		return nil, err
+	}
+	hosts, err := machineHosts(repo.Config, cfg.Machine)
+	if err != nil {
+		return nil, err
+	}
+	if opts.Refs, err = resolveRefs(ctx, cfg.Providers, opts.Token, hosts); err != nil {
+		return nil, err
 	}
 	return New(repo.Config, cfg.Machine, opts)
+}
+
+// openSecretsDir opens the --secrets-dir p as an os.Root: a symlink below
+// it cannot read, as root, a file outside it into a Host's secrets.
+func openSecretsDir(repoDir, p string) (*os.Root, error) {
+	dir, err := outsideCheckout(repoDir, p, "--secrets-dir")
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("opening --secrets-dir: %w", err)
+	}
+	return root, nil
+}
+
+// outsideCheckout is p resolved, which must not lie at or below the Fleet
+// checkout repoDir: the setup makes the checkout readable by every user,
+// credentials included.
+func outsideCheckout(repoDir, p, flag string) (string, error) {
+	resolved, err := realPath(p)
+	if err != nil {
+		return "", fmt.Errorf("resolving %s: %w", flag, err)
+	}
+	if rel, err := filepath.Rel(repoDir, resolved); err == nil && (rel == "." || filepath.IsLocal(rel)) {
+		return "", fmt.Errorf("%s must not lie inside the Fleet checkout %s: "+
+			"bootstrap makes the checkout readable by every user", flag, repoDir)
+	}
+	return resolved, nil
+}
+
+// readToken reads the operator's token file of prov; nil when the operator
+// gave no provider token.
+func readToken(repoDir string, prov *provider, file string) (*ProviderToken, error) {
+	if prov == nil {
+		return nil, nil //nolint:nilnil // no token is not an error
+	}
+	p, err := outsideCheckout(repoDir, file, prov.flag)
+	if err != nil {
+		return nil, err
+	}
+	content, err := readCredential(os.DirFS("/"), strings.TrimPrefix(p, "/"))
+	if err != nil {
+		return nil, fmt.Errorf("reading %s %s: %w", prov.flag, p, err)
+	}
+	return &ProviderToken{provider: prov, Path: p, Content: content}, nil
 }
 
 // realPath is p absolute, with symlinks resolved.

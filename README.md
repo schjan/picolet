@@ -177,6 +177,74 @@ differs, owner/mode differ) or `already done`, never their values.
 sudo picolet bootstrap machine vps-1 --repo-dir /srv/fleet --secrets-dir /root/fleet-secrets
 ```
 
+With a secret provider, pass the Machine's provider token instead of (or beside)
+`--secrets-dir`: `--onepassword-token-file <file>` (a 1Password service-account
+token) or `--protonpass-pat-file <file>` (a Proton Pass PAT), at most one of
+them. The token is placed in every Host's secrets directory like a
+`--secrets-dir` file, as `op-service-account-token` or `pp-pat`: the
+`onepassword.token_path` / `protonpass.pat_path` the Agent config points at
+(`/etc/picolet/secrets/op-service-account-token`,
+`/etc/picolet/secrets/pp-pat`). Each Agent then resolves its git token, GitHub
+App credentials and every other secret itself, through the references in its
+Fleet-rendered config. Scope the token in the vault: one per Machine by default,
+or one per Host as the stricter option (see ADR 0002).
+
+```bash
+sudo picolet bootstrap machine vps-1 --repo-dir /srv/fleet --onepassword-token-file /root/vps-1-op-token
+```
+
+A Host that must run *without* a provider (an isolated CI runner) declares a
+`bootstrap:` block instead: file names in its secrets directory and the Secret
+Reference each is materialized from. Bootstrap resolves the references of all
+Hosts in one batch with the operator's token and writes the values like
+`--secrets-dir` files (`0600`, the Host's user). Such a Host never gets the
+Machine's token; a per-Host scoped provider token is just another entry.
+
+```yaml
+# hosts/srv-1-runner/host.yml
+bootstrap:
+  git_token: pass://ci/runner-git/token
+```
+
+The block can also be given for every Host, or per Role, in `fleet.yml`. The
+most specific level that declares one wins whole (no merging): the Host's
+`bootstrap:`, else `bootstrap.roles.<role>`, else `bootstrap.files`.
+`bootstrap: {}` cancels an inherited block's files but is still a block: the
+Host gets neither files nor the Machine's token. Only a Host for which no level
+declares a block gets the token.
+
+```yaml
+# fleet.yml
+bootstrap:
+  files:            # every Host without its own or its Role's block
+    git_token: op://Infra/fleet-git/token
+  roles:
+    runner:         # Hosts with role: runner
+      git_token: pass://ci/runner-git/token
+```
+
+Entries are plain file names (no `/`) and `op://…` or `pass://…` references;
+loading the Fleet rejects anything else, a pasted value included, without
+printing it. Upgrade every Agent before adding `bootstrap:` to `fleet.yml`: an
+older Agent refuses an unknown `fleet.yml` key (a `host.yml` key only warns).
+
+Sources add up: `--secrets-dir` with one provider token is fine, and with no
+source at all the credential phase has nothing to do. Two sources placing the
+same file of a Host stop the command before its first step. A reference that
+is not resolved, by the provider or because the operator gave no token of its
+provider, is a warning and listed in the summary as not placed; the run goes
+on. A provider is opened only when some Host has a reference of it, and a
+provider that fails to open (bad token) stops the command. The token file must
+lie outside the Fleet checkout. `--plan` resolves the references and compares
+the files, never printing a value.
+
+`--protonpass-pat-file` needs the Proton Pass CLI `pass-cli` on `PATH`
+(install it from https://protonpass.github.io/pass-cli/; bootstrap installs no
+packages); without it the command fails before its first step. Its session and
+`local.key` live in a private temporary directory removed when the command
+exits, on failure too. 1Password needs only network egress. Nothing the
+operator passed persists on the Machine but the placed token.
+
 Both forms refuse to run inside a container or on anything but Linux; a run
 also refuses without root or without Podman installed. Each Host listens on the
 port the Fleet declares (`listen_port:`); bootstrap never allocates one.

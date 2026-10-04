@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"slices"
 	"strings"
 
@@ -82,6 +83,10 @@ type Host struct {
 	User string
 	// ListenPort is the port the Fleet declares for the Agent.
 	ListenPort int
+	// Bootstrap is the files the Host gets from Secret References instead
+	// of the Machine's provider token; nil for a Host that runs with the
+	// provider, empty for one declaring bootstrap: {} (neither).
+	Bootstrap config.BootstrapFiles
 }
 
 // Rootful reports whether the Host's Agent runs as root.
@@ -106,15 +111,17 @@ type Step struct {
 	// Content is what a StepCredential's file holds: a credential value,
 	// never printed.
 	Content []byte
+	// Source is where a StepCredential's content comes from beyond
+	// --secrets-dir: the provider token's flag or the Secret Reference.
+	Source string
 }
 
 // Plan is the ordered work for one Machine.
 type Plan struct {
 	Machine string
 	RepoDir string
-	// SecretsDir is the --secrets-dir the credential files come from; empty
-	// when none was given.
-	SecretsDir string
+	// Sources are the credential sources the operator gave, as shown.
+	Sources []string
 	// Hosts are the Machine's Hosts, sorted by hostname.
 	Hosts []Host
 	// Steps are in execution order.
@@ -122,6 +129,9 @@ type Plan struct {
 	// Warnings are what the operator should know before the steps run but
 	// what stops nothing.
 	Warnings []string
+	// Unresolved lists, as <hostname>/<file>, the bootstrap: files not
+	// placed because their reference was not resolved.
+	Unresolved []string
 }
 
 // Options are the operator's inputs beyond the Fleet.
@@ -131,6 +141,11 @@ type Options struct {
 	// SecretsDir holds each Host's credential files below <hostname>/;
 	// nil when the operator gave none.
 	SecretsDir *SecretsDir
+	// Token is the Machine's provider token, placed for every Host without
+	// bootstrap: files; nil when the operator gave none.
+	Token *ProviderToken
+	// Refs holds the values of the Hosts' bootstrap: references.
+	Refs Resolved
 }
 
 // SecretsDir is the operator's --secrets-dir: <dir>/<hostname>/<file> is a
@@ -175,7 +190,8 @@ func (d agentDir) path(h Host) string {
 
 // New plans the bootstrap of machine: every Host of the Fleet declaring it,
 // phase by phase. It reads the Hosts' credential files from opts.SecretsDir
-// and writes nothing. It errors when no Host runs on machine.
+// and writes nothing. It errors when no Host runs on machine, and when two
+// sources place the same credential file.
 func New(cfg *config.Config, machine string, opts Options) (*Plan, error) {
 	hosts, err := machineHosts(cfg, machine)
 	if err != nil {
@@ -183,18 +199,21 @@ func New(cfg *config.Config, machine string, opts Options) (*Plan, error) {
 	}
 	plan := &Plan{Machine: machine, RepoDir: opts.RepoDir, Hosts: hosts}
 	if opts.SecretsDir != nil {
-		plan.SecretsDir = opts.SecretsDir.Path
+		plan.Sources = append(plan.Sources, "--secrets-dir "+opts.SecretsDir.Path)
+	}
+	if opts.Token != nil {
+		plan.Sources = append(plan.Sources, opts.Token.provider.flag+" "+opts.Token.Path)
+	}
+	if opts.Refs.Warning != "" {
+		plan.Warnings = append(plan.Warnings, opts.Refs.Warning)
 	}
 	for _, h := range hosts {
 		plan.Steps = append(plan.Steps, setupSteps(h, opts.RepoDir)...)
 	}
 	for _, h := range hosts {
-		steps, warning, err := credentialSteps(h, opts.SecretsDir)
+		steps, err := hostCredentialSteps(plan, h, opts)
 		if err != nil {
 			return nil, err
-		}
-		if warning != "" {
-			plan.Warnings = append(plan.Warnings, warning)
 		}
 		plan.Steps = append(plan.Steps, steps...)
 	}
@@ -202,6 +221,48 @@ func New(cfg *config.Config, machine string, opts Options) (*Plan, error) {
 		plan.Steps = append(plan.Steps, Step{ID: h.Hostname + "/bootstrap", Phase: PhaseHostBootstrap, Kind: StepHostBootstrap, Host: h})
 	}
 	return plan, nil
+}
+
+// hostCredentialSteps plans h's credential files, in order: its
+// --secrets-dir files, the Machine's provider token for a Host without a
+// bootstrap: block, and the block's files whose reference was resolved. It
+// records on plan the warnings and the files not placed.
+func hostCredentialSteps(plan *Plan, h Host, opts Options) ([]Step, error) {
+	steps, warning, err := credentialSteps(h, opts.SecretsDir)
+	if err != nil {
+		return nil, err
+	}
+	if warning != "" {
+		plan.Warnings = append(plan.Warnings, warning)
+	}
+	if t := opts.Token; t != nil && h.Bootstrap == nil {
+		steps = append(steps, credentialStep(h, t.provider.tokenName, t.Content, t.provider.flag))
+	}
+	for _, name := range slices.Sorted(maps.Keys(h.Bootstrap)) {
+		ref := h.Bootstrap[name]
+		value, ok := opts.Refs.Values[ref]
+		if !ok {
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s: %s not placed: %s %s", h.Hostname, name, ref, opts.Refs.Missing[ref]))
+			plan.Unresolved = append(plan.Unresolved, h.Hostname+"/"+name)
+			continue
+		}
+		steps = append(steps, credentialStep(h, name, []byte(value), ref))
+	}
+	return steps, oneSourcePerPath(h, steps)
+}
+
+// oneSourcePerPath rejects two of h's credential steps placing one path.
+func oneSourcePerPath(h Host, steps []Step) error {
+	from := map[string]string{}
+	for _, s := range steps {
+		source := cmp.Or(s.Source, "--secrets-dir")
+		if other, ok := from[s.Path]; ok {
+			return fmt.Errorf("%s: %s comes from both %s and %s: give each credential file one source",
+				h.Hostname, s.displayPath(), other, source)
+		}
+		from[s.Path] = source
+	}
+	return nil
 }
 
 func machineHosts(cfg *config.Config, machine string) ([]Host, error) {
@@ -214,7 +275,7 @@ func machineHosts(cfg *config.Config, machine string) ([]Host, error) {
 	for _, h := range cfg.Hosts {
 		known[config.MachineKey(h.Machine)] = h.Machine
 		if config.MachineKey(h.Machine) == key {
-			hosts = append(hosts, Host{Hostname: h.Hostname, User: h.User, ListenPort: h.ListenPort})
+			hosts = append(hosts, Host{Hostname: h.Hostname, User: h.User, ListenPort: h.ListenPort, Bootstrap: h.Bootstrap})
 		}
 	}
 	if len(hosts) == 0 {
@@ -277,7 +338,11 @@ func (s Step) Describe() string { //nolint:cyclop // one case per step kind
 	case StepCheckout:
 		return "Fleet checkout readable by " + s.Host.User + " (world-readable)"
 	case StepCredential:
-		return fmt.Sprintf("credential file %s, owner %s, mode %04o", s.displayPath(), s.Host.owner(), s.Mode)
+		describe := fmt.Sprintf("credential file %s, owner %s, mode %04o", s.displayPath(), s.Host.owner(), s.Mode)
+		if s.Source != "" {
+			describe += ", from " + s.Source
+		}
+		return describe
 	case StepHostBootstrap:
 		if s.Host.Rootful() {
 			return "per-Host bootstrap as root (--systemd system)"

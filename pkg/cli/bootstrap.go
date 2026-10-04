@@ -12,6 +12,8 @@ import (
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/bootstrap"
 	"github.com/schjan/picolet/pkg/machine"
+	op "github.com/schjan/picolet/pkg/onepassword"
+	pp "github.com/schjan/picolet/pkg/protonpass"
 )
 
 func bootstrapCmd() *cli.Command {
@@ -112,22 +114,29 @@ func bootstrapMachineCmd() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "repo-dir", Usage: "Fleet checkout on this Machine"},
 			&cli.StringFlag{Name: "secrets-dir", Usage: "credential files per Host: <dir>/<hostname>/<file> goes to the Host's secrets directory"},
+			&cli.StringFlag{Name: "onepassword-token-file", Usage: "the Machine's 1Password service-account token: placed for every Host without bootstrap: files, resolves the others' references"},
+			&cli.StringFlag{Name: "protonpass-pat-file", Usage: "the Machine's Proton Pass PAT: placed for every Host without bootstrap: files, resolves the others' references (needs pass-cli)"},
 			&cli.BoolFlag{Name: "plan", Usage: "print the ordered steps with would do / already done / unknown, change nothing"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if cmd.NArg() > 1 {
 				return fmt.Errorf("expected one machine, got %d arguments", cmd.NArg())
 			}
-			_, lookErr := exec.LookPath("podman")
+			_, podmanErr := exec.LookPath("podman")
+			_, passCLIErr := exec.LookPath(pp.DefaultCLIPath)
 			cfg := machine.Config{
-				Machine:    cmd.Args().First(),
-				RepoDir:    cmd.String("repo-dir"),
-				SecretsDir: cmd.String("secrets-dir"),
+				Machine:              cmd.Args().First(),
+				RepoDir:              cmd.String("repo-dir"),
+				SecretsDir:           cmd.String("secrets-dir"),
+				OnePasswordTokenFile: cmd.String("onepassword-token-file"),
+				ProtonPassPATFile:    cmd.String("protonpass-pat-file"),
+				Providers:            machineProviders(),
 				Env: machine.Environment{
 					GOOS:        runtime.GOOS,
 					InContainer: agentcfg.InContainer(),
 					Root:        os.Geteuid() == 0,
-					Podman:      lookErr == nil,
+					Podman:      podmanErr == nil,
+					PassCLI:     passCLIErr == nil,
 				},
 				Stdout: os.Stdout,
 			}
@@ -135,6 +144,19 @@ func bootstrapMachineCmd() *cli.Command {
 				return machine.ShowPlan(ctx, cfg, machine.NewOSHostOps())
 			}
 			return machine.Run(ctx, cfg, machine.NewOSHostOps())
+		},
+	}
+}
+
+// machineProviders opens the secret providers bootstrap machine resolves
+// the Hosts' bootstrap: references through.
+func machineProviders() machine.Providers {
+	return machine.Providers{
+		OnePassword: func(ctx context.Context, tokenFile string) (machine.RefReader, error) {
+			return op.NewReaderFromTokenFile(ctx, tokenFile)
+		},
+		ProtonPass: func(ctx context.Context, patFile, sessionDir string) (machine.RefReader, error) {
+			return pp.NewReader(ctx, pp.ClientConfig{PATPath: patFile, SessionDir: sessionDir})
 		},
 	}
 }

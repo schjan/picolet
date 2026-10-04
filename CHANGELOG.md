@@ -63,6 +63,15 @@ kept as is.
   into each Host's secrets directory (`0600`, the Host's user), writing only
   new or changed files and listing their Hosts as needing an Agent restart
   ([#153](https://github.com/schjan/picolet/issues/153)).
+- `picolet bootstrap machine --onepassword-token-file` / `--protonpass-pat-file`
+  places the Machine's provider token (`op-service-account-token` / `pp-pat`)
+  for every Host without a `bootstrap:` block; `host.yml` `bootstrap:` (or
+  `fleet.yml` `bootstrap.files` / `bootstrap.roles.<role>`, the most specific
+  winning whole) lists Secret References bootstrap resolves in one batch and
+  places as files for a Host that runs without a provider. Unresolved
+  references warn; Proton Pass needs `pass-cli` and keeps no session
+  ([#154](https://github.com/schjan/picolet/issues/154)). Upgrade Agents before
+  adding `bootstrap:` to `fleet.yml`.
 
 ### Changed
 

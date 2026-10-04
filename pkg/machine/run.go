@@ -38,7 +38,7 @@ func Run(ctx context.Context, cfg Config, ops HostOps) error {
 	if err := cfg.Env.checkRun(); err != nil {
 		return err
 	}
-	plan, err := load(cfg)
+	plan, err := load(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -69,8 +69,8 @@ func Run(ctx context.Context, cfg Config, ops HostOps) error {
 	return errors.Join(r.errs...)
 }
 
-// summary prints the count per outcome and the Hosts whose Agent needs a
-// restart.
+// summary prints the count per outcome, the Hosts whose Agent needs a
+// restart and the bootstrap: files not placed.
 func (r *runner) summary() {
 	var counts []string
 	for _, o := range []outcome{outcomeApplied, outcomeDone, outcomeFailed, outcomeSkipped} {
@@ -82,6 +82,7 @@ func (r *runner) summary() {
 	if len(r.restart) > 0 {
 		fmt.Fprintf(r.w, "Agent restart required (credential files written): %s\n", strings.Join(r.restart, ", "))
 	}
+	writeUnresolved(r.w, r.plan)
 	fmt.Fprintln(r.w, "No Agent started: the per-Host bootstrap is not run yet.")
 }
 
@@ -95,8 +96,9 @@ func hasPhase(plan *Plan, phase Phase) bool {
 
 // runner carries a run's state across steps.
 type runner struct {
-	ops HostOps
-	w   io.Writer
+	plan *Plan
+	ops  HostOps
+	w    io.Writer
 	// idWidth and describeWidth align the step columns.
 	idWidth, describeWidth int
 
@@ -113,7 +115,7 @@ type runner struct {
 var outcomeWidth = len(outcomeDone)
 
 func newRunner(plan *Plan, ops HostOps, w io.Writer) *runner {
-	r := &runner{ops: ops, w: w, facts: map[string]*hostFacts{}, stopped: map[string]string{}, counts: map[outcome]int{}}
+	r := &runner{plan: plan, ops: ops, w: w, facts: map[string]*hostFacts{}, stopped: map[string]string{}, counts: map[outcome]int{}}
 	for _, s := range plan.Steps {
 		if slices.Contains(runPhases, s.Phase) {
 			r.idWidth = max(r.idWidth, len(s.ID))

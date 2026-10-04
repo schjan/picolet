@@ -3,8 +3,10 @@ Machine vps-1: 3 Hosts
   vps-1-runner  user runner  listen port 9419
   vps-1-system  rootful      listen port 9418
 Fleet checkout: <repo>
-Credential sources: --secrets-dir <secrets>
-warning: no credential files for vps-1-system: <secrets>/vps-1-system does not exist
+Credential sources: --onepassword-token-file <token>
+warning: 1Password: resolving 1password secret "op://ci/forge/token": NotFound
+warning: vps-1-runner: forge_token not placed: op://ci/forge/token not resolved by 1Password
+warning: vps-1-runner: mqtt_password not placed: pass://ci/mqtt/password needs --protonpass-pat-file
 
 Phase 1: users, sessions and directories
   already done  vps-1/user                  Linux user pi present  uid 1000
@@ -34,14 +36,14 @@ Phase 1: users, sessions and directories
   already done  vps-1-system/dir/units      directory /etc/systemd/system, owner root, mode 0755
 
 Phase 2: credential files
-  already done  vps-1/credential/git-token         credential file ~pi/.config/picolet/secrets/git-token, owner pi, mode 0600
-  would do      vps-1/credential-dir/github        directory ~pi/.config/picolet/secrets/github, owner pi, mode 0700                   is 1000:1000 0755
-  would do      vps-1/credential/github/app.pem    credential file ~pi/.config/picolet/secrets/github/app.pem, owner pi, mode 0600     is 1000:1000 0644
-  would do      vps-1-runner/credential/git-token  credential file ~runner/.config/picolet/secrets/git-token, owner runner, mode 0600  content differs, Agent restart required
+  already done  vps-1/credential/op-service-account-token  credential file ~pi/.config/picolet/secrets/op-service-account-token, owner pi, mode 0600, from --onepassword-token-file
+  would do      vps-1-runner/credential/git_token          credential file ~runner/.config/picolet/secrets/git_token, owner runner, mode 0600, from op://ci/git/token  content differs, Agent restart required
+  would do      vps-1-system/credential/git_token          credential file /etc/picolet/secrets/git_token, owner root, mode 0600, from op://ci/git/token               missing, Agent restart required
 
 Phase 3: per-Host bootstrap
   would do  vps-1/bootstrap         per-Host bootstrap as pi (--systemd user)
   would do  vps-1-runner/bootstrap  per-Host bootstrap as runner (--systemd user)
   would do  vps-1-system/bootstrap  per-Host bootstrap as root (--systemd system)
 
-6 would do, 26 already done
+5 would do, 26 already done
+Not placed (Secret Reference not resolved): vps-1-runner/forge_token, vps-1-runner/mqtt_password
