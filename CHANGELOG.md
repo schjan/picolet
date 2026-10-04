@@ -37,6 +37,10 @@ kept as is.
   ([#168](https://github.com/schjan/picolet/pull/168)); the Agent listener
   binds loopback by default, `listen_addr` to expose it
   ([#171](https://github.com/schjan/picolet/pull/171)).
+- `picolet bootstrap create` and the shell scripts
+  `deploy/bootstrap/bootstrap.sh` / `bootstrap-rootless.sh` are removed;
+  `picolet bootstrap machine` replaces them
+  ([#156](https://github.com/schjan/picolet/issues/156)).
 
 ### Added
 
@@ -81,6 +85,11 @@ kept as is.
   gains `--skip-health-wait`, which `bootstrap machine` passes so an Agent
   needing a restart for new credentials is restarted before any health wait
   ([#155](https://github.com/schjan/picolet/issues/155)).
+- `picolet bootstrap teardown --machine <machine> --repo-dir <checkout>` tears
+  down every Host of the Machine: each Host's `bootstrap teardown` runs in the
+  per-Host bootstrap's container, as the Host's user or as root. Users,
+  subuid/subgid ranges and lingering are never touched
+  ([#156](https://github.com/schjan/picolet/issues/156)).
 
 ### Changed
 

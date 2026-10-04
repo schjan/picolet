@@ -34,10 +34,10 @@ unchanged rows of the new category table, so an Agent of this release loads the
 file written by an older one, and orphan removal, health checks and
 `picolet_files_managed_total` keep working.
 
-`picolet bootstrap create` and the shell scripts in `deploy/bootstrap/` still
-ship in v0.2.0; see
+`picolet bootstrap create` and the shell scripts in `deploy/bootstrap/` are
+removed in v0.2.0; see
 [Bootstrap](#bootstrap-bootstrap-create-and-the-shell-scripts) for their
-planned replacement.
+replacement.
 
 ## Rollout order
 
@@ -297,14 +297,13 @@ with one idempotent root command, `picolet bootstrap machine`, that bootstraps
 every Host of a Machine from the Fleet (`machine:`/`user:`/`listen_port:` in
 `host.yml`).
 
-**Status in v0.2.0:** `bootstrap machine` has only its read side,
-`picolet bootstrap machine --plan`, which prints the steps it would take and
-changes nothing. `bootstrap create` and both scripts still ship and remain the
-way to bootstrap a new Host; their removal lands with
-[#156](https://github.com/schjan/picolet/issues/156). Already bootstrapped Hosts
-are unaffected either way: bootstrap runs once, and the Agent manages itself
-from the Fleet afterwards. Start describing your Machines in `host.yml`
-(step 4) so that `bootstrap machine` can take over once the scripts are gone.
+**Status in v0.2.0:** `bootstrap create` and both scripts are removed
+([#156](https://github.com/schjan/picolet/issues/156)).
+`picolet bootstrap machine` bootstraps new Hosts, and
+`picolet bootstrap teardown --machine` tears every Host of a Machine down
+again; see [Deployment](README.md#deployment). Already bootstrapped Hosts are
+unaffected: bootstrap runs once, and the Agent manages itself from the Fleet
+afterwards. To bootstrap a Machine, describe it in `host.yml` (step 4) first.
 
 ## Worked example: `deploy/fleet-repo/`
 

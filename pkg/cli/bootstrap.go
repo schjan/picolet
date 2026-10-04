@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,6 +24,9 @@ func bootstrapCmd() *cli.Command {
 		Flags:  bootstrapRunFlags(),
 		Before: jsonLogging,
 		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.NArg() > 0 {
+				return fmt.Errorf("unknown bootstrap subcommand %q (subcommands: machine, teardown)", cmd.Args().First())
+			}
 			return bootstrap.Run(ctx, bootstrap.RunConfig{
 				Target:         bootstrapTarget(cmd),
 				Hostname:       cmd.String("hostname"),
@@ -36,7 +40,6 @@ func bootstrapCmd() *cli.Command {
 			})
 		},
 		Commands: []*cli.Command{
-			bootstrapCreateCmd(),
 			bootstrapMachineCmd(),
 			bootstrapTeardownCmd(),
 		},
@@ -77,36 +80,6 @@ func bootstrapRunFlags() []cli.Flag {
 	)
 }
 
-func bootstrapCreateCmd() *cli.Command {
-	return &cli.Command{
-		Name:   "create",
-		Usage:  "emit or run a host-specific bootstrap script",
-		Before: setupTextLogging,
-		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "hostname", Aliases: []string{"host"}, Required: true, Usage: "hostname to bootstrap"},
-			&cli.StringFlag{Name: "fleet-dir", Value: ".", Usage: "local fleet repo path"},
-			&cli.StringFlag{Name: "service", Usage: "picolet service bundle to bootstrap"},
-			&cli.StringFlag{Name: "target-path", Value: "/tmp/fleet", Usage: "target-side fleet repo path"},
-			&cli.BoolFlag{Name: "script", Usage: "emit bare runnable script"},
-			&cli.StringFlag{Name: "ssh", Usage: "rsync and run via ssh user@host"},
-			&cli.BoolFlag{Name: "skip-git-checks", Usage: "skip dirty/ahead/behind safety checks"},
-		},
-		Action: func(ctx context.Context, cmd *cli.Command) error {
-			return bootstrap.Create(ctx, bootstrap.CreateConfig{
-				Hostname:      cmd.String("hostname"),
-				FleetDir:      cmd.String("fleet-dir"),
-				Service:       cmd.String("service"),
-				TargetPath:    cmd.String("target-path"),
-				Script:        cmd.Bool("script"),
-				SSH:           cmd.String("ssh"),
-				SkipGitChecks: cmd.Bool("skip-git-checks"),
-				Stdout:        os.Stdout,
-				Stderr:        os.Stderr,
-			})
-		},
-	}
-}
-
 func bootstrapMachineCmd() *cli.Command {
 	return &cli.Command{
 		Name:      "machine",
@@ -124,8 +97,6 @@ func bootstrapMachineCmd() *cli.Command {
 			if cmd.NArg() > 1 {
 				return fmt.Errorf("expected one machine, got %d arguments", cmd.NArg())
 			}
-			_, podmanErr := exec.LookPath("podman")
-			_, passCLIErr := exec.LookPath(pp.DefaultCLIPath)
 			cfg := machine.Config{
 				Machine:              cmd.Args().First(),
 				RepoDir:              cmd.String("repo-dir"),
@@ -133,20 +104,28 @@ func bootstrapMachineCmd() *cli.Command {
 				OnePasswordTokenFile: cmd.String("onepassword-token-file"),
 				ProtonPassPATFile:    cmd.String("protonpass-pat-file"),
 				Providers:            machineProviders(),
-				Env: machine.Environment{
-					GOOS:        runtime.GOOS,
-					InContainer: agentcfg.InContainer(),
-					Root:        os.Geteuid() == 0,
-					Podman:      podmanErr == nil,
-					PassCLI:     passCLIErr == nil,
-				},
-				Stdout: os.Stdout,
+				Env:                  machineEnvironment(),
+				Stdout:               os.Stdout,
 			}
 			if cmd.Bool("plan") {
 				return machine.ShowPlan(ctx, cfg, machine.NewOSHostOps())
 			}
 			return machine.Run(ctx, cfg, machine.NewOSHostOps())
 		},
+	}
+}
+
+// machineEnvironment is where a bootstrap command for the whole Machine
+// runs.
+func machineEnvironment() machine.Environment {
+	_, podmanErr := exec.LookPath("podman")
+	_, passCLIErr := exec.LookPath(pp.DefaultCLIPath)
+	return machine.Environment{
+		GOOS:        runtime.GOOS,
+		InContainer: agentcfg.InContainer(),
+		Root:        os.Geteuid() == 0,
+		Podman:      podmanErr == nil,
+		PassCLI:     passCLIErr == nil,
 	}
 }
 
@@ -166,15 +145,39 @@ func machineProviders() machine.Providers {
 func bootstrapTeardownCmd() *cli.Command {
 	return &cli.Command{
 		Name:  "teardown",
-		Usage: "remove ALL picolet-managed resources on this host and the bootstrap state",
+		Usage: "remove ALL picolet-managed resources and the bootstrap state of this host, or of every Host of a Machine (--machine)",
 		Flags: append(bootstrapTargetFlags("Podman socket path"),
 			&cli.StringFlag{Name: "hostname", Aliases: []string{"host"}, Usage: "hostname to tear down (verified against the local agent config when readable)"},
+			&cli.StringFlag{Name: "machine", Usage: "tear down every Host the Fleet declares on this Machine (as root; users, subuid/subgid and lingering are kept)"},
+			&cli.StringFlag{Name: "repo-dir", Usage: "Fleet checkout on this Machine (with --machine)"},
 		),
 		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.IsSet("machine") {
+				return teardownMachine(ctx, cmd)
+			}
+			if cmd.IsSet("repo-dir") {
+				return errors.New("--repo-dir is only used with --machine")
+			}
 			return bootstrap.Teardown(ctx, bootstrap.TeardownConfig{
 				Target:   bootstrapTarget(cmd),
 				Hostname: cmd.String("hostname"),
 			})
 		},
 	}
+}
+
+// teardownMachine runs teardown --machine: the per-Host teardown of every
+// Host on the Machine, each in a container as the Host's user.
+func teardownMachine(ctx context.Context, cmd *cli.Command) error {
+	for _, flag := range []string{"hostname", "service", "systemd", "rootless", "podman-socket", "data-dir"} {
+		if cmd.IsSet(flag) {
+			return fmt.Errorf("--%s cannot be combined with --machine: the Fleet decides each Host's teardown", flag)
+		}
+	}
+	return machine.Teardown(ctx, machine.TeardownConfig{
+		Machine: cmd.String("machine"),
+		RepoDir: cmd.String("repo-dir"),
+		Env:     machineEnvironment(),
+		Stdout:  os.Stdout,
+	}, machine.NewOSHostOps())
 }

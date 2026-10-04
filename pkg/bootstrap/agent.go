@@ -24,6 +24,19 @@ type Agent struct {
 	DialAddr string
 }
 
+// FleetAgent is the Agent of host as the Fleet names it, without rendering
+// it: the default Service Bundle of the Host's systemd instance, its unit and
+// fleet.yml images.picolet. DialAddr stays empty. The bundle need not be
+// assigned: a Host's teardown runs from its state, not from the bundle.
+func FleetAgent(fleet *config.Config, host *config.HostConfig) (Agent, error) {
+	image := fleet.Fleet.Images["picolet"]
+	if image == "" {
+		return Agent{}, fmt.Errorf("fleet.yml images has no picolet key: the image the per-Host bootstrap of %s runs", host.Hostname)
+	}
+	service := defaultService(!host.Rootful())
+	return Agent{Service: service, Unit: service + ".service", Image: image}, nil
+}
+
 // ResolveAgent resolves the Agent of hostname from the Fleet checked out at
 // repoDir, as the per-Host bootstrap in the Agent's container resolves it.
 // Credential files are not read: the Agent config needs none to say where the
@@ -38,23 +51,23 @@ func ResolveAgent(ctx context.Context, repoDir, hostname string) (Agent, error) 
 	if !ok {
 		return Agent{}, fmt.Errorf("host not found: %s", hostname)
 	}
+	agent, err := FleetAgent(repo.Config, host)
+	if err != nil {
+		return Agent{}, err
+	}
 	// The container's layout: no --rootless, no --data-dir, and the default
 	// service of the Host's systemd instance.
 	mode := SystemdUser
 	if host.Rootful() {
 		mode = SystemdSystem
 	}
-	tgt, err := Target{SystemdMode: mode}.resolve()
+	tgt, err := Target{SystemdMode: mode, Service: agent.Service}.resolve()
 	if err != nil {
 		return Agent{}, err
 	}
 	if assigned := repo.Config.Assignments.Resolve(host).Services; !slices.Contains(assigned, tgt.service) {
 		return Agent{}, fmt.Errorf("host %s has no %s service assigned, the Agent of a %s (assigned: %s)",
 			hostname, tgt.service, agentKind(host), strings.Join(assigned, ", "))
-	}
-	image := repo.Config.Fleet.Images["picolet"]
-	if image == "" {
-		return Agent{}, fmt.Errorf("fleet.yml images has no picolet key: the image the per-Host bootstrap of %s runs", hostname)
 	}
 
 	resolved, err := resolveBootstrapHost(ctx, repo, resolveConfig{
@@ -70,11 +83,11 @@ func ResolveAgent(ctx context.Context, repoDir, hostname string) (Agent, error) 
 	if err := verifyUnitResolved(resolved.Files, tgt); err != nil {
 		return Agent{}, err
 	}
-	addr, err := healthAddrFromResolved(resolved.Files, tgt.unitName)
+	agent.DialAddr, err = healthAddrFromResolved(resolved.Files, tgt.unitName)
 	if err != nil {
 		return Agent{}, err
 	}
-	return Agent{Service: tgt.service, Unit: tgt.unitName, Image: image, DialAddr: addr}, nil
+	return agent, nil
 }
 
 func agentKind(host *config.HostConfig) string {

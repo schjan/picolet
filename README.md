@@ -17,7 +17,7 @@ sudo sh -c 'podman run --rm --entrypoint cat ghcr.io/schjan/picolet:<tag> /picol
 sudo chmod 0755 /usr/local/bin/picolet
 ```
 
-This is step zero of [Bootstrapping a Machine](#bootstrapping-a-machine).
+This is part of [preparing the Machine](#2-prepare-the-machine).
 
 ### Container (GHCR)
 
@@ -63,7 +63,11 @@ These tags are also set in the `Containerfile` and `.github/workflows/ci.yml`.
 
 ## Deployment
 
-Picolet manages itself via GitOps. Bootstrap gets it running; after that, the fleet git repo controls everything — including picolet's own version.
+Picolet manages itself via GitOps. `picolet bootstrap machine` gets every Agent
+of a Machine running; after that, the Fleet git repo controls everything —
+including picolet's own version. Why a Machine runs one Agent per Linux user,
+and why bootstrap provisions whole Machines but installs nothing:
+[ADR 0002](docs/adr/0002-host-per-linux-user.md).
 
 ### 1. Create a Fleet Repository
 
@@ -76,61 +80,45 @@ Use `deploy/fleet-repo/` as a starting point: a worked example of one Machine (`
 
 Read [Fleet conventions](#fleet-conventions) before you lay the repository out.
 
-### 2. Bootstrap a Host
+### 2. Prepare the Machine
 
-#### Rootful (production)
+`picolet bootstrap machine` creates users, sessions, directories, credential
+files and the Agents. Everything else stays outside picolet; do it first (by
+hand or with your configuration management):
 
-```bash
-# 1. Install Podman
-sudo apt install podman
+- **Packages.** Podman (`sudo apt install podman`), git for the Fleet
+  checkout, and the Proton Pass CLI `pass-cli` if you use
+  `--protonpass-pat-file`. Bootstrap installs no packages.
+- **The `picolet` binary.** Take the release artifact for the Machine's
+  architecture from [GitHub Releases](https://github.com/schjan/picolet/releases),
+  or copy it out of the Agent image the Fleet pins (`fleet.yml`
+  `images.picolet`; the binary is static):
 
-# 2. Create agent config
-sudo mkdir -p /etc/picolet/secrets
-sudo tee /etc/picolet/config.yml << EOF
-hostname: "srv-1-system"
-repo_url: "https://github.com/yourorg/fleet.git"
-git_token_path: "/etc/picolet/secrets/git_token"
-EOF
-echo "ghp_yourtoken" | sudo tee /etc/picolet/secrets/git_token > /dev/null
-sudo chmod 600 /etc/picolet/config.yml /etc/picolet/secrets/git_token
+  ```bash
+  sudo sh -c 'podman run --rm --entrypoint cat ghcr.io/schjan/picolet:v0.2.0 /picolet > /usr/local/bin/picolet'
+  sudo chmod 0755 /usr/local/bin/picolet
+  ```
 
-# 3. Run bootstrap
-sudo bash deploy/bootstrap/bootstrap.sh
-```
+- **A Fleet checkout** the Hosts' users can reach, e.g.
+  `sudo git clone --no-hardlinks <fleet-url> /srv/fleet` (see below for why not
+  below `/root` and why `--no-hardlinks`).
+- **Firewall.** Every Agent's listener binds loopback by default (see
+  [Monitoring](#6-monitoring)); open only the ports your workloads publish,
+  e.g. 80 and 443 for the reference `proxy` bundle. Picolet configures no
+  firewall.
+- **Unprivileged ports.** A rootless Host may bind only ports ≥ 1024 unless
+  the Machine sets `net.ipv4.ip_unprivileged_port_start` (e.g. `80` in
+  `/etc/sysctl.d/`); set it before assigning a bundle that binds a lower port.
+- **SELinux.** On an SELinux-enforcing Machine a container may only use a bind
+  mount whose content is labeled for it: add `:z` to the bind mounts
+  (`Volume=`) of your Fleet's Quadlets, the Agent quadlet's included. Picolet
+  adds no label option, neither to the Fleet's Quadlets nor to the bind mounts
+  of the per-Host bootstrap container.
 
-#### Rootless (dev/test)
-
-```bash
-# 1. Create agent config
-mkdir -p ~/.config/picolet/secrets
-cat > ~/.config/picolet/config.yml << EOF
-hostname: "srv-1"
-repo_url: "https://github.com/yourorg/fleet.git"
-systemd_user: true
-git_token_path: "/etc/picolet/secrets/git_token"
-EOF
-echo "ghp_yourtoken" > ~/.config/picolet/secrets/git_token
-chmod 600 ~/.config/picolet/config.yml ~/.config/picolet/secrets/git_token
-
-# 2. Run bootstrap (no sudo)
-bash deploy/bootstrap/bootstrap-rootless.sh
-```
-
-#### Bootstrapping a Machine
+### 3. Bootstrapping a Machine
 
 `picolet bootstrap machine` brings up every Host whose `host.yml` declares a
 Machine. Run it on the Machine, with a Fleet checkout there.
-
-Step zero is the `picolet` binary on the Machine (bootstrap installs no
-packages and no binary). Take the release artifact for the Machine's
-architecture from [GitHub Releases](https://github.com/schjan/picolet/releases),
-or copy it out of the Agent image the Fleet pins (`fleet.yml`
-`images.picolet`; the binary is static):
-
-```bash
-sudo sh -c 'podman run --rm --entrypoint cat ghcr.io/schjan/picolet:v0.2.0 /picolet > /usr/local/bin/picolet'
-sudo chmod 0755 /usr/local/bin/picolet
-```
 
 First preview:
 
@@ -324,50 +312,15 @@ Both forms refuse to run inside a container or on anything but Linux; a run
 also refuses without root or without Podman installed. Each Host listens on the
 port the Fleet declares (`listen_port:`); bootstrap never allocates one.
 
-#### Containerized picolet & `host_data_dir`
+### 4. What Happens Next
 
-The `rootless` flag describes picolet's **internal** assumptions — the path layout
-it uses (`/etc` + `/var/lib` vs `~/.config` + `~/.local/share`) and, by default,
-which systemd instance it talks to (`systemd_user`). It does **not** describe the
-host deployment model.
+1. Each Agent clones the Fleet from the `repo_url` of its Fleet-rendered config.
+2. Its own Quadlet and config are already in its `state.json`, seeded by the
+   per-Host bootstrap, so its first Reconciliation leaves the Agent running and
+   deploys the rest of the Host's assignments.
+3. From then on the Agent manages itself via GitOps.
 
-picolet itself usually runs as a container. When its volume mounts are
-*asymmetric* — the host sees a directory at a different path than picolet does,
-e.g. `Volume=%h/.local/share/picolet:/var/lib/picolet` — picolet writes files
-correctly (the mount lands them) but the `filePath`/`manifestPath` template
-helpers would bake picolet's *internal* path into rendered quadlet `Volume=` lines,
-which the **host's** podman cannot resolve.
-
-Set `host_data_dir` to the host-visible path so those helpers emit
-host-resolvable strings:
-
-```yaml
-# config.yml — picolet runs containerized, host data dir mounted at a different path
-host_data_dir: /home/app/.local/share/picolet
-```
-
-`host_data_dir` only changes the path string templates emit; it does not change
-where picolet writes files (that stays the internal data dir, distinct from the
-unrelated `data_dir` option which overrides picolet's own repo/state/lock dir).
-The first reconcile after setting it re-renders affected quadlets, causing a
-one-time restart of the units that reference `filePath`/`manifestPath` paths.
-
-The path those helpers emit — `host_data_dir`, else picolet's internal data dir —
-must be absolute and consist of letters, digits and `. _ - + @ /` only: templates
-put it unquoted into Quadlet, systemd and shell lines, where whitespace, quotes,
-`$`, backticks, `%` or `:` would be split or expanded. Picolet refuses to render
-with any other path.
-
-> `picolet resolve` / `picolet validate` (run without `--config`) cannot read
-> `host_data_dir` and will preview picolet's internal paths.
-
-### 3. What Happens Next
-
-1. Picolet starts and clones your fleet repo
-2. First reconcile: picolet replaces the bootstrap container file with the fleet template version → **one-time self-restart** (expected)
-3. After restart: picolet is fully self-managed via GitOps
-
-### 4. Updating Picolet
+### 5. Updating Picolet
 
 Bump the image version in your fleet repo's `fleet.yml`:
 
@@ -380,7 +333,7 @@ Push to git. Picolet detects the change, writes the updated Quadlet, and restart
 
 An upgrade that changes the Fleet schema (v0.2.0) needs a fixed rollout order; see [MIGRATION.md](MIGRATION.md).
 
-### 5. Monitoring
+### 6. Monitoring
 
 The agent serves `/metrics`, `/health`, `/webhook` and the dashboard on
 **`127.0.0.1:9417`** by default. None of them is authenticated, so a fresh
@@ -388,8 +341,8 @@ install exposes nothing on a public Machine; Prometheus scrapes it from the same
 Machine, and remote access goes through a reverse proxy or a mesh network.
 
 ```bash
-# Logs (rootful / rootless)
-journalctl -fu picolet.service
+# Logs (rootful Host / Host with user:, as that user)
+journalctl -fu picolet-system.service
 journalctl --user -fu picolet.service
 
 # Prometheus metrics
@@ -444,7 +397,7 @@ A **containerized** agent reaches the Machine's loopback only with
 container with its own network namespace, bind `0.0.0.0` and publish the port
 instead; picolet logs a warning when it detects that combination.
 
-### 6. Node Maintenance (image pruning)
+### 7. Node Maintenance (image pruning)
 
 Long-running nodes accumulate unused container images as picolet rolls out new
 image tags. To reclaim that space, the agent periodically removes **unused
@@ -478,6 +431,53 @@ Notes:
 - On a **mixed host**, `prune -a` also removes images that belong to non-picolet
   workloads if no container references them. On a dedicated fleet host this is
   the intended behavior.
+
+### 8. Tearing Down a Machine
+
+```bash
+sudo picolet bootstrap teardown --machine vps-1 --repo-dir /srv/fleet
+```
+
+tears down every Host the Fleet declares on the Machine. For each Host it runs
+the per-Host teardown, `picolet bootstrap teardown`, in the same container as
+the per-Host bootstrap: the Host's own Podman runs `images.picolet` with the
+Agent quadlet's bind mounts, as the Host's user through `runuser`, as root for
+the rootful Host, but without the Fleet checkout:
+
+```
+runuser -u <user> -- env XDG_RUNTIME_DIR=/run/user/<uid> podman run --rm --network host \
+  -v ~<user>/.config/picolet/secrets:/etc/picolet/secrets:ro \
+  -v ~<user>/.local/share/picolet:/var/lib/picolet \
+  -v ~<user>/.config/containers/systemd:/etc/containers/systemd \
+  -v ~<user>/.config/systemd/user:/etc/systemd/system \
+  -v /run/user/<uid>/systemd:/run/user/<uid>/systemd \
+  -v /run/user/<uid>/podman/podman.sock:/run/podman/podman.sock \
+  -e XDG_RUNTIME_DIR=/run/user/<uid> \
+  <images.picolet> bootstrap teardown --hostname <host> --service picolet --systemd user
+```
+
+The per-Host teardown stops the Agent and removes everything its `state.json`
+records — every Managed File and Podman secret, the Agent's own Quadlet and
+config included — then `state.json` and the Agent's clone of the Fleet. Since
+it runs in the Agent's container layout, it reads the state the Agent wrote.
+The Fleet only names each Host's Agent (`picolet` for a Host with `user:`,
+`picolet-system` for the rootful Host, run from `images.picolet`) and is not
+rendered, so a Host whose Agent bundle is no longer assigned, or no longer
+renders, is torn down all the same.
+
+Teardown never deletes users, their subuid/subgid ranges or lingering, and
+leaves `podman.socket`, the Hosts' directories and their credential files in
+place; remove them by hand when you retire the Machine (`loginctl
+disable-linger <user>`, `userdel --remove <user>`). A Host whose user does not
+exist has nothing to tear down and is skipped. A failing Host does not stop
+the others; the command lists every Host as `torn down`, `failed` or `skipped`
+and exits non-zero if any failed. Like `bootstrap machine`, it runs only as
+root, on Linux, outside a container, with Podman installed. `--machine` takes
+none of the per-Host flags (`--hostname`, `--service`, `--systemd`,
+`--rootless`, `--podman-socket`, `--data-dir`): the Fleet decides them.
+
+Run alone, `picolet bootstrap teardown --hostname <host>` tears down one Host
+from inside such a container, unchanged.
 
 ## Fleet Repository Reference
 
@@ -559,6 +559,43 @@ Two cases in step 3 are required, not optional: a rootless Host needs `user:`
 a Host whose `hostname` is not a hostname label (e.g. contains `.` or `_`) needs
 `machine:` — until it has one, upgraded Agents refuse to load the Fleet, so
 commit it right after step 2 completes.
+
+### Containerized picolet & `host_data_dir`
+
+The `rootless` flag describes picolet's **internal** assumptions — the path layout
+it uses (`/etc` + `/var/lib` vs `~/.config` + `~/.local/share`) and, by default,
+which systemd instance it talks to (`systemd_user`). It does **not** describe the
+host deployment model.
+
+picolet itself usually runs as a container. When its volume mounts are
+*asymmetric* — the host sees a directory at a different path than picolet does,
+e.g. `Volume=%h/.local/share/picolet:/var/lib/picolet` — picolet writes files
+correctly (the mount lands them) but the `filePath`/`manifestPath` template
+helpers would bake picolet's *internal* path into rendered quadlet `Volume=` lines,
+which the **host's** podman cannot resolve.
+
+Set `host_data_dir` to the host-visible path so those helpers emit
+host-resolvable strings:
+
+```yaml
+# config.yml — picolet runs containerized, host data dir mounted at a different path
+host_data_dir: /home/app/.local/share/picolet
+```
+
+`host_data_dir` only changes the path string templates emit; it does not change
+where picolet writes files (that stays the internal data dir, distinct from the
+unrelated `data_dir` option which overrides picolet's own repo/state/lock dir).
+The first reconcile after setting it re-renders affected quadlets, causing a
+one-time restart of the units that reference `filePath`/`manifestPath` paths.
+
+The path those helpers emit — `host_data_dir`, else picolet's internal data dir —
+must be absolute and consist of letters, digits and `. _ - + @ /` only: templates
+put it unquoted into Quadlet, systemd and shell lines, where whitespace, quotes,
+`$`, backticks, `%` or `:` would be split or expanded. Picolet refuses to render
+with any other path.
+
+> `picolet resolve` / `picolet validate` (run without `--config`) cannot read
+> `host_data_dir` and will preview picolet's internal paths.
 
 ### Fleet conventions
 

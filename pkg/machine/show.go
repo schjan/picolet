@@ -24,28 +24,36 @@ type Environment struct {
 	PassCLI bool
 }
 
-func (e Environment) check() error {
+// check fails unless command runs on a Linux Machine itself, which it
+// inspects.
+func (e Environment) check(command string) error {
 	if e.GOOS != "linux" {
-		return fmt.Errorf("bootstrap machine needs Linux: it inspects the Machine's users, systemd and Podman (running on %s)", e.GOOS)
+		return fmt.Errorf("%s needs Linux: it inspects the Machine's users, systemd and Podman (running on %s)", command, e.GOOS)
 	}
 	if e.InContainer {
-		return errors.New("bootstrap machine must run on the Machine itself, not inside a container: " +
-			"it inspects the Machine's users, systemd and Podman")
+		return fmt.Errorf("%s must run on the Machine itself, not inside a container: "+
+			"it inspects the Machine's users, systemd and Podman", command)
 	}
 	return nil
 }
 
 // checkRun is check plus what a run needs beyond a plan.
 func (e Environment) checkRun() error {
-	if err := e.check(); err != nil {
+	return e.checkRoot("bootstrap machine", "it creates users and directories and enables services "+
+		"(--plan previews the steps without root)")
+}
+
+// checkRoot is check plus root and Podman, which command needs: why says
+// what it does as root.
+func (e Environment) checkRoot(command, why string) error {
+	if err := e.check(command); err != nil {
 		return err
 	}
 	if !e.Root {
-		return errors.New("bootstrap machine must run as root: it creates users and directories and enables services " +
-			"(--plan previews the steps without root)")
+		return fmt.Errorf("%s must run as root: %s", command, why)
 	}
 	if !e.Podman {
-		return errors.New("podman is not installed (no podman on PATH): install it first, bootstrap machine installs no packages")
+		return fmt.Errorf("podman is not installed (no podman on PATH): install it first, %s installs no packages", command)
 	}
 	return nil
 }
@@ -73,7 +81,7 @@ type Config struct {
 // step through the read side of ops. It writes nothing to the Machine and
 // never needs root: checks root alone can perform show as unknown.
 func ShowPlan(ctx context.Context, cfg Config, ops HostOps) error {
-	if err := cfg.Env.check(); err != nil {
+	if err := cfg.Env.check("bootstrap machine"); err != nil {
 		return err
 	}
 	plan, err := load(ctx, cfg)
@@ -95,15 +103,7 @@ func load(ctx context.Context, cfg Config) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cfg.RepoDir == "" {
-		return nil, errors.New("--repo-dir is required: the Fleet checkout on this Machine")
-	}
-	// The readability check walks the real tree, not a symlink to it.
-	repoDir, err := realPath(cfg.RepoDir)
-	if err != nil {
-		return nil, fmt.Errorf("resolving --repo-dir: %w", err)
-	}
-	repo, err := config.OpenRepo(repoDir)
+	repo, repoDir, err := openCheckout(cfg.RepoDir)
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +132,24 @@ func load(ctx context.Context, cfg Config) (*Plan, error) {
 	}
 	plan.resolve(res)
 	return plan, nil
+}
+
+// openCheckout opens the Fleet checked out at the operator's --repo-dir and
+// returns it with the checkout's path, absolute with symlinks resolved.
+func openCheckout(dir string) (*config.Repo, string, error) {
+	if dir == "" {
+		return nil, "", errors.New("--repo-dir is required: the Fleet checkout on this Machine")
+	}
+	// The readability check walks the real tree, not a symlink to it.
+	repoDir, err := realPath(dir)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolving --repo-dir: %w", err)
+	}
+	repo, err := config.OpenRepo(repoDir)
+	if err != nil {
+		return nil, "", err
+	}
+	return repo, repoDir, nil
 }
 
 // openSecretsDir opens the --secrets-dir p as an os.Root: a symlink below

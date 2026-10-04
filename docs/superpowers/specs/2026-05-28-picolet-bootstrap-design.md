@@ -1,6 +1,6 @@
 # `picolet bootstrap`: one-shot host provisioning
 
-**Status:** Draft
+**Status:** Superseded by [ADR 0002](../../adr/0002-host-per-linux-user.md) and [#141](https://github.com/schjan/picolet/issues/141) (`picolet bootstrap machine`). Kept as history; where it disagrees with the code, the code wins. In particular: bootstrap may now hold a secret-provider credential (`bootstrap machine` places the Machine's provider token and resolves `bootstrap:` Secret References with it), which this spec ruled out; `bootstrap create` and `deploy/bootstrap/*.sh` are removed ([#156](https://github.com/schjan/picolet/issues/156)); and the bootstrap's `EnableUnit`/`DisableUnit` of the Agent's unit (step 14, teardown step 2) were never implemented: the unit is Quadlet-generated, so bootstrap only starts it and Quadlet realizes its `[Install]` section, and teardown stops it and removes its Quadlet.
 **Date:** 2026-05-28
 **Author:** Jannis Schäfer
 **Scope:** picolet feature (new subcommand family) + small targeted auto-detection in `pkg/agentcfg`. Backward-compatible with all existing fleet repos.
