@@ -6,7 +6,7 @@ require (
 	github.com/1password/onepassword-sdk-go v0.4.1
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/bradleyfalzon/ghinstallation/v2 v2.19.0
-	github.com/containers/podman/v5 v5.8.8
+	github.com/containers/podman/v5 v5.8.9
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/eclipse/paho.golang v0.23.0
 	github.com/go-git/go-git/v5 v5.19.3
@@ -48,7 +48,7 @@ require (
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v1.0.0-rc.2 // indirect
 	github.com/containerd/stargz-snapshotter/estargz v0.18.2 // indirect
-	github.com/containers/buildah v1.43.4 // indirect
+	github.com/containers/buildah v1.43.5 // indirect
 	github.com/containers/libtrust v0.0.0-20230121012942-c1716e8a8d01 // indirect
 	github.com/containers/ocicrypt v1.2.1 // indirect
 	github.com/containers/psgo v1.9.1-0.20250826150930-4ae76f200c86 // indirect
@@ -180,7 +180,7 @@ require (
 	go.opentelemetry.io/proto/otlp v1.9.0 // indirect
 	go.podman.io/common v0.67.2 // indirect
 	go.podman.io/image/v5 v5.39.3 // indirect
-	go.podman.io/storage v1.62.1 // indirect
+	go.podman.io/storage v1.62.2 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.56.0 // indirect
