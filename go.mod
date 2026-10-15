@@ -19,7 +19,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/urfave/cli/v3 v3.14.0
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
 	sigs.k8s.io/yaml v1.6.0
