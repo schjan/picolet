@@ -338,6 +338,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	healthChecker := health.New(a.systemd, health.WithLogger(a.logger))
 
 	a.scanOrphans(ctx, store)
+	a.clearFailureGateOnStartup(store)
 
 	metrics.FeatureInfo.WithLabelValues("mqtt").Set(boolToFloat(a.mqttClient != nil))
 	metrics.FeatureInfo.WithLabelValues(string(resolver.ProviderOnePassword)).Set(boolToFloat(a.opReader != nil))
@@ -625,6 +626,11 @@ type ResolveParams struct {
 	// config.LenientHosts). Set only by the Agent's own reconciliation.
 	LenientHosts bool
 
+	// SecretGuard vets every host secret read from SecretsDir; the Agent
+	// passes agentcfg's Config.RefuseCredential so a Fleet cannot deploy
+	// the Agent's own credentials. Nil vets nothing.
+	SecretGuard resolver.SecretGuard
+
 	// Logger receives the config-load, resolver and secret-resolution log
 	// lines. Nil falls back to slog.Default().
 	Logger *slog.Logger
@@ -648,7 +654,7 @@ func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.Re
 	}
 	defer repo.Close()
 
-	secretReader, releaseSecrets := resolver.DirSecretReader(params.SecretsDir)
+	secretReader, releaseSecrets := resolver.DirSecretReader(params.SecretsDir, params.SecretGuard)
 	defer releaseSecrets()
 
 	log.Debug("resolving host", "hostname", params.Hostname)
@@ -686,6 +692,7 @@ func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, err
 		RepoPath:       fleetPath,
 		Hostname:       a.cfg.Hostname,
 		SecretsDir:     a.cfg.SecretsDir,
+		SecretGuard:    a.cfg.RefuseCredential,
 		Rootless:       a.cfg.Rootless,
 		OpSecretReader: a.opReader,
 		PPSecretReader: a.ppReader,
@@ -1206,6 +1213,31 @@ func (a *Agent) markAppliedIncompleteWithMetrics(st *state.State, headSHA string
 	a.statusStore.SetFailedSHACount(0)
 }
 
+// clearFailureGateOnStartup resets the persisted failed-SHA gate. Credential
+// fixes (a new age identity, a new 1Password token) arrive with an Agent
+// restart but leave the Fleet's SHA unchanged, so a gate armed before the
+// restart would keep blocking the fixed Host until it expires. The cleared
+// gate is recorded as a dashboard event, so a restart loop stays visible.
+func (a *Agent) clearFailureGateOnStartup(store *state.Store) {
+	st, err := store.Load()
+	if err != nil {
+		a.logger.Error("loading state to clear failure gate", "error", err)
+		return
+	}
+	sha, failures := st.ClearFailureGate()
+	if failures == 0 {
+		return
+	}
+	if err := store.Save(st); err != nil {
+		a.logger.Error("saving state after clearing failure gate", "error", err)
+		return
+	}
+	a.statusStore.SetFailedSHACount(0)
+	a.logger.Info("failure gate cleared by agent restart", "sha", sha, "failures", failures)
+	a.recordEvent("failed_sha_gate_cleared", sha,
+		fmt.Sprintf("failure gate cleared by agent restart (%d consecutive failures)", failures))
+}
+
 // scanOrphans detects and removes files/secrets placed by a previous picolet run
 // that are no longer tracked in state. Runs once at startup; errors are logged,
 // not fatal. The dir overrides applied below mirror the fallback logic that
@@ -1283,7 +1315,7 @@ func (a *Agent) analyze(resolved *resolver.ResolvedHost) (map[string]status.Unit
 // are NOT recorded — they are conveyed by LastSuccessfulReconciliationAt and
 // Snapshot.VerifiedAt. The ring is reserved for events an operator would
 // want to see in a panel: success, failure, paused, git_error,
-// failed_sha_gate, status_error.
+// failed_sha_gate, failed_sha_gate_cleared, status_error.
 func (a *Agent) recordEvent(result, sha, message string) {
 	a.statusStore.AddEvent(status.ReconcileEvent{
 		At:      time.Now(),

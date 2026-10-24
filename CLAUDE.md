@@ -51,7 +51,7 @@ The agent runs a timer-based loop (`pkg/agent`). Each tick:
 
 1. **Health enforce** — restart inactive managed units (5min cooldown per unit)
 2. **Git poll** — fetch + hard reset to remote HEAD, compare SHA
-3. **Failure gate** — skip if same SHA failed 3+ times
+3. **Failure gate** — skip if same SHA failed 3+ times (expires after 1h; Agent startup clears it and records a `failed_sha_gate_cleared` dashboard event, since credential fixes arrive with a restart but no new SHA)
 4. **Config load** — `fleet.yml`, `assignments.yml`, `hosts/<name>/host.yml` from repo FS
 5. **Resolve** — merge assignments (base → role → features), render templates
 6. **Diff** — compare desired files against `state.ManagedFiles` by SHA-256 content hash
@@ -100,7 +100,7 @@ type SecretReader func(path string) (string, error)
 
 - **Agent config** (`/etc/picolet/config.yml`) — hostname, repo URL, poll interval. Loaded by `pkg/agentcfg`.
 - **Fleet config** (in git repo) — `fleet.yml` (images, ports), `assignments.yml` (file mappings per role/feature), `hosts/<name>/host.yml` (per-host settings incl. `machine:`/`user:`/`listen_port:`). Loaded by `pkg/config`. Production code opens the repo with `config.OpenRepo` (an `os.Root`-backed FS), never `os.DirFS`: `DirFS` follows symlinks out of the tree, which would let a Fleet deploy any host file (the agent runs as root). Host secrets go through `resolver.DirSecretReader`. Tests may use `fstest.MapFS`/`os.DirFS`. Loading is strict; only the Agent's reconciliation passes `config.LenientHosts()` (via `ResolveParams.LenientHosts`), so an unknown `host.yml` key only warns there (older Agents must keep loading a Fleet that adopts a new key) and fails everywhere else. Every Host needs an Agent listen port: `listen_port:` or `fleet.yml` `ports.picolet_metrics` (user Hosts) / `ports.picolet_system_metrics` (rootful), so test fleets carry `picolet_system_metrics`.
-- **Secrets** — read from local filesystem (`cfg.SecretsDir`), not from git.
+- **Secrets** — read from local filesystem (`cfg.SecretsDir`), not from git. The Agent's own credential files are listed explicitly by `agentcfg.Config.Credentials()` (add new credential settings there); the Agent's secret reader refuses them (`Config.RefuseCredential` as the `resolver.SecretGuard`, `os.SameFile` on the opened file, every file under a `Dir` credential), and `agentcfg.Load` fails when two credential settings name the same file.
 - **Bootstrap credentials** — `host.yml` `bootstrap:` / `fleet.yml` `bootstrap.files|roles` (`config.BootstrapFiles`, effective block in `HostConfig.Bootstrap`, most specific level wins whole; nil = no block = the Host gets the Machine's provider token, `{}` = declared, gets nothing). Read only by `pkg/machine`; providers are injected as `machine.Providers` (production wiring in `pkg/cli`), so tests never open 1Password or pass-cli.
 
 ### Template System
