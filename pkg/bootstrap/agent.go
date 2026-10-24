@@ -3,8 +3,6 @@ package bootstrap
 import (
 	"context"
 	"fmt"
-	"slices"
-	"strings"
 
 	"github.com/schjan/picolet/pkg/config"
 )
@@ -33,7 +31,7 @@ func FleetAgent(fleet *config.Config, host *config.HostConfig) (Agent, error) {
 	if image == "" {
 		return Agent{}, fmt.Errorf("fleet.yml images has no picolet key: the image the per-Host bootstrap of %s runs", host.Hostname)
 	}
-	service := defaultService(!host.Rootful())
+	service := config.AgentService(host)
 	return Agent{Service: service, Unit: service + ".service", Image: image}, nil
 }
 
@@ -65,9 +63,8 @@ func ResolveAgent(ctx context.Context, repoDir, hostname string) (Agent, error) 
 	if err != nil {
 		return Agent{}, err
 	}
-	if assigned := repo.Config.Assignments.Resolve(host).Services; !slices.Contains(assigned, tgt.service) {
-		return Agent{}, fmt.Errorf("host %s has no %s service assigned, the Agent of a %s (assigned: %s)",
-			hostname, tgt.service, agentKind(host), strings.Join(assigned, ", "))
+	if _, err := repo.Config.AssignedAgentService(host); err != nil {
+		return Agent{}, err
 	}
 
 	resolved, err := resolveBootstrapHost(ctx, repo, resolveConfig{
@@ -88,11 +85,4 @@ func ResolveAgent(ctx context.Context, repoDir, hostname string) (Agent, error) 
 		return Agent{}, err
 	}
 	return agent, nil
-}
-
-func agentKind(host *config.HostConfig) string {
-	if host.Rootful() {
-		return "rootful Host"
-	}
-	return "Host with user:"
 }

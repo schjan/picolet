@@ -39,7 +39,7 @@ func TestResolveAgent(t *testing.T) {
 func TestResolveAgentWithoutAgentBundle(t *testing.T) {
 	t.Parallel()
 	_, err := ResolveAgent(t.Context(), exampleFleet, "node-1")
-	require.ErrorContains(t, err, "host node-1 has no picolet-system service assigned")
+	require.ErrorContains(t, err, "host node-1: agent bundle not assigned: picolet-system")
 }
 
 // Missing inputs are reported in the bootstrap's order, hostname before repo

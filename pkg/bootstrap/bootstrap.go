@@ -30,10 +30,6 @@ const (
 	defaultSecretsDir   = "/etc/picolet/secrets" //nolint:gosec // default path, not a credential value.
 	defaultHealthPath   = "/health"
 	defaultTimeout      = 90 * time.Second
-
-	// agentConfigTarget is the in-container path the agent reads its config
-	// from; the bundle's container quadlet mounts the config secret there.
-	agentConfigTarget = "/etc/picolet/config.yml"
 )
 
 // Target identifies the picolet service bundle and systemd instance a
@@ -91,7 +87,7 @@ func (t Target) resolve() (resolvedTarget, error) {
 	}
 	service := t.Service
 	if service == "" {
-		service = defaultService(useSystemdUser)
+		service = config.DefaultAgentService(useSystemdUser)
 	}
 	dir, err := dataDir(t.Rootless, t.DataDir)
 	if err != nil {
@@ -342,7 +338,7 @@ func verifyTeardownHost(hostname string) error {
 	}
 	path := os.Getenv("PICOLET_CONFIG")
 	if path == "" {
-		path = agentConfigTarget
+		path = resolver.AgentConfigTarget
 	}
 	cfg, err := agentcfg.Load(path)
 	if err != nil {
@@ -381,13 +377,6 @@ func resolveSystemdMode(mode string) (bool, error) {
 	}
 }
 
-func defaultService(useSystemdUser bool) string {
-	if useSystemdUser {
-		return "picolet"
-	}
-	return "picolet-system"
-}
-
 func dataDir(rootless bool, override string) (string, error) {
 	if override != "" {
 		return override, nil
@@ -416,7 +405,7 @@ func verifyUnitResolved(files []resolver.ResolvedFile, tgt resolvedTarget) error
 // rendered agent config the bundle mounts, and returns the address a probe on
 // this Machine must dial to reach it.
 func healthAddrFromResolved(files []resolver.ResolvedFile, unitName string) (string, error) {
-	file, err := configSecret(files, unitName)
+	file, err := resolver.AgentConfigSecret(files, unitName)
 	if err != nil {
 		return "", err
 	}
@@ -425,32 +414,6 @@ func healthAddrFromResolved(files []resolver.ResolvedFile, unitName string) (str
 		return "", fmt.Errorf("parsing rendered picolet config: %w", err)
 	}
 	return cfg.DialAddr(), nil
-}
-
-// configSecret returns the resolved secret the bundle's container quadlet
-// mounts at the agent config path (Secret=<name>,target=/etc/picolet/config.yml).
-func configSecret(files []resolver.ResolvedFile, unitName string) (*resolver.ResolvedFile, error) {
-	name := ""
-	for _, file := range files {
-		if file.ServiceName != unitName || file.ParsedUnit == nil {
-			continue
-		}
-		for _, secret := range file.ParsedUnit.LookupAll("Container", "Secret") {
-			parts := strings.Split(secret, ",")
-			if slices.Contains(parts[1:], "target="+agentConfigTarget) {
-				name = parts[0]
-			}
-		}
-	}
-	if name == "" {
-		return nil, fmt.Errorf("%s declares no Secret=...,target=%s mount for the agent config", unitName, agentConfigTarget)
-	}
-	for i := range files {
-		if files[i].Category == config.CategorySecret && files[i].DestPath == "secret:"+name {
-			return &files[i], nil
-		}
-	}
-	return nil, fmt.Errorf("config secret %s referenced by %s was not resolved by the bundle", name, unitName)
 }
 
 func diffBootstrapScope(files []resolver.ResolvedFile, st *state.State, unitName string) *reconciler.Changeset {
