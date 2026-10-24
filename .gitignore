@@ -2,6 +2,6 @@
 /picolet-*
 /dist/
 .DS_Store
-.claude/
+.claude/settings.local.json
 .idea/
 .picolet-dev/
