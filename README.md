@@ -333,6 +333,16 @@ Push to git. Picolet detects the change, writes the updated Quadlet, and restart
 
 An upgrade that changes the Fleet schema (v0.2.0) needs a fixed rollout order; see [MIGRATION.md](MIGRATION.md).
 
+A commit that changes an Agent's own config (the secret its bundle mounts at
+`/etc/picolet/config.yml`) is checked before it is applied, with the checks the
+Agent runs at startup: the config must parse with the running Agent's strict
+loader (an unknown key fails), and every credential file it names must exist
+and be readable on the Host. If either fails, the reconciliation fails before
+anything is written and the Agent keeps its current config, so it is never
+left with a config it would refuse to restart with. Place a new credential
+file on the Host (`bootstrap machine`) before the commit that points the Agent
+at it.
+
 ### 6. Monitoring
 
 The agent serves `/metrics`, `/health`, `/webhook` and the dashboard on
