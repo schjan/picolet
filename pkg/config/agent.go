@@ -9,10 +9,10 @@ import (
 
 // The default Service Bundles of a Host's Agent, one per systemd instance.
 const (
-	// AgentServiceUser is the Agent bundle of a Host with user:.
-	AgentServiceUser = "picolet"
-	// AgentServiceSystem is the Agent bundle of the rootful Host.
-	AgentServiceSystem = "picolet-system"
+	// agentServiceUser is the Agent bundle of a Host with user:.
+	agentServiceUser = "picolet"
+	// agentServiceSystem is the Agent bundle of the rootful Host.
+	agentServiceSystem = "picolet-system"
 )
 
 // ErrAgentNotAssigned marks a Host whose Agent bundle is not assigned to it.
@@ -22,9 +22,9 @@ var ErrAgentNotAssigned = errors.New("agent bundle not assigned")
 // instance's for userInstance, the system instance's otherwise.
 func DefaultAgentService(userInstance bool) string {
 	if userInstance {
-		return AgentServiceUser
+		return agentServiceUser
 	}
-	return AgentServiceSystem
+	return agentServiceSystem
 }
 
 // AgentService is the Service Bundle of host's Agent as the Fleet names it:
@@ -40,18 +40,11 @@ func AgentService(host *HostConfig) string {
 func (c *Config) AssignedAgentService(host *HostConfig) (string, error) {
 	service := AgentService(host)
 	if assigned := c.Assignments.Resolve(host).Services; !slices.Contains(assigned, service) {
-		return "", notAssignedError{msg: fmt.Sprintf("host %s has no %s service assigned, the Agent of a %s (assigned: %s)",
-			host.Hostname, service, agentKind(host), strings.Join(assigned, ", "))}
+		return "", fmt.Errorf("host %s: %w: %s, the Agent of a %s, is not among the assigned services (%s)",
+			host.Hostname, ErrAgentNotAssigned, service, agentKind(host), strings.Join(assigned, ", "))
 	}
 	return service, nil
 }
-
-// notAssignedError is ErrAgentNotAssigned with its Host's message, which
-// reads without the sentinel's text.
-type notAssignedError struct{ msg string }
-
-func (e notAssignedError) Error() string        { return e.msg }
-func (e notAssignedError) Is(target error) bool { return target == ErrAgentNotAssigned }
 
 func agentKind(host *HostConfig) string {
 	if host.Rootful() {

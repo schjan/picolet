@@ -18,13 +18,13 @@ import (
 func validateAgentBundles(ctx context.Context, fsys fs.FS, cfg *config.Config) error {
 	var errs []error
 	for _, hostname := range cfg.SortedHostnames() {
-		host, _ := cfg.FindHost(hostname)
-		service, err := cfg.AssignedAgentService(host)
-		if errors.Is(err, config.ErrAgentNotAssigned) {
-			continue
+		host, ok := cfg.FindHost(hostname)
+		if !ok {
+			continue // unreachable: hostname comes from cfg's own Hosts
 		}
+		// The only error is ErrAgentNotAssigned: no Agent bundle to render.
+		service, err := cfg.AssignedAgentService(host)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("host %s: %w", hostname, err))
 			continue
 		}
 		if err := renderAgentBundle(ctx, fsys, cfg, hostname, service); err != nil {

@@ -1,6 +1,7 @@
 package picolet_test
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"slices"
@@ -37,43 +38,44 @@ func TestIntegrationValidate(t *testing.T) {
 
 // validate renders each Host's Agent bundle strictly, as bootstrap does: a
 // provider ref the bundle needs at bootstrap fails CI, not the next
-// `bootstrap machine`.
+// `bootstrap machine`. The rootful Host's bundle is picolet-system, a Host
+// with user:'s is picolet.
 func TestIntegrationValidateAgentBundleStrict(t *testing.T) {
 	t.Parallel()
 	const fix = "use a YAML-value reference and let the agent resolve it at runtime"
 	tests := []struct {
-		name   string
-		config string
-		want   []string
+		name, user, service, fn, ref string
 	}{
-		{
-			name:   "readOpSecret",
-			config: `{{ $ref := "op://vault/item/token" }}git_token: {{ readOpSecret $ref }}`,
-			want:   []string{"host test-host", "Agent bundle picolet-system", `readOpSecret "op://vault/item/token"`, fix},
-		},
-		{
-			name:   "readProtonPassSecret",
-			config: `{{ $ref := "pass://share/item/token" }}git_token: {{ readProtonPassSecret $ref }}`,
-			want:   []string{"host test-host", "Agent bundle picolet-system", `readProtonPassSecret "pass://share/item/token"`, fix},
-		},
+		{name: "rootful readOpSecret", service: "picolet-system", fn: "readOpSecret", ref: "op://vault/item/token"},
+		{name: "rootful readProtonPassSecret", service: "picolet-system", fn: "readProtonPassSecret", ref: "pass://share/item/token"},
+		{name: "user readOpSecret", user: "app", service: "picolet", fn: "readOpSecret", ref: "op://vault/item/token"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateAgentBundleFleet(t, tt.config)
+			body := fmt.Sprintf(`{{ $ref := %q }}git_token: {{ %s $ref }}`, tt.ref, tt.fn)
+			err := validateFleet(t, agentBundleFleet(tt.user, tt.service, true, body))
 			require.Error(t, err)
-			for _, want := range tt.want {
+			for _, want := range []string{"host test-host", "Agent bundle " + tt.service, fmt.Sprintf("%s %q", tt.fn, tt.ref), fix} {
 				assert.ErrorContains(t, err, want)
 			}
 		})
 	}
 }
 
+// A Host without its Agent bundle assigned is skipped: the bundle's provider
+// ref is not rendered, so validate passes.
+func TestIntegrationValidateAgentBundleUnassignedSkipped(t *testing.T) {
+	t.Parallel()
+	body := `{{ $ref := "op://vault/item/token" }}git_token: {{ readOpSecret $ref }}`
+	require.NoError(t, validateFleet(t, agentBundleFleet("", "picolet-system", false, body)))
+}
+
 // Secret References as plain YAML values are the Agent's to resolve at
 // runtime: the Agent-bundle pass does not flag them.
 func TestIntegrationValidateAgentBundleYAMLValueRefs(t *testing.T) {
 	t.Parallel()
-	require.NoError(t, validateAgentBundleFleet(t, `onepassword:
+	require.NoError(t, validateFleet(t, agentBundleFleet("", "picolet-system", true, `onepassword:
   token_path: /etc/picolet/secrets/op-token
   git_token_ref: op://vault/item/token
   github_app_id_ref: op://vault/app/id
@@ -83,26 +85,39 @@ protonpass:
   git_token_ref: pass://share/item/token
   github_app_id_ref: pass://share/app/id
   github_installation_id_ref: pass://share/app/installation
-  github_private_key_ref: pass://share/app/key`))
+  github_private_key_ref: pass://share/app/key`)))
 }
 
-// validateAgentBundleFleet runs `picolet validate` on a one-host Fleet whose
-// rootful Host is assigned the picolet-system Agent bundle; configBody is
-// appended to the bundle's Agent config template.
-func validateAgentBundleFleet(t *testing.T, configBody string) error {
-	t.Helper()
-	repoFS := fstest.MapFS{
-		"fleet.yml":                &fstest.MapFile{Data: []byte("images: {picolet: \"picolet:test\"}\nports: {picolet_system_metrics: 9418}\n")},
-		"assignments.yml":          &fstest.MapFile{Data: []byte("base: {}\nroles:\n  node:\n    services: [picolet-system]\nfeatures: {}\n")},
-		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte("hostname: test-host\nrole: node\nfeatures: []\n")},
-		"services/picolet-system/picolet-system.container.tmpl": &fstest.MapFile{Data: []byte(`[Container]
+// agentBundleFleet is a one-host Fleet whose Host test-host (user: user, or
+// rootful when empty) carries the Agent bundle service, assigned to it when
+// assign; configBody is appended to the bundle's Agent config template.
+func agentBundleFleet(user, service string, assign bool, configBody string) fstest.MapFS {
+	hostYML := "hostname: test-host\nrole: node\nfeatures: []\n"
+	if user != "" {
+		hostYML += "user: " + user + "\n"
+	}
+	assigned := ""
+	if assign {
+		assigned = service
+	}
+	secret := strings.ReplaceAll(service, "-", "_") + "_config"
+	return fstest.MapFS{
+		"fleet.yml":                &fstest.MapFile{Data: []byte("images: {picolet: \"picolet:test\"}\nports: {picolet_metrics: 9417, picolet_system_metrics: 9418}\n")},
+		"assignments.yml":          &fstest.MapFile{Data: []byte("base: {}\nroles:\n  node:\n    services: [" + assigned + "]\nfeatures: {}\n")},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(hostYML)},
+		"services/" + service + "/" + service + ".container.tmpl": &fstest.MapFile{Data: []byte(`[Container]
 Image={{ index .Images "picolet" }}
-Secret=picolet_system_config,target=/etc/picolet/config.yml
+Secret=` + secret + `,target=/etc/picolet/config.yml
 `)},
-		"services/picolet-system/secrets/picolet_system_config.yml.tmpl": &fstest.MapFile{Data: []byte(`hostname: "{{ .Host.Hostname }}"
+		"services/" + service + "/secrets/" + secret + ".yml.tmpl": &fstest.MapFile{Data: []byte(`hostname: "{{ .Host.Hostname }}"
 repo_url: "https://github.com/example/fleet.git"
 ` + configBody + "\n")},
 	}
+}
+
+// validateFleet runs `picolet validate` on repoFS.
+func validateFleet(t *testing.T, repoFS fstest.MapFS) error {
+	t.Helper()
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
@@ -454,11 +469,7 @@ func validatePathsFleet(t *testing.T, files map[string]string) error {
 	for p, content := range files {
 		repoFS[p] = &fstest.MapFile{Data: []byte(content)}
 	}
-	cfg, err := config.LoadAll(repoFS)
-	require.NoError(t, err)
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
-	require.NoError(t, err)
-	return validator.ValidateAll(t.Context(), repoFS, r, cfg)
+	return validateFleet(t, repoFS)
 }
 
 func newAggregatedSecretFleetFS(ruleExpr string) fstest.MapFS {
