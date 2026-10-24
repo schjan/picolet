@@ -47,6 +47,11 @@ tasks:
     cmds:
       - BUILD_TAGS="{{.BUILD_TAGS}}" scripts/govulncheck.sh
 
+  sops:corpus:
+    desc: Regenerate the SOPS fixture corpus in testdata/sops/corpus with the pinned sops tool (then run `go test ./pkg/sops`; its inspection goldens must not change)
+    cmds:
+      - go run ./pkg/sops/internal/corpusgen -dir testdata/sops
+
   lint:fix:
     desc: Run golangci-lint fix
     cmds:

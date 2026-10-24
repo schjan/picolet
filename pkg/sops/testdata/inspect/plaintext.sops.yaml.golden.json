@@ -1,0 +1,8 @@
+{
+  "file": {
+    "format": "yaml",
+    "is_sops": false,
+    "not_sops_reason": "no sops metadata",
+    "shamir_threshold": 0
+  }
+}
