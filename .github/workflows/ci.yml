@@ -160,6 +160,24 @@ jobs:
           PP_TEST_REF: ${{ secrets.PP_TEST_REF }}
         run: go test -tags "$BUILD_TAGS,protonpass_integration" ./pkg/protonpass/... -race -count=1 -v
 
+  govulncheck:
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          # Latest patch of the go.mod Go version: standard-library findings
+          # are fixed by patch releases and are never excluded.
+          check-latest: true
+
+      - name: govulncheck
+        # Fails on any called vulnerability not listed (with the reason) in
+        # .github/govulncheck-exclusions.txt; same as `task vulncheck`.
+        run: scripts/govulncheck.sh
+
   lint:
     runs-on: ubuntu-26.04-arm
     steps:

@@ -19,7 +19,12 @@ task test           # all tests with -race -count=1
 task lint           # golangci-lint (v2 config in .golangci.yml)
 task lint:fix       # golangci-lint with --fix
 task fmt            # run all formatters (gofumpt + gci) via golangci-lint fmt
+task vulncheck      # govulncheck with the build tags; fails on any finding not in .github/govulncheck-exclusions.txt
 ```
+
+`go tool sops` runs the pinned SOPS CLI (Go `tool` directive in `go.mod`).
+
+`task vulncheck` runs `scripts/govulncheck.sh` (needs `jq`; govulncheck is pinned in the script, not as a `go.mod` tool, because its dependencies would bump the binary's `golang.org/x/*` modules). Locally it also reports standard-library findings fixed in newer Go patch releases; CI uses the latest patch.
 
 **Regenerate mocks** (after changing interfaces in `pkg/applier`, `pkg/agent` or `pkg/machine`): `go tool mockery`
 
@@ -36,6 +41,7 @@ go test -tags "$TAGS" ./... -update                                    # update 
 - **Formatters**: `gofumpt` + `gci` (import grouping: stdlib / external / localmodule) — run `task fmt` to apply automatically, never reorder imports by hand
 - **Aggressive linters**: `cyclop`, `funlen`, `nestif`, `gosec`, `ireturn`, `dupl`, `containedctx`, `contextcheck` — use `//nolint:lintername` with an explanation comment when suppression is justified
 - All tests must use `t.Parallel()` (enforced by `tparallel` linter)
+- `depguard` has exactly one rule: only `pkg/sops` may import `github.com/getsops/sops`
 
 ## Architecture
 
