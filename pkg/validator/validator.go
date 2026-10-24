@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"path/filepath"
 	"slices"
@@ -106,14 +107,20 @@ func ValidateHost(ctx context.Context, r *resolver.Resolver, hostname string, op
 	return nil
 }
 
-// ValidateAll resolves and validates all hosts in the fleet config.
-// Intended for CI/CD pipelines; agents use ValidateFiles directly.
-func ValidateAll(ctx context.Context, r *resolver.Resolver, cfg *config.Config, opts ...Option) error {
+// ValidateAll resolves and validates all hosts in the fleet config, then runs
+// the Fleet-wide passes over fsys, the Fleet repository r and cfg were
+// loaded from. Intended for CI/CD pipelines; agents use ValidateFiles
+// directly.
+func ValidateAll(ctx context.Context, fsys fs.FS, r *resolver.Resolver, cfg *config.Config, opts ...Option) error {
 	var errs []error
 	for _, hostname := range cfg.SortedHostnames() {
 		if err := ValidateHost(ctx, r, hostname, opts...); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	// Fleet-wide passes, after every Host has been resolved.
+	if err := validateAgentBundles(ctx, fsys, cfg, newOptions(opts).logger); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }
