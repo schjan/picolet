@@ -1,0 +1,4 @@
+# TEST-ONLY age identity "srv-3" of the picolet SOPS fixture corpus (testdata/sops).
+# This private key is published in the repository. Never encrypt a real secret to it.
+# public key: age1pre96p2krmjun420xp2jtzgzyryr3gvvvzqvqj439nzvcrjx953sj5vmaa
+AGE-SECRET-KEY-1GQ5MQ74TNT30WCCGG23ZAVVGXZLL0APULF5PX7TQ9FQHH0VV4C9SR9TW8Z

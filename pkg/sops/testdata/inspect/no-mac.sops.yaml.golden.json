@@ -1,0 +1,8 @@
+{
+  "file": {
+    "format": "yaml",
+    "is_sops": false,
+    "not_sops_reason": "sops.mac missing",
+    "shamir_threshold": 0
+  }
+}

@@ -1,0 +1,12 @@
+{
+    "db": {
+        "user": "app",
+        "password": "hunter2-test",
+        "port": 5432,
+        "tls": true,
+        "empty": "",
+        "nothing": null
+    },
+    "tokens": ["alpha-token", "beta-token"],
+    "note_unencrypted": "visible"
+}
