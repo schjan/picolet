@@ -1,0 +1,209 @@
+package sops
+
+import (
+	"errors"
+	"fmt"
+	"path"
+	"strings"
+)
+
+// Scheme is the Secret Reference scheme of SOPS-encrypted values.
+const Scheme = "sops://"
+
+var (
+	// ErrBadPointer is returned (wrapped) for a malformed JSON Pointer or one
+	// that names no node in the file.
+	ErrBadPointer = errors.New("bad pointer")
+	// ErrNotSOPSPath is returned (wrapped) for a path without the `.sops.`
+	// infix, and for SOPS's own config files (.sops.yaml, .sops.yml).
+	ErrNotSOPSPath = errors.New("not a SOPS path")
+	// ErrInvalidSecretName is returned (wrapped) when a direct ref cannot be
+	// turned into a Podman secret name.
+	ErrInvalidSecretName = errors.New("invalid Podman secret name")
+)
+
+// Pointer is an RFC 6901 JSON Pointer into a SOPS file. The zero value (no
+// segments) addresses the whole document. On a list a segment is a list index;
+// everywhere else it is a map key.
+type Pointer struct {
+	segments []string
+}
+
+// ParsePointer parses an RFC 6901 pointer: "" or a sequence of "/segment",
+// with "~1" for "/" and "~0" for "~" inside a segment.
+func ParsePointer(s string) (Pointer, error) {
+	if s == "" {
+		return Pointer{}, nil
+	}
+	if !strings.HasPrefix(s, "/") {
+		return Pointer{}, fmt.Errorf("%w %q: a JSON Pointer starts with '/'", ErrBadPointer, s)
+	}
+	raw := strings.Split(s[1:], "/")
+	segs := make([]string, len(raw))
+	for i, seg := range raw {
+		unescaped, err := unescapeSegment(seg)
+		if err != nil {
+			return Pointer{}, fmt.Errorf("%w %q: %w", ErrBadPointer, s, err)
+		}
+		segs[i] = unescaped
+	}
+	return Pointer{segments: segs}, nil
+}
+
+func unescapeSegment(seg string) (string, error) {
+	if !strings.Contains(seg, "~") {
+		return seg, nil
+	}
+	var b strings.Builder
+	for i := 0; i < len(seg); i++ {
+		if seg[i] != '~' {
+			b.WriteByte(seg[i])
+			continue
+		}
+		if i+1 >= len(seg) || (seg[i+1] != '0' && seg[i+1] != '1') {
+			return "", errors.New("'~' must be followed by '0' (for '~') or '1' (for '/')")
+		}
+		if seg[i+1] == '0' {
+			b.WriteByte('~')
+		} else {
+			b.WriteByte('/')
+		}
+		i++
+	}
+	return b.String(), nil
+}
+
+// Segments returns the unescaped segments; nil for the whole document.
+func (p Pointer) Segments() []string {
+	if len(p.segments) == 0 {
+		return nil
+	}
+	return append([]string(nil), p.segments...)
+}
+
+// IsRoot reports whether the pointer addresses the whole document.
+func (p Pointer) IsRoot() bool { return len(p.segments) == 0 }
+
+// String returns the pointer in RFC 6901 syntax.
+func (p Pointer) String() string {
+	var b strings.Builder
+	for _, seg := range p.segments {
+		b.WriteByte('/')
+		b.WriteString(strings.ReplaceAll(strings.ReplaceAll(seg, "~", "~0"), "/", "~1"))
+	}
+	return b.String()
+}
+
+// sopsConfigNames are SOPS's own config files, never SOPS paths.
+var sopsConfigNames = map[string]bool{".sops.yaml": true, ".sops.yml": true}
+
+// IsSOPSPath reports whether p names a SOPS file: its base name carries
+// `.sops.` followed by an extension (`db.sops.yaml`). SOPS's config files
+// `.sops.yaml` and `.sops.yml` are never SOPS paths.
+func IsSOPSPath(p string) bool {
+	base := path.Base(p)
+	if sopsConfigNames[base] {
+		return false
+	}
+	_, ext, ok := strings.Cut(base, ".sops.")
+	return ok && ext != ""
+}
+
+// Ref is a parsed sops:// Secret Reference:
+// sops://<fleet-relative path>[#<JSON Pointer>]. Without a fragment it names
+// the whole file.
+type Ref struct {
+	raw string
+	// Path is the Fleet-relative path of the SOPS file, as written. Its
+	// validation against the Fleet tree is the caller's.
+	Path string
+	// Pointer addresses the value; the root pointer for a whole-file ref.
+	Pointer Pointer
+	whole   bool
+}
+
+// ParseRef parses a sops:// ref. The path must be a SOPS path; a fragment, if
+// present, must be a non-empty JSON Pointer.
+func ParseRef(s string) (Ref, error) {
+	rest, ok := strings.CutPrefix(s, Scheme)
+	if !ok {
+		return Ref{}, fmt.Errorf("%s: not a sops:// reference", s)
+	}
+	p, frag, hasFrag := strings.Cut(rest, "#")
+	if p == "" {
+		return Ref{}, fmt.Errorf("%s: missing file path", s)
+	}
+	if !IsSOPSPath(p) {
+		return Ref{}, fmt.Errorf("%s: %w: %q needs `.sops.` before its extension (e.g. db.sops.yaml)", s, ErrNotSOPSPath, p)
+	}
+	r := Ref{raw: s, Path: p, whole: !hasFrag}
+	if !hasFrag {
+		return r, nil
+	}
+	if frag == "" {
+		return Ref{}, fmt.Errorf("%s: %w: empty fragment; omit '#' for the whole file", s, ErrBadPointer)
+	}
+	ptr, err := ParsePointer(frag)
+	if err != nil {
+		return Ref{}, fmt.Errorf("%s: %w", s, err)
+	}
+	r.Pointer = ptr
+	return r, nil
+}
+
+// String returns the ref as written.
+func (r Ref) String() string { return r.raw }
+
+// WholeFile reports whether the ref has no fragment and names the whole file.
+func (r Ref) WholeFile() bool { return r.whole }
+
+// maxSecretNameLen is Podman's limit on secret names.
+const maxSecretNameLen = 253
+
+// SecretName returns the Podman secret name of a direct secrets: ref: the
+// pointer's segments joined by "_", or, for a whole-file ref, the file's base
+// name before `.sops.`. Characters are never rewritten: a segment outside
+// [A-Za-z0-9_.-], an empty segment, a name not starting with a letter or
+// digit, or a name over 253 characters is an error.
+func (r Ref) SecretName() (string, error) {
+	segs := r.Pointer.segments
+	if r.whole {
+		stem, _, _ := strings.Cut(path.Base(r.Path), ".sops.")
+		segs = []string{stem}
+	}
+	for _, seg := range segs {
+		if !validNameSegment(seg) {
+			return "", r.invalidName(fmt.Sprintf("segment %q can't appear in a Podman secret name (allowed: letters, digits, '.', '_', '-')", seg))
+		}
+	}
+	name := strings.Join(segs, "_")
+	if !isAlnum(name[0]) {
+		return "", r.invalidName(fmt.Sprintf("secret name %q must start with a letter or digit (segment %q)", name, segs[0]))
+	}
+	if len(name) > maxSecretNameLen {
+		return "", r.invalidName(fmt.Sprintf("secret name %q is longer than %d characters", name, maxSecretNameLen))
+	}
+	return name, nil
+}
+
+func (r Ref) invalidName(reason string) error {
+	return fmt.Errorf("%s: %w: %s; deliver the value through a secrets/<name>.tmpl file containing {{ readSopsSecret %q }}",
+		r.raw, ErrInvalidSecretName, reason, r.raw)
+}
+
+func validNameSegment(seg string) bool {
+	if seg == "" {
+		return false
+	}
+	for i := 0; i < len(seg); i++ {
+		c := seg[i]
+		if !isAlnum(c) && c != '.' && c != '_' && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAlnum(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
