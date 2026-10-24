@@ -82,11 +82,14 @@ func (s *State) markApplied(headSHA string) {
 }
 
 // ClearFailureGate forgets the failed SHA and its consecutive-failure count,
-// so the next reconciliation of that SHA is attempted again.
-func (s *State) ClearFailureGate() {
+// so the next reconciliation of that SHA is attempted again. It returns the
+// cleared SHA and count (count 0: there was no gate).
+func (s *State) ClearFailureGate() (sha string, count int) {
+	sha, count = s.FailedSHA, s.FailedCount
 	s.FailedSHA = ""
 	s.FailedCount = 0
 	s.FailedAt = time.Time{}
+	return sha, count
 }
 
 // MarkApplied records the SHA as a fully successful reconciliation, advancing

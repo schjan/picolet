@@ -85,6 +85,16 @@ Internal=true
 
 // initTestRepoWithHook creates a bare git repo whose only service bundle
 // declares a signal hook bound to app.service. Returned path is the bare repo
+// repoHeadSHA returns the HEAD commit SHA of the repo at url.
+func repoHeadSHA(t *testing.T, url string) string {
+	t.Helper()
+	clone, err := git.PlainClone(filepath.Join(t.TempDir(), "peek"), false, &git.CloneOptions{URL: url})
+	require.NoError(t, err)
+	head, err := clone.Head()
+	require.NoError(t, err)
+	return head.Hash().String()
+}
+
 // to use as RepoURL.
 func initTestRepoWithHook(t *testing.T) string {
 	t.Helper()
@@ -825,15 +835,9 @@ func TestAgentRetriesFailedSHA(t *testing.T) {
 	)
 
 	// Pre-seed state with only 1 failure — below maxRetries, should retry
-	cloneDir := filepath.Join(t.TempDir(), "tmp-clone")
-	clonedRepo, err := git.PlainClone(cloneDir, false, &git.CloneOptions{URL: bareDir})
-	require.NoError(t, err)
-	head, err := clonedRepo.Head()
-	require.NoError(t, err)
-
 	store := state.NewStore(statePath)
 	st := state.NewState()
-	st.FailedSHA = head.Hash().String()
+	st.FailedSHA = repoHeadSHA(t, bareDir)
 	st.FailedCount = 1 // only 1 failure, will retry
 	require.NoError(t, store.Save(st))
 

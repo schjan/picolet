@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-git/go-git/v5"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -47,11 +46,7 @@ func failingApplyAgent(t *testing.T, pollInterval time.Duration) (a *Agent, head
 	a = newTestAgent(t, cfg, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
 		WithRepoPath(filepath.Join(t.TempDir(), "clone")), WithStatePath(statePath))
 
-	clone, err := git.PlainClone(filepath.Join(t.TempDir(), "peek"), false, &git.CloneOptions{URL: bareDir})
-	require.NoError(t, err)
-	head, err := clone.Head()
-	require.NoError(t, err)
-	return a, head.Hash().String(), statePath
+	return a, repoHeadSHA(t, bareDir), statePath
 }
 
 // runUntil runs the Agent until cond holds on its status store (or fails the

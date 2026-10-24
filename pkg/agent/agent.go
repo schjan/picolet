@@ -1218,11 +1218,10 @@ func (a *Agent) clearFailureGateOnStartup(store *state.Store) {
 		a.logger.Error("loading state to clear failure gate", "error", err)
 		return
 	}
-	if st.FailedCount == 0 {
+	sha, failures := st.ClearFailureGate()
+	if failures == 0 {
 		return
 	}
-	sha, failures := st.FailedSHA, st.FailedCount
-	st.ClearFailureGate()
 	if err := store.Save(st); err != nil {
 		a.logger.Error("saving state after clearing failure gate", "error", err)
 		return
