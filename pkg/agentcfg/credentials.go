@@ -79,18 +79,21 @@ func (c *Config) RefuseCredential(info fs.FileInfo) error {
 // holds reports whether info is the credential file or, for a Dir
 // credential, the directory or a file anywhere under it. A credential not on
 // disk holds nothing.
-func (c Credential) holds(info fs.FileInfo) (bool, error) {
-	cred, err := os.Stat(c.Path)
+func (cred Credential) holds(info fs.FileInfo) (bool, error) {
+	onDisk, err := os.Stat(cred.Path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	if !c.Dir || os.SameFile(info, cred) {
-		return os.SameFile(info, cred), nil
+	if os.SameFile(info, onDisk) {
+		return true, nil
 	}
-	return dirHolds(c.Path, info)
+	if !cred.Dir {
+		return false, nil
+	}
+	return dirHolds(cred.Path, info)
 }
 
 // dirHolds reports whether info is a file anywhere under dir. The caller
@@ -149,24 +152,25 @@ func (c *Config) checkCredentialFiles() error {
 	return nil
 }
 
-// overlaps reports whether a and b name the same file, or one names a file
-// under the other's directory: by spelling, so files not yet on disk count,
-// and by os.SameFile on what is there.
-func (c Credential) overlaps(o Credential) (bool, error) {
-	if filepath.Clean(c.Path) == filepath.Clean(o.Path) || within(c, o) || within(o, c) {
+// overlaps reports whether cred and other name the same file, or one names
+// a file under the other's directory: by spelling, so files not yet on disk
+// count, and by os.SameFile on what is there.
+func (cred Credential) overlaps(other Credential) (bool, error) {
+	if filepath.Clean(cred.Path) == filepath.Clean(other.Path) || cred.spellsUnder(other.Path) || other.spellsUnder(cred.Path) {
 		return true, nil
 	}
-	for _, pair := range [][2]Credential{{c, o}, {o, c}} {
-		info, err := os.Stat(pair[0].Path) //nolint:gosec // G703: the path is the operator's own Agent config setting, stat'ed to compare
+	for _, pair := range [][2]Credential{{cred, other}, {other, cred}} {
+		file, holder := pair[0], pair[1]
+		info, err := os.Stat(file.Path)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue // not on disk: nothing to compare
 		}
 		if err != nil {
-			return false, fmt.Errorf("checking %s (%s): %w", pair[0].Setting, pair[0].Path, err)
+			return false, fmt.Errorf("checking %s (%s): %w", file.Setting, file.Path, err)
 		}
-		held, err := pair[1].holds(info)
+		held, err := holder.holds(info)
 		if err != nil {
-			return false, fmt.Errorf("checking %s (%s): %w", pair[1].Setting, pair[1].Path, err)
+			return false, fmt.Errorf("checking %s (%s): %w", holder.Setting, holder.Path, err)
 		}
 		if held {
 			return true, nil
@@ -175,10 +179,11 @@ func (c Credential) overlaps(o Credential) (bool, error) {
 	return false, nil
 }
 
-// within reports whether file's path spells a path under dir's directory.
-func within(file, dir Credential) bool {
-	if !dir.Dir {
+// spellsUnder reports whether path spells a path under cred's directory; a
+// file credential has nothing under it.
+func (cred Credential) spellsUnder(path string) bool {
+	if !cred.Dir {
 		return false
 	}
-	return strings.HasPrefix(filepath.Clean(file.Path), filepath.Clean(dir.Path)+string(filepath.Separator))
+	return strings.HasPrefix(filepath.Clean(path), filepath.Clean(cred.Path)+string(filepath.Separator))
 }

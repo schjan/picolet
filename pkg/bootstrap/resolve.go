@@ -77,5 +77,6 @@ func secretReader(secretsDir string, mode fileReaderMode) (resolver.SecretReader
 	if mode == fileReaderPlaceholder {
 		return func(string) (string, error) { return "<secret>", nil }, func() {}
 	}
+	// No guard: bootstrap has no Agent config, so no Agent credentials to refuse.
 	return resolver.DirSecretReader(secretsDir, nil)
 }

@@ -584,13 +584,9 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 
 // ResolveParams holds the parameters for LoadAndResolveHost.
 type ResolveParams struct {
-	RepoPath   string
-	Hostname   string
-	SecretsDir string
-	// SecretGuard vets every host secret read from SecretsDir; the Agent
-	// passes agentcfg's Config.RefuseCredential so a Fleet cannot deploy
-	// the Agent's own credentials. Nil vets nothing.
-	SecretGuard    resolver.SecretGuard
+	RepoPath       string
+	Hostname       string
+	SecretsDir     string
 	Rootless       bool
 	OpSecretReader resolver.SecretRefReader
 	PPSecretReader resolver.SecretRefReader
@@ -609,6 +605,11 @@ type ResolveParams struct {
 	// LenientHosts ignores unknown host.yml keys with a warning (see
 	// config.LenientHosts). Set only by the Agent's own reconciliation.
 	LenientHosts bool
+
+	// SecretGuard vets every host secret read from SecretsDir; the Agent
+	// passes agentcfg's Config.RefuseCredential so a Fleet cannot deploy
+	// the Agent's own credentials. Nil vets nothing.
+	SecretGuard resolver.SecretGuard
 }
 
 // LoadAndResolveHost loads fleet config from repoPath and resolves the desired state plus host metadata.
