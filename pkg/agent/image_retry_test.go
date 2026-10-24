@@ -49,7 +49,7 @@ func TestFailedImagePullAtApplyIsRetriedByHealth(t *testing.T) {
 	require.Contains(t, st.PendingUnits, unit)
 
 	// Next pass, within the cooldown: not retried yet, and still pending.
-	checker := health.New(sys)
+	checker := health.New(sys, health.WithLogger(discardLogger()))
 	result, err := checker.Enforce(t.Context(), st)
 	require.NoError(t, err)
 	assert.Equal(t, []string{unit}, result.Skipped)
@@ -62,7 +62,7 @@ func TestFailedImagePullAtApplyIsRetriedByHealth(t *testing.T) {
 	pu.LastAttemptAt = time.Now().Add(-time.Hour)
 	st.PendingUnits[unit] = pu
 	sys.EXPECT().RestartUnit(mock.Anything, unit).Return(nil).Once()
-	result, err = health.New(sys).Enforce(t.Context(), st)
+	result, err = health.New(sys, health.WithLogger(discardLogger())).Enforce(t.Context(), st)
 	require.NoError(t, err)
 	assert.Equal(t, []string{unit}, result.Restarted)
 }

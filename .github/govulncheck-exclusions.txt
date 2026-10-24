@@ -1,0 +1,32 @@
+# govulncheck exclusions: one Go vulnerability ID per line, '#' starts a comment.
+#
+# Read by scripts/govulncheck.sh (`task vulncheck`, CI job `govulncheck`).
+# Every finding govulncheck reports as called by picolet fails the job unless
+# its ID is listed here. Only findings that were already on main when the
+# job was added are listed: all of them reach picolet through the Podman
+# bindings (github.com/containers/podman/v5 and the containers modules it
+# pulls in) and have no fixed version picolet can move to on its own.
+# Remove an entry once a dependency bump fixes it (the script warns about
+# entries that no longer match a finding). Standard-library findings are
+# never listed: they are fixed by a Go patch release, and the CI job always
+# runs the latest patch of the go.mod Go version.
+
+# github.com/containers/podman/v5 (no fixed version)
+GO-2024-3042
+GO-2025-3961
+
+# github.com/containers/buildah, via the Podman bindings (no fixed version)
+GO-2026-5116
+
+# github.com/docker/docker, via the Podman bindings (no fixed version)
+GO-2026-4883
+GO-2026-4887
+
+# golang.org/x/crypto/openpgp, via go.podman.io/image/v5/signature (no fixed version)
+GO-2026-5932
+
+# github.com/sigstore/fulcio, via go.podman.io/image/v5/signature (fixed in
+# fulcio v1.8.x, which go.podman.io/image does not require yet)
+GO-2025-4193
+GO-2026-4311
+GO-2026-5853

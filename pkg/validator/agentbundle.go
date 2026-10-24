@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/resolver"
@@ -15,7 +16,7 @@ import (
 // provider ref the bundle needs at bootstrap (a template-function call or a
 // direct provider `secrets:` ref) fails here instead of at the next
 // `bootstrap machine`. Hosts without an assigned Agent bundle are skipped.
-func validateAgentBundles(ctx context.Context, fsys fs.FS, cfg *config.Config) error {
+func validateAgentBundles(ctx context.Context, fsys fs.FS, cfg *config.Config, log *slog.Logger) error {
 	var errs []error
 	for _, hostname := range cfg.SortedHostnames() {
 		host, ok := cfg.FindHost(hostname)
@@ -27,7 +28,7 @@ func validateAgentBundles(ctx context.Context, fsys fs.FS, cfg *config.Config) e
 		if err != nil {
 			continue
 		}
-		if err := renderAgentBundle(ctx, fsys, cfg, hostname, service); err != nil {
+		if err := renderAgentBundle(ctx, fsys, cfg, hostname, service, log); err != nil {
 			errs = append(errs, fmt.Errorf("host %s: Agent bundle %s: %w", hostname, service, err))
 		}
 	}
@@ -36,12 +37,13 @@ func validateAgentBundles(ctx context.Context, fsys fs.FS, cfg *config.Config) e
 
 // renderAgentBundle resolves service for hostname in strict mode with no
 // provider readers and placeholder file secrets.
-func renderAgentBundle(ctx context.Context, fsys fs.FS, cfg *config.Config, hostname, service string) error {
+func renderAgentBundle(ctx context.Context, fsys fs.FS, cfg *config.Config, hostname, service string, log *slog.Logger) error {
 	r, err := resolver.New(resolver.Config{
 		FS:           fsys,
 		Config:       cfg,
 		SecretReader: func(string) (string, error) { return unresolvedSecretPlaceholder, nil },
 		Strict:       true,
+		Logger:       log,
 	})
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)

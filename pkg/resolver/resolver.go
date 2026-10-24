@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -82,6 +83,10 @@ type Config struct {
 	// when picolet runs containerized and the host sees the data dir at a
 	// different path than picolet does.
 	HostDataDir string
+
+	// Logger receives the resolver's log lines (secret resolution, template
+	// rendering). Nil falls back to slog.Default().
+	Logger *slog.Logger
 }
 
 // Resolver renders templates and resolves the desired state for hosts.
@@ -97,6 +102,7 @@ type Resolver struct {
 	hostDataDir    string
 	rootless       bool
 	strict         bool
+	logger         *slog.Logger
 }
 
 // Rootless reports whether the resolver is configured for rootless mode.
@@ -138,6 +144,7 @@ func New(rc Config) (*Resolver, error) {
 		hostDataDir:    hostDataDir,
 		rootless:       rc.Rootless,
 		strict:         rc.Strict,
+		logger:         cmp.Or(rc.Logger, slog.Default()),
 	}, nil
 }
 
@@ -190,6 +197,7 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 	if !ok {
 		return nil, &HostNotFoundError{Hostname: hostname}
 	}
+	r.cfg.Assignments.WarnUnassigned(host, r.logger)
 	return r.resolveHostFileSet(ctx, hostname, host, r.cfg.Assignments.Resolve(host), nil)
 }
 
@@ -201,6 +209,7 @@ func (r *Resolver) ResolveServicesForHost(ctx context.Context, hostname string, 
 	if !ok {
 		return nil, &HostNotFoundError{Hostname: hostname}
 	}
+	r.cfg.Assignments.WarnUnassigned(host, r.logger)
 	full := r.cfg.Assignments.Resolve(host)
 	available := config.SortedUnique(full.Services)
 	requested := config.SortedUnique(services)
@@ -230,7 +239,7 @@ func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host
 	// hostDataDir (not dataDir) drives filePath/manifestPath: those helpers emit
 	// path strings baked into rendered quadlets, which the host's podman must
 	// resolve. dataDir remains the write path (dataDestPath).
-	registry, caches, err := buildRegistry(ctx, r.fsys, r.secretReader, providers, r.hostDataDir, prefixFilter(templatePrefixes), siblings(tmplData))
+	registry, caches, err := buildRegistry(ctx, r.fsys, r.secretReader, providers, r.hostDataDir, prefixFilter(templatePrefixes), siblings(tmplData), r.logger)
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}
@@ -620,7 +629,7 @@ func findQuadletFile(quadletName string, files []ResolvedFile) *ResolvedFile {
 // Quadlet-resolvable and the field is explicitly set. Must be called BEFORE
 // resolveHookQuadletUnit rewrites hook.Unit, since the lookup compares against
 // the original Quadlet filename (e.g. "app.container").
-func validateSignalHookContainer(hook config.Hook, files []ResolvedFile) error {
+func (r *Resolver) validateSignalHookContainer(hook config.Hook, files []ResolvedFile) error {
 	if hook.Action != config.HookActionSignal || !isQuadletUnit(hook.Unit) {
 		return nil
 	}
@@ -631,7 +640,7 @@ func validateSignalHookContainer(hook config.Hook, files []ResolvedFile) error {
 	declared, ok := file.ParsedUnit.LookupLast("Container", "ContainerName")
 	declared = strings.TrimSpace(declared)
 	if !ok || declared == "" {
-		slog.Debug("Quadlet has no explicit ContainerName, container not validated",
+		r.logger.Debug("Quadlet has no explicit ContainerName, container not validated",
 			"hook", hook.Name, "unit", hook.Unit, "container", hook.Container)
 		return nil
 	}
@@ -716,7 +725,7 @@ func (r *Resolver) resolveHooksFile(registry *template.Template, tmplData *Templ
 		return nil, fmt.Errorf("parsing %s: %w", ref.SrcPath, err)
 	}
 	for i := range file.Hooks {
-		if err := validateSignalHookContainer(file.Hooks[i], files); err != nil {
+		if err := r.validateSignalHookContainer(file.Hooks[i], files); err != nil {
 			return nil, fmt.Errorf("%s: hooks[%d]: %w", ref.SrcPath, i, err)
 		}
 		if isQuadletUnit(file.Hooks[i].Unit) {
@@ -800,10 +809,10 @@ func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, re
 			return fmt.Errorf("%s provider not configured; cannot resolve direct secrets in strict mode: %s; %s",
 				name, strings.Join(refs, ", "), strictModeFix(name))
 		}
-		slog.Warn("skipping secrets (provider not configured)", "provider", name, "count", len(refs))
+		r.logger.Warn("skipping secrets (provider not configured)", "provider", name, "count", len(refs))
 		return nil
 	}
-	slog.Debug("batch-resolving secrets", "provider", name, "count", len(refs))
+	r.logger.Debug("batch-resolving secrets", "provider", name, "count", len(refs))
 	results, err := reader(ctx, refs)
 	if err != nil {
 		return fmt.Errorf("resolving %s secrets: %w", name, err)
@@ -863,7 +872,7 @@ func (r *Resolver) secretContent(registry *template.Template, tmplData *Template
 	// Static repo file — copy as-is without template rendering.
 	data, readErr := fs.ReadFile(r.fsys, srcPath)
 	if readErr == nil {
-		slog.Debug("reading static secret from repo", "path", srcPath)
+		r.logger.Debug("reading static secret from repo", "path", srcPath)
 		return string(data), nil
 	}
 	if !errors.Is(readErr, fs.ErrNotExist) {
@@ -873,13 +882,13 @@ func (r *Resolver) secretContent(registry *template.Template, tmplData *Template
 	if r.secretReader != nil {
 		return r.secretReader(filename)
 	}
-	slog.Warn("secret reader not configured, using placeholder", "file", srcPath)
+	r.logger.Warn("secret reader not configured, using placeholder", "file", srcPath)
 	return placeholderSecret, nil
 }
 
 func (r *Resolver) renderOrRead(registry *template.Template, tmplData *TemplateData, path string) (string, error) {
 	if config.IsTemplate(path) {
-		slog.Debug("rendering template", "path", path)
+		r.logger.Debug("rendering template", "path", path)
 		var buf bytes.Buffer
 		if err := registry.ExecuteTemplate(&buf, path, tmplData); err != nil {
 			return "", fmt.Errorf("executing template %s: %w", path, err)
@@ -887,7 +896,7 @@ func (r *Resolver) renderOrRead(registry *template.Template, tmplData *TemplateD
 		return buf.String(), nil
 	}
 
-	slog.Debug("reading static file", "path", path)
+	r.logger.Debug("reading static file", "path", path)
 	data, err := fs.ReadFile(r.fsys, path)
 	if err != nil {
 		return "", fmt.Errorf("reading %s: %w", path, err)

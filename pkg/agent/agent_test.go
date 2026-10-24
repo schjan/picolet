@@ -144,6 +144,8 @@ func newBareMocks(t *testing.T) (*appliermocks.MockSystemdManager, *appliermocks
 
 func newTestAgent(t *testing.T, cfg *agentcfg.Config, opts ...Option) *Agent {
 	t.Helper()
+	// The test logger goes first so a caller's WithLogger wins.
+	opts = append([]Option{WithLogger(newTestLogger(t))}, opts...)
 	opts = append(opts, WithLockPath(filepath.Join(t.TempDir(), "reconciliation.lock")))
 	return New(cfg, opts...)
 }
@@ -1074,7 +1076,7 @@ Internal=true
 		Hostname:   "test-host",
 		SecretsDir: t.TempDir(),
 	}
-	resolved, err := LoadAndResolveHost(t.Context(), ResolveParams{RepoPath: repoDir, Hostname: cfg.Hostname, SecretsDir: cfg.SecretsDir})
+	resolved, err := LoadAndResolveHost(t.Context(), ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: cfg.Hostname, SecretsDir: cfg.SecretsDir})
 	require.NoError(t, err)
 	files := resolved.Files
 
@@ -1420,7 +1422,7 @@ Internal=true
 
 	// Resolve from the subdirectory path (simulates what Agent.loadAndResolve does with RepoSubDir).
 	fleetPath := filepath.Join(repoDir, subDir)
-	resolved, err := LoadAndResolveHost(t.Context(), ResolveParams{RepoPath: fleetPath, Hostname: "test-host", SecretsDir: t.TempDir()})
+	resolved, err := LoadAndResolveHost(t.Context(), ResolveParams{Logger: discardLogger(), RepoPath: fleetPath, Hostname: "test-host", SecretsDir: t.TempDir()})
 	require.NoError(t, err)
 	files := resolved.Files
 	require.NotEmpty(t, files)
@@ -1458,7 +1460,7 @@ ContainerName=broken
 `), 0o600))
 
 	store := status.NewStore()
-	a := New(&agentcfg.Config{Hostname: "test-host"},
+	a := New(&agentcfg.Config{Hostname: "test-host"}, WithLogger(newTestLogger(t)),
 		WithLockPath(filepath.Join(t.TempDir(), "lock")),
 		WithStatusStore(store),
 		WithRepoPath(repoDir),
@@ -1523,7 +1525,7 @@ func TestTickDoesNotCreateDeploymentForUnchangedSHAOpRefresh(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
+	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil, gitpoll.WithLogger(discardLogger()))
 	require.NoError(t, poller.Init(ctx))
 
 	initial, err := poller.Poll(ctx, "")
@@ -1534,7 +1536,7 @@ func TestTickDoesNotCreateDeploymentForUnchangedSHAOpRefresh(t *testing.T) {
 	st.MarkApplied(initial.HeadSHA)
 	require.NoError(t, store.Save(st))
 
-	healthChecker := health.New(sys)
+	healthChecker := health.New(sys, health.WithLogger(discardLogger()))
 	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
 	reporter.AssertNotCalled(t, "CreateDeployment", mock.Anything, mock.Anything)
 	reporter.AssertNotCalled(t, "ReportInProgress", mock.Anything, mock.Anything)
@@ -1572,7 +1574,7 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
+	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil, gitpoll.WithLogger(discardLogger()))
 	require.NoError(t, poller.Init(ctx))
 	initial, err := poller.Poll(ctx, "")
 	require.NoError(t, err)
@@ -1580,7 +1582,7 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 	// Pre-seed state at the current SHA, with the secret already managed and
 	// one hook waiting for retry. The diff against this state must be empty;
 	// the noop gate must be bypassed because PendingHooks is non-empty.
-	resolved, err := LoadAndResolveHost(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
+	resolved, err := LoadAndResolveHost(ctx, ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
 	require.NoError(t, err)
 	files := resolved.Files
 	store := state.NewStore(statePath)
@@ -1596,7 +1598,7 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 	// equality assertion would be racy under -count or t.Parallel.
 	beforeRetryLabel := testutil.ToFloat64(metrics.GitPollTotal.WithLabelValues("pending_hook_retry"))
 
-	healthChecker := health.New(sys)
+	healthChecker := health.New(sys, health.WithLogger(discardLogger()))
 	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
 
 	loaded, err := store.Load()
@@ -1617,7 +1619,7 @@ func tickPendingUnitFixture(t *testing.T, poller *gitpoll.Poller, repoDir, state
 	initial, err := poller.Poll(ctx, "")
 	require.NoError(t, err)
 
-	resolved, err := LoadAndResolveHost(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
+	resolved, err := LoadAndResolveHost(ctx, ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
 	require.NoError(t, err)
 	files := resolved.Files
 	store := state.NewStore(statePath)
@@ -1664,7 +1666,7 @@ func TestTickReportsRetryPendingWhenUnitsPending(t *testing.T) {
 	)
 
 	ctx := t.Context()
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
+	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil, gitpoll.WithLogger(discardLogger()))
 	require.NoError(t, poller.Init(ctx))
 	store, _ := tickPendingUnitFixture(t, poller, repoDir, statePath, cfg.SecretsDir)
 
@@ -1672,7 +1674,7 @@ func TestTickReportsRetryPendingWhenUnitsPending(t *testing.T) {
 	require.NoError(t, err)
 
 	before := testutil.ToFloat64(metrics.ReconciliationTotal.WithLabelValues("retry_pending"))
-	healthChecker := health.New(sys)
+	healthChecker := health.New(sys, health.WithLogger(discardLogger()))
 	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
 
 	after := testutil.ToFloat64(metrics.ReconciliationTotal.WithLabelValues("retry_pending"))
@@ -1710,11 +1712,11 @@ func TestTickClearsPendingUnitWhenHealthy(t *testing.T) {
 	)
 
 	ctx := t.Context()
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
+	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil, gitpoll.WithLogger(discardLogger()))
 	require.NoError(t, poller.Init(ctx))
 	store, _ := tickPendingUnitFixture(t, poller, repoDir, statePath, cfg.SecretsDir)
 
-	healthChecker := health.New(sys)
+	healthChecker := health.New(sys, health.WithLogger(discardLogger()))
 	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
 
 	loaded, err := store.Load()
@@ -1731,7 +1733,7 @@ func tickTimerJobFixture(t *testing.T, poller *gitpoll.Poller, repoDir, statePat
 	initial, err := poller.Poll(ctx, "")
 	require.NoError(t, err)
 
-	resolved, err := LoadAndResolveHost(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
+	resolved, err := LoadAndResolveHost(ctx, ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
 	require.NoError(t, err)
 	files := resolved.Files
 	store := state.NewStore(statePath)
@@ -1809,10 +1811,10 @@ func TestTickRecordsTimerOneshotRuns(t *testing.T) {
 	)
 
 	ctx := t.Context()
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
+	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil, gitpoll.WithLogger(discardLogger()))
 	require.NoError(t, poller.Init(ctx))
 	store := tickTimerJobFixture(t, poller, repoDir, statePath, cfg.SecretsDir)
-	healthChecker := health.New(sys)
+	healthChecker := health.New(sys, health.WithLogger(discardLogger()))
 
 	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
 
@@ -1869,7 +1871,7 @@ func TestTickDropsStalePendingHookNameOnRetry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
+	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil, gitpoll.WithLogger(discardLogger()))
 	require.NoError(t, poller.Init(ctx))
 	initial, err := poller.Poll(ctx, "")
 	require.NoError(t, err)
@@ -1877,7 +1879,7 @@ func TestTickDropsStalePendingHookNameOnRetry(t *testing.T) {
 	// Pre-seed state matching the current resolved files (so the diff is empty)
 	// AND a pending hook for a *different* secret that did not change in this
 	// tick. The pending entry must survive the tick.
-	resolved, err := LoadAndResolveHost(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
+	resolved, err := LoadAndResolveHost(ctx, ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
 	require.NoError(t, err)
 	files := resolved.Files
 	store := state.NewStore(statePath)
@@ -1887,7 +1889,7 @@ func TestTickDropsStalePendingHookNameOnRetry(t *testing.T) {
 	st.PendingHooks = map[string]int{"hook-for-other-secret-not-in-this-bundle": 1}
 	require.NoError(t, store.Save(st))
 
-	healthChecker := health.New(sys)
+	healthChecker := health.New(sys, health.WithLogger(discardLogger()))
 	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
 
 	loaded, err := store.Load()
@@ -1927,13 +1929,13 @@ func TestTickDoesNotIncrementFailedCountOnRetryableHookError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
+	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil, gitpoll.WithLogger(discardLogger()))
 	require.NoError(t, poller.Init(ctx))
 
 	store := state.NewStore(statePath)
 	require.NoError(t, store.Save(state.NewState()))
 
-	healthChecker := health.New(sys)
+	healthChecker := health.New(sys, health.WithLogger(discardLogger()))
 	// tick must return nil — ErrApplyIncomplete is handled internally as
 	// "retry pending", not propagated as a reconciliation failure.
 	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
@@ -1990,7 +1992,7 @@ func TestPendingHookExhaustsBudgetAfterMaxRetries(t *testing.T) {
 	}}
 	pending := map[string]int{"app-reload": 3}
 
-	got := enforceRetryBudget(pending, hooks)
+	got := newTestAgent(t, &agentcfg.Config{}).enforceRetryBudget(pending, hooks)
 	assert.Empty(t, got, "hook exhausted retry budget should be dropped")
 }
 
@@ -2013,6 +2015,6 @@ func TestMergeThenEnforceBudgetDropsAtLimit(t *testing.T) {
 		PendingHookNames:   []string{"app-reload"},
 	}
 
-	got := enforceRetryBudget(mergePendingHooks(old, result), hooks)
+	got := newTestAgent(t, &agentcfg.Config{}).enforceRetryBudget(mergePendingHooks(old, result), hooks)
 	assert.Empty(t, got, "count reaches MaxRetries=3, budget drops the entry on the same tick")
 }
