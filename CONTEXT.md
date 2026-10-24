@@ -73,6 +73,10 @@ _Avoid_: secret (when the reference, not the value, is meant)
 An age public key a SOPS file in the Fleet is encrypted to. A Host's Recipients are the public keys of its own identity; only a file's Recipients can read it.
 _Avoid_: key (the identity and the Recipient are different halves), public key (when the role is meant)
 
+**Operator**:
+A person, or an offline backup key, declared in the Fleet as allowed to read every SOPS file. Operators edit SOPS files; Agents never act as Operators.
+_Avoid_: admin, maintainer, user (a Linux user on a Machine is something else)
+
 **Timer-triggered One-shot**:
 A `Type=oneshot` unit from the Fleet that a `.timer` starts on a schedule (a backup, a restore-verify); picolet tracks when it last ran, last succeeded and with what result.
 _Avoid_: job, cron job, scheduled job (systemd's D-Bus jobs are a different thing picolet already models)
