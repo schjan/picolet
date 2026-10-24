@@ -74,11 +74,11 @@ func buildUnitInfo(unit *parser.UnitFile) *quadlet.UnitInfo {
 // systemd dependency generation (e.g. podman-user-wait-network-online.service vs
 // network-online.target).
 func validateQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.UnitInfo, rootless bool) error {
-	_, err := convertQuadlet(unit, unitsInfoMap, rootless)
+	_, err := convertQuadlet(unit, unitsInfoMap, rootless, slog.Default())
 	return err
 }
 
-func convertQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.UnitInfo, rootless bool) (*parser.UnitFile, error) {
+func convertQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.UnitInfo, rootless bool, log *slog.Logger) (*parser.UnitFile, error) {
 	// Ensure the unit's own entry is in the map. In the ValidateFiles path this is
 	// pre-populated by buildUnitsInfoFromFiles; this handles direct calls (e.g. tests).
 	if _, ok := unitsInfoMap[unit.Filename]; !ok {
@@ -100,7 +100,7 @@ func convertQuadlet(unit *parser.UnitFile, unitsInfoMap map[string]*quadlet.Unit
 
 	service, warn, convertErr := conv.convert(unit, unitsInfoMap, rootless)
 	if warn != nil {
-		slog.Warn("quadlet warning", "file", unit.Filename, "warning", warn)
+		log.Warn("quadlet warning", "file", unit.Filename, "warning", warn)
 	}
 	if convertErr != nil {
 		return nil, fmt.Errorf("%s: %w", unit.Filename, convertErr)

@@ -309,17 +309,19 @@ func runDryRun(ctx context.Context, repoDir, hostname, configPath string) error 
 	return nil
 }
 
-func runValidate(ctx context.Context, repoDir string) error {
-	repo, err := config.OpenRepo(repoDir)
+// runValidate validates every Host of the Fleet at repoDir. Config load,
+// resolver and validator all log through logger.
+func runValidate(ctx context.Context, repoDir string, logger *slog.Logger) error {
+	repo, err := config.OpenRepo(repoDir, config.WithLogger(logger))
 	if err != nil {
 		return err
 	}
 	defer repo.Close()
-	r, err := resolver.New(resolver.Config{FS: repo.FS, Config: repo.Config})
+	r, err := resolver.New(resolver.Config{FS: repo.FS, Config: repo.Config, Logger: logger})
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)
 	}
-	return validator.ValidateAll(ctx, r, repo.Config)
+	return validator.ValidateAll(ctx, r, repo.Config, validator.WithLogger(logger))
 }
 
 func runResolve(ctx context.Context, out io.Writer, repoDir, host string) error {

@@ -56,6 +56,7 @@ func TestLoadAndResolveHostRejectsSymlinksEscapingTheRepo(t *testing.T) {
 			}
 
 			resolved, err := LoadAndResolveHost(t.Context(), ResolveParams{
+				Logger:   discardLogger(),
 				RepoPath: repo, Hostname: "h1", SecretsDir: t.TempDir(), DataDir: t.TempDir(),
 			})
 			require.Error(t, err)

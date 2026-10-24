@@ -106,6 +106,20 @@ type Poller struct {
 	localPath string
 	auth      AuthProvider
 	repo      *git.Repository
+	logger    *slog.Logger
+}
+
+// Option configures a Poller.
+type Option func(*Poller)
+
+// WithLogger sets the logger the Poller logs through. A nil logger is
+// ignored; the default is slog.Default().
+func WithLogger(l *slog.Logger) Option {
+	return func(p *Poller) {
+		if l != nil {
+			p.logger = l
+		}
+	}
 }
 
 // PollResult indicates the current HEAD SHA and whether it changed.
@@ -115,16 +129,21 @@ type PollResult struct {
 }
 
 // New creates a poller. localPath is where the repo is cloned to.
-func New(repoURL, branch, localPath string, auth AuthProvider) *Poller {
+func New(repoURL, branch, localPath string, auth AuthProvider, opts ...Option) *Poller {
 	if auth == nil {
 		auth = noAuthProvider{}
 	}
-	return &Poller{
+	p := &Poller{
 		repoURL:   repoURL,
 		branch:    branch,
 		localPath: localPath,
 		auth:      auth,
+		logger:    slog.Default(),
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // Init opens an existing clone or clones fresh.
@@ -162,7 +181,7 @@ func (p *Poller) Init(ctx context.Context) error {
 // Poll fetches from remote and returns the current HEAD SHA. Changed is true
 // if HEAD differs from previousSHA.
 func (p *Poller) Poll(ctx context.Context, previousSHA string) (*PollResult, error) {
-	slog.Debug("polling git repository", "url", p.repoURL, "branch", p.branch)
+	p.logger.Debug("polling git repository", "url", p.repoURL, "branch", p.branch)
 	if err := p.fetch(ctx); err != nil {
 		return nil, err
 	}
@@ -172,7 +191,7 @@ func (p *Poller) Poll(ctx context.Context, previousSHA string) (*PollResult, err
 		return nil, err
 	}
 
-	slog.Debug("git fetch complete", "sha", head, "changed", head != previousSHA)
+	p.logger.Debug("git fetch complete", "sha", head, "changed", head != previousSHA)
 	return &PollResult{
 		HeadSHA: head,
 		Changed: head != previousSHA,
@@ -241,11 +260,11 @@ func NewStaticTokenAuth(repoURL, token string) AuthProvider {
 func (p *Poller) verifyRemote(repo *git.Repository) bool {
 	remote, err := repo.Remote("origin")
 	if err != nil || len(remote.Config().URLs) == 0 {
-		slog.Warn("existing repo has no origin remote, re-cloning")
+		p.logger.Warn("existing repo has no origin remote, re-cloning")
 		return false
 	}
 	if remote.Config().URLs[0] != p.repoURL {
-		slog.Warn("existing repo has wrong remote, re-cloning",
+		p.logger.Warn("existing repo has wrong remote, re-cloning",
 			"expected", p.repoURL,
 			"got", remote.Config().URLs[0])
 		return false

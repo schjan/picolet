@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,7 +17,7 @@ import (
 func TestWebhookValidPostNoSecret(t *testing.T) {
 	t.Parallel()
 	var called atomic.Int32
-	h := webhookHandler(func() { called.Add(1) }, "")
+	h := webhookHandler(func() { called.Add(1) }, "", slog.New(slog.DiscardHandler))
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader("{}"))
 	rec := httptest.NewRecorder()
@@ -33,7 +34,7 @@ func TestWebhookValidPostWithHMAC(t *testing.T) {
 	require.NoError(t, os.WriteFile(secretPath, []byte(secret), 0o600))
 
 	var called atomic.Int32
-	h := webhookHandler(func() { called.Add(1) }, secretPath)
+	h := webhookHandler(func() { called.Add(1) }, secretPath, slog.New(slog.DiscardHandler))
 
 	body := []byte("{}")
 	sig := ComputeSignature(body, secret)
@@ -53,7 +54,7 @@ func TestWebhookWrongHMAC(t *testing.T) {
 	require.NoError(t, os.WriteFile(secretPath, []byte("correct-secret"), 0o600))
 
 	var called atomic.Int32
-	h := webhookHandler(func() { called.Add(1) }, secretPath)
+	h := webhookHandler(func() { called.Add(1) }, secretPath, slog.New(slog.DiscardHandler))
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader("{}"))
 	req.Header.Set("X-Hub-Signature-256", "sha256=wrong")
@@ -70,7 +71,7 @@ func TestWebhookMissingSignatureWhenSecretConfigured(t *testing.T) {
 	require.NoError(t, os.WriteFile(secretPath, []byte("my-secret"), 0o600))
 
 	var called atomic.Int32
-	h := webhookHandler(func() { called.Add(1) }, secretPath)
+	h := webhookHandler(func() { called.Add(1) }, secretPath, slog.New(slog.DiscardHandler))
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader("{}"))
 	rec := httptest.NewRecorder()
@@ -83,7 +84,7 @@ func TestWebhookMissingSignatureWhenSecretConfigured(t *testing.T) {
 func TestWebhookGetNotAllowed(t *testing.T) {
 	t.Parallel()
 	var called atomic.Int32
-	h := webhookHandler(func() { called.Add(1) }, "")
+	h := webhookHandler(func() { called.Add(1) }, "", slog.New(slog.DiscardHandler))
 
 	req := httptest.NewRequest(http.MethodGet, "/webhook", nil)
 	rec := httptest.NewRecorder()
@@ -96,7 +97,7 @@ func TestWebhookGetNotAllowed(t *testing.T) {
 func TestWebhookSecretFileMissing(t *testing.T) {
 	t.Parallel()
 	var called atomic.Int32
-	h := webhookHandler(func() { called.Add(1) }, "/nonexistent/secret")
+	h := webhookHandler(func() { called.Add(1) }, "/nonexistent/secret", slog.New(slog.DiscardHandler))
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader("{}"))
 	rec := httptest.NewRecorder()
