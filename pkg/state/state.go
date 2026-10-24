@@ -78,6 +78,12 @@ func NewState() *State {
 func (s *State) markApplied(headSHA string) {
 	s.AppliedSHA = headSHA
 	s.AppliedAt = time.Now()
+	s.ClearFailureGate()
+}
+
+// ClearFailureGate forgets the failed SHA and its consecutive-failure count,
+// so the next reconciliation of that SHA is attempted again.
+func (s *State) ClearFailureGate() {
 	s.FailedSHA = ""
 	s.FailedCount = 0
 	s.FailedAt = time.Time{}

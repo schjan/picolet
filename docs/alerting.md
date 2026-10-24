@@ -71,7 +71,7 @@ groups:
           severity: critical
         annotations:
           summary: "picolet has gated a SHA after 3 consecutive failures"
-          description: "The current git HEAD has failed reconciliation 3+ times and is permanently skipped until a new commit arrives."
+          description: "The current git HEAD has failed reconciliation 3+ times and is skipped until a new commit arrives, the gate expires (1h) or the Agent restarts."
 
       - alert: PicoletUnitRestartPending
         expr: picolet_unit_restart_pending > 0
