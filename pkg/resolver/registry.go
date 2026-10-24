@@ -93,6 +93,18 @@ func PPProvider(reader SecretRefReader) ProviderTemplate {
 	}
 }
 
+// strictModeFix is the fix a strict-mode error (bootstrap, validate's
+// Agent-bundle pass) gives for a ref of the provider key: a provider is never
+// configured there, so the value must reach the Agent another way.
+func strictModeFix(key ProviderKey) string {
+	switch key {
+	case ProviderOnePassword, ProviderProtonPass:
+		return "use a YAML-value reference and let the agent resolve it at runtime"
+	default:
+		return "this provider cannot be resolved in strict mode"
+	}
+}
+
 const placeholderSecret = "<secret>"
 
 // RefCache manages two-phase resolution of secret references for templates.
@@ -299,7 +311,7 @@ func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p Provi
 	funcMap[p.FuncName] = func(ref string) (string, error) {
 		if cache == nil {
 			if p.Strict {
-				return "", fmt.Errorf("%s: provider not configured in strict mode; use a YAML-value reference and let the agent resolve it at runtime", p.FuncName)
+				return "", fmt.Errorf("%s %q: provider not configured in strict mode; %s", p.FuncName, ref, strictModeFix(p.Key))
 			}
 			return p.PlaceholderEmpty, nil
 		}

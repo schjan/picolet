@@ -320,7 +320,7 @@ func runValidate(ctx context.Context, repoDir string, logger *slog.Logger) error
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)
 	}
-	return validator.ValidateAll(ctx, r, repo.Config, validator.WithLogger(logger))
+	return validator.ValidateAll(ctx, repo.FS, r, repo.Config, validator.WithLogger(logger))
 }
 
 func runResolve(ctx context.Context, out io.Writer, repoDir, host string) error {

@@ -806,7 +806,8 @@ func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, re
 	}
 	if reader == nil {
 		if r.strict {
-			return fmt.Errorf("%s provider not configured; cannot resolve direct secrets in strict mode: %s", name, strings.Join(refs, ", "))
+			return fmt.Errorf("%s provider not configured; cannot resolve direct secrets in strict mode: %s; %s",
+				name, strings.Join(refs, ", "), strictModeFix(name))
 		}
 		r.logger.Warn("skipping secrets (provider not configured)", "provider", name, "count", len(refs))
 		return nil

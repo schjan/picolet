@@ -1902,6 +1902,29 @@ features: {}
 	require.ErrorContains(t, err, "provider not configured in strict mode")
 }
 
+// A direct provider `secrets:` ref in strict mode names the ref and the fix.
+func TestResolveHostStrictDirectProviderSecretNamesRefAndFix(t *testing.T) {
+	t.Parallel()
+	for _, ref := range []string{"op://vault/item/field", "pass://share/item/field"} {
+		t.Run(ref, func(t *testing.T) {
+			t.Parallel()
+			fsys := fstest.MapFS{
+				"fleet.yml":             &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
+				"assignments.yml":       &fstest.MapFile{Data: []byte("base:\n  secrets: [\"" + ref + "\"]\nroles: {}\nfeatures: {}\n")},
+				"hosts/node-1/host.yml": &fstest.MapFile{Data: []byte("hostname: node-1\nrole: node\n")},
+			}
+			cfg, err := config.LoadAll(fsys)
+			require.NoError(t, err)
+			r, err := New(Config{FS: fsys, Config: cfg, Strict: true})
+			require.NoError(t, err)
+
+			_, err = r.ResolveHost(t.Context(), "node-1")
+			require.ErrorContains(t, err, ref)
+			require.ErrorContains(t, err, "use a YAML-value reference and let the agent resolve it at runtime")
+		})
+	}
+}
+
 //nolint:funlen // table-driven test subtests
 func TestReadOpSecret(t *testing.T) {
 	t.Parallel()
