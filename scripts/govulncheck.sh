@@ -15,9 +15,14 @@ report="$(mktemp)"
 trap 'rm -f "$report"' EXIT
 
 cd "$root"
+# `go run pkg@version` ignores this module's go line and picks the toolchain
+# from the base go and x/vuln's own go line, so a base go older than go.mod
+# builds a scanner that cannot load picolet's packages. Pin the toolchain
+# this module selects (GOVERSION, read here in the module root).
+toolchain="$(go env GOVERSION)"
 # JSON mode exits 0 when it finds vulnerabilities; a non-zero exit is a
 # scanner error and fails the script through set -e.
-go run "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION" \
+GOTOOLCHAIN="$toolchain" go run "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION" \
   -format json -tags "$BUILD_TAGS" ./... > "$report"
 
 go_version="$(jq -r 'select(.config) | .config.go_version' "$report")"

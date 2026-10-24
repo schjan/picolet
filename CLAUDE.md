@@ -24,6 +24,8 @@ task vulncheck      # govulncheck with the build tags; fails on any finding not 
 
 `go tool sops` runs the pinned SOPS CLI (Go `tool` directive in `go.mod`).
 
+`task vulncheck` runs `scripts/govulncheck.sh` (needs `jq`; govulncheck is pinned in the script, not as a `go.mod` tool, because its dependencies would bump the binary's `golang.org/x/*` modules). Locally it also reports standard-library findings fixed in newer Go patch releases; CI uses the latest patch.
+
 **Regenerate mocks** (after changing interfaces in `pkg/applier`, `pkg/agent` or `pkg/machine`): `go tool mockery`
 
 **Without Task**: all `go build`/`go test` commands require the build tags from `Taskfile.yml` (podman/v5 otherwise pulls in C libraries):
