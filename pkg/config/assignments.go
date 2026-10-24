@@ -101,21 +101,31 @@ type ResolvedFileSet struct {
 	Services []string
 }
 
+// WarnUnassigned logs, through log, the host's role and features that have no
+// assignments group.
+func (a *Assignments) WarnUnassigned(host *HostConfig, log *slog.Logger) {
+	if _, ok := a.Roles[host.Role]; !ok && host.Role != "" {
+		log.Warn("no assignments for role", "role", host.Role, "host", host.Hostname)
+	}
+	for _, feature := range host.Features {
+		if _, ok := a.Features[feature]; !ok {
+			log.Warn("no assignments for feature", "feature", feature, "host", host.Hostname)
+		}
+	}
+}
+
 // Resolve computes the complete file set for a host by merging
-// base + role + features assignments.
+// base + role + features assignments. It is a pure merge; WarnUnassigned
+// reports a role or feature without assignments.
 func (a *Assignments) Resolve(host *HostConfig) *ResolvedFileSet {
 	result := &ResolvedFileSet{}
 	result.merge(&a.Base)
 	if group, ok := a.Roles[host.Role]; ok {
 		result.merge(&group)
-	} else if host.Role != "" {
-		slog.Warn("no assignments for role", "role", host.Role, "host", host.Hostname)
 	}
 	for _, feature := range host.Features {
 		if group, ok := a.Features[feature]; ok {
 			result.merge(&group)
-		} else {
-			slog.Warn("no assignments for feature", "feature", feature, "host", host.Hostname)
 		}
 	}
 	result.Paths = SortedUnique(result.Paths)

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	"github.com/schjan/picolet/pkg/metrics"
@@ -24,17 +23,17 @@ func (a *Agent) maybePruneImages(ctx context.Context, st *state.State, store *st
 	// has a default via setDefaults; a zero interval only occurs for configs not
 	// built through agentcfg.Parse).
 	if a.dryRun || !a.cfg.PruneImagesEnabled() || a.cfg.PruneInterval <= 0 {
-		slog.Debug("image prune skipped", "reason", "disabled_or_dry_run")
+		a.logger.Debug("image prune skipped", "reason", "disabled_or_dry_run")
 		return
 	}
 	if time.Since(st.LastPrunedAt) < a.cfg.PruneInterval {
-		slog.Debug("image prune not due", "last_pruned_at", st.LastPrunedAt, "interval", a.cfg.PruneInterval)
+		a.logger.Debug("image prune not due", "last_pruned_at", st.LastPrunedAt, "interval", a.cfg.PruneInterval)
 		return
 	}
 	// A zero lastPruneAttemptAt is far in the past, so time.Since is never below
 	// the cooldown — the first attempt is never suppressed.
 	if time.Since(a.lastPruneAttemptAt) < pruneFailureCooldown {
-		slog.Debug("image prune backing off after recent failure", "last_attempt", a.lastPruneAttemptAt)
+		a.logger.Debug("image prune backing off after recent failure", "last_attempt", a.lastPruneAttemptAt)
 		return
 	}
 	a.lastPruneAttemptAt = time.Now()
@@ -54,7 +53,7 @@ func (a *Agent) maybePruneImages(ctx context.Context, st *state.State, store *st
 		// above bounds the retry cadence. Record the error while preserving the
 		// last-success timestamp (so the metric is not made to look healthy by a
 		// failed attempt), reflecting any partial reclaim in the snapshot.
-		slog.Error("image prune failed", "error", err, "images_removed", res.ImagesRemoved)
+		a.logger.Error("image prune failed", "error", err, "images_removed", res.ImagesRemoved)
 		metrics.ImagePruneTotal.WithLabelValues("error").Inc()
 		prune := a.statusStore.Prune()
 		prune.LastErrorAt = time.Now()
@@ -69,9 +68,9 @@ func (a *Agent) maybePruneImages(ctx context.Context, st *state.State, store *st
 
 	st.LastPrunedAt = time.Now().Truncate(time.Second)
 	if saveErr := store.Save(st); saveErr != nil {
-		slog.Error("saving state after image prune", "error", saveErr)
+		a.logger.Error("saving state after image prune", "error", saveErr)
 	}
-	slog.Info("image prune complete", "images_removed", res.ImagesRemoved, "reclaimed_bytes", res.ReclaimedBytes)
+	a.logger.Info("image prune complete", "images_removed", res.ImagesRemoved, "reclaimed_bytes", res.ReclaimedBytes)
 	metrics.ImagePruneTotal.WithLabelValues("success").Inc()
 	a.statusStore.SetPrune(status.PruneStatus{
 		LastRunAt:      st.LastPrunedAt,
