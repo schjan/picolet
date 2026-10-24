@@ -51,7 +51,7 @@ The agent runs a timer-based loop (`pkg/agent`). Each tick:
 
 1. **Health enforce** — restart inactive managed units (5min cooldown per unit)
 2. **Git poll** — fetch + hard reset to remote HEAD, compare SHA
-3. **Failure gate** — skip if same SHA failed 3+ times
+3. **Failure gate** — skip if same SHA failed 3+ times (expires after 1h; Agent startup clears it and records a `failed_sha_gate_cleared` dashboard event, since credential fixes arrive with a restart but no new SHA)
 4. **Config load** — `fleet.yml`, `assignments.yml`, `hosts/<name>/host.yml` from repo FS
 5. **Resolve** — merge assignments (base → role → features), render templates
 6. **Diff** — compare desired files against `state.ManagedFiles` by SHA-256 content hash
