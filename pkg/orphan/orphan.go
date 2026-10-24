@@ -23,17 +23,36 @@ type Scanner struct {
 	quadletDir string
 	systemdDir string
 	dataDir    string
+	logger     *slog.Logger
+}
+
+// Option configures a Scanner.
+type Option func(*Scanner)
+
+// WithLogger sets the logger the Scanner logs through. A nil logger is
+// ignored; the default is slog.Default().
+func WithLogger(l *slog.Logger) Option {
+	return func(s *Scanner) {
+		if l != nil {
+			s.logger = l
+		}
+	}
 }
 
 // New creates a new Scanner.
-func New(writer applier.FileWriter, podman applier.PodmanClient, quadletDir, systemdDir, dataDir string) *Scanner {
-	return &Scanner{
+func New(writer applier.FileWriter, podman applier.PodmanClient, quadletDir, systemdDir, dataDir string, opts ...Option) *Scanner {
+	s := &Scanner{
 		writer:     writer,
 		podman:     podman,
 		quadletDir: quadletDir,
 		systemdDir: systemdDir,
 		dataDir:    dataDir,
+		logger:     slog.Default(),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // ScanResult contains counts of resources removed during an orphan scan.
@@ -118,7 +137,7 @@ func (s *Scanner) scanMarkedDir(dir string, managedFiles map[string]state.Manage
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		if !hasPicoletMarker(path) {
+		if !s.hasPicoletMarker(path) {
 			continue
 		}
 		if _, managed := managedFiles[path]; !managed {
@@ -140,9 +159,9 @@ func (s *Scanner) scanSecrets(ctx context.Context, managedFiles map[string]state
 	var removed int
 	for _, name := range names {
 		if _, managed := managedFiles["secret:"+name]; !managed {
-			slog.Warn("orphaned secret detected, removing", "name", name)
+			s.logger.Warn("orphaned secret detected, removing", "name", name)
 			if err := s.podman.SecretRemove(ctx, name); err != nil {
-				slog.Error("removing orphaned secret failed", "name", name, "error", err)
+				s.logger.Error("removing orphaned secret failed", "name", name, "error", err)
 			} else {
 				removed++
 			}
@@ -152,19 +171,19 @@ func (s *Scanner) scanSecrets(ctx context.Context, managedFiles map[string]state
 }
 
 func (s *Scanner) removeOrphan(path string) bool {
-	slog.Warn("orphaned file detected, removing", "path", path)
+	s.logger.Warn("orphaned file detected, removing", "path", path)
 	if err := s.writer.Remove(path); err != nil {
-		slog.Error("removing orphaned file failed", "path", path, "error", err)
+		s.logger.Error("removing orphaned file failed", "path", path, "error", err)
 		return false
 	}
 	return true
 }
 
 // hasPicoletMarker reports whether the first bytes of a file match the picolet marker.
-func hasPicoletMarker(path string) bool {
+func (s *Scanner) hasPicoletMarker(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
-		slog.Warn("orphan scan: cannot open file for marker check", "path", path, "error", err)
+		s.logger.Warn("orphan scan: cannot open file for marker check", "path", path, "error", err)
 		return false
 	}
 	defer f.Close()

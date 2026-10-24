@@ -265,6 +265,8 @@ type Applier struct {
 	// dataDir and hostDataDir map written data paths to the paths the Host
 	// sees (WithHostDataDir).
 	dataDir, hostDataDir string
+	// logger receives the apply's log lines (WithLogger).
+	logger *slog.Logger
 }
 
 // New creates a new Applier. Hooks may be nil if no change-triggered actions are needed.
@@ -276,14 +278,26 @@ func New(systemd SystemdManager, podman PodmanClient, writer FileWriter, dryRun 
 		dryRun:    dryRun,
 		hooks:     hooks,
 		selfUnits: unitSet(config.DefaultSelfUnits()),
+		logger:    slog.Default(),
 	}
 	for _, opt := range opts {
 		opt(a)
 	}
 	if a.reloader == nil {
 		a.reloader = NewHookReloader(systemd, podman)
+		a.reloader.logger = a.logger
 	}
 	return a
+}
+
+// WithLogger sets the logger the Applier (and its default hook runner) logs
+// through. A nil logger is ignored; the default is slog.Default().
+func WithLogger(l *slog.Logger) Option {
+	return func(a *Applier) {
+		if l != nil {
+			a.logger = l
+		}
+	}
 }
 
 // WithHookReloader overrides hook execution, primarily for tests.
@@ -445,7 +459,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		if change.Action == reconciler.ActionNoop {
 			continue
 		}
-		slog.Info("applying change",
+		a.logger.Info("applying change",
 			"path", change.DestPath,
 			"action", change.Action,
 			"category", change.Category,
@@ -653,10 +667,10 @@ func startingPod(u *parser.UnitFile) string {
 // the restart set: restarting the pod service stops them (their BindsTo=) and
 // starts them again (its Wants=), so restarting them as well would bounce them
 // twice.
-func dropPodMemberRestarts(p *applyPhaseResult) {
+func (a *Applier) dropPodMemberRestarts(p *applyPhaseResult) {
 	for member, pod := range p.PodMembers {
 		if podService, ok := p.ChangedPods[pod]; ok {
-			slog.Info("member restart covered by pod restart", "unit", member, "pod", podService)
+			a.logger.Info("member restart covered by pod restart", "unit", member, "pod", podService)
 			delete(p.ChangedUnits, member)
 		}
 	}
@@ -697,7 +711,7 @@ func (a *Applier) stopUnitForDelete(ctx context.Context, change reconciler.Chang
 		return
 	}
 	if stopErr := a.systemd.StopUnit(ctx, unitName); stopErr != nil {
-		slog.Warn("stopping unit before file removal", "unit", unitName, "error", stopErr)
+		a.logger.Warn("stopping unit before file removal", "unit", unitName, "error", stopErr)
 	}
 }
 
@@ -748,7 +762,7 @@ func (a *Applier) restartUnits(ctx context.Context, phase *applyPhaseResult, res
 		delete(phase.ChangedUnits, build)
 	}
 	a.activateSystemdUnits(ctx, phase, result)
-	dropPodMemberRestarts(phase)
+	a.dropPodMemberRestarts(phase)
 	consumers := a.takeBuildConsumers(phase)
 	selfRestarts := a.restartChangedUnits(ctx, phase, result)
 	selfConsumers := a.restartEach(consumers, func(unit string) { a.restartConsumer(ctx, unit, result) })
@@ -785,7 +799,7 @@ func (a *Applier) restartChangedUnit(ctx context.Context, unit string, oneshot b
 	if oneshot && a.skipTimerTriggeredRestart(ctx, unit, result) {
 		return
 	}
-	slog.Info("restarting unit", "unit", unit)
+	a.logger.Info("restarting unit", "unit", unit)
 	recordRestart(unit, a.systemd.RestartUnit(ctx, unit), result)
 }
 
@@ -812,7 +826,7 @@ func recordRestart(unit string, err error, result *ApplyResult) {
 func (a *Applier) skipTimerTriggeredRestart(ctx context.Context, unit string, result *ApplyResult) bool {
 	status, err := a.systemd.GetUnitStatus(ctx, unit)
 	if err != nil {
-		slog.Warn("skipping one-shot restart: status check failed", "unit", unit, "error", err)
+		a.logger.Warn("skipping one-shot restart: status check failed", "unit", unit, "error", err)
 		result.Errors = append(result.Errors, fmt.Errorf("checking %s before restart: %w", unit, err))
 		result.SystemdUnitOps = append(result.SystemdUnitOps,
 			SystemdUnitOp{Unit: unit, Operation: SystemdOpRestart, Result: SystemdOpResultError})
@@ -821,7 +835,7 @@ func (a *Applier) skipTimerTriggeredRestart(ctx context.Context, unit string, re
 	if !TimerTriggered(status) {
 		return false
 	}
-	slog.Info("skipping restart of timer-triggered one-shot", "unit", unit)
+	a.logger.Info("skipping restart of timer-triggered one-shot", "unit", unit)
 	result.SystemdUnitOps = append(result.SystemdUnitOps,
 		SystemdUnitOp{Unit: unit, Operation: SystemdOpRestart, Result: SystemdOpResultSkipped})
 	return true
@@ -840,9 +854,9 @@ func (a *Applier) activateSystemdUnits(ctx context.Context, phase *applyPhaseRes
 
 // runSystemdOp invokes one systemd operation on a raw unit and records its outcome.
 func (a *Applier) runSystemdOp(ctx context.Context, unit, op string, result *ApplyResult) {
-	slog.Info("systemd unit operation", "unit", unit, "operation", op)
+	a.logger.Info("systemd unit operation", "unit", unit, "operation", op)
 	if err := a.systemdOpFunc(op)(ctx, unit); err != nil {
-		slog.Warn("systemd unit operation failed", "unit", unit, "operation", op, "error", err)
+		a.logger.Warn("systemd unit operation failed", "unit", unit, "operation", op, "error", err)
 		result.Errors = append(result.Errors, fmt.Errorf("%s %s: %w", op, unit, err))
 		result.SystemdUnitOps = append(result.SystemdUnitOps, SystemdUnitOp{Unit: unit, Operation: op, Result: SystemdOpResultError})
 		return
@@ -874,7 +888,7 @@ func (a *Applier) systemdOpFunc(op string) func(context.Context, string) error {
 // units after all other units were handled synchronously.
 func (a *Applier) scheduleSelfUnitOps(selfRestarts []string, result *ApplyResult) {
 	for _, unit := range selfRestarts {
-		slog.Info("restarting picolet (self-update), state will be saved before shutdown", "unit", unit)
+		a.logger.Info("restarting picolet (self-update), state will be saved before shutdown", "unit", unit)
 		result.RestartedUnits = append(result.RestartedUnits, unit)
 		a.deferredSelfUnitOp(unit, a.systemd.RestartUnit)
 	}
@@ -882,7 +896,7 @@ func (a *Applier) scheduleSelfUnitOps(selfRestarts []string, result *ApplyResult
 		if slices.Contains(selfRestarts, unit) {
 			continue // restart already scheduled; a stop would defeat it
 		}
-		slog.Info("stopping picolet (own unit deleted), state will be saved before shutdown", "unit", unit)
+		a.logger.Info("stopping picolet (own unit deleted), state will be saved before shutdown", "unit", unit)
 		a.deferredSelfUnitOp(unit, a.systemd.StopUnit)
 	}
 }
@@ -898,7 +912,7 @@ func (a *Applier) deferredSelfUnitOp(unit string, op func(context.Context, strin
 		defer cancel()
 		if err := op(opCtx, unit); err != nil {
 			// Expected: process is killed mid-D-Bus call during shutdown.
-			slog.Debug("deferred self unit operation result (may be interrupted by shutdown)", "unit", unit, "error", err)
+			a.logger.Debug("deferred self unit operation result (may be interrupted by shutdown)", "unit", unit, "error", err)
 		}
 	}()
 }
@@ -907,7 +921,7 @@ func (a *Applier) reloadIfNeeded(ctx context.Context, needsReload bool) error {
 	if !needsReload {
 		return nil
 	}
-	slog.Info("running systemd daemon-reload")
+	a.logger.Info("running systemd daemon-reload")
 	if err := a.systemd.DaemonReload(ctx); err != nil {
 		return fmt.Errorf("daemon-reload: %w", err)
 	}
@@ -966,7 +980,7 @@ func (a *Applier) runHooksWithPending(
 		if !ok {
 			// Hook was removed from config since the last failure. Mark
 			// attempted (no outcome) so mergePendingHooks drops it.
-			slog.Info("pending hook no longer in config, dropping", "hook", name)
+			a.logger.Info("pending hook no longer in config, dropping", "hook", name)
 			result.AttemptedHookNames = append(result.AttemptedHookNames, name)
 			continue
 		}
@@ -1040,7 +1054,7 @@ func (a *Applier) RunPendingHooks(ctx context.Context, pendingNames []string) *A
 
 func (a *Applier) restartFallbackUnits(ctx context.Context, restartUnits map[string]struct{}, result *ApplyResult) {
 	for unit := range restartUnits {
-		slog.Info("restarting unit after hook retry", "unit", unit)
+		a.logger.Info("restarting unit after hook retry", "unit", unit)
 		if err := a.systemd.RestartUnit(ctx, unit); err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("restarting %s: %w", unit, err))
 		} else {

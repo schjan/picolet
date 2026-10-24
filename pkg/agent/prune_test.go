@@ -37,7 +37,7 @@ func newPruneTickAgent(t *testing.T, cfg *agentcfg.Config, opts ...Option) (*Age
 	opts = append(opts, WithSystemd(sys), WithFileWriter(fw), WithRepoPath(repoDir), WithStatePath(statePath))
 	a := newTestAgent(t, cfg, opts...)
 
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
+	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil, gitpoll.WithLogger(discardLogger()))
 	require.NoError(t, poller.Init(t.Context()))
 	initial, err := poller.Poll(t.Context(), "")
 	require.NoError(t, err)
@@ -47,7 +47,7 @@ func newPruneTickAgent(t *testing.T, cfg *agentcfg.Config, opts ...Option) (*Age
 	st.MarkApplied(initial.HeadSHA) // SHA unchanged => noop tick
 	require.NoError(t, store.Save(st))
 
-	return a, poller, store, health.New(sys)
+	return a, poller, store, health.New(sys, health.WithLogger(discardLogger()))
 }
 
 // TestTickInvokesPruneOnNoopTick verifies the prune step actually runs through

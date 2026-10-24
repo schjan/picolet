@@ -101,6 +101,22 @@ type UnitRun struct {
 	SucceededAt time.Time
 }
 
+// SecretProvider is the Agent's runtime record for one secret provider
+// (1Password, Proton Pass, ...), keyed by provider name in Snapshot.
+type SecretProvider struct {
+	// Managed is the number of direct provider-backed secret assignments in
+	// the last resolved file set. Meaningful only when ManagedSet is true.
+	Managed    int
+	ManagedSet bool
+	// Syncs counts successful syncs of this provider since the process
+	// started; LastSyncAt is when the latest one finished.
+	Syncs      uint64
+	LastSyncAt time.Time
+	// CredentialExpiresAt is the operator-declared expiry of the provider's
+	// credential; zero when none is declared.
+	CredentialExpiresAt time.Time
+}
+
 // ReconcileEvent is a compact in-memory event rendered by the dashboard.
 type ReconcileEvent struct {
 	At      time.Time
@@ -121,6 +137,11 @@ type Snapshot struct {
 	Prune        PruneStatus
 	Events       []ReconcileEvent
 	VerifiedAt   time.Time
+	// SecretProviders holds per-provider secret-sync bookkeeping.
+	SecretProviders map[string]SecretProvider
+	// FailedSHACount is the consecutive reconciliation failure count for the
+	// current SHA.
+	FailedSHACount int
 	// Bootstrapped is true once the agent has completed at least one
 	// resolve+analyze cycle. The first SetDependencies call flips it.
 	Bootstrapped bool
@@ -336,6 +357,75 @@ func (s *Store) AddEvent(event ReconcileEvent) {
 	}
 }
 
+// SetSecretsManaged records how many direct secret assignments provider
+// currently backs.
+func (s *Store) SetSecretsManaged(provider string, count int) {
+	s.updateSecretProvider(provider, func(p *SecretProvider) {
+		p.Managed = count
+		p.ManagedSet = true
+	})
+}
+
+// RecordSecretSync counts one successful sync of provider, finished at at.
+func (s *Store) RecordSecretSync(provider string, at time.Time) {
+	s.updateSecretProvider(provider, func(p *SecretProvider) {
+		p.Syncs++
+		p.LastSyncAt = at
+	})
+}
+
+// SetCredentialExpiry records the declared expiry of provider's credential.
+func (s *Store) SetCredentialExpiry(provider string, expiresAt time.Time) {
+	s.updateSecretProvider(provider, func(p *SecretProvider) {
+		p.CredentialExpiresAt = expiresAt
+	})
+}
+
+func (s *Store) updateSecretProvider(provider string, update func(*SecretProvider)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.snapshot.SecretProviders == nil {
+		s.snapshot.SecretProviders = make(map[string]SecretProvider)
+	}
+	p := s.snapshot.SecretProviders[provider]
+	update(&p)
+	s.snapshot.SecretProviders[provider] = p
+}
+
+// SecretProviders returns a copy of the per-provider secret bookkeeping,
+// cheaper than a full Snapshot for the metrics scrape path.
+func (s *Store) SecretProviders() map[string]SecretProvider {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return maps.Clone(s.snapshot.SecretProviders)
+}
+
+// SetFailedSHACount records the consecutive failure count for the current SHA.
+func (s *Store) SetFailedSHACount(n int) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshot.FailedSHACount = n
+}
+
+// FailedSHACount returns the consecutive failure count for the current SHA.
+func (s *Store) FailedSHACount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snapshot.FailedSHACount
+}
+
 func cloneSnapshot(in Snapshot) Snapshot {
 	return Snapshot{
 		Units:        cloneUnits(in.Units),
@@ -347,6 +437,9 @@ func cloneSnapshot(in Snapshot) Snapshot {
 		Events:       slices.Clone(in.Events),
 		VerifiedAt:   in.VerifiedAt,
 		Bootstrapped: in.Bootstrapped,
+
+		SecretProviders: maps.Clone(in.SecretProviders),
+		FailedSHACount:  in.FailedSHACount,
 	}
 }
 

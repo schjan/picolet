@@ -102,6 +102,7 @@ const placeholderSecret = "<secret>"
 // Not goroutine-safe; template rendering must be serial (same constraint as renderTemplate).
 type RefCache struct {
 	reader    SecretRefReader
+	logger    *slog.Logger
 	collected []string
 	resolved  map[string]string // non-nil after Resolve(); doubles as phase indicator
 }
@@ -128,13 +129,21 @@ func (c *RefCache) Resolve(ctx context.Context) error {
 		return nil
 	}
 	unique := config.SortedUnique(c.collected)
-	slog.Debug("batch-resolving template secrets", "count", len(unique))
+	c.log().Debug("batch-resolving template secrets", "count", len(unique))
 	results, err := c.reader(ctx, unique)
 	if err != nil {
 		return fmt.Errorf("resolving template secrets: %w", err)
 	}
 	c.resolved = results
 	return nil
+}
+
+// log returns the cache's logger, slog.Default() when none was set.
+func (c *RefCache) log() *slog.Logger {
+	if c.logger == nil {
+		return slog.Default()
+	}
+	return c.logger
 }
 
 // BuildRegistry collects all .tmpl files from the filesystem and builds
@@ -147,16 +156,17 @@ func (c *RefCache) Resolve(ctx context.Context) error {
 // Two-phase resolution: callers must run a collect pass, call cache.Resolve,
 // then run the real render pass.
 func BuildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string) (*template.Template, ProviderCaches, error) {
-	return buildRegistry(ctx, fsys, secretReader, providers, dataDir, nil, nil)
+	return buildRegistry(ctx, fsys, secretReader, providers, dataDir, nil, nil, slog.Default())
 }
 
 // buildRegistry is BuildRegistry with an optional source-path predicate and
 // the current Host's siblings. A nil include function includes every
 // template. The registry is rebuilt per resolve, so the `siblings` helper is
-// a per-Host closure over hostSiblings.
+// a per-Host closure over hostSiblings. The provider caches log through
+// logger.
 //
 //nolint:cyclop,funlen // funcmap registration is inherently branchy
-func buildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string, include func(string) bool, hostSiblings []HostTemplateData) (*template.Template, ProviderCaches, error) {
+func buildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, providers []ProviderTemplate, dataDir string, include func(string) bool, hostSiblings []HostTemplateData, logger *slog.Logger) (*template.Template, ProviderCaches, error) {
 	sources, err := loadTemplateSources(fsys, include)
 	if err != nil {
 		return nil, nil, err
@@ -168,7 +178,7 @@ func buildRegistry(ctx context.Context, fsys fs.FS, secretReader SecretReader, p
 	caches := make(ProviderCaches)
 	for _, p := range providers {
 		if p.Reader != nil {
-			caches[p.Key] = &RefCache{reader: p.Reader}
+			caches[p.Key] = &RefCache{reader: p.Reader, logger: logger}
 		}
 	}
 
@@ -304,7 +314,7 @@ func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p Provi
 			return val, nil
 		}
 		// Cache miss: dynamic ref not seen in collect phase.
-		slog.Debug("cache miss, resolving individually", "func", p.FuncName, "ref", ref)
+		cache.log().Debug("cache miss, resolving individually", "func", p.FuncName, "ref", ref)
 		results, err := p.Reader(ctx, []string{ref})
 		if err != nil {
 			return "", err

@@ -113,6 +113,9 @@ type Agent struct {
 	consecutiveHealthFailures atomic.Int32
 	routeRegistrar            RouteRegistrar // nil = no extra HTTP routes
 	statusStore               *status.Store
+	// logger receives every log line of the reconcile, secret-resolution and
+	// validation paths; it defaults to slog.Default() (see WithLogger).
+	logger *slog.Logger
 }
 
 // RouteRegistrar is implemented by anything that wants to add routes to the
@@ -224,6 +227,17 @@ func WithStatusStore(store *status.Store) Option {
 	}
 }
 
+// WithLogger sets the logger the Agent and the components it drives (config
+// load, resolver, validator, applier, health, rollback, git poller, orphan
+// scan) log through. A nil logger is ignored; the default is slog.Default().
+func WithLogger(l *slog.Logger) Option {
+	return func(a *Agent) {
+		if l != nil {
+			a.logger = l
+		}
+	}
+}
+
 // New creates a new Agent.
 func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 	a := &Agent{
@@ -233,6 +247,7 @@ func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 		lockPath:    DefaultLockPath,
 		webhookCh:   make(chan struct{}, 1),
 		statusStore: status.NewStore(),
+		logger:      slog.Default(),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -248,7 +263,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	defer func() {
 		if err := releaseLock(); err != nil {
-			slog.Warn("releasing process lock failed", "path", a.lockPath, "error", err)
+			a.logger.Warn("releasing process lock failed", "path", a.lockPath, "error", err)
 		}
 	}()
 
@@ -280,8 +295,8 @@ func (a *Agent) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("setting up 1password: %w", err)
 		}
-		slog.Info("1password client initialized", "token_path", a.cfg.OnePassword.TokenPath)
-		publishCredentialExpiry(resolver.ProviderOnePassword, a.cfg.OnePassword.TokenExpiresAt)
+		a.logger.Info("1password client initialized", "token_path", a.cfg.OnePassword.TokenPath)
+		a.publishCredentialExpiry(resolver.ProviderOnePassword, a.cfg.OnePassword.TokenExpiresAt)
 	}
 
 	// Bound pp.NewReader's EnsureSession with a deadline so a hung login can't block startup.
@@ -293,11 +308,11 @@ func (a *Agent) Run(ctx context.Context) error {
 			return fmt.Errorf("setting up protonpass: %w", err)
 		}
 		a.ppReader = reader
-		slog.Info("protonpass client initialized",
+		a.logger.Info("protonpass client initialized",
 			"session_dir", a.cfg.ProtonPass.SessionDir,
 			"lazy_mode", a.cfg.ProtonPass.PATPath == "",
 		)
-		publishCredentialExpiry(resolver.ProviderProtonPass, a.cfg.ProtonPass.PATExpiresAt)
+		a.publishCredentialExpiry(resolver.ProviderProtonPass, a.cfg.ProtonPass.PATExpiresAt)
 	}
 
 	// Required invariant: opReader/ppReader must be non-nil here before resolvePollerAuth()
@@ -310,13 +325,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	poller := gitpoll.New(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, auth)
+	poller := gitpoll.New(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, auth, gitpoll.WithLogger(a.logger))
 	if err := poller.Init(ctx); err != nil {
 		return fmt.Errorf("initializing git poller: %w", err)
 	}
 
 	store := state.NewStore(a.statePath)
-	healthChecker := health.New(a.systemd)
+	healthChecker := health.New(a.systemd, health.WithLogger(a.logger))
 
 	a.scanOrphans(ctx, store)
 
@@ -324,7 +339,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	metrics.FeatureInfo.WithLabelValues(string(resolver.ProviderOnePassword)).Set(boolToFloat(a.opReader != nil))
 	metrics.FeatureInfo.WithLabelValues(string(resolver.ProviderProtonPass)).Set(boolToFloat(a.ppReader != nil))
 
-	slog.Info("agent started",
+	a.logger.Info("agent started",
 		"hostname", a.cfg.Hostname,
 		"poll_interval", a.cfg.PollInterval,
 		"dry_run", a.dryRun,
@@ -334,7 +349,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Run first tick immediately
 	if err := a.tick(ctx, poller, store, healthChecker); err != nil {
-		slog.Error("initial reconciliation failed", "error", err)
+		a.logger.Error("initial reconciliation failed", "error", err)
 	} else {
 		a.ready.Store(true)
 	}
@@ -345,18 +360,18 @@ func (a *Agent) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("agent shutting down")
+			a.logger.Info("agent shutting down")
 			return nil
 		case <-ticker.C:
 			if err := a.tick(ctx, poller, store, healthChecker); err != nil {
-				slog.Error("reconciliation tick failed", "error", err)
+				a.logger.Error("reconciliation tick failed", "error", err)
 			} else if !a.ready.Load() {
 				a.ready.Store(true)
 			}
 		case <-a.webhookCh:
-			slog.Info("webhook-triggered reconciliation")
+			a.logger.Info("webhook-triggered reconciliation")
 			if err := a.tick(ctx, poller, store, healthChecker); err != nil {
-				slog.Error("webhook-triggered reconciliation failed", "error", err)
+				a.logger.Error("webhook-triggered reconciliation failed", "error", err)
 			} else if !a.ready.Load() {
 				a.ready.Store(true)
 			}
@@ -382,7 +397,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	defer func() { metrics.SetUnitRestartPending(pendingUnitAttempts(st.PendingUnits)) }()
 
 	// Seed managed-files metrics from state on every tick
-	metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
+	a.statusStore.SetFailedSHACount(st.FailedCount)
 	managedByCategory := make(map[string]float64, len(config.Deployable()))
 	for _, mf := range st.ManagedFiles {
 		managedByCategory[mf.Category.String()]++
@@ -405,7 +420,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	// 1. Health enforcement (always — units must stay healthy even when paused)
 	hr, err := healthChecker.Enforce(ctx, st)
 	if err != nil {
-		slog.Error("health enforcement error", "error", err)
+		a.logger.Error("health enforcement error", "error", err)
 	} else {
 		a.recordHealthMetrics(hr)
 	}
@@ -431,13 +446,13 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	// silently break this change detection.
 	if !maps.Equal(st.PendingUnits, pendingUnitsBefore) {
 		if saveErr := store.Save(st); saveErr != nil {
-			slog.Error("saving state after health enforcement", "error", saveErr)
+			a.logger.Error("saving state after health enforcement", "error", saveErr)
 		}
 	}
 
 	// 1b. Pause check — health ran, skip reconciliation when paused via MQTT
 	if a.paused.Load() {
-		slog.Debug("reconciliation paused via MQTT")
+		a.logger.Debug("reconciliation paused via MQTT")
 		metrics.ReconciliationTotal.WithLabelValues("paused").Inc()
 		a.recordEvent("paused", st.AppliedSHA, "reconciliation paused via MQTT")
 		return nil
@@ -461,11 +476,11 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 
 	if !pollResult.Changed && !a.opRefreshDue() && !a.ppRefreshDue() && len(st.PendingHooks) == 0 && len(st.PendingUnits) == 0 {
 		metrics.GitPollTotal.WithLabelValues("noop").Inc()
-		slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
+		a.logger.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
 		if !a.statusStore.Snapshot().Bootstrapped {
 			if err := a.refreshResolvedSnapshot(ctx); err != nil {
-				slog.Warn("refreshing runtime status snapshot failed", "error", err)
+				a.logger.Warn("refreshing runtime status snapshot failed", "error", err)
 				a.recordEvent("status_error", pollResult.HeadSHA, err.Error())
 			}
 		}
@@ -490,7 +505,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if !pollResult.Changed && !a.opRefreshDue() && !a.ppRefreshDue() && len(st.PendingHooks) == 0 {
 		metrics.GitPollTotal.WithLabelValues("pending_unit_retry").Inc()
 		metrics.ReconciliationTotal.WithLabelValues("retry_pending").Inc()
-		slog.Warn("apply incomplete, units still failing to restart",
+		a.logger.Warn("apply incomplete, units still failing to restart",
 			"sha", pollResult.HeadSHA, "pending_units", slices.Sorted(maps.Keys(st.PendingUnits)))
 		a.recordEvent("retry_pending", st.AppliedSHA, "units still failing to restart")
 		return nil
@@ -503,10 +518,10 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		// Pending-hook retry takes priority over secret-provider refresh in the
 		// label even when both apply: the retry is the actionable reason this
 		// tick ran, and ReconcileOnce will refresh secrets regardless.
-		slog.Info("forcing reconciliation for pending hook retry", "sha", pollResult.HeadSHA, "pending", st.PendingHooks)
+		a.logger.Info("forcing reconciliation for pending hook retry", "sha", pollResult.HeadSHA, "pending", st.PendingHooks)
 		metrics.GitPollTotal.WithLabelValues("pending_hook_retry").Inc()
 	default:
-		slog.Info("forcing reconciliation for secret-provider refresh", "sha", pollResult.HeadSHA)
+		a.logger.Info("forcing reconciliation for secret-provider refresh", "sha", pollResult.HeadSHA)
 		metrics.GitPollTotal.WithLabelValues("secret_refresh").Inc()
 	}
 
@@ -515,7 +530,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	const maxRetries = 3
 	const failedSHAExpiry = 1 * time.Hour
 	if pollResult.HeadSHA == st.FailedSHA && st.FailedCount >= maxRetries && time.Since(st.FailedAt) < failedSHAExpiry {
-		slog.Warn("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "failed_sha_gate", "failures", st.FailedCount)
+		a.logger.Warn("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "failed_sha_gate", "failures", st.FailedCount)
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
 		// Bump every provider's last-refresh timestamp so the agent does not
 		// retry secret refreshes every tick while blocked by the failed-SHA gate.
@@ -528,7 +543,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	// same SHA (secret-provider refresh, pending hook retry) are not deployments.
 	var deploymentID int64
 	if pollResult.Changed {
-		slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
+		a.logger.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
 		deploymentID = a.createDeployment(ctx, pollResult.HeadSHA)
 	}
 
@@ -543,7 +558,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		// failed-SHA gate, do not report a failed deployment.
 		a.reportDeploymentResult(ctx, deploymentID, nil)
 		a.markRefreshAttempted()
-		slog.Warn("apply incomplete, hooks will retry on next tick", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
+		a.logger.Warn("apply incomplete, hooks will retry on next tick", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
 		metrics.ReconciliationTotal.WithLabelValues("retry_pending").Inc()
 		a.recordEvent("retry_pending", pollResult.HeadSHA, err.Error())
 		return nil
@@ -552,7 +567,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	a.reportDeploymentResult(ctx, deploymentID, err)
 
 	if err != nil {
-		slog.Error("reconciliation failed", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
+		a.logger.Error("reconciliation failed", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
 		metrics.ReconciliationTotal.WithLabelValues("failure").Inc()
 
 		// Track failure count for the same SHA
@@ -563,22 +578,22 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 			st.FailedCount = 1
 		}
 		st.FailedAt = time.Now()
-		metrics.RecordFailedSHA(st.FailedCount)
+		a.statusStore.SetFailedSHACount(st.FailedCount)
 		a.recordEvent("failure", pollResult.HeadSHA, err.Error())
 		if saveErr := store.Save(st); saveErr != nil {
-			slog.Error("saving failed state", "error", saveErr)
+			a.logger.Error("saving failed state", "error", saveErr)
 		}
 		return err
 	}
 
 	a.markRefreshAttempted()
-	recordProviderSyncSuccess(resolver.ProviderOnePassword, result.OpSecretsCount)
-	recordProviderSyncSuccess(resolver.ProviderProtonPass, result.PPSecretsCount)
+	a.recordProviderSyncSuccess(resolver.ProviderOnePassword, result.OpSecretsCount)
+	a.recordProviderSyncSuccess(resolver.ProviderProtonPass, result.PPSecretsCount)
 	metrics.ReconciliationTotal.WithLabelValues("success").Inc()
 	if result.HasChanges {
 		a.recordEvent("success", pollResult.HeadSHA, "reconciliation complete")
 	}
-	slog.Info("reconciliation complete", "sha", pollResult.HeadSHA, "result", "success", "duration", elapsed.Round(time.Millisecond))
+	a.logger.Info("reconciliation complete", "sha", pollResult.HeadSHA, "result", "success", "duration", elapsed.Round(time.Millisecond))
 	return nil
 }
 
@@ -605,13 +620,21 @@ type ResolveParams struct {
 	// LenientHosts ignores unknown host.yml keys with a warning (see
 	// config.LenientHosts). Set only by the Agent's own reconciliation.
 	LenientHosts bool
+
+	// Logger receives the config-load, resolver and secret-resolution log
+	// lines. Nil falls back to slog.Default().
+	Logger *slog.Logger
 }
 
 // LoadAndResolveHost loads fleet config from repoPath and resolves the desired state plus host metadata.
 // It is the shared implementation behind Agent.loadAndResolve and CLI subcommands (apply, dry-run).
 func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.ResolvedHost, error) {
-	slog.Debug("loading fleet config", "repo", params.RepoPath)
-	var loadOpts []config.LoadOption
+	log := params.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	log.Debug("loading fleet config", "repo", params.RepoPath)
+	loadOpts := []config.LoadOption{config.WithLogger(log)}
 	if params.LenientHosts {
 		loadOpts = append(loadOpts, config.LenientHosts())
 	}
@@ -624,7 +647,7 @@ func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.Re
 	secretReader, releaseSecrets := resolver.DirSecretReader(params.SecretsDir)
 	defer releaseSecrets()
 
-	slog.Debug("resolving host", "hostname", params.Hostname)
+	log.Debug("resolving host", "hostname", params.Hostname)
 	loadStart := time.Now()
 	r, err := resolver.New(resolver.Config{
 		FS:             repo.FS,
@@ -637,6 +660,7 @@ func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.Re
 		SystemdDir:     params.SystemdDir,
 		DataDir:        params.DataDir,
 		HostDataDir:    params.HostDataDir,
+		Logger:         log,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating resolver: %w", err)
@@ -645,7 +669,7 @@ func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.Re
 	if err != nil {
 		return nil, fmt.Errorf("resolving host %s: %w", params.Hostname, err)
 	}
-	slog.Debug("host resolved", "hostname", params.Hostname, "files", len(resolved.Files), "duration", time.Since(loadStart).Round(time.Millisecond))
+	log.Debug("host resolved", "hostname", params.Hostname, "files", len(resolved.Files), "duration", time.Since(loadStart).Round(time.Millisecond))
 	return resolved, nil
 }
 
@@ -668,6 +692,7 @@ func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, err
 		SystemdDir:  a.systemdDirOverride,
 		DataDir:     a.dataDirOverride,
 		HostDataDir: a.cfg.EffectiveHostDataDir(),
+		Logger:      a.logger,
 	})
 }
 
@@ -701,8 +726,8 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	a.recordHostMetadata(resolved.Host)
 
 	counts := refSecretsCounts{
-		Op: recordProviderRefCount(resolver.ProviderOnePassword, a.opReader != nil, op.IsRef, files),
-		PP: recordProviderRefCount(resolver.ProviderProtonPass, a.ppReader != nil, pp.IsRef, files),
+		Op: a.recordProviderRefCount(resolver.ProviderOnePassword, a.opReader != nil, op.IsRef, files),
+		PP: a.recordProviderRefCount(resolver.ProviderProtonPass, a.ppReader != nil, pp.IsRef, files),
 	}
 
 	changeset := reconciler.Diff(files, st)
@@ -714,7 +739,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		return a.reconcileNoChanges(headSHA, resolved, changeset, st, store, counts)
 	}
 
-	slog.Info("changes detected",
+	a.logger.Info("changes detected",
 		"create", changeset.Summary[reconciler.ActionCreate],
 		"update", changeset.Summary[reconciler.ActionUpdate],
 		"delete", changeset.Summary[reconciler.ActionDelete],
@@ -722,7 +747,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 
 	deps, err := a.analyze(resolved)
 	if err != nil {
-		slog.Warn("validation failed", "error", err)
+		a.logger.Warn("validation failed", "error", err)
 		a.recordEvent("failure", headSHA, fmt.Sprintf("validation failed: %v", err))
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
@@ -745,10 +770,10 @@ func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Stor
 	// deployed state. On apply failure (rollback) we keep the previous good
 	// map rather than advertising deps for a state we couldn't reach.
 	a.statusStore.SetDependencies(deps)
-	st.PendingHooks = enforceRetryBudget(mergePendingHooks(st.PendingHooks, applyResult), hooks)
-	logNonRetryableApplyErrors(applyResult)
+	st.PendingHooks = a.enforceRetryBudget(mergePendingHooks(st.PendingHooks, applyResult), hooks)
+	a.logNonRetryableApplyErrors(applyResult)
 
-	markAppliedWithMetrics(st, headSHA)
+	a.markAppliedWithMetrics(st, headSHA)
 	a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
 	UpdateState(st, changeset)
 	// Reconcile pending-unit records: clear units that restarted cleanly, seed
@@ -760,7 +785,7 @@ func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Stor
 	}
 
 	if applyResult.NeedsSelfRestart && !a.dryRun {
-		slog.Info("picolet.container changed, self-update pending")
+		a.logger.Info("picolet.container changed, self-update pending")
 	}
 
 	return &ReconcileResult{
@@ -792,9 +817,9 @@ func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHo
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 	a.statusStore.SetDependencies(deps)
-	slog.Info("no changes to apply", "sha", headSHA)
+	a.logger.Info("no changes to apply", "sha", headSHA)
 	if headSHA != st.AppliedSHA {
-		markAppliedWithMetrics(st, headSHA)
+		a.markAppliedWithMetrics(st, headSHA)
 		a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
 		if err := store.Save(st); err != nil {
 			return nil, fmt.Errorf("saving state: %w", err)
@@ -817,15 +842,15 @@ func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHo
 // an agent restart.
 func (a *Agent) savePartialState(headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, hooks []config.Hook) {
 	UpdateState(st, changeset)
-	st.PendingHooks = enforceRetryBudget(mergePendingHooks(st.PendingHooks, applyResult), hooks)
+	st.PendingHooks = a.enforceRetryBudget(mergePendingHooks(st.PendingHooks, applyResult), hooks)
 	// Prune against the just-rebuilt ServiceNames so a unit removed from the
 	// fleet drops its pending record (health-enforce cannot see removals).
 	st.PendingUnits = prunePendingUnits(mergePendingUnits(st.PendingUnits, applyResult, headSHA, time.Now()), st.ServiceNames)
 	// Record the SHA without advancing the last-successful timestamp: the apply
 	// is incomplete, so staleness alerts must keep firing until it converges.
-	markAppliedIncompleteWithMetrics(st, headSHA)
+	a.markAppliedIncompleteWithMetrics(st, headSHA)
 	if saveErr := store.Save(st); saveErr != nil {
-		slog.Error("saving partial state after incomplete apply", "error", saveErr)
+		a.logger.Error("saving partial state after incomplete apply", "error", saveErr)
 	}
 	a.statusStore.SetDependencies(deps)
 }
@@ -937,14 +962,14 @@ func pendingUnitAttempts(pending map[string]state.PendingUnit) map[string]int {
 // map. Returns ErrApplyIncomplete when hooks still fail under keep_running.
 func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.ResolvedHost, st *state.State, store *state.Store, changeset *reconciler.Changeset, counts refSecretsCounts) (*ReconcileResult, error) {
 	pendingNames := pendingHookNames(st.PendingHooks)
-	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, resolved.Hooks)
+	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, resolved.Hooks, applier.WithLogger(a.logger))
 	result := app.RunPendingHooks(ctx, pendingNames)
 
 	recordHookMetrics(result)
-	logNonRetryableApplyErrors(result)
+	a.logNonRetryableApplyErrors(result)
 
 	newPending := mergePendingHooks(st.PendingHooks, result)
-	newPending = enforceRetryBudget(newPending, resolved.Hooks)
+	newPending = a.enforceRetryBudget(newPending, resolved.Hooks)
 
 	if !maps.Equal(st.PendingHooks, newPending) {
 		st.PendingHooks = newPending
@@ -965,7 +990,7 @@ func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.Resolv
 		return out, fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(result.RetryableErrors...))
 	}
 
-	slog.Info("pending hooks retried", "restarted", result.RestartedUnits)
+	a.logger.Info("pending hooks retried", "restarted", result.RestartedUnits)
 	return out, nil
 }
 
@@ -981,7 +1006,7 @@ func pendingHookNames(pending map[string]int) []string {
 // enforceRetryBudget removes hooks that exceeded their configured max_retries.
 // Hooks not found in the config are left untouched (they'll be dropped as stale
 // on the next actual retry attempt by RunPendingHooks).
-func enforceRetryBudget(pending map[string]int, hooks []config.Hook) map[string]int {
+func (a *Agent) enforceRetryBudget(pending map[string]int, hooks []config.Hook) map[string]int {
 	if len(pending) == 0 {
 		return nil
 	}
@@ -998,7 +1023,7 @@ func enforceRetryBudget(pending map[string]int, hooks []config.Hook) map[string]
 			limit = config.DefaultMaxRetries
 		}
 		if count >= limit {
-			slog.Error("hook exhausted retry budget, giving up",
+			a.logger.Error("hook exhausted retry budget, giving up",
 				"hook", name, "attempts", count, "max_retries", limit)
 			delete(pending, name)
 		}
@@ -1012,16 +1037,16 @@ func enforceRetryBudget(pending map[string]int, hooks []config.Hook) map[string]
 // applyWithRollback applies changeset and rolls back on a fatal error.
 // dataDir and hostDataDir are the resolved host's (applier.WithHostDataDir).
 func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset, hooks []config.Hook, pendingNames []string, deps map[string]status.UnitDependencies, dataDir, hostDataDir string) (*applier.ApplyResult, error) {
-	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile)
+	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile, rollback.WithLogger(a.logger))
 	if err != nil {
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
 	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, hooks,
-		applier.WithDependencies(deps), applier.WithHostDataDir(dataDir, hostDataDir))
+		applier.WithDependencies(deps), applier.WithHostDataDir(dataDir, hostDataDir), applier.WithLogger(a.logger))
 	result, err := app.ApplyWithPending(ctx, changeset, pendingNames)
 	if err != nil {
-		slog.Error("apply failed, rolling back", "error", err)
+		a.logger.Error("apply failed, rolling back", "error", err)
 		metrics.RollbackTotal.Inc()
 
 		// Use a detached context so rollback can complete even during shutdown.
@@ -1029,10 +1054,10 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer rollbackCancel()
 
-		if rbErr := rollback.Restore(rollbackCtx, snap, a.writer, a.systemd); rbErr != nil {
-			slog.Error("rollback failed", "error", rbErr)
+		if rbErr := rollback.Restore(rollbackCtx, snap, a.writer, a.systemd, rollback.WithLogger(a.logger)); rbErr != nil {
+			a.logger.Error("rollback failed", "error", rbErr)
 		} else {
-			slog.Warn("rollback complete", "sha", headSHA)
+			a.logger.Warn("rollback complete", "sha", headSHA)
 		}
 		return nil, fmt.Errorf("%w: apply: %w", errRollbackPerformed, err)
 	}
@@ -1048,7 +1073,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		}
 	}
 	if incompleteErr := applyIncompleteError(result, changesetUnitNames(changeset)); incompleteErr != nil {
-		logNonRetryableApplyErrors(result)
+		a.logNonRetryableApplyErrors(result)
 		// tick() logs the user-facing "apply incomplete" message with sha + duration.
 		// Failed restarts of managed units are recorded in state.PendingUnits and
 		// retried by health-enforce; they make the apply incomplete but do not roll
@@ -1056,7 +1081,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		return result, incompleteErr
 	}
 
-	slog.Info("apply complete",
+	a.logger.Info("apply complete",
 		"applied", result.Applied,
 		"restarted", result.RestartedUnits,
 		"skipped_oneshot_restarts", result.SkippedRestarts(),
@@ -1118,7 +1143,7 @@ func applyIncompleteError(result *applier.ApplyResult, managed map[string]struct
 	return fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(incompleteErrs...))
 }
 
-func logNonRetryableApplyErrors(result *applier.ApplyResult) {
+func (a *Agent) logNonRetryableApplyErrors(result *applier.ApplyResult) {
 	if len(result.Errors) == 0 {
 		return
 	}
@@ -1134,10 +1159,10 @@ func logNonRetryableApplyErrors(result *applier.ApplyResult) {
 			continue
 		}
 		if fallback, ok := errors.AsType[*applier.HookFallbackError](err); ok {
-			slog.Warn("hook failed, fallback restart scheduled", "unit", fallback.Unit, "error", fallback.Err)
+			a.logger.Warn("hook failed, fallback restart scheduled", "unit", fallback.Unit, "error", fallback.Err)
 			continue
 		}
-		slog.Warn("non-fatal apply error", "error", err)
+		a.logger.Warn("non-fatal apply error", "error", err)
 	}
 }
 
@@ -1159,18 +1184,22 @@ func UpdateState(st *state.State, changeset *reconciler.Changeset) {
 }
 
 // markAppliedWithMetrics records a fully successful SHA application in both
-// state and metrics.
-func markAppliedWithMetrics(st *state.State, headSHA string) {
+// state and metrics, resetting the consecutive failure count.
+func (a *Agent) markAppliedWithMetrics(st *state.State, headSHA string) {
 	st.MarkApplied(headSHA)
 	metrics.RecordAppliedSHA(headSHA)
+	a.statusStore.SetFailedSHACount(0)
 }
 
 // markAppliedIncompleteWithMetrics records a SHA whose apply did not fully
-// converge. The SHA is recorded so gitpoll stops reporting "Changed", but the
-// last-successful timestamp (state and metric) is not advanced.
-func markAppliedIncompleteWithMetrics(st *state.State, headSHA string) {
+// converge (a keep_running hook or a unit restart is still failing). The SHA
+// is recorded so gitpoll stops reporting "Changed" and the failure count is
+// reset, but the last-successful timestamp (state and metric) is not
+// advanced, so staleness alerts keep firing until the fleet converges.
+func (a *Agent) markAppliedIncompleteWithMetrics(st *state.State, headSHA string) {
 	st.MarkAppliedIncomplete(headSHA)
-	metrics.RecordAppliedSHAIncomplete(headSHA)
+	metrics.SetAppliedSHA(headSHA)
+	a.statusStore.SetFailedSHACount(0)
 }
 
 // scanOrphans detects and removes files/secrets placed by a previous picolet run
@@ -1184,7 +1213,7 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	}
 	quadletDir, systemdDir, dataDir, err := resolver.ResolveDirs(a.cfg.Rootless)
 	if err != nil {
-		slog.Warn("resolving dirs for orphan scan failed", "error", err)
+		a.logger.Warn("resolving dirs for orphan scan failed", "error", err)
 		a.statusStore.SetOrphanScan(status.OrphanScan{Ran: true, Error: err.Error()})
 		return
 	}
@@ -1196,14 +1225,14 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	dataDir = cmp.Or(a.dataDirOverride, dataDir)
 	st, err := store.Load()
 	if err != nil {
-		slog.Warn("loading state for orphan scan failed", "error", err)
+		a.logger.Warn("loading state for orphan scan failed", "error", err)
 		a.statusStore.SetOrphanScan(status.OrphanScan{Ran: true, Error: err.Error()})
 		return
 	}
-	scanner := orphan.New(a.writer, a.podman, quadletDir, systemdDir, dataDir)
+	scanner := orphan.New(a.writer, a.podman, quadletDir, systemdDir, dataDir, orphan.WithLogger(a.logger))
 	result, err := scanner.Scan(ctx, st.ManagedFiles)
 	if err != nil {
-		slog.Warn("orphan scan error", "error", err)
+		a.logger.Warn("orphan scan error", "error", err)
 	}
 	scan := status.OrphanScan{
 		Ran:            true,
@@ -1215,13 +1244,13 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	}
 	a.statusStore.SetOrphanScan(scan)
 	if result.FilesRemoved > 0 || result.SecretsRemoved > 0 {
-		slog.Info("orphan scan complete", "removed_files", result.FilesRemoved, "removed_secrets", result.SecretsRemoved)
+		a.logger.Info("orphan scan complete", "removed_files", result.FilesRemoved, "removed_secrets", result.SecretsRemoved)
 		metrics.OrphansRemovedTotal.WithLabelValues("file").Add(float64(result.FilesRemoved))
 		metrics.OrphansRemovedTotal.WithLabelValues("secret").Add(float64(result.SecretsRemoved))
 	}
 	if result.FilesRemoved > 0 {
 		if err := a.systemd.DaemonReload(ctx); err != nil {
-			slog.Warn("daemon-reload after orphan cleanup failed", "error", err)
+			a.logger.Warn("daemon-reload after orphan cleanup failed", "error", err)
 		}
 	}
 }
@@ -1242,7 +1271,7 @@ func (a *Agent) refreshResolvedSnapshot(ctx context.Context) error {
 
 // analyze validates resolved's files for this Agent's Host.
 func (a *Agent) analyze(resolved *resolver.ResolvedHost) (map[string]status.UnitDependencies, error) {
-	return validator.AnalyzeFiles(resolved.Files, validator.Target{Rootless: a.cfg.Rootless, HostDataDir: resolved.HostDataDir})
+	return validator.AnalyzeFiles(resolved.Files, validator.Target{Rootless: a.cfg.Rootless, HostDataDir: resolved.HostDataDir}, validator.WithLogger(a.logger))
 }
 
 // recordEvent appends a state-changing event to the in-memory ring rendered
@@ -1280,9 +1309,9 @@ func (a *Agent) publishMQTTStatus(ctx context.Context, st *state.State, tickTime
 		Paused:                       a.paused.Load(),
 	}
 	if err := a.mqttClient.PublishStatus(ctx, status); err != nil {
-		slog.Warn("mqtt status publish failed", "error", err)
+		a.logger.Warn("mqtt status publish failed", "error", err)
 	} else {
-		slog.Debug("mqtt status published", "sha", status.AppliedSHA, "paused", status.Paused)
+		a.logger.Debug("mqtt status published", "sha", status.AppliedSHA, "paused", status.Paused)
 	}
 }
 

@@ -32,6 +32,7 @@ type HookReloader struct {
 	podman      PodmanClient
 	httpClient  *http.Client
 	healthDelay time.Duration
+	logger      *slog.Logger
 }
 
 // NewHookReloader creates a hook runner with production defaults.
@@ -44,6 +45,7 @@ func NewHookReloader(systemd SystemdManager, podman PodmanClient) *HookReloader 
 			CheckRedirect: rejectRedirects,
 		},
 		healthDelay: defaultReloadHealthDelay,
+		logger:      slog.Default(),
 	}
 }
 
@@ -81,11 +83,11 @@ func (r *HookReloader) WithHealthDelay(delay time.Duration) *HookReloader {
 // when the unit is not in an active/activating state.
 func (r *HookReloader) Run(ctx context.Context, hook config.Hook, restartScheduled map[string]struct{}) (bool, error) {
 	if _, scheduled := restartScheduled[hook.Unit]; scheduled && hook.Action != config.HookActionRestart {
-		slog.Info("skipping hook, unit already scheduled for restart", "hook", hook.Name, "unit", hook.Unit)
+		r.logger.Info("skipping hook, unit already scheduled for restart", "hook", hook.Name, "unit", hook.Unit)
 		return false, ErrHookSkipped
 	}
 	if hook.Action == config.HookActionRestart {
-		slog.Info("hook scheduled restart", "hook", hook.Name, "unit", hook.Unit)
+		r.logger.Info("hook scheduled restart", "hook", hook.Name, "unit", hook.Unit)
 		return true, nil
 	}
 	if err := r.unitActive(ctx, hook); err != nil {
@@ -113,7 +115,7 @@ func (r *HookReloader) unitActive(ctx context.Context, hook config.Hook) error {
 	case "active", "activating":
 		return nil
 	default:
-		slog.Info("hook target unit not active, will retry",
+		r.logger.Info("hook target unit not active, will retry",
 			"hook", hook.Name,
 			"unit", hook.Unit,
 			"active_state", status.ActiveState,
@@ -124,7 +126,7 @@ func (r *HookReloader) unitActive(ctx context.Context, hook config.Hook) error {
 }
 
 func (r *HookReloader) runHTTP(ctx context.Context, hook config.Hook) (bool, error) {
-	slog.Info("running HTTP hook", "hook", hook.Name, "method", hook.Method, "url", hook.URL, "unit", hook.Unit)
+	r.logger.Info("running HTTP hook", "hook", hook.Name, "method", hook.Method, "url", hook.URL, "unit", hook.Unit)
 	if err := r.doHTTP(ctx, hook.Method, hook.URL); err != nil {
 		return hook.FallbackToRestart(), fmt.Errorf("hook %s: reload request: %w", hook.Name, err)
 	}
@@ -146,7 +148,7 @@ func (r *HookReloader) runHTTP(ctx context.Context, hook config.Hook) (bool, err
 }
 
 func (r *HookReloader) runSignal(ctx context.Context, hook config.Hook) (bool, error) {
-	slog.Info("running signal hook", "hook", hook.Name, "container", hook.Container, "signal", hook.Signal, "unit", hook.Unit)
+	r.logger.Info("running signal hook", "hook", hook.Name, "container", hook.Container, "signal", hook.Signal, "unit", hook.Unit)
 	if err := r.podman.ContainerKill(ctx, hook.Container, hook.Signal); err != nil {
 		return hook.FallbackToRestart(), fmt.Errorf("hook %s: signal container %s: %w", hook.Name, hook.Container, err)
 	}

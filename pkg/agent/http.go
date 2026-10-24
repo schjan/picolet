@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"time"
@@ -35,7 +34,7 @@ func (a *Agent) newMux() *http.ServeMux {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	mux.Handle("/webhook", webhookHandler(a.triggerReconcile, a.cfg.WebhookSecretPath))
+	mux.Handle("/webhook", webhookHandler(a.triggerReconcile, a.cfg.WebhookSecretPath, a.logger))
 	if a.routeRegistrar != nil {
 		a.routeRegistrar.Register(mux)
 	}
@@ -55,11 +54,11 @@ func (a *Agent) startHTTP() (func(context.Context), error) {
 		return nil, fmt.Errorf("starting http listener on %s: %w", srv.Addr, err)
 	}
 
-	slog.Info("http server starting", "addr", addr)
-	warnUnreachableLoopback(a.cfg)
+	a.logger.Info("http server starting", "addr", addr)
+	a.warnUnreachableLoopback()
 	go func() {
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			slog.Error("http server error", "error", err)
+			a.logger.Error("http server error", "error", err)
 		}
 	}()
 
@@ -67,7 +66,7 @@ func (a *Agent) startHTTP() (func(context.Context), error) {
 		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Warn("http server shutdown error", "error", err)
+			a.logger.Warn("http server shutdown error", "error", err)
 		}
 	}, nil
 }
@@ -87,11 +86,12 @@ func (a *Agent) updateHealthFailures(hr *health.CheckResult) {
 // cannot reach: in a container network namespace of its own, /metrics, /health
 // and /webhook are invisible to Prometheus and to `picolet trigger`. The
 // namespace check is a heuristic, so the message stays conditional.
-func warnUnreachableLoopback(cfg *agentcfg.Config) {
+func (a *Agent) warnUnreachableLoopback() {
+	cfg := a.cfg
 	if !cfg.ListensOnLoopback() || !agentcfg.InPrivateNetworkNamespace() {
 		return
 	}
-	slog.Warn("loopback listen address in what looks like a container-private network namespace",
+	a.logger.Warn("loopback listen address in what looks like a container-private network namespace",
 		"addr", cfg.EffectiveListenAddr(),
 		"hint", "unless this container runs with Network=host, nothing on the Machine can reach it; otherwise set listen_addr to 0.0.0.0 and publish the port")
 }

@@ -104,7 +104,7 @@ func validateCmd() *cli.Command {
 		Name:  "validate",
 		Usage: "validate all quadlet files and manifests for every host",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			return runValidate(ctx, cmd.Root().String("repo-dir"))
+			return runValidate(ctx, cmd.Root().String("repo-dir"), slog.Default())
 		},
 	}
 }
