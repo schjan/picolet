@@ -31,13 +31,24 @@ var (
 	ErrNotSOPSFile = errors.New("not a SOPS file")
 )
 
+// Format is the SOPS store a file is read with.
+type Format string
+
+const (
+	FormatYAML   Format = "yaml"
+	FormatJSON   Format = "json"
+	FormatDotenv Format = "dotenv"
+	FormatINI    Format = "ini"
+	FormatBinary Format = "binary"
+)
+
 // File is the keyless view of a SOPS file: its metadata and the shape of its
 // tree. Nothing in it needs, or reveals, a key or a plaintext secret: encrypted
 // leaves are reported by type tag only.
 type File struct {
 	// Format is the store chosen from the path's extension, as `sops` does:
 	// yaml, json, dotenv, ini or binary.
-	Format string `json:"format"`
+	Format Format `json:"format"`
 	// IsSOPS is true when the file parses with SOPS metadata carrying
 	// sops.version and sops.mac (the rule of `sops filestatus`).
 	IsSOPS bool `json:"is_sops"`
@@ -70,7 +81,8 @@ type KeyGroup struct {
 	// Age holds the group's age recipients in canonical form, in file order.
 	Age []Recipient `json:"age,omitempty"`
 	// UnsupportedAge holds age recipient labels that are not X25519 or hybrid
-	// post-quantum keys (SSH, plugin, malformed), as written.
+	// post-quantum keys (SSH, plugin, malformed), as written; an age identity
+	// (secret key) is redacted to "AGE-SECRET-KEY-<redacted>".
 	UnsupportedAge []string `json:"unsupported_age,omitempty"`
 	// Other holds the key type of every non-age master key ("kms", "pgp",
 	// "gcp_kms", ...), in file order. picolet never uses them.
@@ -115,18 +127,18 @@ func checkSize(name string, data []byte) error {
 type loadFunc func(in []byte) (gsops.Tree, error)
 
 // storeFor picks the store from the path's extension with upstream's rule.
-func storeFor(path string) (string, loadFunc) {
+func storeFor(path string) (Format, loadFunc) {
 	switch formats.FormatForPath(path) {
 	case formats.Yaml:
-		return "yaml", yaml.NewStore(&config.YAMLStoreConfig{}).LoadEncryptedFile
+		return FormatYAML, yaml.NewStore(&config.YAMLStoreConfig{}).LoadEncryptedFile
 	case formats.Json:
-		return "json", json.NewStore(&config.JSONStoreConfig{}).LoadEncryptedFile
+		return FormatJSON, json.NewStore(&config.JSONStoreConfig{}).LoadEncryptedFile
 	case formats.Dotenv:
-		return "dotenv", dotenv.NewStore(&config.DotenvStoreConfig{}).LoadEncryptedFile
+		return FormatDotenv, dotenv.NewStore(&config.DotenvStoreConfig{}).LoadEncryptedFile
 	case formats.Ini:
-		return "ini", ini.NewStore(&config.INIStoreConfig{}).LoadEncryptedFile
+		return FormatINI, ini.NewStore(&config.INIStoreConfig{}).LoadEncryptedFile
 	default:
-		return "binary", json.NewBinaryStore(&config.JSONBinaryStoreConfig{}).LoadEncryptedFile
+		return FormatBinary, json.NewBinaryStore(&config.JSONBinaryStoreConfig{}).LoadEncryptedFile
 	}
 }
 
@@ -147,7 +159,7 @@ func Inspect(path string, data []byte) (*File, error) {
 		return f, nil
 	case err != nil:
 		// Upstream parse errors can quote file content: never pass them on.
-		f.NotSOPSReason = "cannot be parsed as " + format + " with sops metadata"
+		f.NotSOPSReason = "cannot be parsed as " + string(format) + " with sops metadata"
 		return f, nil
 	case tree.Metadata.Version == "":
 		f.NotSOPSReason = "sops.version missing"
@@ -182,7 +194,7 @@ func (f *File) fillMetadata(md gsops.Metadata) {
 			}
 			r, err := ParseRecipient(ak.Recipient)
 			if err != nil {
-				g.UnsupportedAge = append(g.UnsupportedAge, ak.Recipient)
+				g.UnsupportedAge = append(g.UnsupportedAge, recipientLabel(ak.Recipient))
 				continue
 			}
 			g.Age = append(g.Age, r)

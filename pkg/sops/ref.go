@@ -50,27 +50,18 @@ func ParsePointer(s string) (Pointer, error) {
 	return Pointer{segments: segs}, nil
 }
 
+var (
+	// segmentUnescaper decodes RFC 6901 escapes left to right, so "~01" is "~1".
+	segmentUnescaper = strings.NewReplacer("~1", "/", "~0", "~")
+	// segmentEscapeChecker drops every valid escape; a '~' left over is invalid.
+	segmentEscapeChecker = strings.NewReplacer("~1", "", "~0", "")
+)
+
 func unescapeSegment(seg string) (string, error) {
-	if !strings.Contains(seg, "~") {
-		return seg, nil
+	if strings.Contains(segmentEscapeChecker.Replace(seg), "~") {
+		return "", errors.New("'~' must be followed by '0' (for '~') or '1' (for '/')")
 	}
-	var b strings.Builder
-	for i := 0; i < len(seg); i++ {
-		if seg[i] != '~' {
-			b.WriteByte(seg[i])
-			continue
-		}
-		if i+1 >= len(seg) || (seg[i+1] != '0' && seg[i+1] != '1') {
-			return "", errors.New("'~' must be followed by '0' (for '~') or '1' (for '/')")
-		}
-		if seg[i+1] == '0' {
-			b.WriteByte('~')
-		} else {
-			b.WriteByte('/')
-		}
-		i++
-	}
-	return b.String(), nil
+	return segmentUnescaper.Replace(seg), nil
 }
 
 // Segments returns the unescaped segments; nil for the whole document.
@@ -98,8 +89,11 @@ func (p Pointer) String() string {
 var sopsConfigNames = map[string]bool{".sops.yaml": true, ".sops.yml": true}
 
 // IsSOPSPath reports whether p names a SOPS file: its base name carries
-// `.sops.` followed by an extension (`db.sops.yaml`). SOPS's config files
-// `.sops.yaml` and `.sops.yml` are never SOPS paths.
+// `.sops.` somewhere before its final extension, followed by at least one
+// character (`db.sops.yaml`, `db.sops.prod.yaml`). The format is then chosen
+// from the final extension, so `db.sops.yaml.bak` is a SOPS path read as
+// binary. SOPS's config files `.sops.yaml` and `.sops.yml` are never SOPS
+// paths.
 func IsSOPSPath(p string) bool {
 	base := path.Base(p)
 	if sopsConfigNames[base] {
@@ -176,6 +170,12 @@ func (r Ref) SecretName() (string, error) {
 			return "", r.invalidName(fmt.Sprintf("segment %q can't appear in a Podman secret name (allowed: letters, digits, '.', '_', '-')", seg))
 		}
 	}
+	if len(segs) == 0 {
+		// A whole-file ref always has a stem segment; a fragment ref has at
+		// least one segment (ParseRef rejects an empty fragment).
+		return "", r.invalidName("no segment to name the secret after")
+	}
+	// Every segment is non-empty (validNameSegment), so name[0] exists.
 	name := strings.Join(segs, "_")
 	if !isAlnum(name[0]) {
 		return "", r.invalidName(fmt.Sprintf("secret name %q must start with a letter or digit (segment %q)", name, segs[0]))

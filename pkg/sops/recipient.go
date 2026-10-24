@@ -56,8 +56,26 @@ func ParseRecipient(s string) (Recipient, error) {
 	return Recipient{canonical: r.String(), typ: RecipientX25519}, nil
 }
 
+// ageIdentityPrefix starts an age identity (secret key), in any case.
+const ageIdentityPrefix = "AGE-SECRET-KEY-"
+
+// isAgeIdentity reports whether s is (or looks like) an age secret key, which
+// must never be echoed.
+func isAgeIdentity(s string) bool {
+	return strings.HasPrefix(strings.ToUpper(s), ageIdentityPrefix)
+}
+
+// recipientLabel returns s for reporting, with an age identity redacted to
+// its prefix.
+func recipientLabel(s string) string {
+	if isAgeIdentity(s) {
+		return ageIdentityPrefix + "<redacted>"
+	}
+	return s
+}
+
 func notARecipient(s string) error {
-	if strings.HasPrefix(strings.ToUpper(s), "AGE-SECRET-KEY-") {
+	if isAgeIdentity(s) {
 		// Never echo a private key.
 		return fmt.Errorf("%w: an age identity (secret key) is not an age recipient; use its public key", ErrUnsupportedRecipient)
 	}

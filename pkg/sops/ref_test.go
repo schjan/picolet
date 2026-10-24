@@ -38,7 +38,7 @@ func TestParsePointer(t *testing.T) {
 func TestParsePointerRejects(t *testing.T) {
 	t.Parallel()
 
-	for _, in := range []string{"db/password", "/db~2", "/db~", "#/db"} {
+	for _, in := range []string{"db/password", "/db~2", "/db~", "#/db", "/~~01", "/a~"} {
 		t.Run(in, func(t *testing.T) {
 			t.Parallel()
 			_, err := sops.ParsePointer(in)
@@ -58,6 +58,8 @@ func TestIsSOPSPath(t *testing.T) {
 		"app.sops.env":                  true,
 		"services/web/secrets.sops.ini": true,
 		"db.sops.prod.yaml":             true,
+		"db.sops.yaml.bak":              true, // read as binary (final extension)
+		"x.sops.tar.gz":                 true,
 		".sops.yaml":                    false, // SOPS's config file
 		".sops.yml":                     false,
 		"dir/.sops.yaml":                false,

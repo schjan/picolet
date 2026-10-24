@@ -2,6 +2,7 @@ package sops_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 	"testing/fstest"
 
@@ -34,7 +35,7 @@ func TestInspectReportsRecipients(t *testing.T) {
 
 	f := inspectCorpus(t, "values.sops.yaml")
 	assert.True(t, f.IsSOPS)
-	assert.Equal(t, "yaml", f.Format)
+	assert.Equal(t, sops.FormatYAML, f.Format)
 	require.Len(t, f.KeyGroups, 1)
 	assert.Equal(t, recipients(t, "srv-1", "srv-2", "operator-1"), f.KeyGroups[0].Age)
 	assert.Equal(t, 1, f.RequiredGroups())
@@ -87,6 +88,23 @@ func TestInspectUnparsableFileIsNotSOPSAndNeverEchoesContent(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, f.IsSOPS)
 	assert.NotContains(t, f.NotSOPSReason, "hunter2")
+}
+
+func TestInspectNeverEchoesAnAgeIdentityAsRecipient(t *testing.T) {
+	t.Parallel()
+
+	const identity = "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQS9AM2Q"
+	data := bytes.Replace(corpusFile(t, "values.sops.yaml"),
+		[]byte("recipient: "+corpusRecipient(t, "srv-2")), []byte("recipient: "+identity), 1)
+	f, err := sops.Inspect("values.sops.yaml", data)
+	require.NoError(t, err)
+	require.True(t, f.IsSOPS)
+	require.Len(t, f.KeyGroups, 1)
+	require.Len(t, f.KeyGroups[0].UnsupportedAge, 1)
+	assert.NotContains(t, f.KeyGroups[0].UnsupportedAge[0], "QQQQ")
+	out, err := json.Marshal(f)
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), identity[len("AGE-SECRET-KEY-"):])
 }
 
 func TestInspectSizeCap(t *testing.T) {
