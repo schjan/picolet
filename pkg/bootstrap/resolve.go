@@ -77,5 +77,5 @@ func secretReader(secretsDir string, mode fileReaderMode) (resolver.SecretReader
 	if mode == fileReaderPlaceholder {
 		return func(string) (string, error) { return "<secret>", nil }, func() {}
 	}
-	return resolver.DirSecretReader(secretsDir)
+	return resolver.DirSecretReader(secretsDir, nil)
 }
