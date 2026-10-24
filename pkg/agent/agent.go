@@ -625,6 +625,11 @@ type ResolveParams struct {
 	// config.LenientHosts). Set only by the Agent's own reconciliation.
 	LenientHosts bool
 
+	// SecretGuard vets every host secret read from SecretsDir; the Agent
+	// passes agentcfg's Config.RefuseCredential so a Fleet cannot deploy
+	// the Agent's own credentials. Nil vets nothing.
+	SecretGuard resolver.SecretGuard
+
 	// Logger receives the config-load, resolver and secret-resolution log
 	// lines. Nil falls back to slog.Default().
 	Logger *slog.Logger
@@ -648,7 +653,7 @@ func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.Re
 	}
 	defer repo.Close()
 
-	secretReader, releaseSecrets := resolver.DirSecretReader(params.SecretsDir)
+	secretReader, releaseSecrets := resolver.DirSecretReader(params.SecretsDir, params.SecretGuard)
 	defer releaseSecrets()
 
 	log.Debug("resolving host", "hostname", params.Hostname)
@@ -686,6 +691,7 @@ func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, err
 		RepoPath:       fleetPath,
 		Hostname:       a.cfg.Hostname,
 		SecretsDir:     a.cfg.SecretsDir,
+		SecretGuard:    a.cfg.RefuseCredential,
 		Rootless:       a.cfg.Rootless,
 		OpSecretReader: a.opReader,
 		PPSecretReader: a.ppReader,

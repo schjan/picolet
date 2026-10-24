@@ -92,6 +92,9 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
+	if err := cfg.checkCredentialFiles(); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
 	return cfg, nil
 }
 
