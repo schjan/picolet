@@ -102,12 +102,11 @@ type UnitRun struct {
 }
 
 // SecretProvider is the Agent's runtime record for one secret provider
-// (1Password, Proton Pass, ...), keyed by provider name in Snapshot.
+// (1Password, Proton Pass, ...), keyed by provider name (Store.SecretProviders).
 type SecretProvider struct {
 	// Managed is the number of direct provider-backed secret assignments in
-	// the last resolved file set. Meaningful only when ManagedSet is true.
-	Managed    int
-	ManagedSet bool
+	// the last resolved file set; nil until one is recorded.
+	Managed *int
 	// Syncs counts successful syncs of this provider since the process
 	// started; LastSyncAt is when the latest one finished.
 	Syncs      uint64
@@ -137,11 +136,6 @@ type Snapshot struct {
 	Prune        PruneStatus
 	Events       []ReconcileEvent
 	VerifiedAt   time.Time
-	// SecretProviders holds per-provider secret-sync bookkeeping.
-	SecretProviders map[string]SecretProvider
-	// FailedSHACount is the consecutive reconciliation failure count for the
-	// current SHA.
-	FailedSHACount int
 	// Bootstrapped is true once the agent has completed at least one
 	// resolve+analyze cycle. The first SetDependencies call flips it.
 	Bootstrapped bool
@@ -152,6 +146,12 @@ type Store struct {
 	mu         sync.RWMutex
 	snapshot   Snapshot
 	eventLimit int
+
+	// secretProviders and failedSHACount feed the metrics collectors only
+	// (read via SecretProviders and FailedSHACount), so they live outside
+	// Snapshot.
+	secretProviders map[string]SecretProvider
+	failedSHACount  int
 }
 
 // NewStore creates an empty status store.
@@ -361,8 +361,7 @@ func (s *Store) AddEvent(event ReconcileEvent) {
 // currently backs.
 func (s *Store) SetSecretsManaged(provider string, count int) {
 	s.updateSecretProvider(provider, func(p *SecretProvider) {
-		p.Managed = count
-		p.ManagedSet = true
+		p.Managed = &count
 	})
 }
 
@@ -387,12 +386,12 @@ func (s *Store) updateSecretProvider(provider string, update func(*SecretProvide
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.snapshot.SecretProviders == nil {
-		s.snapshot.SecretProviders = make(map[string]SecretProvider)
+	if s.secretProviders == nil {
+		s.secretProviders = make(map[string]SecretProvider)
 	}
-	p := s.snapshot.SecretProviders[provider]
+	p := s.secretProviders[provider]
 	update(&p)
-	s.snapshot.SecretProviders[provider] = p
+	s.secretProviders[provider] = p
 }
 
 // SecretProviders returns a copy of the per-provider secret bookkeeping,
@@ -403,7 +402,7 @@ func (s *Store) SecretProviders() map[string]SecretProvider {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return maps.Clone(s.snapshot.SecretProviders)
+	return maps.Clone(s.secretProviders)
 }
 
 // SetFailedSHACount records the consecutive failure count for the current SHA.
@@ -413,7 +412,7 @@ func (s *Store) SetFailedSHACount(n int) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.snapshot.FailedSHACount = n
+	s.failedSHACount = n
 }
 
 // FailedSHACount returns the consecutive failure count for the current SHA.
@@ -423,7 +422,7 @@ func (s *Store) FailedSHACount() int {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.snapshot.FailedSHACount
+	return s.failedSHACount
 }
 
 func cloneSnapshot(in Snapshot) Snapshot {
@@ -437,9 +436,6 @@ func cloneSnapshot(in Snapshot) Snapshot {
 		Events:       slices.Clone(in.Events),
 		VerifiedAt:   in.VerifiedAt,
 		Bootstrapped: in.Bootstrapped,
-
-		SecretProviders: maps.Clone(in.SecretProviders),
-		FailedSHACount:  in.FailedSHACount,
 	}
 }
 

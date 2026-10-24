@@ -60,12 +60,12 @@ func (c *SecretProviderCollector) Describe(ch chan<- *prometheus.Desc) {
 // Collect implements prometheus.Collector.
 func (c *SecretProviderCollector) Collect(ch chan<- prometheus.Metric) {
 	for provider, p := range c.store.SecretProviders() {
-		if p.ManagedSet {
-			ch <- prometheus.MustNewConstMetric(c.descManaged, prometheus.GaugeValue, float64(p.Managed), provider)
+		if p.Managed != nil {
+			ch <- prometheus.MustNewConstMetric(c.descManaged, prometheus.GaugeValue, float64(*p.Managed), provider)
 		}
 		if p.Syncs > 0 {
 			ch <- prometheus.MustNewConstMetric(c.descSyncs, prometheus.CounterValue, float64(p.Syncs), provider)
-			ch <- prometheus.MustNewConstMetric(c.descLast, prometheus.GaugeValue, float64(p.LastSyncAt.Unix()), provider)
+			ch <- prometheus.MustNewConstMetric(c.descLast, prometheus.GaugeValue, float64(p.LastSyncAt.UnixNano())/1e9, provider)
 		}
 		if !p.CredentialExpiresAt.IsZero() {
 			ch <- prometheus.MustNewConstMetric(c.descExpires, prometheus.GaugeValue, float64(p.CredentialExpiresAt.Unix()), provider)

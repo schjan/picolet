@@ -122,7 +122,9 @@ Template data root: `.Host` (hostname, role, features, machine, user, rootful, l
 
 `pkg/state`, `pkg/gitpoll`, `pkg/status` and `pkg/buildunit` are fully standalone. `pkg/status` is a process-local in-memory runtime store consumed by `pkg/agent`, `pkg/dashboard`, and `pkg/metrics`.
 
-`pkg/metrics` exposes Prometheus collectors. Custom collectors that read runtime state accept a `*status.Store` at construction (`metrics.Register(store)`); no package-level mutable state. `pkg/metrics` imports `pkg/status` (one direction; no cycle).
+`pkg/metrics` exposes Prometheus collectors. Custom collectors that read runtime state accept a `*status.Store` at construction (`metrics.Register(store)`); no package-level mutable state. `pkg/metrics` imports `pkg/status` (one direction; no cycle). The Agent records its runtime metrics (secret-provider sync, failed-SHA gate) in its `status.Store`, and `metrics.Collectors(store)` is the single list of `/metrics` collectors that read it at scrape time; never add a package-level collector the Agent sets directly.
+
+Logging is injected: `agent.WithLogger` feeds config load, resolver (`resolver.Config.Logger`), validator, applier, health, rollback, gitpoll and orphan, each of which takes its own `WithLogger` option (default `slog.Default()`); `pkg/agent`'s `TestMain` fails the package when a record reaches the global slog default, so never call `slog.Info`/`slog.Warn` etc. directly on those paths.
 
 Everything else flows through `pkg/agent` which orchestrates the pipeline.
 

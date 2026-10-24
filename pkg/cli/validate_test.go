@@ -52,6 +52,11 @@ const validateGuardEnv = "PICOLET_TEST_VALIDATE_GLOBAL_GUARD"
 // A validate run with its own logger writes nothing to the global slog
 // default. The global default is process state, so the check runs in a child
 // process where swapping it cannot disturb parallel tests.
+//
+// The same test function plays both roles: the parent re-executes the binary
+// filtered to this test with the guard env set, and that child takes the
+// first branch. Both call t.Parallel() (tparallel); the child process runs
+// only this test, so its slog.SetDefault cannot race with anything.
 func TestRunValidateLeavesGlobalLoggerAlone(t *testing.T) {
 	t.Parallel()
 	if os.Getenv(validateGuardEnv) == "1" {
