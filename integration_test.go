@@ -32,7 +32,82 @@ func TestIntegrationValidate(t *testing.T) {
 
 	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
-	require.NoError(t, validator.ValidateAll(t.Context(), r, cfg))
+	require.NoError(t, validator.ValidateAll(t.Context(), repoFS, r, cfg))
+}
+
+// validate renders each Host's Agent bundle strictly, as bootstrap does: a
+// provider ref the bundle needs at bootstrap fails CI, not the next
+// `bootstrap machine`.
+func TestIntegrationValidateAgentBundleStrict(t *testing.T) {
+	t.Parallel()
+	const fix = "use a YAML-value reference and let the agent resolve it at runtime"
+	tests := []struct {
+		name   string
+		config string
+		want   []string
+	}{
+		{
+			name:   "readOpSecret",
+			config: `{{ $ref := "op://vault/item/token" }}git_token: {{ readOpSecret $ref }}`,
+			want:   []string{"host test-host", "Agent bundle picolet-system", `readOpSecret "op://vault/item/token"`, fix},
+		},
+		{
+			name:   "readProtonPassSecret",
+			config: `{{ $ref := "pass://share/item/token" }}git_token: {{ readProtonPassSecret $ref }}`,
+			want:   []string{"host test-host", "Agent bundle picolet-system", `readProtonPassSecret "pass://share/item/token"`, fix},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateAgentBundleFleet(t, tt.config)
+			require.Error(t, err)
+			for _, want := range tt.want {
+				assert.ErrorContains(t, err, want)
+			}
+		})
+	}
+}
+
+// Secret References as plain YAML values are the Agent's to resolve at
+// runtime: the Agent-bundle pass does not flag them.
+func TestIntegrationValidateAgentBundleYAMLValueRefs(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, validateAgentBundleFleet(t, `onepassword:
+  token_path: /etc/picolet/secrets/op-token
+  git_token_ref: op://vault/item/token
+  github_app_id_ref: op://vault/app/id
+  github_installation_id_ref: op://vault/app/installation
+  github_private_key_ref: op://vault/app/key
+protonpass:
+  git_token_ref: pass://share/item/token
+  github_app_id_ref: pass://share/app/id
+  github_installation_id_ref: pass://share/app/installation
+  github_private_key_ref: pass://share/app/key`))
+}
+
+// validateAgentBundleFleet runs `picolet validate` on a one-host Fleet whose
+// rootful Host is assigned the picolet-system Agent bundle; configBody is
+// appended to the bundle's Agent config template.
+func validateAgentBundleFleet(t *testing.T, configBody string) error {
+	t.Helper()
+	repoFS := fstest.MapFS{
+		"fleet.yml":                &fstest.MapFile{Data: []byte("images: {picolet: \"picolet:test\"}\nports: {picolet_system_metrics: 9418}\n")},
+		"assignments.yml":          &fstest.MapFile{Data: []byte("base: {}\nroles:\n  node:\n    services: [picolet-system]\nfeatures: {}\n")},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte("hostname: test-host\nrole: node\nfeatures: []\n")},
+		"services/picolet-system/picolet-system.container.tmpl": &fstest.MapFile{Data: []byte(`[Container]
+Image={{ index .Images "picolet" }}
+Secret=picolet_system_config,target=/etc/picolet/config.yml
+`)},
+		"services/picolet-system/secrets/picolet_system_config.yml.tmpl": &fstest.MapFile{Data: []byte(`hostname: "{{ .Host.Hostname }}"
+repo_url: "https://github.com/example/fleet.git"
+` + configBody + "\n")},
+	}
+	cfg, err := config.LoadAll(repoFS)
+	require.NoError(t, err)
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	require.NoError(t, err)
+	return validator.ValidateAll(t.Context(), repoFS, r, cfg)
 }
 
 func TestIntegrationResolveGolden(t *testing.T) {
@@ -383,7 +458,7 @@ func validatePathsFleet(t *testing.T, files map[string]string) error {
 	require.NoError(t, err)
 	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
-	return validator.ValidateAll(t.Context(), r, cfg)
+	return validator.ValidateAll(t.Context(), repoFS, r, cfg)
 }
 
 func newAggregatedSecretFleetFS(ruleExpr string) fstest.MapFS {
