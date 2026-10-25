@@ -194,17 +194,13 @@ func EmptyDirectValueError(raw string) error {
 // inspect reads and inspects the file at path and, for a SOPS file, walks
 // its tree keyless (keylessTree).
 func (r *KeylessReader) inspect(path string) (*keylessFile, error) {
-	data, err := ReadFile(r.fsys, path)
-	if err != nil {
-		return nil, err
-	}
-	f, err := Inspect(path, data)
+	f, err := InspectFile(r.fsys, path)
 	if err != nil {
 		return nil, err
 	}
 	kf := &keylessFile{File: f}
 	if f.IsSOPS {
-		kf.branches, kf.walkErr = keylessTree(path, data, f)
+		kf.branches, kf.walkErr = keylessTree(path, f)
 	}
 	return kf, nil
 }

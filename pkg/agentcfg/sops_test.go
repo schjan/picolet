@@ -100,7 +100,8 @@ func TestLoadSopsIdentitiesBrokenFile(t *testing.T) {
 			// The startup checks, and with them the self-restart guard,
 			// refuse the same file.
 			cfg.Hostname, cfg.RepoURL = "node-1", "https://example.com/fleet.git"
-			require.Error(t, cfg.CheckStartup())
+			_, err = cfg.CheckStartup()
+			require.Error(t, err)
 		})
 	}
 }

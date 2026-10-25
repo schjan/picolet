@@ -95,6 +95,9 @@ type Agent struct {
 	// sopsIDs are the age identities sops:// refs are decrypted with; nil
 	// when the config has no sops block. Set by setupSops in Run.
 	sopsIDs *sops.Identities
+	// startup is what the run command's startup checks loaded (WithStartup);
+	// nil makes setupSops load the identities itself.
+	startup *agentcfg.Startup
 	// Accessed only by the agent tick loop, which runs serially.
 	lastOPRefresh time.Time // zero = never refreshed; in-memory only (restart always re-fetches)
 	lastPPRefresh time.Time // zero = never refreshed; in-memory only (restart always re-fetches)
@@ -229,6 +232,13 @@ func WithStatusStore(store *status.Store) Option {
 			a.statusStore = store
 		}
 	}
+}
+
+// WithStartup hands the Agent what the startup checks loaded
+// (agentcfg.Config.CheckStartup), so it does not read the age identity file
+// again.
+func WithStartup(st agentcfg.Startup) Option {
+	return func(a *Agent) { a.startup = &st }
 }
 
 // WithLogger sets the logger the Agent and the components it drives (config
@@ -645,8 +655,9 @@ type ResolveParams struct {
 	LenientHosts bool
 
 	// SecretGuard vets every host secret read from SecretsDir; the Agent
-	// passes agentcfg's Config.RefuseCredential so a Fleet cannot deploy
-	// the Agent's own credentials. Nil vets nothing.
+	// passes agentcfg.RefuseCredentials over its credentials so a Fleet
+	// cannot deploy them. It may keep state for one resolve, so build new
+	// params per resolve. Nil vets nothing.
 	SecretGuard resolver.SecretGuard
 
 	// Logger receives the config-load, resolver and secret-resolution log
@@ -675,7 +686,7 @@ func ResolveParamsFromConfig(cfg *agentcfg.Config, repoDir string, providers Sec
 		RepoPath:       filepath.Join(repoDir, cfg.RepoSubDir),
 		Hostname:       cfg.Hostname,
 		SecretsDir:     cfg.SecretsDir,
-		SecretGuard:    cfg.RefuseCredential,
+		SecretGuard:    agentcfg.RefuseCredentials(cfg.Credentials()),
 		Rootless:       cfg.Rootless,
 		OpSecretReader: providers.Op,
 		PPSecretReader: providers.PP,
@@ -692,7 +703,10 @@ func ResolveParamsFromConfig(cfg *agentcfg.Config, repoDir string, providers Sec
 // (validation, apply) through it before it is printed or logged.
 func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.ResolvedHost, func(error) error, error) {
 	resolved, reader, err := loadAndResolveHost(ctx, params)
-	return resolved, func(err error) error { return scrubError(reader, err) }, err
+	// The Scrubber, not the reader: the closure must not keep every
+	// decrypted file alive. The resolve is done, so it sees every value.
+	scrub := reader.Scrubber()
+	return resolved, func(err error) error { return scrubError(scrub, err) }, err
 }
 
 // loadAndResolveHost is LoadAndResolveHost that also returns the SOPS reader

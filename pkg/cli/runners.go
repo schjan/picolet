@@ -34,22 +34,23 @@ import (
 )
 
 // loadRunConfig loads the Agent config for the run command and runs the
-// startup checks. The same checks guard a Fleet-rendered Agent config before
-// it is applied (agentcfg.CheckRenderedConfig), so a commit cannot lock the
-// Agent out.
-func loadRunConfig(configPath string) (*agentcfg.Config, error) {
+// startup checks, returning what they loaded for the Agent. The same checks
+// guard a Fleet-rendered Agent config before it is applied
+// (agentcfg.CheckRenderedConfig), so a commit cannot lock the Agent out.
+func loadRunConfig(configPath string) (*agentcfg.Config, agentcfg.Startup, error) {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
-		return nil, err
+		return nil, agentcfg.Startup{}, err
 	}
-	if err := cfg.CheckStartup(); err != nil {
-		return nil, fmt.Errorf("invalid config %s: %w", configPath, err)
+	startup, err := cfg.CheckStartup()
+	if err != nil {
+		return nil, agentcfg.Startup{}, fmt.Errorf("invalid config %s: %w", configPath, err)
 	}
-	return cfg, nil
+	return cfg, startup, nil
 }
 
 func runAgent(ctx context.Context, configPath string) error {
-	cfg, err := loadRunConfig(configPath)
+	cfg, startup, err := loadRunConfig(configPath)
 	if err != nil {
 		return err
 	}
@@ -71,6 +72,7 @@ func runAgent(ctx context.Context, configPath string) error {
 	}
 
 	opts := []agent.Option{
+		agent.WithStartup(startup),
 		agent.WithSystemd(systemd),
 		agent.WithPodman(podman),
 		agent.WithFileWriter(applier.NewAtomicFileWriter()),

@@ -6,13 +6,16 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	pp "github.com/schjan/picolet/pkg/protonpass"
 )
 
 // Credential is a file the Agent authenticates with, named by an Agent
-// config setting. A Fleet must never deploy one (Config.RefuseCredential),
+// config setting. A Fleet must never deploy one (RefuseCredentials),
 // and no two settings may name the same one (checked by Load).
 type Credential struct {
 	Setting string // config key, e.g. "git_token_path"
@@ -62,14 +65,6 @@ func protonPassSessionDir(c *ProtonPassConfig) string {
 	return ""
 }
 
-// RefuseCredential returns an error when info (the file a secret read
-// opened) is one of the Agent's credentials, compared with os.SameFile so
-// symlinks, hard links and other spellings are caught. It is the Agent's
-// resolver.SecretGuard.
-func (c *Config) RefuseCredential(info fs.FileInfo) error {
-	return refuseCredential(c.Credentials(), info)
-}
-
 // CredentialsAt is Credentials for a reader that sees the Agent's
 // secrets_dir at secretsDir, as `picolet bootstrap` sees it at --secrets-dir:
 // a credential below secrets_dir is listed at its path and again at the same
@@ -89,15 +84,46 @@ func (c *Config) CredentialsAt(secretsDir string) []Credential {
 	return creds
 }
 
-// RefuseCredentials is RefuseCredential for an explicit credential list (a
-// CredentialsAt list).
+// RefuseCredentials returns the resolver.SecretGuard that refuses a secret
+// read whose opened file (info) is one of creds (the Agent's Credentials(),
+// or bootstrap's CredentialsAt list), compared with os.SameFile so
+// symlinks, hard links and other spellings are caught.
+//
+// The guard stats each credential, and walks each directory credential,
+// once on its first call, and compares later calls with that snapshot. It
+// takes the snapshot again for a file modified since (allowing for coarse
+// file timestamps), so a file written under a directory credential after
+// the snapshot is still found. Build one per resolve (per DirSecretReader).
 func RefuseCredentials(creds []Credential) func(fs.FileInfo) error {
-	return func(info fs.FileInfo) error { return refuseCredential(creds, info) }
+	g := &credentialGuard{creds: creds}
+	return g.refuse
 }
 
-func refuseCredential(creds []Credential, info fs.FileInfo) error {
-	for _, cred := range creds {
-		held, err := cred.holds(info)
+// snapshotSlack is how much older than the snapshot a file's modification
+// time must be for the guard to trust the snapshot: file timestamps come
+// from a coarse clock (and some filesystems store whole seconds).
+const snapshotSlack = 2 * time.Second
+
+type credentialGuard struct {
+	creds []Credential
+
+	mu    sync.Mutex
+	taken time.Time   // when held was taken; zero before the first call
+	held  []heldFiles // per credential, in creds order
+}
+
+func (g *credentialGuard) refuse(info fs.FileInfo) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.taken.IsZero() || !info.ModTime().Before(g.taken.Add(-snapshotSlack)) {
+		g.taken = time.Now()
+		g.held = make([]heldFiles, len(g.creds))
+		for i, cred := range g.creds {
+			g.held[i] = cred.snapshot()
+		}
+	}
+	for i, cred := range g.creds {
+		held, err := g.held[i].holds(info)
 		if err != nil {
 			return fmt.Errorf("checking Agent credential %s (%s): %w", cred.Setting, cred.Path, err)
 		}
@@ -108,36 +134,57 @@ func refuseCredential(creds []Credential, info fs.FileInfo) error {
 	return nil
 }
 
+// heldFiles is what a credential holds on disk: the file (or directory)
+// itself and, for a Dir credential, the entries under it in walk order.
+type heldFiles struct {
+	self  fs.FileInfo   // nil when the credential is not on disk
+	under []fs.FileInfo // a Dir credential's entries, up to err
+	err   error         // why the credential, or the walk past under, failed
+}
+
 // holds reports whether info is the credential file or, for a Dir
 // credential, the directory or a file anywhere under it. A credential not on
 // disk holds nothing.
 func (cred Credential) holds(info fs.FileInfo) (bool, error) {
-	onDisk, err := os.Stat(cred.Path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if os.SameFile(info, onDisk) {
-		return true, nil
-	}
-	if !cred.Dir {
-		return false, nil
-	}
-	return dirHolds(cred.Path, info)
+	return cred.snapshot().holds(info)
 }
 
-// dirHolds reports whether info is a file anywhere under dir. The caller
-// opened info's file before this walk, so a file under dir is there to be
-// found; entries removed during the walk cannot be it.
-func dirHolds(dir string, info fs.FileInfo) (bool, error) {
+func (h heldFiles) holds(info fs.FileInfo) (bool, error) {
+	if h.self == nil {
+		return false, h.err
+	}
+	same := func(entry fs.FileInfo) bool { return os.SameFile(info, entry) }
+	if same(h.self) || slices.ContainsFunc(h.under, same) {
+		return true, nil
+	}
+	return false, h.err
+}
+
+// snapshot stats cred and, for a Dir credential, walks it.
+func (cred Credential) snapshot() heldFiles {
+	self, err := os.Stat(cred.Path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return heldFiles{}
+	}
+	if err != nil {
+		return heldFiles{err: err}
+	}
+	h := heldFiles{self: self}
+	if cred.Dir {
+		h.under, h.err = dirEntries(cred.Path)
+	}
+	return h
+}
+
+// dirEntries returns the info of every entry under dir, in walk order, up to
+// the walk's first error. Entries removed during the walk are skipped.
+func dirEntries(dir string) ([]fs.FileInfo, error) {
 	// WalkDir does not descend into a symlinked root, so resolve it first.
 	root, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	errFound := errors.New("found")
+	var entries []fs.FileInfo
 	err = filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
@@ -152,15 +199,10 @@ func dirHolds(dir string, info fs.FileInfo) (bool, error) {
 		if err != nil {
 			return err
 		}
-		if os.SameFile(info, entry) {
-			return errFound
-		}
+		entries = append(entries, entry)
 		return nil
 	})
-	if errors.Is(err, errFound) {
-		return true, nil
-	}
-	return false, err
+	return entries, err
 }
 
 // checkCredentialFiles fails when two credential settings name the same

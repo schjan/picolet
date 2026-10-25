@@ -130,7 +130,7 @@ func TestResolveHostRefusesAgentCredentialInReadSecretFile(t *testing.T) {
 			t.Parallel()
 			dir, credFile, agentCfg := secretsWithCredential(t, k.setting)
 			fsys, cfg := readSecretFileFleet(t, credFile)
-			read, release := DirSecretReader(dir, agentCfg.RefuseCredential)
+			read, release := DirSecretReader(dir, agentcfg.RefuseCredentials(agentCfg.Credentials()))
 			defer release()
 			r, err := New(Config{FS: fsys, Config: cfg, SecretReader: read})
 			require.NoError(t, err)
@@ -150,7 +150,7 @@ func TestResolveHostRefusesAgentCredentialAsSecretEntry(t *testing.T) {
 			// newSecretTestFS's host-only secret entry is host_only.txt.
 			require.NoError(t, os.Symlink(credFile, filepath.Join(dir, "host_only.txt")))
 			fsys, cfg := newSecretTestFS(t)
-			read, release := DirSecretReader(dir, agentCfg.RefuseCredential)
+			read, release := DirSecretReader(dir, agentcfg.RefuseCredentials(agentCfg.Credentials()))
 			defer release()
 			r, err := New(Config{FS: fsys, Config: cfg, SecretReader: read})
 			require.NoError(t, err)
@@ -165,7 +165,7 @@ func TestResolveHostReadsOtherSecretsBesideAgentCredentials(t *testing.T) {
 	t.Parallel()
 	dir, _, agentCfg := secretsWithCredential(t, "git_token_path")
 	fsys, cfg := readSecretFileFleet(t, "api.token")
-	read, release := DirSecretReader(dir, agentCfg.RefuseCredential)
+	read, release := DirSecretReader(dir, agentcfg.RefuseCredentials(agentCfg.Credentials()))
 	defer release()
 	r, err := New(Config{FS: fsys, Config: cfg, SecretReader: read})
 	require.NoError(t, err)
@@ -184,7 +184,7 @@ func TestDirSecretReaderRefusesLinksToAgentCredentials(t *testing.T) {
 	require.NoError(t, os.Mkdir(filepath.Join(dir, "sub"), 0o700))
 	require.NoError(t, os.Symlink("../cred", filepath.Join(dir, "sub", "up")))
 
-	read, release := DirSecretReader(dir, agentCfg.RefuseCredential)
+	read, release := DirSecretReader(dir, agentcfg.RefuseCredentials(agentCfg.Credentials()))
 	defer release()
 
 	for _, name := range []string{"cred", "./cred", "sub/../cred", "link", "hard", "sub/up"} {
@@ -203,7 +203,7 @@ func TestDirSecretReaderRefusesEverythingUnderSessionDir(t *testing.T) {
 	require.NoError(t, os.Symlink("cred", filepath.Join(dir, "sess")))
 	require.NoError(t, os.Link(filepath.Join(session, "deep", "state"), filepath.Join(dir, "hard")))
 
-	read, release := DirSecretReader(dir, agentCfg.RefuseCredential)
+	read, release := DirSecretReader(dir, agentcfg.RefuseCredentials(agentCfg.Credentials()))
 	defer release()
 
 	for _, name := range []string{"cred/local.key", "cred/deep/state", "sess/local.key", "sess/deep/state", "hard"} {
@@ -223,7 +223,7 @@ func TestDirSecretReaderRefusesSessionDirOutsideSecretsDir(t *testing.T) {
 	require.NoError(t, os.Link(filepath.Join(session, "local.key"), filepath.Join(dir, "hard")))
 	agentCfg := &agentcfg.Config{ProtonPass: &agentcfg.ProtonPassConfig{SessionDir: session}}
 
-	read, release := DirSecretReader(dir, agentCfg.RefuseCredential)
+	read, release := DirSecretReader(dir, agentcfg.RefuseCredentials(agentCfg.Credentials()))
 	defer release()
 
 	_, err := read("hard")

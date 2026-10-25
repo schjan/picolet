@@ -31,15 +31,22 @@ func (a *Agent) warnIdentityDrift(host *config.HostConfig, reader *sops.Reader) 
 		"fix", "add the identity's public key to age_recipients: in host.yml, or deliver the identity of a declared recipient")
 }
 
-// setupSops loads the age identities named by the Agent config's sops block,
-// the only identities the Agent decrypts sops:// refs with. A config without
+// setupSops sets up the age identities named by the Agent config's sops
+// block, the only identities the Agent decrypts sops:// refs with: those the
+// startup checks loaded (WithStartup), else it loads them. A config without
 // the block leaves the Agent without a SOPS reader, so a sops:// ref fails
 // its resolve. A broken identity file stops the Agent, like a broken
 // 1Password token; one readable by group or others only warns.
 func (a *Agent) setupSops() error {
-	ids, loose, err := a.cfg.LoadSopsIdentities()
-	if err != nil {
-		return fmt.Errorf("setting up sops: %w", err)
+	var ids *sops.Identities
+	var loose bool
+	if a.startup != nil {
+		ids, loose = a.startup.SopsIdentities, a.startup.SopsIdentityLoose
+	} else {
+		var err error
+		if ids, loose, err = a.cfg.LoadSopsIdentities(); err != nil {
+			return fmt.Errorf("setting up sops: %w", err)
+		}
 	}
 	if ids == nil {
 		return nil
@@ -54,18 +61,27 @@ func (a *Agent) setupSops() error {
 	return nil
 }
 
+// scrubber removes decrypted SOPS values from text: a *sops.Reader (nil
+// included) or the sops.Scrubber built from one.
+type scrubber interface {
+	Scrub(text string) string
+}
+
 // scrubError returns err with every decrypted SOPS value of the resolve that
-// reader served removed from its text (sops.Reader.Scrub). Template helpers
+// s scrubs for removed from its text (sops.Reader.Scrub). Template helpers
 // and validators may embed a rendered value in their errors, so every
 // reconciliation error passes through here before it reaches a log line, a
 // dashboard event, a deployment status or MQTT. An error whose text holds no
-// such value is returned as is.
-func scrubError(reader *sops.Reader, err error) error {
-	if err == nil || reader == nil {
+// such value, or that is already scrubbed, is returned as is.
+func scrubError(s scrubber, err error) error {
+	if err == nil || s == nil {
+		return err
+	}
+	if _, done := err.(*scrubbedError); done { //nolint:errorlint // only an unwrapped scrubbedError holds a scrubbed text as a whole
 		return err
 	}
 	msg := err.Error()
-	clean := reader.Scrub(msg)
+	clean := s.Scrub(msg)
 	if clean == msg {
 		return err
 	}

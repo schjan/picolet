@@ -36,13 +36,33 @@ const (
 // error reaches a log, an event or a status report: template helpers and
 // validators may embed a rendered value in their messages.
 func (r *Reader) Scrub(text string) string {
+	return r.Scrubber().Scrub(text)
+}
+
+// Scrubber returns a Scrubber for the values this Reader has decrypted so
+// far; it does not see files the Reader decrypts later. It holds only the
+// strings to replace, not the decrypted files. A nil Reader returns the
+// zero Scrubber, which changes nothing.
+func (r *Reader) Scrubber() Scrubber {
 	if r == nil {
-		return text
+		return Scrubber{}
 	}
 	r.mu.Lock()
-	needles := scrubNeedles(r.values)
-	r.mu.Unlock()
-	for _, n := range needles {
+	defer r.mu.Unlock()
+	if r.needles == nil {
+		r.needles = scrubNeedles(r.values)
+	}
+	return Scrubber{needles: r.needles}
+}
+
+// Scrubber removes a Reader's decrypted values from text (Reader.Scrub).
+type Scrubber struct {
+	needles []string // longest first; shared with the Reader's cache, never changed
+}
+
+// Scrub returns text with the Scrubber's values replaced by Redacted.
+func (s Scrubber) Scrub(text string) string {
+	for _, n := range s.needles {
 		text = strings.ReplaceAll(text, n, Redacted)
 	}
 	return text

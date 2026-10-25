@@ -33,7 +33,7 @@ func (c *Config) LoadSopsIdentities() (ids *sops.Identities, groupOrWorldReadabl
 func loadSopsIdentities(cred located) (ids *sops.Identities, groupOrWorldReadable bool, err error) {
 	data, mode, err := readWithMode(cred.at)
 	if err != nil {
-		return nil, false, fmt.Errorf("credential %s (%s) is not readable: %w", sopsIdentitySetting, cred.shown(), err)
+		return nil, false, unreadable(cred, err)
 	}
 	ids, err = sops.ParseIdentities(data)
 	if err != nil {
