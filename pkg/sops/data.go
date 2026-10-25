@@ -15,7 +15,9 @@ import (
 // string for a leaf, nested maps and lists keeping their structure. Without
 // a fragment it returns the whole document. A leaf is rendered as
 // `sops decrypt --extract` prints it, without a trailing newline; null is
-// "". Comments are not data and are left out.
+// "". Leaves are always strings, numbers and booleans too (`42`, `true`),
+// so a template comparing or computing with one converts it first. Comments
+// are not data and are left out.
 //
 // It shares ReadAll's per-Reader file cache, so a file both read is
 // decrypted once, and its leaves are scrubbed like any decrypted file's.

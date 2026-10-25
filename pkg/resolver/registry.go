@@ -429,17 +429,8 @@ func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p Provi
 		registerDataFunc(ctx, funcMap, p)
 	}
 	funcMap[p.FuncName] = func(ref string) (string, error) {
-		if err := p.precheck(p.FuncName, ref); err != nil {
-			return "", err
-		}
-		if cache == nil {
-			if p.MissingReader != nil {
-				return "", p.MissingReader(p.FuncName, ref)
-			}
-			return p.PlaceholderEmpty, nil
-		}
-		if !p.IsRef(ref) {
-			return "", fmt.Errorf("%s: %q is not a valid reference for this provider", p.FuncName, ref)
+		if ready, err := p.prepareCall(p.FuncName, ref, cache != nil); !ready {
+			return p.PlaceholderEmpty, err
 		}
 		if cache.resolved == nil {
 			cache.collected = append(cache.collected, ref)
@@ -469,20 +460,32 @@ func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p Provi
 // DataReader, which caches per file.
 func registerDataFunc(ctx context.Context, funcMap template.FuncMap, p ProviderTemplate) {
 	funcMap[p.DataFuncName] = func(ref string) (any, error) {
-		if err := p.precheck(p.DataFuncName, ref); err != nil {
-			return nil, err
-		}
-		if p.DataReader == nil {
-			if p.MissingReader != nil {
-				return nil, p.MissingReader(p.DataFuncName, ref)
-			}
-			return p.PlaceholderEmpty, nil
-		}
-		if !p.IsRef(ref) {
-			return nil, fmt.Errorf("%s: %q is not a valid reference for this provider", p.DataFuncName, ref)
+		if ready, err := p.prepareCall(p.DataFuncName, ref, p.DataReader != nil); !ready {
+			return p.PlaceholderEmpty, err
 		}
 		return p.DataReader(ctx, ref)
 	}
+}
+
+// prepareCall runs the checks every provider function makes before reading
+// ref: precheck, then, without a reader (hasReader false), MissingReader's
+// error, then the ref check. ready is true only when the caller should read
+// ref; when it is false with a nil error the caller returns
+// PlaceholderEmpty (a provider without a reader and without MissingReader).
+func (p ProviderTemplate) prepareCall(funcName, ref string, hasReader bool) (ready bool, err error) {
+	if err := p.precheck(funcName, ref); err != nil {
+		return false, err
+	}
+	if !hasReader {
+		if p.MissingReader != nil {
+			return false, p.MissingReader(funcName, ref)
+		}
+		return false, nil
+	}
+	if !p.IsRef(ref) {
+		return false, fmt.Errorf("%s: %q is not a valid reference for this provider", funcName, ref)
+	}
+	return true, nil
 }
 
 // precheck fails a call of funcName before any reader or cache sees ref:
