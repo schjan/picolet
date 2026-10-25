@@ -193,3 +193,19 @@ func TestMergeChangesetPreservesUntouchedState(t *testing.T) {
 	assert.Equal(t, "keep.service", st.ServiceNames["/untouched"])
 	assert.NotContains(t, st.ServiceNames, "/plain")
 }
+
+func TestRefreshNoopsUpdatesSopsValuesFlag(t *testing.T) {
+	t.Parallel()
+	desired := []resolver.ResolvedFile{
+		{DestPath: "/data/files/pin", Content: "pin=1", Category: config.CategoryFile, SopsValues: true},
+		{DestPath: "/data/files/new", Content: "new", Category: config.CategoryFile, SopsValues: true},
+	}
+	st := state.NewState()
+	st.ManagedFiles["/data/files/pin"] = state.ManagedFile{Hash: hash("pin=1"), Category: config.CategoryFile}
+
+	cs := Diff(desired, st)
+	require.True(t, cs.RefreshNoops(st))
+	assert.Equal(t, state.ManagedFile{Hash: hash("pin=1"), Category: config.CategoryFile, SopsValues: true}, st.ManagedFiles["/data/files/pin"])
+	assert.NotContains(t, st.ManagedFiles, "/data/files/new", "a create is recorded by the apply, not here")
+	assert.False(t, cs.RefreshNoops(st), "nothing left to refresh")
+}

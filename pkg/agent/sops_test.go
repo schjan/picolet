@@ -328,3 +328,39 @@ func TestAgentRecordsSopsValuesInState(t *testing.T) {
 		"pin": true, "plain.txt": false, "app.container": false, "secret:db_password": true,
 	}, sopsValues)
 }
+
+// A file whose content stays byte-identical while its render switches to a
+// SOPS value (a plain value migrated to sops:// unchanged) is a no-op for the
+// diff, yet its state record gains the SopsValues flag, so the dashboard
+// stops showing its hash.
+func TestAgentRefreshesSopsValuesOfUnchangedFile(t *testing.T) {
+	t.Parallel()
+	files := sopsFleet(dbPasswordSecret, map[string]string{
+		"secrets/db.sops.yaml": sopsCorpus(t, "values.sops.yaml"),
+		"files/pin.tmpl":       "pin=hunter2-test",
+	}, "files/pin.tmpl")
+	h := newSopsHarness(t, files, writeIdentityFile(t, "srv-1"))
+	require.NoError(t, h.tick(t))
+	assert.False(t, pinSopsValues(t, h), "a plain render holds no SOPS value")
+
+	pushToTestRepo(t, h.bareDir, map[string]string{
+		"files/pin.tmpl": `pin={{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`,
+	})
+	h.reset()
+	require.NoError(t, h.tick(t))
+	assert.Empty(t, h.restarts, "nothing changed on disk")
+	assert.True(t, pinSopsValues(t, h), "the record follows the render")
+}
+
+func pinSopsValues(t *testing.T, h *sopsHarness) bool {
+	t.Helper()
+	st, err := h.store.Load()
+	require.NoError(t, err)
+	for path, mf := range st.ManagedFiles {
+		if filepath.Base(path) == "pin" {
+			return mf.SopsValues
+		}
+	}
+	require.Fail(t, "pin not managed")
+	return false
+}

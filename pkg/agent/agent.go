@@ -814,12 +814,12 @@ func (a *Agent) reconcileResolved(ctx context.Context, headSHA string, st *state
 	a.recordHostMetadata(resolved.Host)
 
 	counts := refSecretsCounts{
-		Op: a.recordSecretsManaged(resolver.ProviderOnePassword, a.opReader != nil, op.IsRef, files),
-		PP: a.recordSecretsManaged(resolver.ProviderProtonPass, a.ppReader != nil, pp.IsRef, files),
+		Op: a.recordProviderRefCount(resolver.ProviderOnePassword, a.opReader != nil, op.IsRef, files),
+		PP: a.recordProviderRefCount(resolver.ProviderProtonPass, a.ppReader != nil, pp.IsRef, files),
 	}
 	// A SOPS sync is counted per resolve that decrypted (ReconcileOnce),
 	// not per direct secret, so only the managed count is recorded here.
-	a.recordSecretsManaged(resolver.ProviderSops, a.sopsIDs != nil, sops.IsRef, files)
+	_ = a.recordProviderRefCount(resolver.ProviderSops, a.sopsIDs != nil, sops.IsRef, files)
 
 	changeset := reconciler.Diff(files, st)
 
@@ -919,6 +919,7 @@ func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHo
 	}
 	a.statusStore.SetDependencies(deps)
 	a.logger.Info("no changes to apply", "sha", headSHA)
+	refreshed := changeset.RefreshNoops(st)
 	if headSHA != st.AppliedSHA {
 		a.markAppliedWithMetrics(st, headSHA)
 		a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
@@ -931,6 +932,11 @@ func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHo
 	st.LastSuccessfulReconciliationAt = now
 	metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
 	a.statusStore.SetVerifiedAt(now)
+	if refreshed {
+		if err := store.Save(st); err != nil {
+			return nil, fmt.Errorf("saving state: %w", err)
+		}
+	}
 	return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: counts.Op, PPSecretsCount: counts.PP}, nil
 }
 

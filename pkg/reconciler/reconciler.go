@@ -59,6 +59,24 @@ func (cs *Changeset) Writes(destPath string) bool {
 	return false
 }
 
+// RefreshNoops updates st's record of each unchanged file whose record
+// differs from what the changeset would write (its SopsValues flag: the
+// content is byte-identical but its render now reads, or no longer reads, a
+// SOPS value), and reports whether it changed any.
+func (cs *Changeset) RefreshNoops(st *state.State) bool {
+	refreshed := false
+	for _, change := range cs.Changes {
+		if change.Action != ActionNoop {
+			continue
+		}
+		if mf := change.ManagedFile(); st.ManagedFiles[change.DestPath] != mf {
+			st.ManagedFiles[change.DestPath] = mf
+			refreshed = true
+		}
+	}
+	return refreshed
+}
+
 // Diff computes the changeset between desired files and current state.
 func Diff(
 	desired []resolver.ResolvedFile,
