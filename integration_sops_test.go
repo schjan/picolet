@@ -261,22 +261,29 @@ func exampleFleetMapFS(t *testing.T) fstest.MapFS {
 	return out
 }
 
-// The example Fleet's root .sops.yaml matches its SOPS files
-// (TestIntegrationValidate passes); dropping a Recipient from the rule, or
-// committing a plaintext SOPS file, fails it.
+// The example Fleet's root .sops.yaml has a rule for each of its SOPS files,
+// which match them (TestIntegrationValidate passes); dropping a Recipient
+// from a rule, or committing a plaintext SOPS file, fails it.
 func TestIntegrationValidateExampleFleetSOPS(t *testing.T) {
 	t.Parallel()
-	t.Run("rule drift", func(t *testing.T) {
-		t.Parallel()
-		fsys := exampleFleetMapFS(t)
-		op := sopsRecipient(t, "operator-1")
-		rules := string(fsys[".sops.yaml"].Data)
-		require.Contains(t, rules, ",\n      "+op)
-		fsys[".sops.yaml"] = data([]byte(strings.Replace(rules, ",\n      "+op, "", 1)))
-		err := validateFleet(t, fsys)
-		require.EqualError(t, err, "`secrets/db.sops.yaml` recipients differ from `.sops.yaml` rule `^secrets/`: +"+op+
-			"; run `sops updatekeys secrets/db.sops.yaml`")
-	})
+	for _, tt := range []struct{ regex, path string }{
+		{regex: "^secrets/", path: "secrets/db.sops.yaml"},
+		{regex: "^services/web-app/", path: "services/web-app/secrets.sops.yaml"},
+	} {
+		t.Run("rule drift "+tt.path, func(t *testing.T) {
+			t.Parallel()
+			fsys := exampleFleetMapFS(t)
+			op := sopsRecipient(t, "operator-1")
+			rules := string(fsys[".sops.yaml"].Data)
+			i := strings.Index(rules, "path_regex: "+tt.regex+"\n")
+			require.GreaterOrEqual(t, i, 0, "no rule %s", tt.regex)
+			require.Contains(t, rules[i:], ",\n      "+op)
+			fsys[".sops.yaml"] = data([]byte(rules[:i] + strings.Replace(rules[i:], ",\n      "+op, "", 1)))
+			err := validateFleet(t, fsys)
+			require.EqualError(t, err, "`"+tt.path+"` recipients differ from `.sops.yaml` rule `"+tt.regex+"`: +"+op+
+				"; run `sops updatekeys "+tt.path+"`")
+		})
+	}
 	t.Run("no operators.yml", func(t *testing.T) {
 		t.Parallel()
 		fsys := exampleFleetMapFS(t)

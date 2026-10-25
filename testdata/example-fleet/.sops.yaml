@@ -8,3 +8,8 @@ creation_rules:
       age1eed9cxu2y3xx2s3syz95sanhy3xuajtpmjsnz63skgwl9yvw0g5su77pfq,
       age1e95u43sns76r0e52j74aupqsp58qc9s6vrwhzsj9hd6x9shk9cgqgu5gjj,
       age16uxzllqjy7exxfsnsc9x48xnsutxukuxkdhkgg3twxmsk8pq3sdqnuhkmp
+  - path_regex: ^services/web-app/
+    age: >-
+      age1eed9cxu2y3xx2s3syz95sanhy3xuajtpmjsnz63skgwl9yvw0g5su77pfq,
+      age1e95u43sns76r0e52j74aupqsp58qc9s6vrwhzsj9hd6x9shk9cgqgu5gjj,
+      age16uxzllqjy7exxfsnsc9x48xnsutxukuxkdhkgg3twxmsk8pq3sdqnuhkmp

@@ -24,7 +24,7 @@ task vulncheck      # govulncheck with the build tags; fails on any finding not 
 
 `go tool sops` runs the pinned SOPS CLI (Go `tool` directive in `go.mod`). `task sops:corpus` regenerates the committed SOPS fixture corpus (`testdata/sops/corpus`, encrypted to the TEST-ONLY identities in `testdata/sops/identities`); packages other than `pkg/sops` can't import getsops, so they test against that corpus and never encrypt.
 
-`task vulncheck` runs `scripts/govulncheck.sh` (needs `jq`; govulncheck is pinned in the script, not as a `go.mod` tool, because its dependencies would bump the binary's `golang.org/x/*` modules). Locally it also reports standard-library findings fixed in newer Go patch releases; CI uses the latest patch.
+`task vulncheck` runs `scripts/govulncheck.sh` (needs `jq`; govulncheck is pinned in the script, not as a `go.mod` tool, because its dependencies would bump the binary's `golang.org/x/*` modules). Locally it also reports standard-library findings fixed in newer Go patch releases; CI uses the latest patch and also runs it weekly (`schedule:` in `.github/workflows/ci.yml`; the other jobs skip scheduled runs).
 
 **Regenerate mocks** (after changing interfaces in `pkg/applier`, `pkg/agent` or `pkg/machine`): `go tool mockery`
 

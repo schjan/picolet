@@ -10,7 +10,7 @@
 | `picolet_git_poll_total` | Counter | `result` (changed/noop/error/secret_refresh/pending_hook_retry/pending_unit_retry) | Total git poll attempts |
 | `picolet_files_applied_total` | Counter | `action`, `category` | Files applied per action (create/update/delete) and category |
 | `picolet_files_managed_total` | Gauge | `category` | Current managed files by category |
-| `picolet_failed_sha_consecutive_count` | Gauge | — | Consecutive failures for current SHA (gates at 3) |
+| `picolet_failed_sha_consecutive_count` | Gauge | — | Consecutive failures for current SHA (gates at 3; an Agent restart resets it to 0) |
 | `picolet_rollback_total` | Counter | — | Total rollbacks performed |
 | `picolet_health_check_total` | Counter | `unit`, `result` | Health checks by unit and result |
 | `picolet_health_enforcement_total` | Counter | `unit`, `action` (restart/skip_cooldown/skip_external_activation) | Health enforcement actions by unit (`skip_external_activation`: a failed unit picolet reports but does not restart — a timer-triggered or static one-shot, or a `.build`/`.image` service that failed on its own; a `.image` whose apply-time pull failed is retried and counts as `restart`) |
@@ -27,7 +27,7 @@
 | `picolet_unit_dependency_count` | Gauge | `unit`, `relation` | Current generated systemd dependency count by managed unit and relation |
 | `picolet_host_info` | Gauge | `role`, `machine`, `user` (`root` for the rootful Host) | Resolved host metadata (value=1); join on it to group a Machine's Agents, e.g. `picolet_reconciliation_total * on(instance) group_left(machine, user) picolet_host_info` |
 | `picolet_host_feature_info` | Gauge | `feature` | Resolved host feature metadata (value=1) |
-| `picolet_secrets_managed_count` | Gauge | `provider` (`onepassword`/`protonpass`) | Number of direct provider-backed secret refs currently managed |
+| `picolet_secrets_managed_count` | Gauge | `provider` (`onepassword`/`protonpass`/`sops`) | Number of direct provider-backed secret refs currently managed |
 | `picolet_secret_sync_total` | Counter | `provider` | Successful secret-provider sync attempts (failures counted on `picolet_reconciliation_total{result="failure"}`) |
 | `picolet_secret_last_sync_timestamp` | Gauge | `provider` | Unix timestamp of the last successful secret-provider sync |
 | `picolet_secret_credential_expires_at` | Gauge | `provider` | Unix timestamp at which the configured credential expires (only emitted when the operator records the expiry in config) |
@@ -70,8 +70,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "picolet has gated a SHA after 3 consecutive failures"
-          description: "The current git HEAD has failed reconciliation 3+ times and is skipped until a new commit arrives, the gate expires (1h) or the Agent restarts."
+          summary: "picolet is skipping a SHA after 3 consecutive failures"
+          description: "picolet on {{ $labels.instance }} has failed to reconcile the current git HEAD 3+ times and skips it until a new commit arrives or the gate expires (1h). Fix the cause; a fix outside git (e.g. a credential file) needs an Agent restart, which clears the gate and retries the SHA at once."
 
       - alert: PicoletUnitRestartPending
         expr: picolet_unit_restart_pending > 0

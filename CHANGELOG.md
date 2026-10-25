@@ -41,6 +41,30 @@ kept as is.
   `deploy/bootstrap/bootstrap.sh` / `bootstrap-rootless.sh` are removed;
   `picolet bootstrap machine` replaces them
   ([#156](https://github.com/schjan/picolet/issues/156)).
+- The Agent checks every credential file its config names at startup, not only
+  the ones it opened before: `webhook_secret_path`, `protonpass.pat_path`,
+  `mqtt.password_path`, `git_token_path`, `github_private_key_path`,
+  `onepassword.token_path` and `sops.age_identity_path` must exist and be
+  readable, or the Agent exits (`credential <setting> (<path>) is not
+  readable`). Run the pre-upgrade check in
+  [MIGRATION.md](MIGRATION.md#pre-upgrade-check-agent-credential-files) before
+  bumping `images.picolet`
+  ([#252](https://github.com/schjan/picolet/issues/252)).
+- An Agent config in which two credential settings name the same file fails to
+  load (`… name the same credential file`), and `readSecretFile` and file
+  `secrets:` refuse every Agent credential file: *Agent credentials cannot be
+  deployed* ([#251](https://github.com/schjan/picolet/issues/251)).
+- SOPS files (`<name>.sops.<ext>`) and SOPS's `.sops.yaml`/`.sops.yml` are
+  skipped by `paths:` directory and Service Bundle walks, and an explicit
+  `paths:` or plain `secrets:` entry naming a SOPS file is an error; a SOPS file
+  is reachable only through a `sops://` ref
+  ([#255](https://github.com/schjan/picolet/issues/255)).
+- `picolet validate` renders each Host's assigned Agent bundle strictly, as
+  bootstrap does: a provider template-function call (`readOpSecret`,
+  `readProtonPassSecret`, `readSopsSecret`, `readSopsData`) or a direct provider
+  `secrets:` ref in the Agent bundle fails CI; YAML-value refs such as
+  `onepassword.git_token_ref` pass
+  ([#253](https://github.com/schjan/picolet/issues/253)).
 
 ### Added
 
@@ -90,9 +114,56 @@ kept as is.
   per-Host bootstrap's container, as the Host's user or as root. Users,
   subuid/subgid ranges and lingering are never touched
   ([#156](https://github.com/schjan/picolet/issues/156)).
+- SOPS-encrypted values in the Fleet
+  ([ADR 0003](docs/adr/0003-no-plaintext-secret-in-git.md),
+  [#248](https://github.com/schjan/picolet/issues/248)):
+  `sops://<fleet-path>[#<json-pointer>]` Secret References, the template
+  functions `readSopsSecret` (one value) and `readSopsData` (a subtree), and
+  direct `sops://` entries in `secrets:`. The Agent decrypts with the age
+  identities named by the new Agent config block `sops: {age_identity_path: …}`;
+  `validate`, `resolve` and `bootstrap` check refs without a key. A Quadlet, Raw
+  Unit or Hook definition that renders a SOPS value fails.
+  `picolet dry-run --config` decrypts like the Agent; decrypted values are
+  scrubbed from errors, logs, events, MQTT and deployment statuses
+  ([#256](https://github.com/schjan/picolet/issues/256),
+  [#257](https://github.com/schjan/picolet/issues/257),
+  [#258](https://github.com/schjan/picolet/issues/258),
+  [#259](https://github.com/schjan/picolet/issues/259),
+  [#260](https://github.com/schjan/picolet/issues/260),
+  [#266](https://github.com/schjan/picolet/issues/266),
+  [#267](https://github.com/schjan/picolet/issues/267)).
+- `host.yml` `age_recipients:` (X25519 or hybrid post-quantum age keys) and
+  `.Host.AgeRecipients`; `validate` fails a `sops://` ref of a Host that is not
+  a Recipient of the file
+  ([#261](https://github.com/schjan/picolet/issues/261)). The reference Agent
+  config templates emit the `sops:` block only for a Host with
+  `age_recipients:`, and the Agent warns when none of its identities is among
+  them ([#268](https://github.com/schjan/picolet/issues/268)).
+- `operators.yml`: Operators' age Recipients, read only by `validate`, which
+  fails every Recipient of a SOPS file that is neither an Operator's nor a
+  consuming Host's ([#262](https://github.com/schjan/picolet/issues/262)).
+- New `validate` passes over every SOPS file in the Fleet: plaintext or
+  oversized `*.sops.*` files and files whose Recipients drifted from their
+  Fleet-root `.sops.yaml` creation rule fail
+  ([#263](https://github.com/schjan/picolet/issues/263)).
+- `picolet_secrets_managed_count`, `picolet_secret_sync_total` and
+  `picolet_secret_last_sync_timestamp` gain `provider="sops"`.
+- CI runs `govulncheck` (on every change and weekly) against the built binary's
+  dependencies, failing on any finding not excluded with a reason
+  ([#254](https://github.com/schjan/picolet/issues/254)).
 
 ### Changed
 
+- An Agent restart clears the failed-SHA gate (and records a
+  `failed_sha_gate_cleared` dashboard event), so a fix outside git, such as a
+  credential file, takes effect without a new commit
+  ([#249](https://github.com/schjan/picolet/issues/249)).
+- The dashboard no longer shows content hashes of secrets
+  ([#250](https://github.com/schjan/picolet/issues/250)).
+- The self-restart guard refuses a Fleet-rendered Agent config the Agent could
+  not start with (strict parse, credential overlap, startup credential checks):
+  the reconciliation fails and the Agent keeps running on its current config
+  ([#252](https://github.com/schjan/picolet/issues/252)).
 - Agents warn about an unknown `host.yml` key instead of refusing the Fleet;
   `picolet validate` still fails on it.
 - `picolet_unit_state_info` is emitted for inactive units too.

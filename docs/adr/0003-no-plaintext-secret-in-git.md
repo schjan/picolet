@@ -1,10 +1,10 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # No plaintext secret in git: SOPS/age values in the Fleet, one age identity per Host
 
-Amends two clauses of [ADR 0002](0002-host-per-linux-user.md): "nothing secret may ever be in git", and the default of one secret-provider token per Machine. On acceptance, ADR 0002 stays `accepted` and gains an "Amended by 0003" note.
+Amends two clauses of [ADR 0002](0002-host-per-linux-user.md): "nothing secret may ever be in git", and the default of one secret-provider token per Machine. ADR 0002 stays `accepted` and carries an "Amended by 0003" note.
 
 Some Fleets can't use a hosted secret manager (no budget, or Hosts that reach the git server but not the internet), and a self-hosted one is a service that has to run outside the Fleet. SOPS with age needs no service at all. We decided that **a secret value may be committed to the Fleet only inside a SOPS file encrypted to age Recipients**, named `*.sops.*` and reached only through a `sops://` Secret Reference; nothing else secret enters git in plaintext, ever. `sops://` stands beside `op://` and `pass://` with no preference, mixed freely per Host and per value. Only the Agent decrypts: `validate`, `resolve` and `bootstrap` stay keyless.
 
