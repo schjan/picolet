@@ -1485,7 +1485,7 @@ The file holds one or more `AGE-SECRET-KEY-…` lines (two during a rotation). D
 
 The reference Agent config templates (the `picolet` and `picolet-system` bundles in `deploy/fleet-repo`) emit this block only for a Host whose `host.yml` declares `age_recipients:`. So deliver `age-identity` and run `bootstrap machine` before you push `age_recipients:`; if the identity isn't there yet, the Agent refuses the new config, fails that reconciliation and keeps running on its old config. When none of the Agent's identities is among its Host's `age_recipients:` but every decrypt succeeds, the Agent logs a warning on each reconciliation that decrypts SOPS files, naming both sets of public keys. Nothing fails.
 
-Don't create `/etc/sops/audit.yaml` where picolet runs: the built-in `getsops` library reads it at process start in every command, so a malformed file panics picolet and a Postgres audit backend is contacted at startup and on every decrypt. The Agent image has no such file; only the CLI on a Machine or in CI is exposed.
+Don't create `/etc/sops/audit.yaml` where picolet runs: the built-in `getsops` library reads it at process start in every command, so a malformed file panics picolet and a Postgres audit backend is contacted at startup and on every decrypt (including the keyless walk `validate`, `resolve` and `dry-run` make over each SOPS file a ref reaches, which upstream records as a decrypt). The Agent image has no such file; only the CLI on a Machine or in CI is exposed.
 
 #### References and SOPS files
 
