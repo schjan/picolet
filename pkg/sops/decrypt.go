@@ -125,7 +125,7 @@ func (r *Reader) openFile(ctx context.Context, raw string, files map[string]file
 		return Ref{}, nil, err
 	}
 	if r.ids.Len() == 0 {
-		return Ref{}, nil, fmt.Errorf("%s: %w; %s", raw, ErrNoIdentity, NoIdentityHint)
+		return Ref{}, nil, NoIdentityError(raw, NoIdentityHint)
 	}
 	res, ok := files[ref.Path]
 	if !ok {

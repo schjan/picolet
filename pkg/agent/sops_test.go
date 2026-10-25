@@ -304,3 +304,63 @@ picolet_secrets_managed_count{provider="sops"} 1
 	assert.Empty(t, h.secrets, "no secret rewritten")
 	assert.Empty(t, h.restarts, "nothing restarted")
 }
+
+// A Managed File whose render used a SOPS value is recorded as such in the
+// state the dashboard reads, so the dashboard can hide its content hash (a
+// hash of the decrypted value); a file without SOPS values is not.
+func TestAgentRecordsSopsValuesInState(t *testing.T) {
+	t.Parallel()
+	files := sopsFleet(dbPasswordSecret, map[string]string{
+		"secrets/db.sops.yaml": sopsCorpus(t, "values.sops.yaml"),
+		"files/pin.tmpl":       `pin={{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`,
+		"files/plain.txt":      "plain",
+	}, "files/pin.tmpl", "files/plain.txt")
+	h := newSopsHarness(t, files, writeIdentityFile(t, "srv-1"))
+	require.NoError(t, h.tick(t))
+
+	st, err := h.store.Load()
+	require.NoError(t, err)
+	sopsValues := map[string]bool{}
+	for path, mf := range st.ManagedFiles {
+		sopsValues[filepath.Base(path)] = mf.SopsValues
+	}
+	assert.Equal(t, map[string]bool{
+		"pin": true, "plain.txt": false, "app.container": false, "secret:db_password": true,
+	}, sopsValues)
+}
+
+// A file whose content stays byte-identical while its render switches to a
+// SOPS value (a plain value migrated to sops:// unchanged) is a no-op for the
+// diff, yet its state record gains the SopsValues flag, so the dashboard
+// stops showing its hash.
+func TestAgentRefreshesSopsValuesOfUnchangedFile(t *testing.T) {
+	t.Parallel()
+	files := sopsFleet(dbPasswordSecret, map[string]string{
+		"secrets/db.sops.yaml": sopsCorpus(t, "values.sops.yaml"),
+		"files/pin.tmpl":       "pin=hunter2-test",
+	}, "files/pin.tmpl")
+	h := newSopsHarness(t, files, writeIdentityFile(t, "srv-1"))
+	require.NoError(t, h.tick(t))
+	assert.False(t, pinSopsValues(t, h), "a plain render holds no SOPS value")
+
+	pushToTestRepo(t, h.bareDir, map[string]string{
+		"files/pin.tmpl": `pin={{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`,
+	})
+	h.reset()
+	require.NoError(t, h.tick(t))
+	assert.Empty(t, h.restarts, "nothing changed on disk")
+	assert.True(t, pinSopsValues(t, h), "the record follows the render")
+}
+
+func pinSopsValues(t *testing.T, h *sopsHarness) bool {
+	t.Helper()
+	st, err := h.store.Load()
+	require.NoError(t, err)
+	for path, mf := range st.ManagedFiles {
+		if filepath.Base(path) == "pin" {
+			return mf.SopsValues
+		}
+	}
+	require.Fail(t, "pin not managed")
+	return false
+}

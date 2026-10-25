@@ -93,7 +93,7 @@ func TestInspectUnparsableFileIsNotSOPSAndNeverEchoesContent(t *testing.T) {
 func TestInspectNeverEchoesAnAgeIdentityAsRecipient(t *testing.T) {
 	t.Parallel()
 
-	const identity = "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQS9AM2Q"
+	identity := zeroIdentity
 	data := bytes.Replace(corpusFile(t, "values.sops.yaml"),
 		[]byte("recipient: "+corpusRecipient(t, "srv-2")), []byte("recipient: "+identity), 1)
 	f, err := sops.Inspect("values.sops.yaml", data)
@@ -205,6 +205,7 @@ func TestLookupMissingPath(t *testing.T) {
 			_, err = f.Lookup(p)
 			require.ErrorIs(t, err, sops.ErrBadPointer)
 			assert.Contains(t, err.Error(), want)
+			assertNoPlaintext(t, err)
 		})
 	}
 }
@@ -224,4 +225,5 @@ func TestLookupOnNonSOPSFile(t *testing.T) {
 	require.NoError(t, err)
 	_, err = inspectCorpus(t, "plaintext.sops.yaml").Lookup(p)
 	require.ErrorIs(t, err, sops.ErrNotSOPSFile)
+	assertNoPlaintext(t, err)
 }

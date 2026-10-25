@@ -624,6 +624,10 @@ type ResolveParams struct {
 	// the resolve with the no-identity error; the keyless reader is never
 	// used here.
 	SopsIdentities *sops.Identities
+	// NoSopsIdentityHint is the fix the no-identity error names without
+	// SopsIdentities (resolver.Config.NoSopsIdentityHint); empty: the
+	// Agent's (set sops.age_identity_path).
+	NoSopsIdentityHint string
 
 	// QuadletDir, SystemdDir, and DataDir override the defaults computed by
 	// resolver.ResolveDirs. Empty fields fall back to the default. Used by
@@ -726,18 +730,19 @@ func loadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.Re
 	log.Debug("resolving host", "hostname", params.Hostname)
 	loadStart := time.Now()
 	r, err := resolver.New(resolver.Config{
-		FS:             repo.FS,
-		Config:         repo.Config,
-		SecretReader:   secretReader,
-		OpSecretReader: params.OpSecretReader,
-		PPSecretReader: params.PPSecretReader,
-		Sops:           sopsResolver,
-		Rootless:       params.Rootless,
-		QuadletDir:     params.QuadletDir,
-		SystemdDir:     params.SystemdDir,
-		DataDir:        params.DataDir,
-		HostDataDir:    params.HostDataDir,
-		Logger:         log,
+		FS:                 repo.FS,
+		Config:             repo.Config,
+		SecretReader:       secretReader,
+		OpSecretReader:     params.OpSecretReader,
+		PPSecretReader:     params.PPSecretReader,
+		Sops:               sopsResolver,
+		NoSopsIdentityHint: params.NoSopsIdentityHint,
+		Rootless:           params.Rootless,
+		QuadletDir:         params.QuadletDir,
+		SystemdDir:         params.SystemdDir,
+		DataDir:            params.DataDir,
+		HostDataDir:        params.HostDataDir,
+		Logger:             log,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating resolver: %w", err)
@@ -914,6 +919,7 @@ func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHo
 	}
 	a.statusStore.SetDependencies(deps)
 	a.logger.Info("no changes to apply", "sha", headSHA)
+	refreshed := changeset.RefreshNoops(st)
 	if headSHA != st.AppliedSHA {
 		a.markAppliedWithMetrics(st, headSHA)
 		a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
@@ -926,6 +932,11 @@ func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHo
 	st.LastSuccessfulReconciliationAt = now
 	metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
 	a.statusStore.SetVerifiedAt(now)
+	if refreshed {
+		if err := store.Save(st); err != nil {
+			return nil, fmt.Errorf("saving state: %w", err)
+		}
+	}
 	return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: counts.Op, PPSecretsCount: counts.PP}, nil
 }
 
@@ -1152,7 +1163,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		defer rollbackCancel()
 
 		if rbErr := rollback.Restore(rollbackCtx, snap, a.writer, a.systemd, rollback.WithLogger(a.logger)); rbErr != nil {
-			a.logger.Error("rollback failed", "error", rbErr)
+			a.logger.Error("rollback failed", "error", scrubError(sopsReader, rbErr))
 		} else {
 			a.logger.Warn("rollback complete", "sha", headSHA)
 		}
@@ -1275,7 +1286,7 @@ func UpdateState(st *state.State, changeset *reconciler.Changeset) {
 		if change.Action == reconciler.ActionDelete {
 			continue
 		}
-		st.ManagedFiles[change.DestPath] = state.ManagedFile{Hash: change.NewHash, Category: change.Category}
+		st.ManagedFiles[change.DestPath] = change.ManagedFile()
 		if change.ServiceName != "" {
 			st.ServiceNames[change.DestPath] = change.ServiceName
 		}

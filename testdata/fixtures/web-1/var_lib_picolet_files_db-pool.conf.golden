@@ -1,0 +1,4 @@
+# Typed SOPS leaves (int, bool): validate renders them as 0 and false, the
+# Agent as the decrypted values. TEST-ONLY values of the picolet SOPS corpus.
+port=0
+tls=false

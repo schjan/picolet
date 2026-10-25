@@ -119,9 +119,7 @@ func TestReadSopsSecretKeylessRecipientChecks(t *testing.T) {
 			for _, want := range tt.want {
 				require.ErrorContains(t, err, want)
 			}
-			for _, plain := range []string{"hunter2-test", "visible", "5432"} {
-				assert.NotContains(t, err.Error(), plain)
-			}
+			assertNoPlaintext(t, err)
 		})
 	}
 }
@@ -214,9 +212,7 @@ func TestReadSopsSecretKeylessRejectedRefs(t *testing.T) {
 			require.Error(t, err)
 			require.ErrorContains(t, err, tt.ref)
 			require.ErrorContains(t, err, tt.want)
-			for _, plain := range []string{"hunter2-test", "visible", "5432"} {
-				assert.NotContains(t, err.Error(), plain)
-			}
+			assertNoPlaintext(t, err)
 		})
 	}
 }
@@ -234,6 +230,7 @@ func TestReadSopsSecretWithoutReaderFails(t *testing.T) {
 	require.ErrorContains(t, err, ref)
 	require.ErrorContains(t, err, "no age identity configured; set sops.age_identity_path")
 	assert.NotContains(t, err.Error(), "<sops-secret")
+	assertNoPlaintext(t, err)
 }
 
 // Strict mode (bootstrap, validate's Agent-bundle pass) fails on
@@ -250,6 +247,7 @@ func TestReadSopsSecretStrictFails(t *testing.T) {
 			require.ErrorContains(t, err, fmt.Sprintf("readSopsSecret %q", ref))
 			require.ErrorContains(t, err, "deliver the value as a --secrets-dir file and point the Agent config at its path; "+
 				"credentials needed to fetch the Fleet can't be SOPS values")
+			assertNoPlaintext(t, err)
 		})
 	}
 }

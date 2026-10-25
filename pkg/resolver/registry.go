@@ -125,10 +125,11 @@ func PPProvider(reader SecretRefReader) ProviderTemplate {
 // SopsProvider returns the SOPS provider template: readSopsSecret (strings)
 // and readSopsData (subtrees), both over reader. reader is the keyless
 // reader (validate, resolve, bootstrap) or the decrypting one (Agent); with
-// a nil reader every ref fails, so a placeholder can never be deployed as a
-// value. Each ref's path is checked like readFile's (Fleet-relative, no
-// "..") before reader sees it.
-func SopsProvider(reader SopsReader) ProviderTemplate {
+// a nil reader every ref fails with the no-identity error naming
+// noIdentityHint, so a placeholder can never be deployed as a value. Each
+// ref's path is checked like readFile's (Fleet-relative, no "..") before
+// reader sees it.
+func SopsProvider(reader SopsReader, noIdentityHint string) ProviderTemplate {
 	p := ProviderTemplate{
 		Key:                ProviderSops,
 		FuncName:           "readSopsSecret",
@@ -136,7 +137,7 @@ func SopsProvider(reader SopsReader) ProviderTemplate {
 		IsRef:              sops.IsRef,
 		PlaceholderPending: "<sops-secret-pending>",
 		MissingReader: func(funcName, ref string) error {
-			return fmt.Errorf("%s %q: %w; %s", funcName, ref, sops.ErrNoIdentity, sops.NoIdentityHint)
+			return sops.NoIdentityError(fmt.Sprintf("%s %q", funcName, ref), noIdentityHint)
 		},
 	}
 	if reader != nil {

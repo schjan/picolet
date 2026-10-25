@@ -208,6 +208,7 @@ func TestReadSopsSecretGuardPrecedesStrictAndMissingReader(t *testing.T) {
 			require.NoError(t, err)
 			_, err = r.ResolveHost(t.Context(), "test-host")
 			require.ErrorIs(t, err, ErrSopsInUnitFile)
+			assertNoPlaintext(t, err)
 		})
 	}
 }
