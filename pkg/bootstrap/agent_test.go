@@ -1,6 +1,8 @@
 package bootstrap
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -40,6 +42,31 @@ func TestResolveAgentWithoutAgentBundle(t *testing.T) {
 	t.Parallel()
 	_, err := ResolveAgent(t.Context(), exampleFleet, "node-1")
 	require.ErrorContains(t, err, "host node-1: agent bundle not assigned: picolet-system")
+}
+
+// bootstrap's strict render fails on readSopsSecret in the Agent bundle and
+// says why: a credential that fetches the Fleet can't be a SOPS value in it.
+func TestResolveAgentRejectsSopsSecret(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	files := map[string]string{
+		"fleet.yml":        "images: {picolet: \"picolet:test\"}\nports: {picolet_system_metrics: 9418}\n",
+		"assignments.yml":  "base: {}\nroles:\n  node:\n    services: [picolet-system]\nfeatures: {}\n",
+		"hosts/h/host.yml": "hostname: h\nrole: node\n",
+		"services/picolet-system/picolet-system.container.tmpl": "[Container]\nImage={{ index .Images \"picolet\" }}\n" +
+			"Secret=picolet_system_config,target=/etc/picolet/config.yml\n",
+		"services/picolet-system/secrets/picolet_system_config.yml.tmpl": "hostname: h\n" +
+			"git_token: {{ readSopsSecret \"sops://secrets/git.sops.yaml#/token\" }}\n",
+	}
+	for name, content := range files {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+		require.NoError(t, os.WriteFile(p, []byte(content), 0o600))
+	}
+	_, err := ResolveAgent(t.Context(), dir, "h")
+	require.ErrorContains(t, err, `readSopsSecret "sops://secrets/git.sops.yaml#/token"`)
+	require.ErrorContains(t, err, "deliver the value as a --secrets-dir file and point the Agent config at its path; "+
+		"credentials needed to fetch the Fleet can't be SOPS values")
 }
 
 // Missing inputs are reported in the bootstrap's order, hostname before repo

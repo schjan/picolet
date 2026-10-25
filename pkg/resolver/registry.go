@@ -3,6 +3,7 @@ package resolver
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"github.com/schjan/picolet/pkg/config"
 	op "github.com/schjan/picolet/pkg/onepassword"
 	pp "github.com/schjan/picolet/pkg/protonpass"
+	"github.com/schjan/picolet/pkg/sops"
 )
 
 // dataPathFunc returns the spec.PathHelper template func, resolving a
@@ -48,6 +50,7 @@ type ProviderKey string
 const (
 	ProviderOnePassword ProviderKey = "onepassword"
 	ProviderProtonPass  ProviderKey = "protonpass"
+	ProviderSops        ProviderKey = "sops"
 )
 
 // ProviderTemplate describes a secret-provider integration for the template registry.
@@ -55,8 +58,10 @@ const (
 // Key is used only to return the provider's cache without relying on slice order.
 // FuncName is the Go template function name (e.g. "readOpSecret").
 // IsRef returns true when a string is a syntactically valid reference for the provider.
-// PlaceholderEmpty is returned when the provider is not configured (Reader == nil).
+// PlaceholderEmpty is returned when the provider is not configured (Reader == nil),
+// unless MissingReader is set: then its error fails the render instead.
 // PlaceholderPending is returned during the collect phase before refs are resolved.
+// Strict (bootstrap, validate's Agent-bundle pass) fails every call.
 type ProviderTemplate struct {
 	Key                ProviderKey
 	FuncName           string
@@ -64,6 +69,7 @@ type ProviderTemplate struct {
 	IsRef              func(string) bool
 	PlaceholderEmpty   string
 	PlaceholderPending string
+	MissingReader      func(ref string) error
 	Strict             bool
 }
 
@@ -93,16 +99,85 @@ func PPProvider(reader SecretRefReader) ProviderTemplate {
 	}
 }
 
-// strictModeFix is the fix a strict-mode error (bootstrap, validate's
-// Agent-bundle pass) gives for a ref of the provider key: a provider is never
-// configured there, so the value must reach the Agent another way.
-func strictModeFix(key ProviderKey) string {
+// SopsProvider returns the SOPS provider template. reader is the keyless
+// reader (validate, resolve, bootstrap) or the decrypting one (Agent); with
+// a nil reader every ref fails, so a placeholder can never be deployed as a
+// value. Each ref's path is checked like readFile's (Fleet-relative, no
+// "..") before reader sees it.
+func SopsProvider(reader SecretRefReader) ProviderTemplate {
+	if reader != nil {
+		reader = checkSopsRefs(reader)
+	}
+	return ProviderTemplate{
+		Key:                ProviderSops,
+		FuncName:           "readSopsSecret",
+		Reader:             reader,
+		IsRef:              func(ref string) bool { return strings.HasPrefix(ref, sops.Scheme) },
+		PlaceholderPending: "<sops-secret-pending>",
+		MissingReader: func(ref string) error {
+			return fmt.Errorf("readSopsSecret %q: %w; set sops.age_identity_path in the Agent config", ref, sops.ErrNoIdentity)
+		},
+	}
+}
+
+// KeylessSopsReader returns the keyless SOPS reader over fsys (the Fleet
+// root) that validate, resolve and bootstrap pass as Config.SopsSecretReader
+// (through NewKeyless): it checks each ref without any key and renders
+// "<sops-secret>".
+func KeylessSopsReader(fsys fs.FS) SecretRefReader {
+	return sops.NewKeylessReader(fsys).ReadAll
+}
+
+// checkSopsRefs wraps reader so that a ref whose file path is not a clean
+// Fleet-relative path fails, naming the ref, without reaching reader.
+func checkSopsRefs(reader SecretRefReader) SecretRefReader {
+	return func(ctx context.Context, refs []string) (map[string]string, error) {
+		var valid []string
+		var errs []error
+		for _, raw := range refs {
+			ref, err := sops.ParseRef(raw)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if _, err := config.ValidateRelPath(ref.Path); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", raw, err))
+				continue
+			}
+			valid = append(valid, raw)
+		}
+		values := map[string]string{}
+		if len(valid) > 0 {
+			var err error
+			values, err = reader(ctx, valid)
+			errs = append(errs, err)
+		}
+		return values, errors.Join(errs...)
+	}
+}
+
+// strictModeText is the one place strict mode (bootstrap, validate's
+// Agent-bundle pass) words a provider key's failure: why a call fails there
+// (reason) and how the value must reach the Agent instead (fix).
+func strictModeText(key ProviderKey) (reason, fix string) {
 	switch key {
 	case ProviderOnePassword, ProviderProtonPass:
-		return "use a YAML-value reference and let the agent resolve it at runtime"
+		return "provider not configured in strict mode",
+			"use a YAML-value reference and let the agent resolve it at runtime"
+	case ProviderSops:
+		return "SOPS values can't be used in strict mode",
+			"deliver the value as a --secrets-dir file and point the Agent config at its path; " +
+				"credentials needed to fetch the Fleet can't be SOPS values"
 	default:
-		return "this provider cannot be resolved in strict mode"
+		return "provider not configured in strict mode", "this provider cannot be resolved in strict mode"
 	}
+}
+
+// strictModeError is the error a provider call fails with in strict mode,
+// where no provider value can be used.
+func strictModeError(p ProviderTemplate, ref string) error {
+	reason, fix := strictModeText(p.Key)
+	return fmt.Errorf("%s %q: %s; %s", p.FuncName, ref, reason, fix)
 }
 
 const placeholderSecret = "<secret>"
@@ -304,14 +379,20 @@ func loadTemplateSources(fsys fs.FS, include func(string) bool) (map[string]stri
 }
 
 // registerProviderFunc adds a provider's template function to funcMap.
-// When the provider's Reader is nil (cache == nil), the function returns the
-// configured "empty" placeholder. Otherwise it participates in the two-phase
+// In strict mode every call fails, even when the provider has a Reader:
+// bootstrap and validate's Agent-bundle pass render what the Agent gets
+// before it has any provider, and they pass the keyless SOPS reader. When the provider's Reader is nil
+// (cache == nil), the function returns the configured "empty" placeholder, or
+// MissingReader's error when set. Otherwise it participates in the two-phase
 // collect+resolve cycle.
 func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p ProviderTemplate, cache *RefCache) {
 	funcMap[p.FuncName] = func(ref string) (string, error) {
+		if p.Strict {
+			return "", strictModeError(p, ref)
+		}
 		if cache == nil {
-			if p.Strict {
-				return "", fmt.Errorf("%s %q: provider not configured in strict mode; %s", p.FuncName, ref, strictModeFix(p.Key))
+			if p.MissingReader != nil {
+				return "", p.MissingReader(ref)
 			}
 			return p.PlaceholderEmpty, nil
 		}

@@ -16,6 +16,7 @@ import (
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/reconciler"
+	"github.com/schjan/picolet/pkg/sops"
 )
 
 // `picolet apply` has no pending-restart bookkeeping: a managed unit that
@@ -55,6 +56,26 @@ func TestRunResolveHeader(t *testing.T) {
 			assert.Equal(t, want, header)
 		})
 	}
+}
+
+// resolve is keyless: a readSopsSecret value prints as <sops-secret>, never
+// as its plaintext (the example Fleet's file is a copy of the SOPS corpus).
+func TestRunResolveSopsKeyless(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	require.NoError(t, runResolve(t.Context(), &out, "../../testdata/example-fleet", "web-1"))
+	assert.Contains(t, out.String(), "password: <sops-secret>")
+	assert.NotContains(t, out.String(), "hunter2-test")
+}
+
+// A dry-run without an Agent config passes no SOPS reader: on a Fleet whose
+// Host uses readSopsSecret it fails with the no-identity error and never
+// renders a placeholder.
+func TestDryRunResolveBasicFailsOnSops(t *testing.T) {
+	t.Parallel()
+	_, _, err := dryRunResolveBasic(t.Context(), "../../testdata/example-fleet", "web-1")
+	require.ErrorIs(t, err, sops.ErrNoIdentity)
+	assert.NotContains(t, err.Error(), "<sops-secret")
 }
 
 // Cannot use t.Parallel(): t.Setenv() mutates a process-global, so the test

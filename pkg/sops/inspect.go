@@ -267,21 +267,35 @@ func describe(v any) Node {
 	return Node{Kind: NodeLeaf, Type: plainType(v)}
 }
 
+// The type tags SOPS's cipher decrypts a value as: the one vocabulary of
+// plainType and the keyless reader's type-tag check (validTypeTags).
+const (
+	tagStr   = "str"
+	tagBytes = "bytes"
+	tagInt   = "int"
+	tagFloat = "float"
+	tagBool  = "bool"
+	tagTime  = "time"
+)
+
+// validTypeTags are the valid type tags of an encrypted value.
+var validTypeTags = map[string]bool{tagStr: true, tagBytes: true, tagInt: true, tagFloat: true, tagBool: true, tagTime: true}
+
 // plainType names a plaintext leaf's type in the type-tag vocabulary.
 func plainType(v any) string {
 	switch v.(type) {
 	case string:
-		return "str"
+		return tagStr
 	case []byte:
-		return "bytes"
+		return tagBytes
 	case int, int64:
-		return "int"
+		return tagInt
 	case float64:
-		return "float"
+		return tagFloat
 	case bool:
-		return "bool"
+		return tagBool
 	case time.Time:
-		return "time"
+		return tagTime
 	case nil:
 		return "null"
 	default:
