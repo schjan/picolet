@@ -73,7 +73,8 @@ type File struct {
 	EncryptedCommentRegex   string `json:"encrypted_comment_regex,omitempty"`
 	MACOnlyEncrypted        bool   `json:"mac_only_encrypted,omitempty"`
 
-	tree gsops.TreeBranches
+	tree  gsops.TreeBranches
+	store sopsStore // loads the tree again and renders plaintext leaves (keyless reader)
 }
 
 // KeyGroup is one SOPS key group.
@@ -161,7 +162,7 @@ func Inspect(path string, data []byte) (*File, error) {
 		return nil, err
 	}
 	format, st := storeFor(path)
-	f := &File{Format: format}
+	f := &File{Format: format, store: st}
 	tree, err := st.LoadEncryptedFile(data)
 	switch {
 	case errors.Is(err, gsops.MetadataNotFound):
@@ -265,7 +266,7 @@ func describe(v any) Node {
 }
 
 // The type tags SOPS's cipher decrypts a value as: the one vocabulary of
-// plainType and the keyless reader's type-tag check (validTypeTags).
+// plainType and the keyless reader's type-tag check (decryptableTypes).
 const (
 	tagStr   = "str"
 	tagBytes = "bytes"
@@ -274,9 +275,6 @@ const (
 	tagBool  = "bool"
 	tagTime  = "time"
 )
-
-// validTypeTags are the valid type tags of an encrypted value.
-var validTypeTags = map[string]bool{tagStr: true, tagBytes: true, tagInt: true, tagFloat: true, tagBool: true, tagTime: true}
 
 // plainType names a plaintext leaf's type in the type-tag vocabulary.
 func plainType(v any) string {

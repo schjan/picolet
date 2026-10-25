@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/pkg/config"
+	"github.com/schjan/picolet/pkg/sops"
 )
 
 // resolveSops resolves test-host of a one-host Fleet whose Host gets the
@@ -147,19 +148,22 @@ func TestReadSopsSecretKeylessRendersPlaceholder(t *testing.T) {
 	assert.Equal(t, "password: <sops-secret>", resolved.Files[0].Content)
 }
 
-// Templated refs and whole-file refs work keyless; "" and null leaves, which
-// SOPS never encrypts, pass for template refs.
+// Templated refs and whole-file refs work keyless. Leaves the file leaves
+// in plaintext ("" and null, which SOPS never encrypts, and those its
+// encryption rules exclude) render their value, as on the Agent.
 func TestReadSopsSecretKeylessAcceptedRefs(t *testing.T) {
 	t.Parallel()
-	tests := []struct{ name, call string }{
-		{name: "templated path", call: `readSopsSecret (print "sops://hosts/" .Host.Hostname "/app.sops.yaml#/db/password")`},
-		{name: "list index", call: `readSopsSecret "sops://secrets/db.sops.yaml#/tokens/0"`},
-		{name: "escaped key", call: `readSopsSecret "sops://secrets/db.sops.yaml#/odd_keys/a~1b"`},
-		{name: "int leaf", call: `readSopsSecret "sops://secrets/db.sops.yaml#/db/port"`},
+	p := sops.Placeholder
+	tests := []struct{ name, call, want string }{
+		{name: "templated path", call: `readSopsSecret (print "sops://hosts/" .Host.Hostname "/app.sops.yaml#/db/password")`, want: p},
+		{name: "list index", call: `readSopsSecret "sops://secrets/db.sops.yaml#/tokens/0"`, want: p},
+		{name: "escaped key", call: `readSopsSecret "sops://secrets/db.sops.yaml#/odd_keys/a~1b"`, want: p},
+		{name: "int leaf", call: `readSopsSecret "sops://secrets/db.sops.yaml#/db/port"`, want: p},
 		{name: "empty leaf", call: `readSopsSecret "sops://secrets/db.sops.yaml#/db/empty"`},
 		{name: "null leaf", call: `readSopsSecret "sops://secrets/db.sops.yaml#/db/nothing"`},
-		{name: "whole file", call: `readSopsSecret "sops://secrets/tls.sops.pem"`},
-		{name: "dotenv key", call: `readSopsSecret "sops://secrets/app.sops.env#/DB_PASSWORD"`},
+		{name: "unencrypted leaf", call: `readSopsSecret "sops://secrets/db.sops.yaml#/note_unencrypted"`, want: "visible"},
+		{name: "whole file", call: `readSopsSecret "sops://secrets/tls.sops.pem"`, want: p},
+		{name: "dotenv key", call: `readSopsSecret "sops://secrets/app.sops.env#/DB_PASSWORD"`, want: p},
 	}
 	files := map[string]string{
 		"secrets/db.sops.yaml":          sopsCorpusFile(t, "values.sops.yaml"),
@@ -173,7 +177,7 @@ func TestReadSopsSecretKeylessAcceptedRefs(t *testing.T) {
 			resolved, err := resolveSops(t, "v: {{ "+tt.call+" }}", files, true, false)
 			require.NoError(t, err)
 			require.Len(t, resolved.Files, 1)
-			assert.Equal(t, "v: <sops-secret>", resolved.Files[0].Content)
+			assert.Equal(t, "v: "+tt.want, resolved.Files[0].Content)
 		})
 	}
 }
@@ -192,7 +196,6 @@ func TestReadSopsSecretKeylessRejectedRefs(t *testing.T) {
 		{name: "missing key", ref: "sops://secrets/db.sops.yaml#/db/nope", want: `key "nope" not found at "/db"`},
 		{name: "map", ref: "sops://secrets/db.sops.yaml#/db", want: `"/db" is a map; a string ref must end at a leaf`},
 		{name: "list", ref: "sops://secrets/db.sops.yaml#/tokens", want: `"/tokens" is a list; a string ref must end at a leaf`},
-		{name: "unencrypted leaf", ref: "sops://secrets/db.sops.yaml#/note_unencrypted", want: `"/note_unencrypted" is not encrypted`},
 		{name: "invalid type tag", ref: "sops://secrets/tampered.sops.yaml#/db/port", want: `"/db/port" has an invalid type tag`},
 	}
 	files := map[string]string{
