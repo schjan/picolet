@@ -624,6 +624,10 @@ type ResolveParams struct {
 	// the resolve with the no-identity error; the keyless reader is never
 	// used here.
 	SopsIdentities *sops.Identities
+	// NoSopsIdentityHint is the fix the no-identity error names without
+	// SopsIdentities (resolver.Config.NoSopsIdentityHint); empty: the
+	// Agent's (set sops.age_identity_path).
+	NoSopsIdentityHint string
 
 	// QuadletDir, SystemdDir, and DataDir override the defaults computed by
 	// resolver.ResolveDirs. Empty fields fall back to the default. Used by
@@ -726,18 +730,19 @@ func loadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.Re
 	log.Debug("resolving host", "hostname", params.Hostname)
 	loadStart := time.Now()
 	r, err := resolver.New(resolver.Config{
-		FS:             repo.FS,
-		Config:         repo.Config,
-		SecretReader:   secretReader,
-		OpSecretReader: params.OpSecretReader,
-		PPSecretReader: params.PPSecretReader,
-		Sops:           sopsResolver,
-		Rootless:       params.Rootless,
-		QuadletDir:     params.QuadletDir,
-		SystemdDir:     params.SystemdDir,
-		DataDir:        params.DataDir,
-		HostDataDir:    params.HostDataDir,
-		Logger:         log,
+		FS:                 repo.FS,
+		Config:             repo.Config,
+		SecretReader:       secretReader,
+		OpSecretReader:     params.OpSecretReader,
+		PPSecretReader:     params.PPSecretReader,
+		Sops:               sopsResolver,
+		NoSopsIdentityHint: params.NoSopsIdentityHint,
+		Rootless:           params.Rootless,
+		QuadletDir:         params.QuadletDir,
+		SystemdDir:         params.SystemdDir,
+		DataDir:            params.DataDir,
+		HostDataDir:        params.HostDataDir,
+		Logger:             log,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating resolver: %w", err)
@@ -809,12 +814,12 @@ func (a *Agent) reconcileResolved(ctx context.Context, headSHA string, st *state
 	a.recordHostMetadata(resolved.Host)
 
 	counts := refSecretsCounts{
-		Op: a.recordProviderRefCount(resolver.ProviderOnePassword, a.opReader != nil, op.IsRef, files),
-		PP: a.recordProviderRefCount(resolver.ProviderProtonPass, a.ppReader != nil, pp.IsRef, files),
+		Op: a.recordSecretsManaged(resolver.ProviderOnePassword, a.opReader != nil, op.IsRef, files),
+		PP: a.recordSecretsManaged(resolver.ProviderProtonPass, a.ppReader != nil, pp.IsRef, files),
 	}
 	// A SOPS sync is counted per resolve that decrypted (ReconcileOnce),
 	// not per direct secret, so only the managed count is recorded here.
-	_ = a.recordProviderRefCount(resolver.ProviderSops, a.sopsIDs != nil, sops.IsRef, files)
+	a.recordSecretsManaged(resolver.ProviderSops, a.sopsIDs != nil, sops.IsRef, files)
 
 	changeset := reconciler.Diff(files, st)
 

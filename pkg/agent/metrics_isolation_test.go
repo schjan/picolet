@@ -33,10 +33,10 @@ func TestAgentsRecordSecretSyncIndependently(t *testing.T) {
 	refFiles := []resolver.ResolvedFile{{SrcPath: "op://vault/item/a"}, {SrcPath: "op://vault/item/b"}, {SrcPath: "plain"}}
 	isRef := func(p string) bool { return strings.HasPrefix(p, "op://") }
 
-	n := a1.recordProviderRefCount(resolver.ProviderOnePassword, true, isRef, refFiles)
+	n := a1.recordSecretsManaged(resolver.ProviderOnePassword, true, isRef, refFiles)
 	a1.recordProviderSyncSuccess(resolver.ProviderOnePassword, n)
 	a1.recordProviderSyncSuccess(resolver.ProviderOnePassword, n)
-	a2.recordProviderRefCount(resolver.ProviderOnePassword, true, isRef, refFiles[2:])
+	a2.recordSecretsManaged(resolver.ProviderOnePassword, true, isRef, refFiles[2:])
 
 	require.NoError(t, testutil.CollectAndCompare(metrics.NewSecretProviderCollector(a1.statusStore), strings.NewReader(`
 # HELP picolet_secret_sync_total Successful secret-provider sync attempts, per provider. Failures are counted on picolet_reconciliation_total{result="failure"}.

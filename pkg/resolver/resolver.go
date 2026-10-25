@@ -82,9 +82,12 @@ type Config struct {
 	// per resolve). Nil makes every sops:// ref fail the resolve; unlike
 	// op:// and pass://, SOPS never renders a placeholder without a reader.
 	// validate, resolve and bootstrap use NewKeyless instead.
-	Sops     SopsReader
-	Rootless bool
-	Strict   bool
+	Sops SopsReader
+	// NoSopsIdentityHint is the fix the no-identity error names when Sops
+	// is nil; empty: sops.NoIdentityHint (set sops.age_identity_path).
+	NoSopsIdentityHint string
+	Rootless           bool
+	Strict             bool
 
 	// keylessSops (set only by NewKeyless) replaces Sops with
 	// the keyless reader, built per host resolve for that Host so its
@@ -119,6 +122,7 @@ type Resolver struct {
 	opSecretReader SecretRefReader
 	ppSecretReader SecretRefReader
 	sopsReader     SopsReader
+	noSopsHint     string
 	keylessSops    bool
 	quadletDir     string
 	systemdDir     string
@@ -190,6 +194,7 @@ func New(rc Config) (*Resolver, error) {
 		opSecretReader: rc.OpSecretReader,
 		ppSecretReader: rc.PPSecretReader,
 		sopsReader:     rc.Sops,
+		noSopsHint:     cmp.Or(rc.NoSopsIdentityHint, sops.NoIdentityHint),
 		keylessSops:    rc.keylessSops,
 		quadletDir:     quadletDir,
 		systemdDir:     systemdDir,
@@ -375,7 +380,7 @@ func (r *Resolver) resolveSopsReader() SopsReader { //nolint:ireturn // the keyl
 // guardedSopsProvider is SopsProvider over this host resolve's SOPS reader
 // with the unit-file guard.
 func (r *Resolver) guardedSopsProvider() ProviderTemplate {
-	p := SopsProvider(r.resolveSopsReader())
+	p := SopsProvider(r.resolveSopsReader(), r.noSopsHint)
 	p.Guard = r.sopsGuard
 	return p
 }
@@ -950,7 +955,7 @@ func (r *Resolver) resolveSopsDirectRefs(ctx context.Context, refs []string, int
 	}
 	reader := r.directSopsReader()
 	if reader == nil {
-		return fmt.Errorf("direct secrets %s: %w; %s", strings.Join(refs, ", "), sops.ErrNoIdentity, sops.NoIdentityHint)
+		return sops.NoIdentityError("direct secrets "+strings.Join(refs, ", "), r.noSopsHint)
 	}
 	r.logger.Debug("batch-resolving secrets", "provider", ProviderSops, "count", len(refs))
 	results, err := reader(ctx, refs)
