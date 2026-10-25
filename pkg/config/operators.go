@@ -44,7 +44,7 @@ func LoadOperators(fsys fs.FS, cfg *Config) (Operators, error) {
 	case err != nil:
 		return nil, fmt.Errorf("loading %s: %w", OperatorsFile, err)
 	}
-	owners := hostRecipientOwners(cfg)
+	owners := cfg.HostRecipientOwners()
 	ops := make(Operators, 0, len(*raw))
 	for _, name := range slices.Sorted(maps.Keys(*raw)) {
 		recipients, err := parseAgeRecipients((*raw)[name].AgeRecipients)
@@ -62,12 +62,12 @@ func LoadOperators(fsys fs.FS, cfg *Config) (Operators, error) {
 	return ops, nil
 }
 
-// hostRecipientOwners maps each age Recipient cfg's Hosts declare to those
+// HostRecipientOwners maps each age Recipient c's Hosts declare to those
 // Hosts, sorted by hostname.
-func hostRecipientOwners(cfg *Config) map[sops.Recipient][]string {
+func (c *Config) HostRecipientOwners() map[sops.Recipient][]string {
 	owners := map[sops.Recipient][]string{}
-	for _, name := range cfg.SortedHostnames() {
-		for _, r := range cfg.Hosts[name].AgeRecipients {
+	for _, name := range c.SortedHostnames() {
+		for _, r := range c.Hosts[name].AgeRecipients {
 			if !slices.Contains(owners[r], name) {
 				owners[r] = append(owners[r], name)
 			}

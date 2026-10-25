@@ -122,14 +122,8 @@ repo_url: "https://github.com/example/fleet.git"
 
 // validateFleet runs `picolet validate` on the Fleet in repoFS. Test Fleets
 // declare the corpus's published TEST-ONLY recipients, so their warning is
-// off.
-func validateFleet(t *testing.T, repoFS fs.FS) error {
-	t.Helper()
-	return validateFleetWith(t, repoFS)
-}
-
-// validateFleetWith is validateFleet with extra validate options.
-func validateFleetWith(t *testing.T, repoFS fs.FS, opts ...validator.Option) error {
+// off; opts are extra validate options.
+func validateFleet(t *testing.T, repoFS fs.FS, opts ...validator.Option) error {
 	t.Helper()
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)

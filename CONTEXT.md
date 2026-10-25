@@ -69,6 +69,14 @@ A reload action (HTTP call, signal or unit restart) triggered when specific secr
 A pointer (`op://…`, `pass://…`) in the Fleet to a value held by a secret provider; the value itself never enters git.
 _Avoid_: secret (when the reference, not the value, is meant)
 
+**Recipient**:
+An age public key a SOPS file in the Fleet is encrypted to. A Host's Recipients are the public keys of its own identity; only a file's Recipients can read it. A Recipient belongs to Hosts or to an Operator, never both. A file's Recipients may only be Operators' and those of the Hosts that reference the file; a file no Host references is for Operators only.
+_Avoid_: key (the identity and the Recipient are different halves), public key (when the role is meant)
+
+**Operator**:
+A person, or an offline backup key, declared in the Fleet (`operators.yml`) as allowed to read every SOPS file. Operators edit SOPS files; Agents never act as Operators.
+_Avoid_: admin, maintainer, user (a Linux user on a Machine is something else)
+
 **Timer-triggered One-shot**:
 A `Type=oneshot` unit from the Fleet that a `.timer` starts on a schedule (a backup, a restore-verify); picolet tracks when it last ran, last succeeded and with what result.
 _Avoid_: job, cron job, scheduled job (systemd's D-Bus jobs are a different thing picolet already models)

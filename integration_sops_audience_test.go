@@ -139,7 +139,7 @@ func TestIntegrationValidateSOPSAudienceSkippedOnResolveFailure(t *testing.T) {
 	fsys["secrets/broken.yml.tmpl"] = data([]byte(`x: {{ readSopsSecret "sops://secrets/gone.sops.yaml#/x" }}` + "\n"))
 
 	var logs bytes.Buffer
-	err := validateFleetWith(t, fsys, validator.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	err := validateFleet(t, fsys, validator.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 	require.ErrorContains(t, err, "host broken-c: resolve")
 	assert.NotContains(t, err.Error(), "may not read it")
 	assert.Contains(t, logs.String(), "skipping the SOPS audience pass")
@@ -167,4 +167,22 @@ func TestIntegrationValidateWarnsOnPublishedTestRecipients(t *testing.T) {
 	logs.Reset()
 	require.NoError(t, validator.ValidateAll(t.Context(), fsys, r, cfg, validator.WithLogger(log), validator.AllowTestRecipients()))
 	assert.NotContains(t, logs.String(), "published test recipient")
+}
+
+// A Host's published TEST-ONLY recipient is warned about even when
+// operators.yml fails to load.
+func TestIntegrationValidateWarnsOnPublishedTestRecipientsWhenOperatorsFail(t *testing.T) {
+	t.Parallel()
+	fsys := audienceFleet(t)
+	fsys["operators.yml"] = data([]byte("operator-1:\n  age_recipients: [not-a-recipient]\n"))
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	r, err := resolver.NewKeyless(resolver.Config{FS: fsys, Config: cfg})
+	require.NoError(t, err)
+
+	var logs bytes.Buffer
+	err = validator.ValidateAll(t.Context(), fsys, r, cfg, validator.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	require.ErrorContains(t, err, "operators.yml")
+	assert.Contains(t, logs.String(), "published test recipient")
+	assert.Contains(t, logs.String(), "host=web-a")
 }

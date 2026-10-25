@@ -147,9 +147,15 @@ func ValidateAll(ctx context.Context, fsys fs.FS, r *resolver.Resolver, cfg *con
 	if err := validateAgentBundles(ctx, fsys, cfg, o.logger); err != nil {
 		errs = append(errs, err)
 	}
-	aud, err := loadAudience(fsys, cfg, resolved, unresolved, o)
-	if err != nil {
-		errs = append(errs, err)
+	ops, opsErr := config.LoadOperators(fsys, cfg)
+	if !o.allowTestRecipients {
+		warnPublishedTestRecipients(o.logger, cfg, ops)
+	}
+	var aud *audience
+	if opsErr != nil {
+		errs = append(errs, opsErr)
+	} else {
+		aud = newAudience(cfg, resolved, unresolved, ops, o.logger)
 	}
 	if err := validateSOPSFiles(fsys, aud); err != nil {
 		errs = append(errs, err)

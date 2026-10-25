@@ -2,7 +2,6 @@ package validator
 
 import (
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"slices"
 	"strings"
@@ -23,47 +22,24 @@ type audience struct {
 	operators map[sops.Recipient]bool
 }
 
-// loadAudience loads operators.yml and returns the audience pass's input,
-// or nil to skip the pass: when operators.yml fails to load (the error), or
-// when a Host in unresolved failed to resolve (logged: its files' audiences
-// would be incomplete). It warns about published test recipients unless
-// the options allow them.
-//
-//nolint:nilnil // a nil audience without an error means: skip the pass, as documented
-func loadAudience(fsys fs.FS, cfg *config.Config, resolved []*resolver.ResolvedHost, unresolved []string, o options) (*audience, error) {
-	ops, err := config.LoadOperators(fsys, cfg)
-	if err != nil {
-		return nil, err
-	}
-	if !o.allowTestRecipients {
-		warnPublishedTestRecipients(o.logger, cfg, ops)
-	}
-	if len(unresolved) > 0 {
-		o.logger.Warn("skipping the SOPS audience pass: some Hosts failed to resolve, so the files' audiences would be incomplete",
-			"hosts", strings.Join(unresolved, ", "))
-		return nil, nil
-	}
-	return newAudience(cfg, resolved, ops), nil
-}
-
 // newAudience builds the audience pass's input from every Host's resolve
-// and the Operators.
-func newAudience(cfg *config.Config, resolved []*resolver.ResolvedHost, ops config.Operators) *audience {
+// and the Operators, or returns nil to skip the pass when a Host in
+// unresolved failed to resolve (logged: its files' audiences would be
+// incomplete).
+func newAudience(cfg *config.Config, resolved []*resolver.ResolvedHost, unresolved []string, ops config.Operators, log *slog.Logger) *audience {
+	if len(unresolved) > 0 {
+		log.Warn("skipping the SOPS audience pass: some Hosts failed to resolve, so the files' audiences would be incomplete",
+			"hosts", strings.Join(unresolved, ", "))
+		return nil
+	}
 	a := &audience{
 		readers:    map[string][]string{},
-		hostOwners: map[sops.Recipient][]string{},
+		hostOwners: cfg.HostRecipientOwners(),
 		operators:  map[sops.Recipient]bool{},
 	}
 	for _, rh := range resolved {
 		for _, path := range rh.SopsFiles {
 			a.readers[path] = append(a.readers[path], rh.Hostname)
-		}
-	}
-	for _, name := range cfg.SortedHostnames() {
-		for _, r := range cfg.Hosts[name].AgeRecipients {
-			if !slices.Contains(a.hostOwners[r], name) {
-				a.hostOwners[r] = append(a.hostOwners[r], name)
-			}
 		}
 	}
 	for _, op := range ops {
