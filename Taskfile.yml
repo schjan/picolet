@@ -48,7 +48,7 @@ tasks:
       - BUILD_TAGS="{{.BUILD_TAGS}}" scripts/govulncheck.sh
 
   sops:corpus:
-    desc: Regenerate the SOPS fixture corpus in testdata/sops/corpus with the pinned sops tool (then run `go test ./pkg/sops`; its inspection goldens must not change)
+    desc: Regenerate the SOPS fixture corpus in testdata/sops/corpus and the CLI-checked creation-rule cases in testdata/sops/creation-rules with the pinned sops tool (then run `go test ./pkg/sops`; its inspection goldens must not change; `-rules-only` regenerates only the rule cases)
     cmds:
       - go run ./pkg/sops/internal/corpusgen -dir testdata/sops
 

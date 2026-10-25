@@ -1,0 +1,10 @@
+# SOPS creation rules (read by `sops` when encrypting, and by `picolet
+# validate`, which reports files whose recipients drifted from their rule).
+# TEST-ONLY recipients of the picolet fixture corpus (testdata/sops): never
+# encrypt a real secret to them.
+creation_rules:
+  - path_regex: ^secrets/
+    age: >-
+      age1eed9cxu2y3xx2s3syz95sanhy3xuajtpmjsnz63skgwl9yvw0g5su77pfq,
+      age1e95u43sns76r0e52j74aupqsp58qc9s6vrwhzsj9hd6x9shk9cgqgu5gjj,
+      age16uxzllqjy7exxfsnsc9x48xnsutxukuxkdhkgg3twxmsk8pq3sdqnuhkmp
