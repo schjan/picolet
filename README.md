@@ -1356,6 +1356,11 @@ Secrets always require non-empty content. Repo-backed YAML secrets (`.yml` / `.y
 
 `validate` also renders each Host's Agent bundle (`picolet` for a Host with `user:`, `picolet-system` for the rootful Host; Hosts without it assigned are skipped) the way `bootstrap` does: strictly, with no secret provider. A `readOpSecret`/`readProtonPassSecret` call in the bundle fails with the Host, the bundle, the ref and the fix, since `bootstrap` would fail on it too; put the ref in the Agent config as a YAML value (e.g. `onepassword.git_token_ref: op://…`) and let the Agent resolve it at runtime.
 
+`validate` checks every `*.sops.*` file in the Fleet, whether or not a Host references it, without any key:
+
+- **Encrypted:** the file must carry SOPS metadata (`sops.version` and `sops.mac`) and be at most 1 MiB. A plaintext file under a SOPS name is an error: its values are in git, so rotate them and commit the file encrypted (rewriting history does not unpublish them).
+- **Creation rule:** when the Fleet-root `.sops.yaml` has a rule matching the file (first match wins, an empty `path_regex` matches every file, paths relative to the Fleet root), the file's age Recipients must equal the rule's, key group by key group, order ignored (`shamir_threshold`, encryption rules and non-age keys are ignored). A mismatch lists `+` (in the file, not the rule) and `−` (in the rule, not the file) and asks you to run `sops updatekeys <file>`. Only the root `.sops.yaml` is read; it must be a regular file, not a symlink. A file without a matching rule, or a Fleet without a root `.sops.yaml`, is not checked: the file's own Recipients decide who can read it. picolet never generates `.sops.yaml`.
+
 Run `./picolet validate` in CI to catch errors before pushing.
 
 ## Secret Providers

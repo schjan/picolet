@@ -122,6 +122,9 @@ func ValidateAll(ctx context.Context, fsys fs.FS, r *resolver.Resolver, cfg *con
 	if err := validateAgentBundles(ctx, fsys, cfg, newOptions(opts).logger); err != nil {
 		errs = append(errs, err)
 	}
+	if err := validateSOPSFiles(fsys); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
 }
 
