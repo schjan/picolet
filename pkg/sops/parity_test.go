@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/sops"
 )
 
@@ -159,12 +160,12 @@ func TestKeylessPlaintextLeaves(t *testing.T) {
 func TestKeylessCiphertextLookalikeInPlaintextPosition(t *testing.T) {
 	t.Parallel()
 	lookalike := "ENC[AES256_GCM,data:AAAA,iv:AAAA,tag:AAAA,type:nope]"
-	data := strings.Replace(string(corpusFile(t, "mac-only-encrypted.sops.yaml")),
+	data := strings.Replace(testsops.CorpusText(t, "mac-only-encrypted.sops.yaml"),
 		"note_unencrypted: visible", "note_unencrypted: "+lookalike, 1)
 	fsys := fstest.MapFS{"db.sops.yaml": {Data: []byte(data)}}
 	ref := "sops://db.sops.yaml#/note_unencrypted"
 
-	want, err := sops.NewReader(fsys, corpusIdentities(t, "srv-1")).ReadAll(t.Context(), []string{ref})
+	want, err := sops.NewReader(fsys, testsops.Identities(t, "srv-1")).ReadAll(t.Context(), []string{ref})
 	require.NoError(t, err)
 	require.Equal(t, lookalike, want[ref])
 
@@ -180,13 +181,13 @@ func TestKeylessCiphertextLookalikeInPlaintextPosition(t *testing.T) {
 func TestKeylessPlaintextInEncryptedPosition(t *testing.T) {
 	t.Parallel()
 	data := regexp.MustCompile(`(?m)^(    password: )ENC\[[^\]]*\]`).
-		ReplaceAllString(string(corpusFile(t, "values.sops.yaml")), "${1}hunter2-test")
+		ReplaceAllString(testsops.CorpusText(t, "values.sops.yaml"), "${1}hunter2-test")
 	fsys := fstest.MapFS{"db.sops.yaml": {Data: []byte(data)}}
 	refs := []string{"sops://db.sops.yaml#/db/password", "sops://db.sops.yaml#/db/user"}
 
-	_, err := sops.NewReader(fsys, corpusIdentities(t, "srv-1")).ReadAll(t.Context(), refs)
+	_, err := sops.NewReader(fsys, testsops.Identities(t, "srv-1")).ReadAll(t.Context(), refs)
 	require.ErrorIs(t, err, sops.ErrEditedOutsideSOPS)
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 
 	r := sops.NewKeylessReader(fsys, hostSrv1(t))
 	_, err = r.ReadAll(t.Context(), refs)
@@ -195,9 +196,9 @@ func TestKeylessPlaintextInEncryptedPosition(t *testing.T) {
 		require.ErrorContains(t, err, ref)
 	}
 	require.ErrorContains(t, err, `"/db/password" is not encrypted`)
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 
 	_, err = r.ReadData(t.Context(), "sops://db.sops.yaml#/tokens")
 	require.ErrorIs(t, err, sops.ErrEditedOutsideSOPS)
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 }

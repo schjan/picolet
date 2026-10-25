@@ -9,12 +9,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/sops"
 )
 
 func inspectCorpus(t *testing.T, name string) *sops.File {
 	t.Helper()
-	f, err := sops.Inspect(name, corpusFile(t, name))
+	f, err := sops.Inspect(name, testsops.CorpusFile(t, name))
 	require.NoError(t, err)
 	return f
 }
@@ -23,7 +24,7 @@ func recipients(t *testing.T, names ...string) []sops.Recipient {
 	t.Helper()
 	out := make([]sops.Recipient, 0, len(names))
 	for _, n := range names {
-		r, err := sops.ParseRecipient(corpusRecipient(t, n))
+		r, err := sops.ParseRecipient(testsops.Recipient(t, n))
 		require.NoError(t, err)
 		out = append(out, r)
 	}
@@ -94,8 +95,8 @@ func TestInspectNeverEchoesAnAgeIdentityAsRecipient(t *testing.T) {
 	t.Parallel()
 
 	identity := zeroIdentity
-	data := bytes.Replace(corpusFile(t, "values.sops.yaml"),
-		[]byte("recipient: "+corpusRecipient(t, "srv-2")), []byte("recipient: "+identity), 1)
+	data := bytes.Replace(testsops.CorpusFile(t, "values.sops.yaml"),
+		[]byte("recipient: "+testsops.Recipient(t, "srv-2")), []byte("recipient: "+identity), 1)
 	f, err := sops.Inspect("values.sops.yaml", data)
 	require.NoError(t, err)
 	require.True(t, f.IsSOPS)
@@ -205,7 +206,7 @@ func TestLookupMissingPath(t *testing.T) {
 			_, err = f.Lookup(p)
 			require.ErrorIs(t, err, sops.ErrBadPointer)
 			assert.Contains(t, err.Error(), want)
-			assertNoPlaintext(t, err)
+			testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 		})
 	}
 }
@@ -225,5 +226,5 @@ func TestLookupOnNonSOPSFile(t *testing.T) {
 	require.NoError(t, err)
 	_, err = inspectCorpus(t, "plaintext.sops.yaml").Lookup(p)
 	require.ErrorIs(t, err, sops.ErrNotSOPSFile)
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 }

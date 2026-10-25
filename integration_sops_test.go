@@ -1,7 +1,6 @@
 package picolet_test
 
 import (
-	"bufio"
 	"bytes"
 	"io/fs"
 	"maps"
@@ -14,37 +13,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/sops"
 )
-
-const sopsCorpusDir = "testdata/sops"
-
-// sopsCorpus reads a file of the SOPS fixture corpus.
-func sopsCorpus(t *testing.T, name string) []byte {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join(sopsCorpusDir, "corpus", name))
-	require.NoError(t, err)
-	return data
-}
-
-// sopsRecipient returns the TEST-ONLY corpus recipient called name.
-func sopsRecipient(t *testing.T, name string) string {
-	t.Helper()
-	f, err := os.Open(filepath.Join(sopsCorpusDir, "recipients.txt"))
-	require.NoError(t, err)
-	defer func() { _ = f.Close() }()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 64*1024)
-	for sc.Scan() {
-		if n, key, ok := strings.Cut(sc.Text(), " "); ok && n == name {
-			return key
-		}
-	}
-	require.NoError(t, sc.Err())
-	t.Fatalf("recipient %q not in corpus", name)
-	return ""
-}
 
 // sopsHostYML is test-host's host.yml declaring the corpus recipients called
 // recipients (none: no age_recipients: key).
@@ -54,7 +26,7 @@ func sopsHostYML(t *testing.T, recipients []string) string {
 	if len(recipients) > 0 {
 		y += "age_recipients:\n"
 		for _, r := range recipients {
-			y += "  - " + sopsRecipient(t, r) + "\n"
+			y += "  - " + testsops.Recipient(t, r) + "\n"
 		}
 	}
 	return y
@@ -78,10 +50,10 @@ func data(b []byte) *fstest.MapFile { return &fstest.MapFile{Data: b} }
 func TestIntegrationValidateSOPSPlaintextFile(t *testing.T) {
 	t.Parallel()
 	err := validateFleet(t, sopsFleet(t, map[string]*fstest.MapFile{
-		"secrets/db.sops.yaml":         data(sopsCorpus(t, "plaintext.sops.yaml")),
+		"secrets/db.sops.yaml":         data(testsops.CorpusFile(t, "plaintext.sops.yaml")),
 		"hosts/test-host/app.sops.env": data([]byte("TOKEN=hunter2-test\n")),
-		"services/x/no-mac.sops.yaml":  data(sopsCorpus(t, "no-mac.sops.yaml")),
-		"secrets/ok.sops.yaml":         data(sopsCorpus(t, "values.sops.yaml")),
+		"services/x/no-mac.sops.yaml":  data(testsops.CorpusFile(t, "no-mac.sops.yaml")),
+		"secrets/ok.sops.yaml":         data(testsops.CorpusFile(t, "values.sops.yaml")),
 	}))
 	require.Error(t, err)
 	for _, want := range []string{
@@ -93,7 +65,7 @@ func TestIntegrationValidateSOPSPlaintextFile(t *testing.T) {
 		require.ErrorContains(t, err, want)
 	}
 	assert.NotContains(t, err.Error(), "secrets/ok.sops.yaml")
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err)
 }
 
 func TestIntegrationValidateSOPSOversizedFile(t *testing.T) {
@@ -102,7 +74,7 @@ func TestIntegrationValidateSOPSOversizedFile(t *testing.T) {
 	err := validateFleet(t, sopsFleet(t, map[string]*fstest.MapFile{"secrets/big.sops.bin": data(big)}))
 	require.ErrorIs(t, err, sops.ErrFileTooLarge)
 	require.ErrorContains(t, err, "secrets/big.sops.bin")
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err)
 }
 
 func sopsRules(body string) *fstest.MapFile {
@@ -117,9 +89,9 @@ type creationRuleCase struct {
 
 func creationRuleCases(t *testing.T) []creationRuleCase {
 	t.Helper()
-	srv1, srv2, srv3 := sopsRecipient(t, "srv-1"), sopsRecipient(t, "srv-2"), sopsRecipient(t, "srv-3")
-	op := sopsRecipient(t, "operator-1")
-	values := sopsCorpus(t, "values.sops.yaml") // srv-1, srv-2, operator-1
+	srv1, srv2, srv3 := testsops.Recipient(t, "srv-1"), testsops.Recipient(t, "srv-2"), testsops.Recipient(t, "srv-3")
+	op := testsops.Recipient(t, "operator-1")
+	values := testsops.CorpusFile(t, "values.sops.yaml") // srv-1, srv-2, operator-1
 
 	return []creationRuleCase{
 		{
@@ -166,10 +138,10 @@ func creationRuleCases(t *testing.T) []creationRuleCase {
 
 func keyGroupRuleCases(t *testing.T) []creationRuleCase {
 	t.Helper()
-	srv1, srv2 := sopsRecipient(t, "srv-1"), sopsRecipient(t, "srv-2")
-	op, pq := sopsRecipient(t, "operator-1"), sopsRecipient(t, "srv-pq")
-	values := sopsCorpus(t, "values.sops.yaml") // srv-1, srv-2, operator-1
-	keyGroups := sopsCorpus(t, "key-groups.sops.yaml")
+	srv1, srv2 := testsops.Recipient(t, "srv-1"), testsops.Recipient(t, "srv-2")
+	op, pq := testsops.Recipient(t, "operator-1"), testsops.Recipient(t, "srv-pq")
+	values := testsops.CorpusFile(t, "values.sops.yaml") // srv-1, srv-2, operator-1
+	keyGroups := testsops.CorpusFile(t, "key-groups.sops.yaml")
 
 	return []creationRuleCase{
 		{
@@ -215,7 +187,7 @@ func TestIntegrationValidateSOPSCreationRules(t *testing.T) {
 			for _, w := range tt.want {
 				require.ErrorContains(t, err, w)
 			}
-			assertNoPlaintext(t, err)
+			testsops.AssertNoPlaintext(t, err)
 		})
 	}
 }
@@ -226,8 +198,8 @@ func TestIntegrationValidateSOPSSymlinkedRulesOnDisk(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	for name, f := range sopsFleet(t, map[string]*fstest.MapFile{
-		"rules/sops.yaml":      sopsRules("  - age: " + sopsRecipient(t, "srv-1") + "\n"),
-		"secrets/db.sops.yaml": data(sopsCorpus(t, "values.sops.yaml")),
+		"rules/sops.yaml":      sopsRules("  - age: " + testsops.Recipient(t, "srv-1") + "\n"),
+		"secrets/db.sops.yaml": data(testsops.CorpusFile(t, "values.sops.yaml")),
 	}) {
 		p := filepath.Join(dir, filepath.FromSlash(name))
 		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o750))
@@ -241,7 +213,7 @@ func TestIntegrationValidateSOPSSymlinkedRulesOnDisk(t *testing.T) {
 	err = validateFleet(t, root.FS())
 	require.ErrorContains(t, err, ".sops.yaml: is a symlink")
 	assert.NotContains(t, err.Error(), "recipients differ")
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err)
 }
 
 // exampleFleetMapFS copies the example Fleet into a MapFS, so a test can
@@ -276,7 +248,7 @@ func TestIntegrationValidateExampleFleetSOPS(t *testing.T) {
 		t.Run("rule drift "+tt.path, func(t *testing.T) {
 			t.Parallel()
 			fsys := exampleFleetMapFS(t)
-			op := sopsRecipient(t, "operator-1")
+			op := testsops.Recipient(t, "operator-1")
 			rules := string(fsys[".sops.yaml"].Data)
 			i := strings.Index(rules, "path_regex: "+tt.regex+"\n")
 			require.GreaterOrEqual(t, i, 0, "no rule %s", tt.regex)
@@ -295,10 +267,10 @@ func TestIntegrationValidateExampleFleetSOPS(t *testing.T) {
 		require.Error(t, err)
 		for _, path := range []string{"secrets/db.sops.yaml", "services/web-app/secrets.sops.yaml"} {
 			for _, name := range []string{"operator-1", "srv-2"} {
-				require.ErrorContains(t, err, "`"+path+"`: age recipient "+sopsRecipient(t, name)+" (owner: unknown) may not read it")
+				require.ErrorContains(t, err, "`"+path+"`: age recipient "+testsops.Recipient(t, name)+" (owner: unknown) may not read it")
 			}
 		}
-		assertNoPlaintext(t, err)
+		testsops.AssertNoPlaintext(t, err)
 	})
 	t.Run("file no longer referenced", func(t *testing.T) {
 		t.Parallel()
@@ -308,7 +280,7 @@ func TestIntegrationValidateExampleFleetSOPS(t *testing.T) {
 		fsys["assignments.yml"] = data([]byte(strings.Replace(assignments, `      - "sops://secrets/db.sops.yaml"`+"\n", "", 1)))
 		delete(fsys, "services/web-app/files/db-pool.conf.tmpl") // its other reference
 		err := validateFleet(t, fsys)
-		require.EqualError(t, err, "`secrets/db.sops.yaml`: age recipient "+sopsRecipient(t, "srv-1")+
+		require.EqualError(t, err, "`secrets/db.sops.yaml`: age recipient "+testsops.Recipient(t, "srv-1")+
 			" (owner: Host web-1) may not read it: no Host references the file, so only Operators may read it; "+
 			"planned retirement: drop it from the `.sops.yaml` rule and run `sops updatekeys secrets/db.sops.yaml`; "+
 			"trust lost: drop it, run `sops rotate -i secrets/db.sops.yaml` (new data key) and change every value. "+
@@ -317,10 +289,10 @@ func TestIntegrationValidateExampleFleetSOPS(t *testing.T) {
 	t.Run("plaintext file", func(t *testing.T) {
 		t.Parallel()
 		fsys := exampleFleetMapFS(t)
-		fsys["secrets/api.sops.yaml"] = data(sopsCorpus(t, "plaintext.sops.yaml"))
+		fsys["secrets/api.sops.yaml"] = data(testsops.CorpusFile(t, "plaintext.sops.yaml"))
 		err := validateFleet(t, fsys)
 		require.ErrorContains(t, err, "`secrets/api.sops.yaml` is not SOPS-encrypted (no sops metadata)")
-		assertNoPlaintext(t, err)
+		testsops.AssertNoPlaintext(t, err)
 	})
 }
 
@@ -358,7 +330,7 @@ func TestIntegrationValidateTypedSopsLeafInManifest(t *testing.T) {
 		"assignments.yml":          data([]byte("base:\n  paths: [manifests/app.yaml.tmpl]\nroles: {}\nfeatures: {}\n")),
 		"manifests/app.yaml.tmpl":  data([]byte(typedSopsManifest)),
 		"hosts/test-host/host.yml": data([]byte(sopsHostYML(t, []string{"srv-1"}))),
-		"secrets/db.sops.yaml":     data(sopsCorpus(t, "values.sops.yaml")),
+		"secrets/db.sops.yaml":     data(testsops.CorpusFile(t, "values.sops.yaml")),
 		config.OperatorsFile:       corpusOperatorsExcept(t, []string{"srv-1"}),
 	})
 	require.NoError(t, validateFleet(t, fsys))

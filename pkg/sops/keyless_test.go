@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/sops"
 )
 
@@ -32,9 +33,9 @@ func (c countingFS) Open(name string) (fs.File, error) {
 
 func keylessFS(t *testing.T) fstest.MapFS {
 	t.Helper()
-	tampered := strings.Replace(string(corpusFile(t, "values.sops.yaml")), "type:int]", "type:nope]", 1)
+	tampered := strings.Replace(testsops.CorpusText(t, "values.sops.yaml"), "type:int]", "type:nope]", 1)
 	return fstest.MapFS{
-		"secrets/db.sops.yaml":       {Data: corpusFile(t, "values.sops.yaml")},
+		"secrets/db.sops.yaml":       {Data: testsops.CorpusFile(t, "values.sops.yaml")},
 		"secrets/tampered.sops.yaml": {Data: []byte(tampered)},
 		"secrets/plain.sops.yaml":    {Data: []byte("db:\n  password: hunter2\n")},
 	}
@@ -78,7 +79,7 @@ func TestKeylessReaderRejectsRefs(t *testing.T) {
 			require.Error(t, err)
 			assert.Empty(t, values)
 			assert.Contains(t, err.Error(), tt.ref)
-			assertNoPlaintext(t, err)
+			testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 			if tt.is != nil {
 				require.ErrorIs(t, err, tt.is)
 			}
@@ -113,7 +114,7 @@ func TestKeylessReaderReadDirect(t *testing.T) {
 		require.ErrorIs(t, err, sops.ErrEmptyValue, ref)
 		require.ErrorContains(t, err, ref)
 		assert.Empty(t, values)
-		assertNoPlaintext(t, err)
+		testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 	}
 }
 
@@ -130,7 +131,7 @@ func TestKeylessReaderReadsEachFileOnce(t *testing.T) {
 	}
 	_, err := r.ReadAll(t.Context(), refs)
 	require.ErrorIs(t, err, sops.ErrBadPointer)
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 	assert.Equal(t, int32(1), fsys.opens["secrets/db.sops.yaml"].Load())
 
 	_, err = r.ReadAll(t.Context(), refs[:1])
@@ -161,7 +162,7 @@ func keylessHost(t *testing.T, name string, recipients ...string) sops.Host {
 	t.Helper()
 	h := sops.Host{Name: name}
 	for _, r := range recipients {
-		parsed, err := sops.ParseRecipient(corpusRecipient(t, r))
+		parsed, err := sops.ParseRecipient(testsops.Recipient(t, r))
 		require.NoError(t, err)
 		h.Recipients = append(h.Recipients, parsed)
 	}
@@ -178,9 +179,9 @@ func hostSrv1(t *testing.T) sops.Host {
 func recipientFS(t *testing.T) fstest.MapFS {
 	t.Helper()
 	return fstest.MapFS{
-		"secrets/db.sops.yaml":     {Data: corpusFile(t, "values.sops.yaml")},     // srv-1, srv-2, operator-1
-		"secrets/groups.sops.yaml": {Data: corpusFile(t, "key-groups.sops.yaml")}, // [srv-1 operator-1] [srv-2] [srv-pq], threshold 2
-		"secrets/pq.sops.yaml":     {Data: corpusFile(t, "pq.sops.yaml")},         // srv-pq, srv-1
+		"secrets/db.sops.yaml":     {Data: testsops.CorpusFile(t, "values.sops.yaml")},     // srv-1, srv-2, operator-1
+		"secrets/groups.sops.yaml": {Data: testsops.CorpusFile(t, "key-groups.sops.yaml")}, // [srv-1 operator-1] [srv-2] [srv-pq], threshold 2
+		"secrets/pq.sops.yaml":     {Data: testsops.CorpusFile(t, "pq.sops.yaml")},         // srv-pq, srv-1
 	}
 }
 
@@ -227,7 +228,7 @@ func TestKeylessReaderRecipientChecksFail(t *testing.T) {
 			ref:  "sops://secrets/db.sops.yaml#/db/password",
 			want: []string{
 				"secrets/db.sops.yaml: not a recipient: the file is not encrypted to Host srv-3",
-				corpusRecipient(t, "srv-3"),
+				testsops.Recipient(t, "srv-3"),
 				"add one of them to the file's .sops.yaml creation rule and run `sops updatekeys secrets/db.sops.yaml`",
 			},
 		},
@@ -237,7 +238,7 @@ func TestKeylessReaderRecipientChecksFail(t *testing.T) {
 			ref:  "sops://secrets/groups.sops.yaml#/db/password",
 			want: []string{
 				"secrets/groups.sops.yaml: not a recipient: the file is encrypted to Host srv-1 in 1 of the 2 key groups it needs",
-				corpusRecipient(t, "srv-1"),
+				testsops.Recipient(t, "srv-1"),
 				"run `sops updatekeys secrets/groups.sops.yaml`",
 			},
 		},
@@ -252,7 +253,7 @@ func TestKeylessReaderRecipientChecksFail(t *testing.T) {
 			for _, want := range tt.want {
 				assert.Contains(t, err.Error(), want)
 			}
-			assertNoPlaintext(t, err)
+			testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 		})
 	}
 }
@@ -262,5 +263,5 @@ func TestKeylessReaderNotRecipientIsErrNotRecipient(t *testing.T) {
 	_, err := sops.NewKeylessReader(recipientFS(t), keylessHost(t, "srv-3", "srv-3")).
 		ReadAll(t.Context(), []string{"sops://secrets/db.sops.yaml#/db/password"})
 	require.ErrorIs(t, err, sops.ErrNotRecipient)
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 }

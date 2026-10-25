@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/sops"
 )
 
@@ -21,7 +22,7 @@ func TestReaderDecryptsEachFileOncePerReader(t *testing.T) {
 	fsys := countingFS{FS: os.DirFS(corpusDir), opens: map[string]*atomic.Int32{
 		"corpus/values.sops.yaml": {}, "corpus/tampered-mac.sops.yaml": {},
 	}}
-	r := sops.NewReader(fsys, corpusIdentities(t, "srv-1"))
+	r := sops.NewReader(fsys, testsops.Identities(t, "srv-1"))
 
 	_, err := r.ReadAll(t.Context(), []string{
 		"sops://corpus/values.sops.yaml#/db/password",
@@ -35,7 +36,7 @@ func TestReaderDecryptsEachFileOncePerReader(t *testing.T) {
 	for range 2 {
 		_, err = r.ReadAll(t.Context(), []string{"sops://corpus/tampered-mac.sops.yaml#/db/password"})
 		require.ErrorIs(t, err, sops.ErrEditedOutsideSOPS)
-		assertNoPlaintext(t, err)
+		testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 	}
 
 	assert.Equal(t, int32(1), fsys.opens["corpus/values.sops.yaml"].Load())
@@ -57,7 +58,7 @@ func TestReaderDecryptedFiles(t *testing.T) {
 		"sops://corpus/tls.sops.pem",
 		"sops://corpus/tampered-mac.sops.yaml#/db/password",
 	})
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 	assert.Equal(t, 2, r.DecryptedFiles())
 }
 

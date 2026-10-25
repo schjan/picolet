@@ -2,13 +2,13 @@ package picolet_test
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/sebdah/goldie/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/sops"
@@ -25,10 +25,7 @@ func TestIntegrationResolveGoldenDecrypting(t *testing.T) {
 	repoFS := os.DirFS(testdataDir)
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
-	identity, err := os.ReadFile(filepath.Join(sopsCorpusDir, "identities", "srv-1.agekey"))
-	require.NoError(t, err)
-	ids, err := sops.ParseIdentities(identity)
-	require.NoError(t, err)
+	ids := testsops.Identities(t, "srv-1")
 
 	keyless, err := resolver.NewKeyless(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)

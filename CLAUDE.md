@@ -142,6 +142,7 @@ Template data root: `.Host` (hostname, role, features, machine, user, rootful, l
 - **Unit tests**: mockery-generated mocks with `.EXPECT()` fluent API; `pkg/applier` has an in-package `memFileWriter` for self-testing
 - **Integration tests**: `integration_test.go` at root uses `testdata/example-fleet/` with `goldie` golden-file snapshots
 - **Agent integration**: `pkg/agent/agent_test.go` creates a real in-memory git repo via `go-git`, exercises the full loop
+- **SOPS fixtures**: `internal/testsops` reads the corpus (files, recipients, identities) and holds the leak assertion (`AssertNoPlaintext`); it imports `pkg/sops`, so `pkg/sops`'s internal (package `sops`) tests cannot use it
 
 ### Package Dependencies
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/sops"
 )
 
@@ -28,16 +29,16 @@ func TestReaderIgnoresAmbientKeys(t *testing.T) {
 
 	// values.sops.json is encrypted to srv-1 and srv-2. With srv-3 passed in,
 	// srv-2's key in the environment must not open it.
-	_, err := sops.NewReader(fsys, corpusIdentities(t, "srv-3")).ReadAll(t.Context(),
+	_, err := sops.NewReader(fsys, testsops.Identities(t, "srv-3")).ReadAll(t.Context(),
 		[]string{"sops://corpus/values.sops.json#/db/password"})
 	require.ErrorIs(t, err, sops.ErrNotRecipient)
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 
 	// No identity configured: the environment is no fallback either.
 	_, err = sops.NewReader(fsys, nil).ReadAll(t.Context(),
 		[]string{"sops://corpus/values.sops.json#/db/password"})
 	require.ErrorIs(t, err, sops.ErrNoIdentity)
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 
 	// The identities passed in still work, and the KMS/PGP stanzas next to
 	// the age ones are never tried against a backend.
@@ -45,7 +46,7 @@ func TestReaderIgnoresAmbientKeys(t *testing.T) {
 		"sops://corpus/values.sops.json#/db/password",
 		"sops://corpus/non-age.sops.yaml#/db/password",
 	}
-	got, err := sops.NewReader(fsys, corpusIdentities(t, "srv-1")).ReadAll(t.Context(), refs)
+	got, err := sops.NewReader(fsys, testsops.Identities(t, "srv-1")).ReadAll(t.Context(), refs)
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{refs[0]: "hunter2-test", refs[1]: "hunter2-test"}, got)
 

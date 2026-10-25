@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/agent"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/sops"
@@ -29,25 +30,6 @@ func writeFiles(t *testing.T, root string, files map[string]string) {
 	}
 }
 
-// corpusRecipientOf returns the TEST-ONLY corpus recipient called name.
-func corpusRecipientOf(t *testing.T, name string) string {
-	t.Helper()
-	for line := range strings.SplitSeq(readCorpus(t, "recipients.txt"), "\n") {
-		if n, key, ok := strings.Cut(line, " "); ok && n == name {
-			return key
-		}
-	}
-	t.Fatalf("recipient %s not in the corpus", name)
-	return ""
-}
-
-func readCorpus(t *testing.T, rel string) string {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sops", rel))
-	require.NoError(t, err)
-	return string(data)
-}
-
 // sopsConfigFleet writes a Fleet whose Host renders a readSopsSecret value
 // (plus extra files) and an Agent config that names the srv-1 identity. It
 // returns the Fleet dir, the config path and the data dir.
@@ -57,15 +39,15 @@ func sopsConfigFleet(t *testing.T, extra map[string]string) (fleet, configPath, 
 	files := map[string]string{ //nolint:gosec // G101: test templates, no credentials
 		"fleet.yml":                "images: {}\nports: {picolet_system_metrics: 9418}\n",
 		"assignments.yml":          "base:\n  secrets:\n    - secrets/db_password.tmpl\n",
-		"hosts/test-host/host.yml": "hostname: test-host\nrole: server\nfeatures: []\nage_recipients: [" + corpusRecipientOf(t, "srv-1") + "]\n",
+		"hosts/test-host/host.yml": "hostname: test-host\nrole: server\nfeatures: []\nage_recipients: [" + testsops.Recipient(t, "srv-1") + "]\n",
 		"secrets/db_password.tmpl": `{{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`,
-		"secrets/db.sops.yaml":     readCorpus(t, "corpus/values.sops.yaml"),
+		"secrets/db.sops.yaml":     testsops.CorpusText(t, "values.sops.yaml"),
 	}
 	maps.Copy(files, extra)
 	writeFiles(t, fleet, files)
 	dir := t.TempDir()
 	identity := filepath.Join(dir, "age-identity")
-	require.NoError(t, os.WriteFile(identity, []byte(readCorpus(t, "identities/srv-1.agekey")), 0o600))
+	require.NoError(t, os.WriteFile(identity, testsops.IdentityFile(t, "srv-1"), 0o600))
 	dataDir = filepath.Join(dir, "data")
 	configPath = filepath.Join(dir, "config.yml")
 	require.NoError(t, os.WriteFile(configPath, []byte("hostname: test-host\nsecrets_dir: "+filepath.Join(dir, "secrets")+
@@ -92,7 +74,7 @@ func TestDryRunWithConfigDecryptsSops(t *testing.T) {
 	changeset = dryRunChanges(t, fleet, configPath, "")
 	assert.False(t, changeset.HasChanges(), "an unchanged SOPS-backed file is not a change")
 
-	writeFiles(t, fleet, map[string]string{"secrets/db.sops.yaml": readCorpus(t, "corpus/values-reencrypted.sops.yaml")})
+	writeFiles(t, fleet, map[string]string{"secrets/db.sops.yaml": testsops.CorpusText(t, "values-reencrypted.sops.yaml")})
 	changeset = dryRunChanges(t, fleet, configPath, "")
 	assert.False(t, changeset.HasChanges(), "a re-encrypted file with the same values is not a change")
 }
@@ -163,7 +145,7 @@ func TestApplyWithConfigDoesNotDecryptSops(t *testing.T) {
 	require.ErrorContains(t, err, "sops://", "the message still names the failing ref")
 	require.NotContains(t, err.Error(), "set sops.age_identity_path",
 		"apply must not point at a sops block that would not help it")
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err)
 }
 
 // `dry-run --config` decrypts, so a validation error that embeds a decrypted
@@ -178,6 +160,6 @@ func TestDryRunWithConfigScrubsValidationErrors(t *testing.T) {
 	_, err := dryRunChangeset(t.Context(), fleet, "test-host", configPath, "")
 	require.ErrorContains(t, err, "validation failed")
 	require.ErrorContains(t, err, sops.Redacted)
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err)
 	assert.NotContains(t, err.Error(), "hunter2...")
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/config"
 )
 
@@ -54,7 +55,7 @@ func (r *recordingSopsReader) asked(ref string) bool {
 func resolveGuard(t *testing.T, base string, extra map[string]string, keyless bool) (*ResolvedHost, *recordingSopsReader, error) {
 	t.Helper()
 	files := map[string]string{
-		"secrets/db.sops.yaml":     sopsCorpusFile(t, "values.sops.yaml"),
+		"secrets/db.sops.yaml":     testsops.CorpusText(t, "values.sops.yaml"),
 		"hosts/test-host/host.yml": sopsHostYAML(t, "srv-1"),
 	}
 	maps.Copy(files, extra)
@@ -208,7 +209,7 @@ func TestReadSopsSecretGuardPrecedesStrictAndMissingReader(t *testing.T) {
 			require.NoError(t, err)
 			_, err = r.ResolveHost(t.Context(), "test-host")
 			require.ErrorIs(t, err, ErrSopsInUnitFile)
-			assertNoPlaintext(t, err)
+			testsops.AssertNoPlaintext(t, err)
 		})
 	}
 }

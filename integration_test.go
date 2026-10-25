@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	appliermocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
@@ -181,7 +182,7 @@ func TestIntegrationValidateSopsRefs(t *testing.T) {
 		{
 			name: "not a recipient", ref: "sops://secrets/db.sops.yaml#/db/password", recipients: []string{"srv-3"},
 			want: "secrets/db.sops.yaml: not a recipient: the file is not encrypted to Host test-host (Host test-host's recipients: " +
-				sopsRecipient(t, "srv-3") + "); add one of them to the file's .sops.yaml creation rule and run `sops updatekeys secrets/db.sops.yaml`",
+				testsops.Recipient(t, "srv-3") + "); add one of them to the file's .sops.yaml creation rule and run `sops updatekeys secrets/db.sops.yaml`",
 		},
 		{
 			name: "key groups: too few", ref: "sops://secrets/groups.sops.yaml#/db/password", recipients: []string{"srv-1"},
@@ -220,7 +221,7 @@ func TestIntegrationValidateSopsRefs(t *testing.T) {
 // declaring recipients, renders ref through readSopsSecret.
 func sopsRefsFleet(t *testing.T, ref string, recipients []string) fstest.MapFS {
 	t.Helper()
-	values := sopsCorpus(t, "values.sops.yaml") // srv-1, srv-2, operator-1
+	values := testsops.CorpusFile(t, "values.sops.yaml") // srv-1, srv-2, operator-1
 	fleet := fstest.MapFS{
 		"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 		"assignments.yml":          &fstest.MapFile{Data: []byte("base:\n  secrets: [secrets/app.yml.tmpl]\nroles: {}\nfeatures: {}\n")},
@@ -235,11 +236,11 @@ func sopsRefsFleet(t *testing.T, ref string, recipients []string) fstest.MapFS {
 		// so the Fleet holds just the SOPS file the ref names.
 		delete(fleet, "secrets/db.sops.yaml")
 		// [srv-1 operator-1] [srv-2] [srv-pq], threshold 2
-		fleet["secrets/groups.sops.yaml"] = &fstest.MapFile{Data: sopsCorpus(t, "key-groups.sops.yaml")}
+		fleet["secrets/groups.sops.yaml"] = &fstest.MapFile{Data: testsops.CorpusFile(t, "key-groups.sops.yaml")}
 	}
 	if strings.Contains(ref, "plain.sops.yaml") {
 		// Only here: the encrypted-file pass fails on it whether referenced or not.
-		fleet["secrets/plain.sops.yaml"] = &fstest.MapFile{Data: sopsCorpus(t, "plaintext.sops.yaml")}
+		fleet["secrets/plain.sops.yaml"] = &fstest.MapFile{Data: testsops.CorpusFile(t, "plaintext.sops.yaml")}
 	}
 	return fleet
 }
@@ -277,7 +278,7 @@ func TestIntegrationValidateDirectSopsRefs(t *testing.T) {
 				"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 				"assignments.yml":          &fstest.MapFile{Data: []byte("base:\n  secrets: [\"" + tt.ref + "\"]\nroles: {}\nfeatures: {}\n")},
 				"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(sopsHostYML(t, recipients))},
-				"secrets/db.sops.yaml":     &fstest.MapFile{Data: sopsCorpus(t, "values.sops.yaml")},
+				"secrets/db.sops.yaml":     &fstest.MapFile{Data: testsops.CorpusFile(t, "values.sops.yaml")},
 				config.OperatorsFile:       corpusOperatorsExcept(t, recipients),
 			})
 			if tt.want == "" {
