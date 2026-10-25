@@ -53,6 +53,7 @@ func TestIntegrationValidateAgentBundleStrict(t *testing.T) {
 		{name: "rootful readProtonPassSecret", service: "picolet-system", fn: "readProtonPassSecret", ref: "pass://share/item/token", fix: fix},
 		{name: "user readOpSecret", user: "app", service: "picolet", fn: "readOpSecret", ref: "op://vault/item/token", fix: fix},
 		{name: "rootful readSopsSecret", service: "picolet-system", fn: "readSopsSecret", ref: "sops://secrets/git.sops.yaml#/token", fix: sopsFix},
+		{name: "rootful readSopsData", service: "picolet-system", fn: "readSopsData", ref: "sops://secrets/git.sops.yaml#/git", fix: sopsFix},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -102,17 +102,32 @@ type fileResult struct {
 }
 
 func (r *Reader) read(ctx context.Context, raw string, files map[string]fileResult) (string, error) {
-	ref, err := ParseRef(raw)
+	ref, plain, err := r.openFile(ctx, raw, files)
 	if err != nil {
 		return "", err
 	}
+	v, err := plain.extract(ref)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", raw, err)
+	}
+	return v, nil
+}
+
+// openFile parses raw and returns the decrypted file it names, decrypting
+// it on first use and caching the result (or the failure) in files. Errors
+// name raw.
+func (r *Reader) openFile(ctx context.Context, raw string, files map[string]fileResult) (Ref, *plainFile, error) {
+	ref, err := ParseRef(raw)
+	if err != nil {
+		return Ref{}, nil, err
+	}
 	if r.ids.Len() == 0 {
-		return "", fmt.Errorf("%s: %w: set sops.age_identity_path in the Agent config", raw, ErrNoIdentity)
+		return Ref{}, nil, fmt.Errorf("%s: %w: set sops.age_identity_path in the Agent config", raw, ErrNoIdentity)
 	}
 	res, ok := files[ref.Path]
 	if !ok {
 		if err := ctx.Err(); err != nil {
-			return "", fmt.Errorf("%s: %w", raw, err)
+			return Ref{}, nil, fmt.Errorf("%s: %w", raw, err)
 		}
 		res.plain, res.err = r.decryptFile(ref.Path)
 		files[ref.Path] = res
@@ -121,13 +136,9 @@ func (r *Reader) read(ctx context.Context, raw string, files map[string]fileResu
 		}
 	}
 	if res.err != nil {
-		return "", fmt.Errorf("%s: %w", raw, res.err)
+		return Ref{}, nil, fmt.Errorf("%s: %w", raw, res.err)
 	}
-	v, err := res.plain.extract(ref)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", raw, err)
-	}
-	return v, nil
+	return ref, res.plain, nil
 }
 
 // plainFile is a decrypted SOPS file and the store that renders it.
@@ -247,11 +258,19 @@ func (p *plainFile) extract(ref Ref) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	switch v := v.(type) {
+	switch v.(type) {
 	case gsops.TreeBranch:
 		return "", fmt.Errorf("%w: %q is a map; a string ref must end at a leaf", ErrNotLeaf, ref.Pointer.String())
 	case []any:
 		return "", fmt.Errorf("%w: %q is a list; a string ref must end at a leaf", ErrNotLeaf, ref.Pointer.String())
+	}
+	return p.leaf(v, ref.Pointer)
+}
+
+// leaf renders the leaf v found at ptr as `sops decrypt --extract` prints
+// it: a string as is, null as "", other scalars through the file's store.
+func (p *plainFile) leaf(v any, ptr Pointer) (string, error) {
+	switch v := v.(type) {
 	case string:
 		return v, nil
 	case nil:
@@ -259,7 +278,7 @@ func (p *plainFile) extract(ref Ref) (string, error) {
 	}
 	out, err := p.store.EmitValue(v)
 	if err != nil {
-		return "", fmt.Errorf("the value at %q cannot be rendered", ref.Pointer.String())
+		return "", fmt.Errorf("the value at %q cannot be rendered", ptr.String())
 	}
 	return string(out), nil
 }
