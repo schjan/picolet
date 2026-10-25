@@ -80,8 +80,14 @@ var tampers = []tamper{
 
 func main() {
 	dir := flag.String("dir", "testdata/sops", "corpus root (holds plain/, corpus/ and recipients.txt)")
+	rulesOnly := flag.Bool("rules-only", false, "regenerate only creation-rules/expected.json, leaving the encrypted corpus alone")
 	flag.Parse()
-	if err := run(*dir); err != nil {
+	if !*rulesOnly {
+		if err := run(*dir); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if err := writeRuleCases(*dir); err != nil {
 		log.Fatal(err)
 	}
 }
