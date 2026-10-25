@@ -154,7 +154,10 @@ func TestIntegrationValidateSopsRefs(t *testing.T) {
 				"secrets/app.yml.tmpl":     &fstest.MapFile{Data: []byte(`password: {{ readSopsSecret "` + tt.ref + `" }}`)},
 				"secrets/db.sops.yaml":     &fstest.MapFile{Data: values},
 				"secrets/db.yaml":          &fstest.MapFile{Data: values},
-				"secrets/plain.sops.yaml":  &fstest.MapFile{Data: sopsCorpus(t, "plaintext.sops.yaml")},
+			}
+			if strings.Contains(tt.ref, "plain.sops.yaml") {
+				// Only here: the encrypted-file pass fails on it whether referenced or not.
+				fleet["secrets/plain.sops.yaml"] = &fstest.MapFile{Data: sopsCorpus(t, "plaintext.sops.yaml")}
 			}
 			err := validateFleet(t, fleet)
 			if tt.want == "" {
@@ -166,14 +169,6 @@ func TestIntegrationValidateSopsRefs(t *testing.T) {
 			require.ErrorContains(t, err, tt.want)
 		})
 	}
-}
-
-// sopsCorpus reads a file of the shared SOPS fixture corpus.
-func sopsCorpus(t *testing.T, name string) []byte {
-	t.Helper()
-	data, err := os.ReadFile("testdata/sops/corpus/" + name)
-	require.NoError(t, err)
-	return data
 }
 
 func TestIntegrationResolveGolden(t *testing.T) {
