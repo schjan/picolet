@@ -15,6 +15,7 @@ import (
 // the file's encryption rules encrypt replaced by Placeholder.
 type keylessFile struct {
 	*File
+
 	// branches is the tree with each encrypted value replaced by
 	// Placeholder; plaintext values keep their decoded value. Nil when
 	// walkErr is set.

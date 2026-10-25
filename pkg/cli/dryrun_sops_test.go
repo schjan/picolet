@@ -142,7 +142,7 @@ func TestDryRunWithoutConfigIsKeyless(t *testing.T) {
 			actions[rec.Path] = rec.Action
 		}
 	}
-	assert.Equal(t, map[string]string{
+	assert.Equal(t, map[string]string{ //nolint:gosec // G101: secret names and actions, no credentials
 		"secret:db_password": "update (unverified: SOPS values not decrypted)",
 		"secret:db_user":     "update (unverified: SOPS values not decrypted)",
 		"secret:plain":       "update",
