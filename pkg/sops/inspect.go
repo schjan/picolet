@@ -123,22 +123,32 @@ func checkSize(name string, data []byte) error {
 	return nil
 }
 
-// loadFunc loads an encrypted file into a SOPS tree without any key.
-type loadFunc func(in []byte) (gsops.Tree, error)
+// store is the part of a SOPS store picolet uses: loading an encrypted file
+// without any key, and emitting decrypted data as `sops decrypt` does.
+type store interface {
+	gsops.EncryptedFileLoader
+	gsops.PlainFileEmitter
+	gsops.ValueEmitter
+}
 
-// storeFor picks the store from the path's extension with upstream's rule.
-func storeFor(path string) (Format, loadFunc) {
+// storeFor picks the store from the path's extension with upstream's rule,
+// configured with the defaults the sops CLI uses without a config file, so
+// decrypted output renders as `sops decrypt` prints it.
+//
+//nolint:ireturn // the store's concrete type depends on the format
+func storeFor(path string) (Format, store) {
+	c := config.NewStoresConfig()
 	switch formats.FormatForPath(path) {
 	case formats.Yaml:
-		return FormatYAML, yaml.NewStore(&config.YAMLStoreConfig{}).LoadEncryptedFile
+		return FormatYAML, yaml.NewStore(&c.YAML)
 	case formats.Json:
-		return FormatJSON, json.NewStore(&config.JSONStoreConfig{}).LoadEncryptedFile
+		return FormatJSON, json.NewStore(&c.JSON)
 	case formats.Dotenv:
-		return FormatDotenv, dotenv.NewStore(&config.DotenvStoreConfig{}).LoadEncryptedFile
+		return FormatDotenv, dotenv.NewStore(&c.Dotenv)
 	case formats.Ini:
-		return FormatINI, ini.NewStore(&config.INIStoreConfig{}).LoadEncryptedFile
+		return FormatINI, ini.NewStore(&c.INI)
 	default:
-		return FormatBinary, json.NewBinaryStore(&config.JSONBinaryStoreConfig{}).LoadEncryptedFile
+		return FormatBinary, json.NewBinaryStore(&c.JSONBinary)
 	}
 }
 
@@ -150,9 +160,9 @@ func Inspect(path string, data []byte) (*File, error) {
 	if err := checkSize(path, data); err != nil {
 		return nil, err
 	}
-	format, load := storeFor(path)
+	format, st := storeFor(path)
 	f := &File{Format: format}
-	tree, err := load(data)
+	tree, err := st.LoadEncryptedFile(data)
 	switch {
 	case errors.Is(err, gsops.MetadataNotFound):
 		f.NotSOPSReason = "no sops metadata"
