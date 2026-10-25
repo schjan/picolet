@@ -49,7 +49,7 @@ func TestIntegrationResolveGoldenDecrypting(t *testing.T) {
 		}
 
 		// A fresh decrypting reader per host resolve, as on the Agent.
-		r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg, SopsSecretReader: sops.NewReader(repoFS, ids).ReadAll})
+		r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg, Sops: sops.NewReader(repoFS, ids)})
 		require.NoError(t, err)
 		resolved, err := r.ResolveHost(t.Context(), hostname)
 		require.NoError(t, err)
