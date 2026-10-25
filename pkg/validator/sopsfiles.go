@@ -15,10 +15,12 @@ import (
 //     carry SOPS metadata (sops.version and sops.mac).
 //   - Creation-rule pass: when the Fleet-root `.sops.yaml` has a rule
 //     matching the file, the file's age Recipients must equal the rule's.
+//   - Audience pass (skipped when aud is nil): every age Recipient of the
+//     file must belong to an Operator or to a Host that reaches the file.
 //
-// Neither pass needs a key.
-func validateSOPSFiles(fsys fs.FS) error {
-	p := sopsPass{fsys: fsys}
+// None of the passes needs a key.
+func validateSOPSFiles(fsys fs.FS, aud *audience) error {
+	p := sopsPass{fsys: fsys, audience: aud}
 	rules, err := sops.ReadCreationRules(fsys)
 	if err != nil {
 		p.errs = append(p.errs, err)
@@ -47,15 +49,20 @@ type sopsPass struct {
 	fsys fs.FS
 	// rules are the root `.sops.yaml`'s; nil skips the creation-rule pass.
 	rules *sops.CreationRules
-	errs  []error
+	// audience is the audience pass's input; nil skips the pass.
+	audience *audience
+	errs     []error
 }
 
-// check runs both passes on the SOPS file at path.
+// check runs the passes on the SOPS file at path.
 func (p *sopsPass) check(path string) {
 	f, err := checkSOPSFile(p.fsys, path)
 	if err != nil {
 		p.errs = append(p.errs, err)
 		return
+	}
+	if p.audience != nil {
+		p.errs = append(p.errs, p.audience.check(path, f)...)
 	}
 	if p.rules == nil {
 		return

@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/sops"
 )
 
@@ -59,9 +60,13 @@ func sopsHostYML(t *testing.T, recipients []string) string {
 	return y
 }
 
-// sopsFleet is a valid one-Host Fleet plus files; no Host references them.
-func sopsFleet(files map[string]*fstest.MapFile) fstest.MapFS {
+// sopsFleet is a valid one-Host Fleet plus files; no Host references them,
+// and every corpus recipient is an Operator, so the audience pass accepts
+// any corpus file.
+func sopsFleet(t *testing.T, files map[string]*fstest.MapFile) fstest.MapFS {
+	t.Helper()
 	fsys := agentBundleFleet("", "picolet-system", false, "")
+	fsys[config.OperatorsFile] = corpusOperatorsExcept(t, nil)
 	maps.Copy(fsys, files)
 	return fsys
 }
@@ -72,7 +77,7 @@ func data(b []byte) *fstest.MapFile { return &fstest.MapFile{Data: b} }
 // Host references it; the fix is rotation, never a history rewrite.
 func TestIntegrationValidateSOPSPlaintextFile(t *testing.T) {
 	t.Parallel()
-	err := validateFleet(t, sopsFleet(map[string]*fstest.MapFile{
+	err := validateFleet(t, sopsFleet(t, map[string]*fstest.MapFile{
 		"secrets/db.sops.yaml":         data(sopsCorpus(t, "plaintext.sops.yaml")),
 		"hosts/test-host/app.sops.env": data([]byte("TOKEN=hunter2-test\n")),
 		"services/x/no-mac.sops.yaml":  data(sopsCorpus(t, "no-mac.sops.yaml")),
@@ -94,7 +99,7 @@ func TestIntegrationValidateSOPSPlaintextFile(t *testing.T) {
 func TestIntegrationValidateSOPSOversizedFile(t *testing.T) {
 	t.Parallel()
 	big := bytes.Repeat([]byte("a"), sops.MaxFileSize+1)
-	err := validateFleet(t, sopsFleet(map[string]*fstest.MapFile{"secrets/big.sops.bin": data(big)}))
+	err := validateFleet(t, sopsFleet(t, map[string]*fstest.MapFile{"secrets/big.sops.bin": data(big)}))
 	require.ErrorIs(t, err, sops.ErrFileTooLarge)
 	assert.ErrorContains(t, err, "secrets/big.sops.bin")
 }
@@ -200,7 +205,7 @@ func TestIntegrationValidateSOPSCreationRules(t *testing.T) {
 	for _, tt := range append(creationRuleCases(t), keyGroupRuleCases(t)...) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateFleet(t, sopsFleet(tt.files))
+			err := validateFleet(t, sopsFleet(t, tt.files))
 			if len(tt.want) == 0 {
 				require.NoError(t, err)
 				return
@@ -218,7 +223,7 @@ func TestIntegrationValidateSOPSCreationRules(t *testing.T) {
 func TestIntegrationValidateSOPSSymlinkedRulesOnDisk(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	for name, f := range sopsFleet(map[string]*fstest.MapFile{
+	for name, f := range sopsFleet(t, map[string]*fstest.MapFile{
 		"rules/sops.yaml":      sopsRules("  - age: " + sopsRecipient(t, "srv-1") + "\n"),
 		"secrets/db.sops.yaml": data(sopsCorpus(t, "values.sops.yaml")),
 	}) {
@@ -271,6 +276,31 @@ func TestIntegrationValidateExampleFleetSOPS(t *testing.T) {
 		err := validateFleet(t, fsys)
 		require.EqualError(t, err, "`secrets/db.sops.yaml` recipients differ from `.sops.yaml` rule `^secrets/`: +"+op+
 			"; run `sops updatekeys secrets/db.sops.yaml`")
+	})
+	t.Run("no operators.yml", func(t *testing.T) {
+		t.Parallel()
+		fsys := exampleFleetMapFS(t)
+		delete(fsys, config.OperatorsFile)
+		err := validateFleet(t, fsys)
+		require.Error(t, err)
+		for _, path := range []string{"secrets/db.sops.yaml", "services/web-app/secrets.sops.yaml"} {
+			for _, name := range []string{"operator-1", "srv-2"} {
+				assert.ErrorContains(t, err, "`"+path+"`: age recipient "+sopsRecipient(t, name)+" (owner: unknown) may not read it")
+			}
+		}
+	})
+	t.Run("file no longer referenced", func(t *testing.T) {
+		t.Parallel()
+		fsys := exampleFleetMapFS(t)
+		assignments := string(fsys["assignments.yml"].Data)
+		require.Contains(t, assignments, `      - "sops://secrets/db.sops.yaml"`+"\n")
+		fsys["assignments.yml"] = data([]byte(strings.Replace(assignments, `      - "sops://secrets/db.sops.yaml"`+"\n", "", 1)))
+		err := validateFleet(t, fsys)
+		require.EqualError(t, err, "`secrets/db.sops.yaml`: age recipient "+sopsRecipient(t, "srv-1")+
+			" (owner: Host web-1) may not read it: no Host references the file, so only Operators may read it; "+
+			"planned retirement: drop it from the `.sops.yaml` rule and run `sops updatekeys secrets/db.sops.yaml`; "+
+			"trust lost: drop it, run `sops rotate -i secrets/db.sops.yaml` (new data key) and change every value. "+
+			"`updatekeys` revokes nothing")
 	})
 	t.Run("plaintext file", func(t *testing.T) {
 		t.Parallel()

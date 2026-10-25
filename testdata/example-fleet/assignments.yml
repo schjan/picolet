@@ -32,6 +32,9 @@ roles:
     # segments joined by "_"), holding the decrypted value.
     secrets:
       - "sops://services/web-app/secrets.sops.yaml#/db/password"
+      # A whole-file ref: the Podman secret db (the base name before
+      # .sops.), holding the decrypted file.
+      - "sops://secrets/db.sops.yaml"
   e2e:
     paths:
       - quadlets/containers/simple.container.tmpl

@@ -58,6 +58,11 @@ type ResolvedHost struct {
 	// filePath and manifestPath helpers emit (Config.HostDataDir, else DataDir).
 	DataDir     string
 	HostDataDir string
+	// SopsFiles are the SOPS files (Fleet-relative paths, sorted) this
+	// resolve's sops:// refs reached: template helpers, templated refs and
+	// direct secrets: entries. validate's audience pass unions them over
+	// every Host.
+	SopsFiles []string
 }
 
 // Config holds configuration for creating a Resolver.
@@ -120,6 +125,10 @@ type Resolver struct {
 	// not be rendered into it (sopsGuard); nil otherwise. Set by withRender
 	// on the per-resolve copy resolveHostFileSet makes.
 	rendering *unitRender
+	// sopsFiles records the SOPS files this resolve's refs reached; set
+	// fresh on every per-resolve copy (forResolve), nil on the shared
+	// Resolver.
+	sopsFiles sopsFileSet
 }
 
 // Rootless reports whether the resolver is configured for rootless mode.
@@ -268,6 +277,7 @@ func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host
 func (r *Resolver) forResolve() *Resolver {
 	rr := *r
 	rr.rendering = nil
+	rr.sopsFiles = sopsFileSet{}
 	return &rr
 }
 
@@ -326,16 +336,22 @@ func (r *Resolver) resolveHostFileSetOnCopy(ctx context.Context, hostname string
 		Hooks:       hooks,
 		DataDir:     r.dataDir,
 		HostDataDir: r.hostDataDir,
+		SopsFiles:   r.sopsFiles.sorted(),
 	}, nil
 }
 
 // sopsReaderFor returns the SOPS reader of one host resolve: the keyless
-// reader for host (NewKeyless), else the configured one.
+// reader for host (NewKeyless), else the configured one (nil without one),
+// recording the files its refs reach into the resolve's sopsFiles.
 func (r *Resolver) sopsReaderFor(host *config.HostConfig) SopsReader { //nolint:ireturn // the keyless or the configured reader, two concrete types
+	reader := r.sopsReader
 	if r.keylessSops {
-		return keylessSopsReader(r.fsys, host)
+		reader = keylessSopsReader(r.fsys, host)
 	}
-	return r.sopsReader
+	if reader == nil {
+		return nil
+	}
+	return sopsFileRecorder{reader: reader, files: r.sopsFiles}
 }
 
 // guardedSopsProvider is SopsProvider over host's SOPS reader with the
@@ -933,12 +949,12 @@ func (r *Resolver) resolveSopsDirectRefs(ctx context.Context, host *config.HostC
 // path is checked like a template ref's (checkSopsRefs).
 func (r *Resolver) directSopsReader(host *config.HostConfig) SecretRefReader {
 	if r.keylessSops {
-		return checkSopsRefs(keylessSopsReader(r.fsys, host).ReadDirect)
+		return checkSopsRefs(r.sopsFiles.recordRefs(keylessSopsReader(r.fsys, host).ReadDirect))
 	}
 	if r.sopsReader == nil {
 		return nil
 	}
-	return checkSopsRefs(rejectEmptyDirect(r.sopsReader.ReadAll))
+	return checkSopsRefs(r.sopsFiles.recordRefs(rejectEmptyDirect(r.sopsReader.ReadAll)))
 }
 
 // rejectEmptyDirect wraps a decrypting reader so that a ref resolving to ""

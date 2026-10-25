@@ -1,0 +1,10 @@
+# Operators: people who may read every SOPS file besides the Hosts that
+# consume it. Only `picolet validate` reads this file: every age Recipient
+# of a *.sops.* file must be an Operator's or a consuming Host's.
+# TEST-ONLY recipients of the picolet fixture corpus (testdata/sops): never
+# encrypt a real secret to them.
+operator-1:
+  age_recipients:
+    - age16uxzllqjy7exxfsnsc9x48xnsutxukuxkdhkgg3twxmsk8pq3sdqnuhkmp
+    # Backup key, kept offline.
+    - age1e95u43sns76r0e52j74aupqsp58qc9s6vrwhzsj9hd6x9shk9cgqgu5gjj

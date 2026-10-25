@@ -37,7 +37,8 @@ type Target struct {
 type Option func(*options)
 
 type options struct {
-	logger *slog.Logger
+	logger              *slog.Logger
+	allowTestRecipients bool
 }
 
 // WithLogger sets the logger validation logs through (progress, Quadlet
@@ -48,6 +49,14 @@ func WithLogger(l *slog.Logger) Option {
 			o.logger = l
 		}
 	}
+}
+
+// AllowTestRecipients turns off ValidateAll's warning about published
+// TEST-ONLY recipients (picolet's fixture keys) declared by a Host or an
+// Operator, for the example Fleet and test Fleets, which declare them on
+// purpose.
+func AllowTestRecipients() Option {
+	return func(o *options) { o.allowTestRecipients = true }
 }
 
 func newOptions(opts []Option) options {
@@ -94,17 +103,24 @@ func AnalyzeFiles(files []resolver.ResolvedFile, target Target, opts ...Option) 
 // ValidateHost resolves and validates files for a single host. The resolver
 // logs through its own resolver.Config.Logger.
 func ValidateHost(ctx context.Context, r *resolver.Resolver, hostname string, opts ...Option) error {
+	_, err := validateHost(ctx, r, hostname, opts)
+	return err
+}
+
+// validateHost is ValidateHost returning the Host's resolve too; it is nil
+// exactly when the resolve failed.
+func validateHost(ctx context.Context, r *resolver.Resolver, hostname string, opts []Option) (*resolver.ResolvedHost, error) {
 	log := newOptions(opts).logger
 	log.Info("validating host", "host", hostname)
 	resolved, err := r.ResolveHost(ctx, hostname)
 	if err != nil {
-		return fmt.Errorf("host %s: resolve: %w", hostname, err)
+		return nil, fmt.Errorf("host %s: resolve: %w", hostname, err)
 	}
 	if err := ValidateFiles(resolved.Files, Target{Rootless: r.Rootless(), HostDataDir: resolved.HostDataDir}, opts...); err != nil {
-		return fmt.Errorf("host %s: %w", hostname, err)
+		return resolved, fmt.Errorf("host %s: %w", hostname, err)
 	}
 	log.Info("host validated", "host", hostname, "files", len(resolved.Files))
-	return nil
+	return resolved, nil
 }
 
 // ValidateAll resolves and validates all hosts in the fleet config, then runs
@@ -112,17 +128,30 @@ func ValidateHost(ctx context.Context, r *resolver.Resolver, hostname string, op
 // loaded from. Intended for CI/CD pipelines; agents use ValidateFiles
 // directly.
 func ValidateAll(ctx context.Context, fsys fs.FS, r *resolver.Resolver, cfg *config.Config, opts ...Option) error {
+	o := newOptions(opts)
 	var errs []error
+	var resolved []*resolver.ResolvedHost
+	var unresolved []string
 	for _, hostname := range cfg.SortedHostnames() {
-		if err := ValidateHost(ctx, r, hostname, opts...); err != nil {
+		rh, err := validateHost(ctx, r, hostname, opts)
+		if err != nil {
 			errs = append(errs, err)
 		}
+		if rh == nil {
+			unresolved = append(unresolved, hostname)
+			continue
+		}
+		resolved = append(resolved, rh)
 	}
 	// Fleet-wide passes, after every Host has been resolved.
-	if err := validateAgentBundles(ctx, fsys, cfg, newOptions(opts).logger); err != nil {
+	if err := validateAgentBundles(ctx, fsys, cfg, o.logger); err != nil {
 		errs = append(errs, err)
 	}
-	if err := validateSOPSFiles(fsys); err != nil {
+	aud, err := loadAudience(fsys, cfg, resolved, unresolved, o)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateSOPSFiles(fsys, aud); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)

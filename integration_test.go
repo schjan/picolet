@@ -34,7 +34,7 @@ func TestIntegrationValidate(t *testing.T) {
 
 	r, err := resolver.NewKeyless(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
-	require.NoError(t, validator.ValidateAll(t.Context(), repoFS, r, cfg))
+	require.NoError(t, validator.ValidateAll(t.Context(), repoFS, r, cfg, validator.AllowTestRecipients()))
 }
 
 // validate renders each Host's Agent bundle strictly, as bootstrap does: a
@@ -120,21 +120,28 @@ repo_url: "https://github.com/example/fleet.git"
 	}
 }
 
-// validateFleet runs `picolet validate` on the Fleet in repoFS.
+// validateFleet runs `picolet validate` on the Fleet in repoFS. Test Fleets
+// declare the corpus's published TEST-ONLY recipients, so their warning is
+// off.
 func validateFleet(t *testing.T, repoFS fs.FS) error {
+	t.Helper()
+	return validateFleetWith(t, repoFS)
+}
+
+// validateFleetWith is validateFleet with extra validate options.
+func validateFleetWith(t *testing.T, repoFS fs.FS, opts ...validator.Option) error {
 	t.Helper()
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 	r, err := resolver.NewKeyless(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
-	return validator.ValidateAll(t.Context(), repoFS, r, cfg)
+	return validator.ValidateAll(t.Context(), repoFS, r, cfg, append([]validator.Option{validator.AllowTestRecipients()}, opts...)...)
 }
 
 // validate checks every readSopsSecret ref keyless and fails, naming the
 // ref, on what it can tell is wrong without a key.
 func TestIntegrationValidateSopsRefs(t *testing.T) {
 	t.Parallel()
-	values := sopsCorpus(t, "values.sops.yaml") // srv-1, srv-2, operator-1
 	tests := []struct {
 		name, ref, want string
 		recipients      []string // test-host's age_recipients:; nil means srv-1
@@ -170,21 +177,7 @@ func TestIntegrationValidateSopsRefs(t *testing.T) {
 			if recipients == nil {
 				recipients = []string{"srv-1"}
 			}
-			fleet := fstest.MapFS{
-				"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
-				"assignments.yml":          &fstest.MapFile{Data: []byte("base:\n  secrets: [secrets/app.yml.tmpl]\nroles: {}\nfeatures: {}\n")},
-				"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(sopsHostYML(t, recipients))},
-				"secrets/app.yml.tmpl":     &fstest.MapFile{Data: []byte(`password: {{ readSopsSecret "` + tt.ref + `" }}`)},
-				"secrets/db.sops.yaml":     &fstest.MapFile{Data: values},
-				"secrets/db.yaml":          &fstest.MapFile{Data: values},
-				// [srv-1 operator-1] [srv-2] [srv-pq], threshold 2
-				"secrets/groups.sops.yaml": &fstest.MapFile{Data: sopsCorpus(t, "key-groups.sops.yaml")},
-			}
-			if strings.Contains(tt.ref, "plain.sops.yaml") {
-				// Only here: the encrypted-file pass fails on it whether referenced or not.
-				fleet["secrets/plain.sops.yaml"] = &fstest.MapFile{Data: sopsCorpus(t, "plaintext.sops.yaml")}
-			}
-			err := validateFleet(t, fleet)
+			err := validateFleet(t, sopsRefsFleet(t, tt.ref, recipients))
 			if tt.want == "" {
 				require.NoError(t, err)
 				return
@@ -194,6 +187,34 @@ func TestIntegrationValidateSopsRefs(t *testing.T) {
 			require.ErrorContains(t, err, tt.want)
 		})
 	}
+}
+
+// sopsRefsFleet is TestIntegrationValidateSopsRefs's Fleet: test-host,
+// declaring recipients, renders ref through readSopsSecret.
+func sopsRefsFleet(t *testing.T, ref string, recipients []string) fstest.MapFS {
+	t.Helper()
+	values := sopsCorpus(t, "values.sops.yaml") // srv-1, srv-2, operator-1
+	fleet := fstest.MapFS{
+		"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
+		"assignments.yml":          &fstest.MapFile{Data: []byte("base:\n  secrets: [secrets/app.yml.tmpl]\nroles: {}\nfeatures: {}\n")},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(sopsHostYML(t, recipients))},
+		"secrets/app.yml.tmpl":     &fstest.MapFile{Data: []byte(`password: {{ readSopsSecret "` + ref + `" }}`)},
+		"secrets/db.sops.yaml":     &fstest.MapFile{Data: values},
+		"secrets/db.yaml":          &fstest.MapFile{Data: values},
+		config.OperatorsFile:       corpusOperatorsExcept(t, recipients),
+	}
+	if strings.Contains(ref, "groups.sops.yaml") {
+		// An unreferenced file allows Operators only (the audience pass),
+		// so the Fleet holds just the SOPS file the ref names.
+		delete(fleet, "secrets/db.sops.yaml")
+		// [srv-1 operator-1] [srv-2] [srv-pq], threshold 2
+		fleet["secrets/groups.sops.yaml"] = &fstest.MapFile{Data: sopsCorpus(t, "key-groups.sops.yaml")}
+	}
+	if strings.Contains(ref, "plain.sops.yaml") {
+		// Only here: the encrypted-file pass fails on it whether referenced or not.
+		fleet["secrets/plain.sops.yaml"] = &fstest.MapFile{Data: sopsCorpus(t, "plaintext.sops.yaml")}
+	}
+	return fleet
 }
 
 // validate runs the keyless per-ref checks on a direct sops:// secrets:
@@ -229,6 +250,7 @@ func TestIntegrationValidateDirectSopsRefs(t *testing.T) {
 				"assignments.yml":          &fstest.MapFile{Data: []byte("base:\n  secrets: [\"" + tt.ref + "\"]\nroles: {}\nfeatures: {}\n")},
 				"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(sopsHostYML(t, recipients))},
 				"secrets/db.sops.yaml":     &fstest.MapFile{Data: sopsCorpus(t, "values.sops.yaml")},
+				config.OperatorsFile:       corpusOperatorsExcept(t, recipients),
 			})
 			if tt.want == "" {
 				require.NoError(t, err)
