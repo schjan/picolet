@@ -12,6 +12,9 @@ import (
 // through renderTemplate.
 var ErrSopsInUnitFile = errors.New("SOPS values can't be rendered")
 
+// unitFileReason is why a Quadlet or a Raw Unit may not carry SOPS values.
+const unitFileReason = "the file is world-readable and Environment= values show in `systemctl show`"
+
 // unitRender is the top-level file whose render may not read SOPS values:
 // a Quadlet or a Raw Unit (written world-readable, Environment= shown by
 // `systemctl show`) or a Hook definition (logged and stored in state).
@@ -26,9 +29,9 @@ type unitRender struct {
 func guardedRender(file string, dest config.Destination) *unitRender {
 	switch dest {
 	case config.DestQuadlet:
-		return &unitRender{file: file, kind: "a Quadlet", reason: "the file is world-readable and Environment= values show in `systemctl show`"}
+		return &unitRender{file: file, kind: "a Quadlet", reason: unitFileReason}
 	case config.DestSystemd:
-		return &unitRender{file: file, kind: "a Raw Unit", reason: "the file is world-readable and Environment= values show in `systemctl show`"}
+		return &unitRender{file: file, kind: "a Raw Unit", reason: unitFileReason}
 	case config.DestData, config.DestSecret:
 	}
 	return nil

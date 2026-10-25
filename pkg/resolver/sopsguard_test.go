@@ -168,3 +168,35 @@ func TestReadSopsSecretRendersOutsideUnitFiles(t *testing.T) {
 		})
 	}
 }
+
+// The guard runs before the missing-reader placeholder and before strict
+// mode: a guarded file fails with ErrSopsInUnitFile when the Fleet has no
+// SOPS reader and when the resolver is strict (bootstrap).
+func TestReadSopsSecretGuardPrecedesStrictAndMissingReader(t *testing.T) {
+	t.Parallel()
+	extra := map[string]string{
+		"units/app.container.tmpl": "[Container]\nImage=app\nEnvironment=DB_PASSWORD={{ readSopsSecret \"" + guardRef + "\" }}\n",
+	}
+	base := "  paths: [units/app.container.tmpl]\n"
+	tests := []struct {
+		name   string
+		modify func(*Config)
+	}{
+		{name: "no sops reader", modify: func(rc *Config) { rc.SopsSecretReader = nil }},
+		{name: "strict", modify: func(rc *Config) { rc.Strict = true }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fsys := pathsFleetFS(base, extra)
+			cfg, err := config.LoadAll(fsys)
+			require.NoError(t, err)
+			rc := Config{FS: fsys, Config: cfg, SopsSecretReader: KeylessSopsReader(fsys)}
+			tt.modify(&rc)
+			r, err := New(rc)
+			require.NoError(t, err)
+			_, err = r.ResolveHost(t.Context(), "test-host")
+			require.ErrorIs(t, err, ErrSopsInUnitFile)
+		})
+	}
+}

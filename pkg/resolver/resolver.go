@@ -249,12 +249,20 @@ func (r *Resolver) ResolveServicesForHost(ctx context.Context, hostname string, 
 }
 
 func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host *config.HostConfig, fileSet *config.ResolvedFileSet, templatePrefixes []string) (*ResolvedHost, error) {
-	// Each resolve renders on its own copy: rendering is per-resolve state,
-	// and one Resolver may resolve Hosts concurrently (validate).
-	rs := *r
-	r = &rs
-	r.rendering = nil
+	return r.forResolve().resolveHostFileSetOnCopy(ctx, hostname, host, fileSet, templatePrefixes)
+}
 
+// forResolve returns the Resolver copy one resolve renders on: rendering is
+// per-resolve state, and one Resolver may resolve Hosts concurrently
+// (validate). The copy is shallow; every other field is read-only during a
+// resolve, so a new mutable field must be copied here too.
+func (r *Resolver) forResolve() *Resolver {
+	rr := *r
+	rr.rendering = nil
+	return &rr
+}
+
+func (r *Resolver) resolveHostFileSetOnCopy(ctx context.Context, hostname string, host *config.HostConfig, fileSet *config.ResolvedFileSet, templatePrefixes []string) (*ResolvedHost, error) {
 	tmplData, err := NewTemplateData(r.cfg, hostname)
 	if err != nil {
 		return nil, err
@@ -890,7 +898,12 @@ func (r *Resolver) collectTemplateRefs(registry *template.Template, tmplData *Te
 		if isProviderRef(ref.SrcPath) {
 			continue
 		}
-		spec, _ := config.SpecFor(ref.Category)
+		spec, ok := config.SpecFor(ref.Category)
+		if !ok {
+			// No row, no known guard: skip collecting (fail closed), so no
+			// ref of it reaches a decrypting reader; resolving it fails later.
+			continue
+		}
 		collect(ref.SrcPath, guardedRender(ref.SrcPath, spec.Dest))
 	}
 	for _, ref := range expanded.Hooks {
