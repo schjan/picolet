@@ -634,7 +634,7 @@ the generic domain `example.net`.
   Recipient's public key, the last-modified time, the SOPS version), and values
   left unencrypted by its rules (`unencrypted_suffix`/`_regex`,
   `encrypted_suffix`/`_regex`, `mac_only_encrypted`). See
-  [ADR 0003](docs/adr/0003-no-plaintext-secret-in-git.md) (proposed).
+  [ADR 0003](docs/adr/0003-no-plaintext-secret-in-git.md).
 - **One provider token per Machine.** By default every Agent on a Machine uses
   the same provider token: one credential to provision and rotate per Machine.
   The stricter options are a token scoped to a single Host's vault or share, or
@@ -1574,6 +1574,7 @@ Git keeps every commit, so a leak is fixed by **rotation, never by rewriting his
 - **CI stays keyless.** `validate` never decrypts, so a CI job never holds an identity; that is a security property, not a limitation.
 - **Public repositories.** Ciphertext in git is permanent and counts as safe against every reader, a public mirror included. For a public Fleet, use hybrid post-quantum (`age1pq1…`) recipients.
 - **Foreign code.** A Host that runs foreign code (a CI runner whose jobs control that user's Podman) must treat its identity as exposed to that code, and must never share a file's audience with a Host that runs no foreign code: give it its own files.
+- **`/etc/sops/audit.yaml`.** The built-in `getsops` library reads this file at process start (package init), in every picolet command: a malformed file panics picolet, and a configured Postgres audit backend is contacted at startup (picolet exits when it can't connect) and on every decrypt. The Agent image has no such file, so the Agent is unaffected; only the CLI on a Machine or in CI is exposed. Don't create that file there.
 
 ### Limitations and operational notes
 

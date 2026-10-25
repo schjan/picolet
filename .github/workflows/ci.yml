@@ -4,12 +4,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Weekly, so a newly published vulnerability fails govulncheck without a
+    # code change; the other jobs skip scheduled runs.
+    - cron: "17 6 * * 1"
 
 env:
   BUILD_TAGS: remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper
 
 jobs:
   test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 5
     steps:
@@ -23,6 +28,7 @@ jobs:
         run: go test -tags "$BUILD_TAGS" ./... -race -count=1 -timeout 120s
 
   validate-fleet:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 5
     steps:
@@ -72,6 +78,7 @@ jobs:
     # actions/runner-images#14642; ubuntu-26.04 ships 5.7.0 (preview image).
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 5
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
 
@@ -179,6 +186,7 @@ jobs:
         run: scripts/govulncheck.sh
 
   lint:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-26.04-arm
     steps:
       - uses: actions/checkout@v7
