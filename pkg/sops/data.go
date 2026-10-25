@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 
 	gsops "github.com/getsops/sops/v3"
 )
@@ -13,9 +12,10 @@ import (
 // ReadData returns the subtree ref names, the value of the readSopsData
 // template helper: a map[string]any for a map, a []any for a list and a
 // string for a leaf, nested maps and lists keeping their structure. Without
-// a fragment it returns the whole document. A leaf is rendered as
-// `sops decrypt --extract` prints it, without a trailing newline; null is
-// "". Leaves are always strings, numbers and booleans too (`42`, `true`),
+// a fragment it returns the whole document. A leaf is rendered like a
+// readSopsSecret leaf (renderLeaf): a string as is, null as "", another
+// scalar as `sops decrypt --extract` prints it minus its trailing newline.
+// Leaves are always strings, numbers and booleans too (`42`, `true`),
 // so a template comparing or computing with one converts it first. Comments
 // are not data and are left out.
 //
@@ -34,8 +34,7 @@ func (r *Reader) ReadData(ctx context.Context, raw string) (any, error) {
 		return nil, fmt.Errorf("%s: %w", raw, err)
 	}
 	v, err := toData(node, ref.Pointer, func(leaf any, at Pointer) (any, error) {
-		s, err := plain.leaf(leaf, at)
-		return strings.TrimSuffix(s, "\n"), err
+		return plain.leaf(leaf, at)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", raw, err)

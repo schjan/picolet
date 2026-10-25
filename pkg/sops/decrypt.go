@@ -260,20 +260,29 @@ func (p *plainFile) extract(ref Ref) (string, error) {
 	return p.leaf(v, ref.Pointer)
 }
 
-// leaf renders the leaf v found at ptr as `sops decrypt --extract` prints
-// it: a string as is, null as "", other scalars through the file's store.
+// leaf renders the leaf v found at ptr (see renderLeaf).
 func (p *plainFile) leaf(v any, ptr Pointer) (string, error) {
+	return renderLeaf(p.store, v, ptr)
+}
+
+// renderLeaf renders the plaintext leaf v found at ptr as
+// `sops decrypt --extract` prints it, through st: a string as is, null as
+// "", and another scalar (int, bool, float, time) minus exactly one trailing
+// newline, which the store's emitter appends. The one leaf rule of
+// readSopsSecret, readSopsData and direct secrets: refs, keyless and
+// decrypting alike.
+func renderLeaf(st sopsStore, v any, ptr Pointer) (string, error) {
 	switch v := v.(type) {
 	case string:
 		return v, nil
 	case nil:
 		return "", nil
 	}
-	out, err := p.store.EmitValue(v)
+	out, err := st.EmitValue(v)
 	if err != nil {
 		return "", fmt.Errorf("the value at %q cannot be rendered", ptr.String())
 	}
-	return string(out), nil
+	return strings.TrimSuffix(string(out), "\n"), nil
 }
 
 var silenceOnce sync.Once

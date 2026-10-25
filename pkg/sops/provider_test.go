@@ -11,6 +11,7 @@ import (
 	"testing/fstest"
 
 	"github.com/sebdah/goldie/v2"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/pkg/sops"
@@ -347,4 +348,33 @@ func TestReaderFileErrorPerRef(t *testing.T) {
 		require.ErrorContains(t, err, ref)
 	}
 	assertNoPlaintext(t, err)
+}
+
+// A scalar leaf that is not a string (int, bool, float) renders as
+// `sops decrypt --extract` prints it minus exactly one trailing newline;
+// string leaves and whole files stay byte-for-byte as sops prints them.
+func TestReaderLeafNewlines(t *testing.T) {
+	t.Parallel()
+	refs := map[string]string{
+		"sops://corpus/values.sops.yaml#/db/port":  "5432",
+		"sops://corpus/values.sops.yaml#/db/tls":   "true",
+		"sops://corpus/values.sops.yaml#/db/ratio": "0.75",
+		"sops://corpus/values.sops.json#/db/port":  "5432",
+		"sops://corpus/tls.sops.pem#/data":         "-----BEGIN TEST-ONLY KEY-----\nVEVTVC1PTkxZIGZpeHR1cmUga2V5IGZvciB0aGUgcGljb2xldCBTT1BTIGNvcnB1cw==\n-----END TEST-ONLY KEY-----\n",
+	}
+	r := corpusReader(t, "srv-1", "srv-2")
+	for ref, want := range refs {
+		got, err := r.ReadAll(t.Context(), []string{ref})
+		require.NoError(t, err)
+		assert.Equal(t, want, got[ref], ref)
+
+		data, err := r.ReadData(t.Context(), ref)
+		require.NoError(t, err)
+		assert.Equal(t, want, data, "readSopsData renders %s like readSopsSecret", ref)
+	}
+
+	whole := "sops://corpus/values.sops.yaml"
+	got, err := r.ReadAll(t.Context(), []string{whole})
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(got[whole], "note_unencrypted: visible\n"), "a whole file keeps its trailing newline")
 }

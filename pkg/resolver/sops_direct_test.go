@@ -235,3 +235,23 @@ func TestDirectSopsSecretStrictFails(t *testing.T) {
 		})
 	}
 }
+
+// A direct secrets: ref and a readSopsSecret call render a leaf alike: a
+// scalar leaf that is not a string loses the one trailing newline
+// `sops decrypt --extract` prints, a string leaf keeps its own.
+func TestDirectSopsSecretLeafMatchesReadSopsSecret(t *testing.T) {
+	t.Parallel()
+	files := directSopsFiles(t)
+	files["secrets/port.tmpl"] = `{{ readSopsSecret "sops://secrets/db.sops.yaml#/db/port" }}`
+	files["secrets/key.tmpl"] = `{{ readSopsSecret "sops://secrets/tls.sops.pem#/data" }}`
+	resolved, err := resolveDirectSops(t, []string{
+		"sops://secrets/db.sops.yaml#/db/port", "sops://secrets/tls.sops.pem#/data",
+		"secrets/port.tmpl", "secrets/key.tmpl",
+	}, files, sopsDecrypting, false)
+	require.NoError(t, err)
+	got := secretsByDest(resolved)
+	assert.Equal(t, "5432", got["secret:db_port"])
+	assert.Equal(t, "5432", got["secret:port"])
+	assert.True(t, strings.HasSuffix(got["secret:data"], "-----END TEST-ONLY KEY-----\n"), "a string leaf keeps its newline")
+	assert.Equal(t, got["secret:data"], got["secret:key"])
+}
