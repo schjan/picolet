@@ -12,12 +12,13 @@ import (
 
 // keylessFile is a SOPS file as the keyless reader sees it: its keyless view
 // (File) and its tree as the Agent's decrypt would walk it, with every value
-// the file's encryption rules encrypt replaced by Placeholder.
+// the file's encryption rules encrypt replaced by its encrypted marker.
 type keylessFile struct {
 	*File
 
-	// branches is the tree with each encrypted value replaced by
-	// Placeholder; plaintext values keep their decoded value. Nil when
+	// branches is the tree with each encrypted value replaced by its
+	// encrypted marker (encryptedMarker, rendered by leaf); plaintext values
+	// keep their decoded value. Nil when
 	// walkErr is set.
 	branches gsops.TreeBranches
 	// walkErr is why the Agent's decrypt fails on the file's structure,
@@ -73,7 +74,7 @@ var decryptableTypes = map[string]bool{
 // placeholderCipher is a gsops.Cipher that decrypts nothing: it checks a
 // value the way upstream's cipher does before it needs the key (the
 // ENC[AES256_GCM,…] format, base64 fields, a known type tag) and returns
-// Placeholder for it. It remembers its last refusal for walkError.
+// the encryptedMarker of its type tag. It remembers its last refusal for walkError.
 type placeholderCipher struct {
 	last *cipherFailure
 }
@@ -98,6 +99,59 @@ func (c *placeholderCipher) Decrypt(ciphertext string, _ []byte, _ string) (any,
 	}
 	if !decryptableTypes[m[4]] {
 		return nil, c.refuse(ciphertext, reasonTypeTag)
+	}
+	return encryptedMarker(m[4]), nil
+}
+
+// markerPrefix and markerSuffix frame an encrypted value's type tag in the
+// keyless tree. A marker is a string (upstream's walk hashes every value it
+// gets back, and only accepts its own types), and the NUL bytes keep it
+// apart from any plaintext value a real file holds.
+const (
+	markerPrefix = "\x00picolet-keyless-encrypted:"
+	markerSuffix = "\x00"
+)
+
+// encryptedMarker is the keyless tree's value for an encrypted value with
+// type tag tag.
+func encryptedMarker(tag string) string { return markerPrefix + tag + markerSuffix }
+
+// encryptedTag returns the type tag of the encrypted marker v, false when v
+// is not one (a plaintext value).
+func encryptedTag(v any) (string, bool) {
+	s, ok := v.(string)
+	if !ok || !strings.HasPrefix(s, markerPrefix) || !strings.HasSuffix(s, markerSuffix) {
+		return "", false
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(s, markerPrefix), markerSuffix), true
+}
+
+// leaf renders the leaf v found at ptr in f's keyless tree. A plaintext
+// leaf renders as the decrypting Reader renders it (renderLeaf). An
+// encrypted leaf renders as the placeholder of its type, so a template that
+// puts it into a typed field (a manifest's replicas:) renders a value the
+// field's parser accepts, as the Agent's decrypted value does: an int as
+// "0", a float as "0.0", a bool as "false", a time as the zero time, a
+// string or bytes value as Placeholder. A direct secrets: entry (direct) is
+// opaque bytes no parser reads, so there every encrypted leaf renders as
+// Placeholder.
+func (f *keylessFile) leaf(v any, ptr Pointer, direct bool) (string, error) {
+	tag, ok := encryptedTag(v)
+	if !ok {
+		return renderLeaf(f.store, v, ptr)
+	}
+	if direct {
+		return Placeholder, nil
+	}
+	switch tag {
+	case tagInt:
+		return "0", nil
+	case tagFloat:
+		return "0.0", nil
+	case tagBool:
+		return "false", nil
+	case tagTime:
+		return "0001-01-01T00:00:00Z", nil
 	}
 	return Placeholder, nil
 }

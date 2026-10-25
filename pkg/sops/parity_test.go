@@ -3,9 +3,11 @@ package sops_test
 import (
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,8 +19,8 @@ import (
 // reader (the Agent) accepts: for every corpus file that decrypts, every ref
 // the Agent reads, as a string, as data or as a direct secrets: entry, also
 // passes keyless for a Host that declares the identities' recipients. Where
-// the keyless value is not the placeholder (a plaintext leaf), it is the
-// Agent's value.
+// the keyless value is not a placeholder (a plaintext leaf), it is the
+// Agent's value; a typed placeholder has the type of the Agent's value.
 func TestKeylessAcceptsWhatDecryptingAccepts(t *testing.T) {
 	t.Parallel()
 	for _, tc := range decryptCases {
@@ -61,13 +63,28 @@ func TestKeylessAcceptsWhatDecryptingAccepts(t *testing.T) {
 	}
 }
 
-// assertKeylessValue fails unless got (keyless) is the placeholder or the
-// decrypted value want.
+// assertKeylessValue fails unless got (keyless) is the decrypted value
+// want, the string placeholder, or a typed placeholder (0, 0.0, false, the
+// zero time) that want parses as the same type as.
 func assertKeylessValue(t *testing.T, want, got, at string) {
 	t.Helper()
-	if got != sops.Placeholder {
+	var err error
+	switch got {
+	case want, sops.Placeholder:
+		return
+	case "0":
+		_, err = strconv.Atoi(want)
+	case "0.0":
+		_, err = strconv.ParseFloat(want, 64)
+	case "false":
+		_, err = strconv.ParseBool(want)
+	case "0001-01-01T00:00:00Z":
+		_, err = time.Parse(time.RFC3339, want)
+	default:
 		assert.Equal(t, want, got, at)
+		return
 	}
+	assert.NoError(t, err, "%s: typed placeholder %q for a decrypted value of another type", at, got)
 }
 
 // assertKeylessData compares a keyless readSopsData result with the

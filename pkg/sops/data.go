@@ -43,9 +43,10 @@ func (r *Reader) ReadData(ctx context.Context, raw string) (any, error) {
 }
 
 // ReadData checks ref like ReadAll does, then returns the subtree's real
-// structure (key names are cleartext) with every leaf's keyless value:
-// Placeholder for an encrypted leaf, the decrypting Reader's value for a
-// plaintext one. Errors name ref. The file is read and inspected anew on
+// structure (key names are cleartext) with every leaf's keyless value
+// (keylessFile.leaf): a placeholder of the leaf's type for an encrypted leaf
+// (Placeholder for a string), the decrypting Reader's value for a plaintext
+// one. Errors name ref. The file is read and inspected anew on
 // each call.
 func (r *KeylessReader) ReadData(ctx context.Context, raw string) (any, error) {
 	ref, err := ParseRef(raw)
@@ -67,7 +68,7 @@ func (r *KeylessReader) ReadData(ctx context.Context, raw string) (any, error) {
 		return nil, fmt.Errorf("%s: %w", raw, err)
 	}
 	v, err := toData(node, ref.Pointer, func(leaf any, at Pointer) (any, error) {
-		return renderLeaf(f.store, leaf, at)
+		return f.leaf(leaf, at, false)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", raw, err)

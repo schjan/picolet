@@ -150,7 +150,8 @@ func TestReadSopsSecretKeylessRendersPlaceholder(t *testing.T) {
 
 // Templated refs and whole-file refs work keyless. Leaves the file leaves
 // in plaintext ("" and null, which SOPS never encrypts, and those its
-// encryption rules exclude) render their value, as on the Agent.
+// encryption rules exclude) render their value, as on the Agent. An
+// encrypted int, bool or float leaf renders as a value of its type.
 func TestReadSopsSecretKeylessAcceptedRefs(t *testing.T) {
 	t.Parallel()
 	p := sops.Placeholder
@@ -158,7 +159,9 @@ func TestReadSopsSecretKeylessAcceptedRefs(t *testing.T) {
 		{name: "templated path", call: `readSopsSecret (print "sops://hosts/" .Host.Hostname "/app.sops.yaml#/db/password")`, want: p},
 		{name: "list index", call: `readSopsSecret "sops://secrets/db.sops.yaml#/tokens/0"`, want: p},
 		{name: "escaped key", call: `readSopsSecret "sops://secrets/db.sops.yaml#/odd_keys/a~1b"`, want: p},
-		{name: "int leaf", call: `readSopsSecret "sops://secrets/db.sops.yaml#/db/port"`, want: p},
+		{name: "int leaf", call: `readSopsSecret "sops://secrets/db.sops.yaml#/db/port"`, want: "0"},
+		{name: "bool leaf", call: `readSopsSecret "sops://secrets/db.sops.yaml#/db/tls"`, want: "false"},
+		{name: "float leaf", call: `readSopsSecret "sops://secrets/db.sops.yaml#/db/ratio"`, want: "0.0"},
 		{name: "empty leaf", call: `readSopsSecret "sops://secrets/db.sops.yaml#/db/empty"`},
 		{name: "null leaf", call: `readSopsSecret "sops://secrets/db.sops.yaml#/db/nothing"`},
 		{name: "unencrypted leaf", call: `readSopsSecret "sops://secrets/db.sops.yaml#/note_unencrypted"`, want: "visible"},

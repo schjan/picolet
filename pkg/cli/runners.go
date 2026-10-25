@@ -268,7 +268,7 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 
 // dryRunResolveBasic resolves the host without agent config (no secrets,
 // the state at statePath). Like resolve it is keyless: a sops:// value
-// renders as "<sops-secret>" (dryRunResult.Unverified).
+// renders as a placeholder (dryRunResult.Unverified).
 func dryRunResolveBasic(ctx context.Context, repoDir, hostname, statePath string) (*resolver.ResolvedHost, *state.Store, error) {
 	repo, err := config.OpenRepo(repoDir)
 	if err != nil {
@@ -298,7 +298,7 @@ func runDryRun(ctx context.Context, repoDir, hostname, configPath string) error 
 }
 
 // unverifiedSuffix marks a keyless dry-run's update of a file whose content
-// holds a SOPS value: it renders as "<sops-secret>", so the update may be
+// holds a SOPS value: it renders as a placeholder, so the update may be
 // no change at all.
 const unverifiedSuffix = " (unverified: SOPS values not decrypted)"
 
@@ -409,7 +409,7 @@ func runResolve(ctx context.Context, out io.Writer, repoDir, host string) error 
 		return err
 	}
 	defer repo.Close()
-	// resolve is keyless: sops:// values render as <sops-secret>.
+	// resolve is keyless: sops:// values render as placeholders.
 	r, err := resolver.NewKeyless(resolver.Config{FS: repo.FS, Config: repo.Config})
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)

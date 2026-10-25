@@ -7,8 +7,10 @@ import (
 	"io/fs"
 )
 
-// Placeholder is what the keyless reader renders for a whole file and for
-// an encrypted leaf.
+// Placeholder is what the keyless reader renders for a whole file, an
+// encrypted string or bytes leaf, and any encrypted leaf of a direct
+// secrets: entry. An encrypted int, float, bool or time leaf renders as a
+// value of its type instead (keylessFile.leaf).
 const Placeholder = "<sops-secret>"
 
 // Host is the Host a KeylessReader checks refs for: its name and the age
@@ -19,8 +21,9 @@ type Host struct {
 }
 
 // KeylessReader checks sops:// refs against a Fleet FS without any key and
-// renders Placeholder for each whole file and encrypted leaf that passes; a
-// plaintext leaf (one the file's encryption rules leave unencrypted, "" and
+// renders Placeholder for each whole file and encrypted leaf that passes (an
+// encrypted int, float, bool or time leaf: a value of its type, see
+// keylessFile.leaf); a plaintext leaf (one the file's encryption rules leave unencrypted, "" and
 // null included) renders as the decrypting Reader renders it. It is the
 // reader of `validate`, `resolve` and bootstrap's strict render: it reads no
 // age identity from anywhere, environment variables included.
@@ -95,7 +98,7 @@ func (r *KeylessReader) check(ctx context.Context, raw string, files map[string]
 	if res.err != nil {
 		return "", fmt.Errorf("%s: %w", raw, res.err)
 	}
-	v, err := checkRef(res.file, ref)
+	v, err := checkRef(res.file, ref, direct)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", raw, err)
 	}
@@ -120,10 +123,10 @@ func (r *KeylessReader) checkHost(raw string, ref Ref, f *File) error {
 
 // checkRef checks what a string ref names in f and returns its keyless
 // value: Placeholder for the whole file, else the leaf the fragment names
-// rendered from f's keyless tree (Placeholder for an encrypted leaf, the
-// decrypting Reader's value for a plaintext one). f must be a SOPS file
-// whose tree passes the keyless walk. Errors never quote a value.
-func checkRef(f *keylessFile, ref Ref) (string, error) {
+// rendered from f's keyless tree (keylessFile.leaf; direct for a direct
+// secrets: entry). f must be a SOPS file whose tree passes the keyless walk.
+// Errors never quote a value.
+func checkRef(f *keylessFile, ref Ref, direct bool) (string, error) {
 	if err := checkKeylessFile(f, ref); err != nil {
 		return "", err
 	}
@@ -142,7 +145,7 @@ func checkRef(f *keylessFile, ref Ref) (string, error) {
 		return "", fmt.Errorf("%w: %q is a list; a string ref must end at a leaf", ErrNotLeaf, ptr)
 	case NodeLeaf:
 	}
-	return renderLeaf(f.store, v, ref.Pointer)
+	return f.leaf(v, ref.Pointer, direct)
 }
 
 // checkKeylessFile fails when f, the file ref names, is not a SOPS file or
