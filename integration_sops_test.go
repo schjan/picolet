@@ -317,3 +317,43 @@ func TestIntegrationValidateExampleFleetSOPS(t *testing.T) {
 		require.ErrorContains(t, err, "`secrets/api.sops.yaml` is not SOPS-encrypted (no sops metadata)")
 	})
 }
+
+// typedSopsManifest is a Deployment whose typed fields come from encrypted
+// non-string SOPS leaves: replicas from an int (through readSopsSecret),
+// paused from a bool and minReadySeconds from an int (through a
+// readSopsData subtree).
+const typedSopsManifest = `{{- $db := readSopsData "sops://secrets/db.sops.yaml#/db" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  replicas: {{ readSopsSecret "sops://secrets/db.sops.yaml#/db/port" }}
+  paused: {{ $db.tls }}
+  minReadySeconds: {{ $db.port }}
+  selector:
+    matchLabels: {app: app}
+  template:
+    metadata:
+      labels: {app: app}
+    spec:
+      containers:
+        - name: app
+          image: docker.io/library/nginx:latest
+`
+
+// A typed field of a strictly validated manifest filled from an encrypted
+// int or bool leaf passes validate, as the Agent's decrypted 5432/true
+// does: keyless, such a leaf renders a value of its type, not the string
+// placeholder.
+func TestIntegrationValidateTypedSopsLeafInManifest(t *testing.T) {
+	t.Parallel()
+	fsys := sopsFleet(t, map[string]*fstest.MapFile{
+		"assignments.yml":          data([]byte("base:\n  paths: [manifests/app.yaml.tmpl]\nroles: {}\nfeatures: {}\n")),
+		"manifests/app.yaml.tmpl":  data([]byte(typedSopsManifest)),
+		"hosts/test-host/host.yml": data([]byte(sopsHostYML(t, []string{"srv-1"}))),
+		"secrets/db.sops.yaml":     data(sopsCorpus(t, "values.sops.yaml")),
+		config.OperatorsFile:       corpusOperatorsExcept(t, []string{"srv-1"}),
+	})
+	require.NoError(t, validateFleet(t, fsys))
+}

@@ -48,7 +48,7 @@ type ResolvedFile struct {
 	// SopsValues is true when Content holds a value read through a sops://
 	// ref: a readSopsSecret or readSopsData call during the file's render
 	// (also through renderTemplate) or a direct sops:// secrets: entry.
-	// Keyless, such a value is "<sops-secret>", so the content can't be
+	// Keyless, such a value is a placeholder, so the content can't be
 	// compared with what the Agent applied.
 	SopsValues bool
 }
@@ -145,7 +145,7 @@ func (r *Resolver) Rootless() bool { return r.rootless }
 
 // NewKeyless is New with the keyless SOPS reader over rc.FS in place of
 // Sops: the resolver of validate, resolve and bootstrap, where
-// sops:// values render as "<sops-secret>" and no key is read. Each host
+// sops:// values render as placeholders and no key is read. Each host
 // resolve checks its refs for that Host, its age_recipients: included. Use it
 // rather than a hand-set reader, so no keyless call site forgets it (which
 // would fail every sops:// ref).

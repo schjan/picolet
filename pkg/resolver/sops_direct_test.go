@@ -87,7 +87,9 @@ func secretsByDest(resolved *ResolvedHost) map[string]string {
 
 // A direct sops:// secret is named after its pointer's segments joined by
 // "_", or for a whole-file ref after the file's base name before `.sops.`.
-// Keyless it renders the placeholder, decrypting the value.
+// Keyless it renders the string placeholder, for a leaf of any type (a
+// Podman secret is opaque bytes, so no typed placeholder); decrypting the
+// value.
 func TestDirectSopsSecretNaming(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -95,6 +97,7 @@ func TestDirectSopsSecretNaming(t *testing.T) {
 	}{
 		{name: "nested pointer", ref: "sops://secrets/db.sops.yaml#/db/password", dest: "secret:db_password", value: "hunter2-test"},
 		{name: "list index", ref: "sops://secrets/db.sops.yaml#/tokens/0", dest: "secret:tokens_0", value: "alpha-token"},
+		{name: "int leaf", ref: "sops://secrets/db.sops.yaml#/db/port", dest: "secret:db_port", value: "5432"},
 		{name: "whole file", ref: "sops://secrets/tls.sops.pem", dest: "secret:tls"},
 	}
 	for _, tt := range tests {

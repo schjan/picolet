@@ -45,9 +45,11 @@ func TestKeylessReaderPlaceholders(t *testing.T) {
 	r := sops.NewKeylessReader(keylessFS(t), hostSrv1(t))
 	refs := map[string]string{
 		"sops://secrets/db.sops.yaml#/db/password": sops.Placeholder,
-		"sops://secrets/db.sops.yaml#/db/port":     sops.Placeholder,
-		"sops://secrets/db.sops.yaml#/db/empty":    "", // "" is never encrypted
-		"sops://secrets/db.sops.yaml#/db/nothing":  "", // null is never encrypted
+		"sops://secrets/db.sops.yaml#/db/port":     "0",     // encrypted int
+		"sops://secrets/db.sops.yaml#/db/tls":      "false", // encrypted bool
+		"sops://secrets/db.sops.yaml#/db/ratio":    "0.0",   // encrypted float
+		"sops://secrets/db.sops.yaml#/db/empty":    "",      // "" is never encrypted
+		"sops://secrets/db.sops.yaml#/db/nothing":  "",      // null is never encrypted
 		"sops://secrets/db.sops.yaml":              sops.Placeholder,
 	}
 	values, err := r.ReadAll(t.Context(), slices.Collect(maps.Keys(refs)))
@@ -92,10 +94,19 @@ func TestKeylessReaderRejectsRefs(t *testing.T) {
 func TestKeylessReaderReadDirect(t *testing.T) {
 	t.Parallel()
 	r := sops.NewKeylessReader(keylessFS(t), hostSrv1(t))
-	ok := []string{"sops://secrets/db.sops.yaml#/db/password", "sops://secrets/db.sops.yaml"}
+	// A Podman secret is opaque bytes, so an encrypted leaf of any type
+	// keeps the string placeholder here (no typed placeholder).
+	ok := []string{
+		"sops://secrets/db.sops.yaml#/db/password", "sops://secrets/db.sops.yaml",
+		"sops://secrets/db.sops.yaml#/db/port", "sops://secrets/db.sops.yaml#/db/tls", "sops://secrets/db.sops.yaml#/db/ratio",
+	}
 	values, err := r.ReadDirect(t.Context(), ok)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]string{ok[0]: sops.Placeholder, ok[1]: sops.Placeholder}, values)
+	want := map[string]string{}
+	for _, ref := range ok {
+		want[ref] = sops.Placeholder
+	}
+	assert.Equal(t, want, values)
 
 	for _, ref := range []string{"sops://secrets/db.sops.yaml#/db/empty", "sops://secrets/db.sops.yaml#/db/nothing"} {
 		values, err := r.ReadDirect(t.Context(), []string{ref})

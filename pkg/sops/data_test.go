@@ -96,8 +96,9 @@ func TestReaderReadDataSharesCache(t *testing.T) {
 }
 
 // The keyless ReadData returns the real structure (key names are cleartext)
-// with every encrypted leaf replaced by the placeholder; "" and null, which
-// SOPS never encrypts, render as on the Agent.
+// with every encrypted leaf replaced by the placeholder of its type (0,
+// 0.0, false; the string placeholder for a string); "" and null, which SOPS
+// never encrypts, render as on the Agent.
 func TestKeylessReaderReadData(t *testing.T) {
 	t.Parallel()
 	p := sops.Placeholder
@@ -108,7 +109,7 @@ func TestKeylessReaderReadData(t *testing.T) {
 	}{
 		{
 			name: "map", ref: "sops://secrets/db.sops.yaml#/db",
-			want: map[string]any{"user": p, "password": p, "port": p, "tls": p, "ratio": p, "empty": "", "nothing": ""},
+			want: map[string]any{"user": p, "password": p, "port": "0", "tls": "false", "ratio": "0.0", "empty": "", "nothing": ""},
 		},
 		{
 			name: "list with a nested map", ref: "sops://secrets/db.sops.yaml#/tokens",

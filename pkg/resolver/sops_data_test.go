@@ -38,7 +38,8 @@ func corpusIDs(t *testing.T, name string) *sops.Identities {
 }
 
 // The keyless resolve (validate, resolve) renders the real structure with
-// every encrypted leaf as "<sops-secret>"; "" and null render empty.
+// every encrypted string leaf as "<sops-secret>" and every encrypted int,
+// float or bool leaf as a value of its type; "" and null render empty.
 func TestReadSopsDataKeyless(t *testing.T) {
 	t.Parallel()
 	resolved, err := resolveSops(t, dataTmpl,
@@ -50,15 +51,15 @@ func TestReadSopsDataKeyless(t *testing.T) {
 empty=
 nothing=
 password=`+p+`
-port=`+p+`
-ratio=`+p+`
-tls=`+p+`
+port=0
+ratio=0.0
+tls=false
 user=`+p+`
 0: `+p+`
 1: `+p+`
 2: `+p+`/`+p+`
 srv-1.example.net `+p+`
-port `+p, resolved.Files[0].Content)
+port 0`, resolved.Files[0].Content)
 }
 
 // On the Agent readSopsData renders the decrypted values, and a file read by
