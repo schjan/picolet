@@ -31,10 +31,13 @@ echo "govulncheck $GOVULNCHECK_VERSION, $go_version"
 # Called findings only (a trace that ends in a function), as in the text
 # report; imported-but-not-called findings are informational.
 found="$(jq -r 'select(.finding) | .finding | select(.trace[0].function != null) | .osv' "$report" | sort -u)"
-excluded="$(sed -E 's/#.*//; s/[[:space:]]+//g' "$exclusions" | grep -v '^$' | sort -u)"
+# Blank lines are dropped with sed, not grep: grep exits 1 when it selects
+# nothing (no findings, or a comment-only exclusions file), which set -e and
+# pipefail would turn into an abort.
+excluded="$(sed -E 's/#.*//; s/[[:space:]]+//g; /^$/d' "$exclusions" | sort -u)"
 
-new="$(comm -23 <(printf '%s\n' "$found" | grep -v '^$' || true) <(printf '%s\n' "$excluded"))"
-stale="$(comm -13 <(printf '%s\n' "$found" | grep -v '^$' || true) <(printf '%s\n' "$excluded"))"
+new="$(comm -23 <(printf '%s\n' "$found" | sed '/^$/d') <(printf '%s\n' "$excluded" | sed '/^$/d'))"
+stale="$(comm -13 <(printf '%s\n' "$found" | sed '/^$/d') <(printf '%s\n' "$excluded" | sed '/^$/d'))"
 
 if [ -n "$stale" ]; then
   while read -r id; do
