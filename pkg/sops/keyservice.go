@@ -1,14 +1,12 @@
 package sops
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 
 	"filippo.io/age"
-	"filippo.io/age/armor"
+	sopsage "github.com/getsops/sops/v3/age"
 	"github.com/getsops/sops/v3/keyservice"
 	"google.golang.org/grpc"
 )
@@ -22,11 +20,12 @@ const maxKeyPartLen = 64
 // backend.
 var errKeyTypeUnsupported = errors.New("picolet decrypts age keys only")
 
-// ageKeyService is picolet's keyservice: it unwraps age stanzas with the
-// identities it holds and nothing else. It never calls SOPS's own age
-// decryption, which falls back to SOPS_AGE_KEY*, keys.txt and ~/.ssh when it
-// holds no identity, and it answers every other key type with an error
-// instead of delegating to SOPS's default keyservice.
+// ageKeyService is picolet's keyservice: it unwraps age stanzas with
+// upstream's age MasterKey, given the identities it holds and nothing else.
+// The MasterKey falls back to SOPS_AGE_KEY*, keys.txt and ~/.ssh only when it
+// holds no identity, so Decrypt refuses an empty set before reaching it and
+// that fallback is unreachable. It answers every other key type with an
+// error instead of delegating to SOPS's default keyservice.
 type ageKeyService struct {
 	ids []age.Identity
 }
@@ -38,19 +37,21 @@ func (ageKeyService) Encrypt(context.Context, *keyservice.EncryptRequest, ...grp
 	return nil, errors.New("picolet never encrypts")
 }
 
-// Decrypt unwraps an age-wrapped data key.
+// Decrypt unwraps an age-wrapped data key. Upstream's error text is never
+// passed on.
 func (s ageKeyService) Decrypt(_ context.Context, req *keyservice.DecryptRequest, _ ...grpc.CallOption) (*keyservice.DecryptResponse, error) {
-	if req.GetKey().GetAgeKey() == nil {
+	ageKey := req.GetKey().GetAgeKey()
+	if ageKey == nil {
 		return nil, errKeyTypeUnsupported
 	}
 	if len(s.ids) == 0 {
+		// Never reach the MasterKey without identities: it would fall back
+		// to the environment, keys.txt and ~/.ssh.
 		return nil, ErrNoIdentity
 	}
-	r, err := age.Decrypt(armor.NewReader(bytes.NewReader(req.GetCiphertext())), s.ids...)
-	if err != nil {
-		return nil, errors.New("age stanza does not open with these identities")
-	}
-	key, err := io.ReadAll(io.LimitReader(r, maxKeyPartLen+1))
+	mk := &sopsage.MasterKey{Recipient: ageKey.GetRecipient(), EncryptedKey: string(req.GetCiphertext())}
+	sopsage.ParsedIdentities(s.ids).ApplyToMasterKey(mk)
+	key, err := mk.Decrypt()
 	if err != nil {
 		return nil, errors.New("age stanza does not open with these identities")
 	}

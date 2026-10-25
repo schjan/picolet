@@ -1519,7 +1519,7 @@ pass-cli item list --share-id <share-id>
 
 ### SOPS setup
 
-The Agent decrypts `sops://` refs only with the age identities in the file its config names; there is no default path, no inline key and no environment fallback:
+The Agent decrypts `sops://` refs only with the age identities in the file its config names; there is no default path, no inline key and no environment fallback (picolet hands only those identities to the SOPS library's age key, so its `SOPS_AGE_KEY*`, `keys.txt` and `~/.ssh` lookup never runs):
 
 ```yaml
 # /etc/picolet/config.yml
