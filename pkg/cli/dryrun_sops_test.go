@@ -1,9 +1,13 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,6 +29,18 @@ func writeFiles(t *testing.T, root string, files map[string]string) {
 	}
 }
 
+// corpusRecipientOf returns the TEST-ONLY corpus recipient called name.
+func corpusRecipientOf(t *testing.T, name string) string {
+	t.Helper()
+	for line := range strings.SplitSeq(readCorpus(t, "recipients.txt"), "\n") {
+		if n, key, ok := strings.Cut(line, " "); ok && n == name {
+			return key
+		}
+	}
+	t.Fatalf("recipient %s not in the corpus", name)
+	return ""
+}
+
 func readCorpus(t *testing.T, rel string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sops", rel))
@@ -41,7 +57,7 @@ func sopsConfigFleet(t *testing.T, extra map[string]string) (fleet, configPath, 
 	files := map[string]string{ //nolint:gosec // G101: test templates, no credentials
 		"fleet.yml":                "images: {}\nports: {picolet_system_metrics: 9418}\n",
 		"assignments.yml":          "base:\n  secrets:\n    - secrets/db_password.tmpl\n",
-		"hosts/test-host/host.yml": "hostname: test-host\nrole: server\nfeatures: []\n",
+		"hosts/test-host/host.yml": "hostname: test-host\nrole: server\nfeatures: []\nage_recipients: [" + corpusRecipientOf(t, "srv-1") + "]\n",
 		"secrets/db_password.tmpl": `{{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`,
 		"secrets/db.sops.yaml":     readCorpus(t, "corpus/values.sops.yaml"),
 	}
@@ -64,8 +80,7 @@ func TestDryRunWithConfigDecryptsSops(t *testing.T) {
 	t.Parallel()
 	fleet, configPath, dataDir := sopsConfigFleet(t, nil)
 
-	changeset, err := dryRunChangeset(t.Context(), fleet, "test-host", configPath)
-	require.NoError(t, err)
+	changeset := dryRunChanges(t, fleet, configPath, "")
 	require.True(t, changeset.HasChanges())
 	assert.Equal(t, 1, changeset.Summary[reconciler.ActionCreate])
 
@@ -74,14 +89,64 @@ func TestDryRunWithConfigDecryptsSops(t *testing.T) {
 	agent.UpdateState(st, changeset)
 	require.NoError(t, state.NewStore(filepath.Join(dataDir, "state.json")).Save(st))
 
-	changeset, err = dryRunChangeset(t.Context(), fleet, "test-host", configPath)
-	require.NoError(t, err)
+	changeset = dryRunChanges(t, fleet, configPath, "")
 	assert.False(t, changeset.HasChanges(), "an unchanged SOPS-backed file is not a change")
 
 	writeFiles(t, fleet, map[string]string{"secrets/db.sops.yaml": readCorpus(t, "corpus/values-reencrypted.sops.yaml")})
-	changeset, err = dryRunChangeset(t.Context(), fleet, "test-host", configPath)
-	require.NoError(t, err)
+	changeset = dryRunChanges(t, fleet, configPath, "")
 	assert.False(t, changeset.HasChanges(), "a re-encrypted file with the same values is not a change")
+}
+
+// dryRunChanges runs a dry-run's resolve, validation and diff (with the
+// Agent config at configPath, or keyless against the state at statePath
+// when configPath is "") and returns its changeset.
+func dryRunChanges(t *testing.T, fleet, configPath, statePath string) *reconciler.Changeset {
+	t.Helper()
+	result, err := dryRunChangeset(t.Context(), fleet, "test-host", configPath, statePath)
+	require.NoError(t, err)
+	return result.Changeset
+}
+
+// Without an Agent config a dry-run resolves keyless, like resolve: a
+// sops:// value renders as the placeholder, so a file whose render used one
+// can't be compared with what the Agent applied. Such a file shows as
+// changed but unverified; every other file diffs as usual.
+func TestDryRunWithoutConfigIsKeyless(t *testing.T) {
+	t.Parallel()
+	fleet, configPath, dataDir := sopsConfigFleet(t, map[string]string{
+		"assignments.yml": "base:\n  secrets:\n    - secrets/db_password.tmpl\n    - secrets/plain.tmpl\n" +
+			"    - \"sops://secrets/db.sops.yaml#/db/user\"\n",
+		"secrets/plain.tmpl": "plain",
+	})
+	statePath := filepath.Join(dataDir, "state.json")
+
+	result, err := dryRunChangeset(t.Context(), fleet, "test-host", "", statePath)
+	require.NoError(t, err)
+	assert.Equal(t, 3, result.Changeset.Summary[reconciler.ActionCreate])
+
+	// The Agent applied the decrypted values.
+	st := state.NewState()
+	agent.UpdateState(st, dryRunChanges(t, fleet, configPath, ""))
+	require.NoError(t, state.NewStore(statePath).Save(st))
+	writeFiles(t, fleet, map[string]string{"secrets/plain.tmpl": "plain, edited"})
+
+	result, err = dryRunChangeset(t.Context(), fleet, "test-host", "", statePath)
+	require.NoError(t, err)
+	var logs bytes.Buffer
+	logDryRun(slog.New(slog.NewJSONHandler(&logs, nil)), result)
+	actions := map[string]string{}
+	for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
+		var rec struct{ Msg, Action, Path string }
+		require.NoError(t, json.Unmarshal([]byte(line), &rec))
+		if rec.Msg == "change" {
+			actions[rec.Path] = rec.Action
+		}
+	}
+	assert.Equal(t, map[string]string{ //nolint:gosec // G101: secret names and actions, no credentials
+		"secret:db_password": "update (unverified: SOPS values not decrypted)",
+		"secret:db_user":     "update (unverified: SOPS values not decrypted)",
+		"secret:plain":       "update",
+	}, actions)
 }
 
 // `apply --config` does not decrypt (spec #248: considered, not adopted),
@@ -109,7 +174,7 @@ func TestDryRunWithConfigScrubsValidationErrors(t *testing.T) {
 		"manifests/app.yml.tmpl": "apiVersion: v1\nkind: Pod\nmetadata: {{ readSopsSecret \"sops://secrets/db.sops.yaml#/db/password\" }}\n",
 	})
 
-	_, err := dryRunChangeset(t.Context(), fleet, "test-host", configPath)
+	_, err := dryRunChangeset(t.Context(), fleet, "test-host", configPath, "")
 	require.ErrorContains(t, err, "validation failed")
 	require.ErrorContains(t, err, sops.Redacted)
 	for _, leak := range []string{"hunter2-test", "hunter2..."} {

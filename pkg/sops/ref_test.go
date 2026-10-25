@@ -57,9 +57,11 @@ func TestIsSOPSPath(t *testing.T) {
 		"tls.sops.pem":                  true,
 		"app.sops.env":                  true,
 		"services/web/secrets.sops.ini": true,
-		"db.sops.prod.yaml":             true,
-		"db.sops.yaml.bak":              true, // read as binary (final extension)
-		"x.sops.tar.gz":                 true,
+		"a.b.sops.yaml":                 true,
+		".sops.json":                    true,  // only .sops.yaml/.sops.yml are config files
+		"db.sops.prod.yaml":             false, // .sops. must sit directly before the final extension
+		"db.sops.yaml.bak":              false,
+		"x.sops.tar.gz":                 false,
 		".sops.yaml":                    false, // SOPS's config file
 		".sops.yml":                     false,
 		"dir/.sops.yaml":                false,
@@ -128,7 +130,7 @@ func TestRefSecretName(t *testing.T) {
 		"sops://secrets/db.sops.yaml#/hosts/srv-1.example.net/pw": "hosts_srv-1.example.net_pw",
 		"sops://certs/tls.sops.pem":                               "tls",
 		"sops://hosts/srv-1/app.sops.env":                         "app",
-		"sops://db.sops.prod.yaml":                                "db",
+		"sops://a.sops.b.sops.yaml":                               "a.sops.b", // the part before the final .sops.
 		"sops://secrets/db.sops.yaml#/DB_PASSWORD":                "DB_PASSWORD",
 	}
 	for in, want := range cases {

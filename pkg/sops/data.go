@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 
 	gsops "github.com/getsops/sops/v3"
 )
@@ -13,9 +12,10 @@ import (
 // ReadData returns the subtree ref names, the value of the readSopsData
 // template helper: a map[string]any for a map, a []any for a list and a
 // string for a leaf, nested maps and lists keeping their structure. Without
-// a fragment it returns the whole document. A leaf is rendered as
-// `sops decrypt --extract` prints it, without a trailing newline; null is
-// "". Leaves are always strings, numbers and booleans too (`42`, `true`),
+// a fragment it returns the whole document. A leaf is rendered like a
+// readSopsSecret leaf (renderLeaf): a string as is, null as "", another
+// scalar as `sops decrypt --extract` prints it minus its trailing newline.
+// Leaves are always strings, numbers and booleans too (`42`, `true`),
 // so a template comparing or computing with one converts it first. Comments
 // are not data and are left out.
 //
@@ -34,8 +34,7 @@ func (r *Reader) ReadData(ctx context.Context, raw string) (any, error) {
 		return nil, fmt.Errorf("%s: %w", raw, err)
 	}
 	v, err := toData(node, ref.Pointer, func(leaf any, at Pointer) (any, error) {
-		s, err := plain.leaf(leaf, at)
-		return strings.TrimSuffix(s, "\n"), err
+		return plain.leaf(leaf, at)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", raw, err)
@@ -43,11 +42,11 @@ func (r *Reader) ReadData(ctx context.Context, raw string) (any, error) {
 	return v, nil
 }
 
-// ReadData checks ref like ReadAll does, and every leaf of the subtree it
-// names like a string ref's leaf, then returns the subtree's real structure
-// (key names are cleartext) with every leaf replaced by Placeholder. Errors
-// name ref; a subtree with several bad leaves reports each. The file is read
-// and inspected anew on each call.
+// ReadData checks ref like ReadAll does, then returns the subtree's real
+// structure (key names are cleartext) with every leaf's keyless value:
+// Placeholder for an encrypted leaf, the decrypting Reader's value for a
+// plaintext one. Errors name ref. The file is read and inspected anew on
+// each call.
 func (r *KeylessReader) ReadData(ctx context.Context, raw string) (any, error) {
 	ref, err := ParseRef(raw)
 	if err != nil {
@@ -60,20 +59,20 @@ func (r *KeylessReader) ReadData(ctx context.Context, raw string) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", raw, err)
 	}
-	if err := checkSOPSFile(f, ref); err != nil {
+	if err := checkKeylessFile(f, ref); err != nil {
 		return nil, fmt.Errorf("%s: %w", raw, err)
 	}
-	node, err := resolvePointer(f.tree, ref.Pointer)
+	node, err := resolvePointer(f.branches, ref.Pointer)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", raw, err)
 	}
 	v, err := toData(node, ref.Pointer, func(leaf any, at Pointer) (any, error) {
-		return Placeholder, checkLeaf(ref.Path, at, leaf)
+		return renderLeaf(f.store, leaf, at)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", raw, err)
 	}
-	if err := r.checkHost(raw, ref, f); err != nil {
+	if err := r.checkHost(raw, ref, f.File); err != nil {
 		return nil, err
 	}
 	return v, nil

@@ -96,7 +96,8 @@ func TestReaderReadDataSharesCache(t *testing.T) {
 }
 
 // The keyless ReadData returns the real structure (key names are cleartext)
-// with every leaf replaced by the placeholder.
+// with every encrypted leaf replaced by the placeholder; "" and null, which
+// SOPS never encrypts, render as on the Agent.
 func TestKeylessReaderReadData(t *testing.T) {
 	t.Parallel()
 	p := sops.Placeholder
@@ -107,7 +108,7 @@ func TestKeylessReaderReadData(t *testing.T) {
 	}{
 		{
 			name: "map", ref: "sops://secrets/db.sops.yaml#/db",
-			want: map[string]any{"user": p, "password": p, "port": p, "tls": p, "ratio": p, "empty": p, "nothing": p},
+			want: map[string]any{"user": p, "password": p, "port": p, "tls": p, "ratio": p, "empty": "", "nothing": ""},
 		},
 		{
 			name: "list with a nested map", ref: "sops://secrets/db.sops.yaml#/tokens",
@@ -136,7 +137,6 @@ func TestKeylessReaderReadDataRejects(t *testing.T) {
 		is   error
 		want string
 	}{
-		{name: "unencrypted leaf in the document", ref: "sops://secrets/db.sops.yaml", want: `"/note_unencrypted" is not encrypted`},
 		{name: "invalid type tag in a subtree", ref: "sops://secrets/tampered.sops.yaml#/db", want: `"/db/port" has an invalid type tag`},
 		{name: "bad pointer", ref: "sops://secrets/db.sops.yaml#/db/nope", is: sops.ErrBadPointer},
 		{name: "not a SOPS file", ref: "sops://secrets/plain.sops.yaml#/db", is: sops.ErrNotSOPSFile},

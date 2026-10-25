@@ -27,13 +27,10 @@ app
 hunter2-test
 === /db/port ===
 5432
-
 === /db/tls ===
 true
-
 === /db/ratio ===
 0.75
-
 === /db/empty ===
 
 === /db/nothing ===

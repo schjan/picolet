@@ -38,7 +38,7 @@ func corpusIDs(t *testing.T, name string) *sops.Identities {
 }
 
 // The keyless resolve (validate, resolve) renders the real structure with
-// every leaf as "<sops-secret>".
+// every encrypted leaf as "<sops-secret>"; "" and null render empty.
 func TestReadSopsDataKeyless(t *testing.T) {
 	t.Parallel()
 	resolved, err := resolveSops(t, dataTmpl,
@@ -47,8 +47,8 @@ func TestReadSopsDataKeyless(t *testing.T) {
 	require.Len(t, resolved.Files, 1)
 	p := sops.Placeholder
 	assert.Equal(t, `
-empty=`+p+`
-nothing=`+p+`
+empty=
+nothing=
 password=`+p+`
 port=`+p+`
 ratio=`+p+`

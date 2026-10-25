@@ -3,6 +3,8 @@ package sops_test
 import (
 	"context"
 	"io/fs"
+	"maps"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -41,18 +43,16 @@ func keylessFS(t *testing.T) fstest.MapFS {
 func TestKeylessReaderPlaceholders(t *testing.T) {
 	t.Parallel()
 	r := sops.NewKeylessReader(keylessFS(t), hostSrv1(t))
-	refs := []string{
-		"sops://secrets/db.sops.yaml#/db/password",
-		"sops://secrets/db.sops.yaml#/db/port",
-		"sops://secrets/db.sops.yaml#/db/empty",   // "" is never encrypted
-		"sops://secrets/db.sops.yaml#/db/nothing", // null is never encrypted
-		"sops://secrets/db.sops.yaml",
+	refs := map[string]string{
+		"sops://secrets/db.sops.yaml#/db/password": sops.Placeholder,
+		"sops://secrets/db.sops.yaml#/db/port":     sops.Placeholder,
+		"sops://secrets/db.sops.yaml#/db/empty":    "", // "" is never encrypted
+		"sops://secrets/db.sops.yaml#/db/nothing":  "", // null is never encrypted
+		"sops://secrets/db.sops.yaml":              sops.Placeholder,
 	}
-	values, err := r.ReadAll(t.Context(), refs)
+	values, err := r.ReadAll(t.Context(), slices.Collect(maps.Keys(refs)))
 	require.NoError(t, err)
-	for _, ref := range refs {
-		assert.Equal(t, sops.Placeholder, values[ref], ref)
-	}
+	assert.Equal(t, refs, values)
 }
 
 func TestKeylessReaderRejectsRefs(t *testing.T) {
@@ -65,7 +65,6 @@ func TestKeylessReaderRejectsRefs(t *testing.T) {
 		{name: "map", ref: "sops://secrets/db.sops.yaml#/db", is: sops.ErrNotLeaf},
 		{name: "list", ref: "sops://secrets/db.sops.yaml#/tokens", is: sops.ErrNotLeaf},
 		{name: "missing path", ref: "sops://secrets/db.sops.yaml#/db/nope", is: sops.ErrBadPointer},
-		{name: "unencrypted leaf", ref: "sops://secrets/db.sops.yaml#/note_unencrypted", want: "is not encrypted"},
 		{name: "invalid type tag", ref: "sops://secrets/tampered.sops.yaml#/db/port", want: "invalid type tag"},
 		{name: "missing file", ref: "sops://secrets/gone.sops.yaml#/x", want: "secrets/gone.sops.yaml"},
 		{name: "no .sops. infix", ref: "sops://secrets/db.yaml#/x", is: sops.ErrNotSOPSPath},

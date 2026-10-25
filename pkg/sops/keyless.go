@@ -7,7 +7,8 @@ import (
 	"io/fs"
 )
 
-// Placeholder is what the keyless reader renders for every sops:// ref.
+// Placeholder is what the keyless reader renders for a whole file and for
+// an encrypted leaf.
 const Placeholder = "<sops-secret>"
 
 // Host is the Host a KeylessReader checks refs for: its name and the age
@@ -18,9 +19,14 @@ type Host struct {
 }
 
 // KeylessReader checks sops:// refs against a Fleet FS without any key and
-// renders Placeholder for each one that passes. It is the reader of
-// `validate`, `resolve` and bootstrap's strict render: it reads no age
-// identity from anywhere, environment variables included.
+// renders Placeholder for each whole file and encrypted leaf that passes; a
+// plaintext leaf (one the file's encryption rules leave unencrypted, "" and
+// null included) renders as the decrypting Reader renders it. It is the
+// reader of `validate`, `resolve` and bootstrap's strict render: it reads no
+// age identity from anywhere, environment variables included.
+//
+// It never fails a per-ref read the decrypting Reader accepts: what it
+// cannot see without a key (MAC, ciphertext) it leaves to the Agent.
 //
 // Besides the file and pointer checks, it checks the Host's recipients
 // against each file's recipient labels: the Host must declare
@@ -37,17 +43,17 @@ func NewKeylessReader(fsys fs.FS, host Host) *KeylessReader {
 	return &KeylessReader{fsys: fsys, host: host}
 }
 
-// ReadAll checks refs and returns Placeholder for each ref that passes, plus
-// one joined error carrying every failed ref's error (each names its ref),
-// the shape of Reader.ReadAll. Each file is read and inspected at most once
-// per call.
+// ReadAll checks refs and returns the keyless value of each ref that passes
+// (Placeholder, or a plaintext leaf's value), plus one joined error carrying
+// every failed ref's error (each names its ref), the shape of
+// Reader.ReadAll. Each file is read and inspected at most once per call.
 func (r *KeylessReader) ReadAll(ctx context.Context, refs []string) (map[string]string, error) {
 	return r.readAll(ctx, refs, false)
 }
 
 // ReadDirect is ReadAll for direct `secrets:` refs, which need a non-empty
 // value: an "" or null leaf (which SOPS leaves unencrypted, so it shows
-// without a key) fails with ErrEmptyValue.
+// without a key) fails with ErrEmptyValue, as on the Agent.
 func (r *KeylessReader) ReadDirect(ctx context.Context, refs []string) (map[string]string, error) {
 	return r.readAll(ctx, refs, true)
 }
@@ -57,43 +63,46 @@ func (r *KeylessReader) readAll(ctx context.Context, refs []string, direct bool)
 	files := map[string]inspected{}
 	var errs []error
 	for _, raw := range refs {
-		if err := r.check(ctx, raw, files, direct); err != nil {
+		v, err := r.check(ctx, raw, files, direct)
+		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		values[raw] = Placeholder
+		values[raw] = v
 	}
 	return values, errors.Join(errs...)
 }
 
 type inspected struct {
-	file *File
+	file *keylessFile
 	err  error
 }
 
-func (r *KeylessReader) check(ctx context.Context, raw string, files map[string]inspected, direct bool) error {
+// check checks the string ref raw and returns its keyless value.
+func (r *KeylessReader) check(ctx context.Context, raw string, files map[string]inspected, direct bool) (string, error) {
 	ref, err := ParseRef(raw)
 	if err != nil {
-		return err
+		return "", err
 	}
 	res, ok := files[ref.Path]
 	if !ok {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("%s: %w", raw, err)
+			return "", fmt.Errorf("%s: %w", raw, err)
 		}
 		res.file, res.err = r.inspect(ref.Path)
 		files[ref.Path] = res
 	}
 	if res.err != nil {
-		return fmt.Errorf("%s: %w", raw, res.err)
+		return "", fmt.Errorf("%s: %w", raw, res.err)
 	}
-	if err := checkRef(res.file, ref); err != nil {
-		return fmt.Errorf("%s: %w", raw, err)
+	v, err := checkRef(res.file, ref)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", raw, err)
 	}
-	if direct && isEmptyLeaf(res.file, ref) {
-		return EmptyDirectValueError(raw)
+	if direct && v == "" {
+		return "", EmptyDirectValueError(raw)
 	}
-	return r.checkHost(raw, ref, res.file)
+	return v, r.checkHost(raw, ref, res.file.File)
 }
 
 // checkHost checks the Host's recipients against f, the file ref (written
@@ -109,29 +118,41 @@ func (r *KeylessReader) checkHost(raw string, ref Ref, f *File) error {
 	return nil
 }
 
-// checkRef checks what a string ref names in f: a SOPS file, and for a
-// fragment a leaf that is encrypted with a valid type tag, or an "" or null
-// leaf (SOPS never encrypts those). Errors never quote a value.
-func checkRef(f *File, ref Ref) error {
-	if err := checkSOPSFile(f, ref); err != nil {
-		return err
+// checkRef checks what a string ref names in f and returns its keyless
+// value: Placeholder for the whole file, else the leaf the fragment names
+// rendered from f's keyless tree (Placeholder for an encrypted leaf, the
+// decrypting Reader's value for a plaintext one). f must be a SOPS file
+// whose tree passes the keyless walk. Errors never quote a value.
+func checkRef(f *keylessFile, ref Ref) (string, error) {
+	if err := checkKeylessFile(f, ref); err != nil {
+		return "", err
 	}
 	if ref.WholeFile() {
-		return nil
+		return Placeholder, nil
 	}
-	v, err := resolvePointer(f.tree, ref.Pointer)
+	v, err := resolvePointer(f.branches, ref.Pointer)
 	if err != nil {
-		return err
+		return "", err
 	}
 	ptr := ref.Pointer.String()
 	switch describe(v).Kind {
 	case NodeMap:
-		return fmt.Errorf("%w: %q is a map; a string ref must end at a leaf", ErrNotLeaf, ptr)
+		return "", fmt.Errorf("%w: %q is a map; a string ref must end at a leaf", ErrNotLeaf, ptr)
 	case NodeList:
-		return fmt.Errorf("%w: %q is a list; a string ref must end at a leaf", ErrNotLeaf, ptr)
+		return "", fmt.Errorf("%w: %q is a list; a string ref must end at a leaf", ErrNotLeaf, ptr)
 	case NodeLeaf:
 	}
-	return checkLeaf(ref.Path, ref.Pointer, v)
+	return renderLeaf(f.store, v, ref.Pointer)
+}
+
+// checkKeylessFile fails when f, the file ref names, is not a SOPS file or
+// its tree fails the keyless walk (keylessTree), as the Agent's decrypt
+// would.
+func checkKeylessFile(f *keylessFile, ref Ref) error {
+	if err := checkSOPSFile(f.File, ref); err != nil {
+		return err
+	}
+	return f.walkErr
 }
 
 // checkSOPSFile fails when f, the file ref names, is not a SOPS file.
@@ -142,42 +163,26 @@ func checkSOPSFile(f *File, ref Ref) error {
 	return nil
 }
 
-// checkLeaf checks the leaf v found at ptr in the file at path: it must be
-// encrypted with a valid type tag, or be "" or null (SOPS never encrypts
-// those). Errors never quote a value.
-func checkLeaf(path string, ptr Pointer, v any) error {
-	node := describe(v)
-	switch {
-	case v == nil || v == "":
-		return nil
-	case !node.Encrypted:
-		return fmt.Errorf("%s: %q is not encrypted (the file's encryption rules leave it in plaintext); a sops:// ref must name an encrypted value", path, ptr.String())
-	case !validTypeTags[node.Type]:
-		return fmt.Errorf("%s: %q has an invalid type tag; restore the file from git, or re-create the value with `sops edit %s`", path, ptr.String(), path)
-	}
-	return nil
-}
-
-// isEmptyLeaf reports whether ref (already checked by checkRef) names an ""
-// or null leaf of f.
-func isEmptyLeaf(f *File, ref Ref) bool {
-	if ref.WholeFile() {
-		return false
-	}
-	v, err := resolvePointer(f.tree, ref.Pointer)
-	return err == nil && (v == nil || v == "")
-}
-
 // EmptyDirectValueError is the ErrEmptyValue error of the direct `secrets:`
 // ref raw: its value is empty (an "" or null leaf).
 func EmptyDirectValueError(raw string) error {
 	return fmt.Errorf("%s: %w: a direct secrets: entry needs a non-empty value (the leaf is \"\" or null)", raw, ErrEmptyValue)
 }
 
-func (r *KeylessReader) inspect(path string) (*File, error) {
+// inspect reads and inspects the file at path and, for a SOPS file, walks
+// its tree keyless (keylessTree).
+func (r *KeylessReader) inspect(path string) (*keylessFile, error) {
 	data, err := ReadFile(r.fsys, path)
 	if err != nil {
 		return nil, err
 	}
-	return Inspect(path, data)
+	f, err := Inspect(path, data)
+	if err != nil {
+		return nil, err
+	}
+	kf := &keylessFile{File: f}
+	if f.IsSOPS {
+		kf.branches, kf.walkErr = keylessTree(path, data, f)
+	}
+	return kf, nil
 }

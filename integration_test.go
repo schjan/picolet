@@ -162,7 +162,9 @@ func TestIntegrationValidateSopsRefs(t *testing.T) {
 		{name: "not a SOPS file", ref: "sops://secrets/plain.sops.yaml#/db/password", want: "not a SOPS file"},
 		{name: "missing path", ref: "sops://secrets/db.sops.yaml#/db/nope", want: "bad pointer"},
 		{name: "not a leaf", ref: "sops://secrets/db.sops.yaml#/db", want: "not a leaf"},
-		{name: "unencrypted leaf", ref: "sops://secrets/db.sops.yaml#/note_unencrypted", want: "is not encrypted"},
+		// The Agent decrypts a leaf the file's rules leave in plaintext, so
+		// validate passes it too.
+		{name: "unencrypted leaf", ref: "sops://secrets/db.sops.yaml#/note_unencrypted"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -230,6 +232,7 @@ func TestIntegrationValidateDirectSopsRefs(t *testing.T) {
 		},
 		{name: "not a leaf", ref: "sops://secrets/db.sops.yaml#/db", want: "not a leaf"},
 		{name: "empty leaf", ref: "sops://secrets/db.sops.yaml#/db/empty", want: "a direct secrets: entry needs a non-empty value"},
+		{name: "unencrypted leaf", ref: "sops://secrets/db.sops.yaml#/note_unencrypted"},
 		{name: "invalid segment", ref: "sops://secrets/db.sops.yaml#/odd_keys/m~0n", want: "can't appear in a Podman secret name"},
 	}
 	for _, tt := range tests {
