@@ -93,7 +93,7 @@ func TestInspectUnparsableFileIsNotSOPSAndNeverEchoesContent(t *testing.T) {
 func TestInspectNeverEchoesAnAgeIdentityAsRecipient(t *testing.T) {
 	t.Parallel()
 
-	const identity = "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQS9AM2Q"
+	identity := zeroIdentity
 	data := bytes.Replace(corpusFile(t, "values.sops.yaml"),
 		[]byte("recipient: "+corpusRecipient(t, "srv-2")), []byte("recipient: "+identity), 1)
 	f, err := sops.Inspect("values.sops.yaml", data)
