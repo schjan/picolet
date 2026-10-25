@@ -32,7 +32,7 @@ func TestIntegrationValidate(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg, SopsSecretReader: resolver.KeylessSopsReader(repoFS)})
+	r, err := resolver.NewKeyless(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
 	require.NoError(t, validator.ValidateAll(t.Context(), repoFS, r, cfg))
 }
@@ -124,7 +124,7 @@ func validateFleet(t *testing.T, repoFS fs.FS) error {
 	t.Helper()
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg, SopsSecretReader: resolver.KeylessSopsReader(repoFS)})
+	r, err := resolver.NewKeyless(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
 	return validator.ValidateAll(t.Context(), repoFS, r, cfg)
 }
@@ -177,7 +177,7 @@ func TestIntegrationResolveGolden(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg, SopsSecretReader: resolver.KeylessSopsReader(repoFS)})
+	r, err := resolver.NewKeyless(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
 	g := goldie.New(t, goldie.WithFixtureDir("testdata/fixtures"))
 
@@ -377,7 +377,7 @@ func TestIntegrationMultiHostConsistency(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg, SopsSecretReader: resolver.KeylessSopsReader(repoFS)})
+	r, err := resolver.NewKeyless(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
 	allResolved, err := r.ResolveAll(t.Context())
 	require.NoError(t, err)

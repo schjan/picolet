@@ -121,8 +121,9 @@ func SopsProvider(reader SecretRefReader) ProviderTemplate {
 }
 
 // KeylessSopsReader returns the keyless SOPS reader over fsys (the Fleet
-// root) that validate, resolve and bootstrap pass as Config.SopsSecretReader:
-// it checks each ref without any key and renders "<sops-secret>".
+// root) that validate, resolve and bootstrap pass as Config.SopsSecretReader
+// (through NewKeyless): it checks each ref without any key and renders
+// "<sops-secret>".
 func KeylessSopsReader(fsys fs.FS) SecretRefReader {
 	return sops.NewKeylessReader(fsys).ReadAll
 }
@@ -155,19 +156,28 @@ func checkSopsRefs(reader SecretRefReader) SecretRefReader {
 	}
 }
 
-// strictModeFix is the fix a strict-mode error (bootstrap, validate's
-// Agent-bundle pass) gives for a ref of the provider key: a provider is never
-// configured there, so the value must reach the Agent another way.
-func strictModeFix(key ProviderKey) string {
+// strictModeText is the one place strict mode (bootstrap, validate's
+// Agent-bundle pass) words a provider key's failure: why a call fails there
+// (reason) and how the value must reach the Agent instead (fix).
+func strictModeText(key ProviderKey) (reason, fix string) {
 	switch key {
 	case ProviderOnePassword, ProviderProtonPass:
-		return "use a YAML-value reference and let the agent resolve it at runtime"
+		return "provider not configured in strict mode",
+			"use a YAML-value reference and let the agent resolve it at runtime"
 	case ProviderSops:
-		return "deliver the value as a --secrets-dir file and point the Agent config at its path; " +
-			"credentials needed to fetch the Fleet can't be SOPS values"
+		return "SOPS values can't be used in strict mode",
+			"deliver the value as a --secrets-dir file and point the Agent config at its path; " +
+				"credentials needed to fetch the Fleet can't be SOPS values"
 	default:
-		return "this provider cannot be resolved in strict mode"
+		return "provider not configured in strict mode", "this provider cannot be resolved in strict mode"
 	}
+}
+
+// strictModeError is the error a provider call fails with in strict mode,
+// where no provider value can be used.
+func strictModeError(p ProviderTemplate, ref string) error {
+	reason, fix := strictModeText(p.Key)
+	return fmt.Errorf("%s %q: %s; %s", p.FuncName, ref, reason, fix)
 }
 
 const placeholderSecret = "<secret>"
@@ -369,7 +379,9 @@ func loadTemplateSources(fsys fs.FS, include func(string) bool) (map[string]stri
 }
 
 // registerProviderFunc adds a provider's template function to funcMap.
-// In strict mode every call fails. When the provider's Reader is nil
+// In strict mode every call fails, even when the provider has a Reader:
+// bootstrap and validate's Agent-bundle pass render what the Agent gets
+// before it has any provider, and they pass the keyless SOPS reader. When the provider's Reader is nil
 // (cache == nil), the function returns the configured "empty" placeholder, or
 // MissingReader's error when set. Otherwise it participates in the two-phase
 // collect+resolve cycle.
@@ -406,15 +418,6 @@ func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p Provi
 		}
 		return val, nil
 	}
-}
-
-// strictModeError is the error a provider call fails with in strict mode,
-// where no provider value can be used.
-func strictModeError(p ProviderTemplate, ref string) error {
-	if p.Key == ProviderSops {
-		return fmt.Errorf("%s %q: SOPS values can't be used in strict mode; %s", p.FuncName, ref, strictModeFix(p.Key))
-	}
-	return fmt.Errorf("%s %q: provider not configured in strict mode; %s", p.FuncName, ref, strictModeFix(p.Key))
 }
 
 func indentFunc(n int, s string) string {

@@ -115,6 +115,16 @@ type Resolver struct {
 // Rootless reports whether the resolver is configured for rootless mode.
 func (r *Resolver) Rootless() bool { return r.rootless }
 
+// NewKeyless is New with the keyless SOPS reader over rc.FS as
+// SopsSecretReader: the resolver of validate, resolve and bootstrap, where
+// sops:// values render as "<sops-secret>" and no key is read. Use it rather
+// than setting the reader by hand, so no keyless call site forgets it (which
+// would fail every sops:// ref).
+func NewKeyless(rc Config) (*Resolver, error) {
+	rc.SopsSecretReader = KeylessSopsReader(rc.FS)
+	return New(rc)
+}
+
 // New creates a new Resolver.
 // Pass nil for SecretReader to use placeholder mode (validate/CI).
 // When Rootless is true, destination paths use ~/.config/ and ~/.local/share/ instead of /etc/ and /var/lib/.
@@ -815,8 +825,9 @@ func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, re
 	}
 	if reader == nil {
 		if r.strict {
+			_, fix := strictModeText(name)
 			return fmt.Errorf("%s provider not configured; cannot resolve direct secrets in strict mode: %s; %s",
-				name, strings.Join(refs, ", "), strictModeFix(name))
+				name, strings.Join(refs, ", "), fix)
 		}
 		r.logger.Warn("skipping secrets (provider not configured)", "provider", name, "count", len(refs))
 		return nil

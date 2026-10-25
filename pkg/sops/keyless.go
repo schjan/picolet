@@ -68,9 +68,6 @@ func (r *KeylessReader) check(ctx context.Context, raw string, files map[string]
 	return nil
 }
 
-// validTypeTags are the type tags SOPS's cipher decrypts a value as.
-var validTypeTags = map[string]bool{"str": true, "int": true, "float": true, "bool": true, "time": true, "bytes": true}
-
 // checkRef checks what a string ref names in f: a SOPS file, and for a
 // fragment a leaf that is encrypted with a valid type tag, or an "" or null
 // leaf (SOPS never encrypts those). Errors never quote a value.

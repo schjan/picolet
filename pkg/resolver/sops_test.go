@@ -1,10 +1,13 @@
 package resolver
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"maps"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -141,4 +144,25 @@ func TestReadSopsSecretStrictFails(t *testing.T) {
 				"credentials needed to fetch the Fleet can't be SOPS values")
 		})
 	}
+}
+
+// Strict mode fails a provider call before looking at the provider's reader:
+// op:// with a configured reader fails too, without calling it (bootstrap and
+// validate's Agent-bundle pass render what the Agent gets before it has any
+// provider).
+func TestStrictModeFailsEvenWithReader(t *testing.T) {
+	t.Parallel()
+	fsys := fstest.MapFS{"s.tmpl": &fstest.MapFile{Data: []byte(`pw={{readOpSecret "op://vault/item/pw"}}`)}}
+	called := false
+	reader := func(context.Context, []string) (map[string]string, error) {
+		called = true
+		return map[string]string{"op://vault/item/pw": "real"}, nil
+	}
+	p := OpProvider(reader)
+	p.Strict = true
+	tmpl, _, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{p}, "")
+	require.NoError(t, err)
+	err = tmpl.ExecuteTemplate(io.Discard, "s.tmpl", nil)
+	require.ErrorContains(t, err, `readOpSecret "op://vault/item/pw": provider not configured in strict mode`)
+	assert.False(t, called)
 }

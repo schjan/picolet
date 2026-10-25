@@ -248,6 +248,8 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 }
 
 // dryRunResolveBasic resolves the host without agent config (no secrets, default state path).
+// It passes no SOPS reader, so a sops:// ref fails the resolve with the
+// no-identity error rather than rendering a placeholder.
 func dryRunResolveBasic(ctx context.Context, repoDir, hostname string) (*resolver.ResolvedHost, *state.Store, error) {
 	repo, err := config.OpenRepo(repoDir)
 	if err != nil {
@@ -329,11 +331,10 @@ func runValidate(ctx context.Context, repoDir string, logger *slog.Logger) error
 		return err
 	}
 	defer repo.Close()
-	r, err := resolver.New(resolver.Config{
-		FS:               repo.FS,
-		Config:           repo.Config,
-		SopsSecretReader: resolver.KeylessSopsReader(repo.FS),
-		Logger:           logger,
+	r, err := resolver.NewKeyless(resolver.Config{
+		FS:     repo.FS,
+		Config: repo.Config,
+		Logger: logger,
 	})
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)
@@ -348,7 +349,7 @@ func runResolve(ctx context.Context, out io.Writer, repoDir, host string) error 
 	}
 	defer repo.Close()
 	// resolve is keyless: sops:// values render as <sops-secret>.
-	r, err := resolver.New(resolver.Config{FS: repo.FS, Config: repo.Config, SopsSecretReader: resolver.KeylessSopsReader(repo.FS)})
+	r, err := resolver.NewKeyless(resolver.Config{FS: repo.FS, Config: repo.Config})
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)
 	}
