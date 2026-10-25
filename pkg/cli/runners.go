@@ -34,16 +34,13 @@ import (
 )
 
 // loadRunConfig loads the Agent config for the run command and runs the
-// startup credential checks. The same checks guard a Fleet-rendered Agent
-// config before it is applied (agentcfg.CheckRendered), so a commit cannot
-// lock the Agent out.
+// startup checks. The same checks guard a Fleet-rendered Agent config before
+// it is applied (agentcfg.CheckRenderedConfig), so a commit cannot lock the
+// Agent out.
 func loadRunConfig(configPath string) (*agentcfg.Config, error) {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
 		return nil, err
-	}
-	if cfg.RepoURL == "" {
-		return nil, errors.New("repo_url is required for the run command")
 	}
 	if err := cfg.CheckStartup(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", configPath, err)

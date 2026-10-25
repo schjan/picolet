@@ -341,7 +341,10 @@ and be readable on the Host. If either fails, the reconciliation fails before
 anything is written and the Agent keeps its current config, so it is never
 left with a config it would refuse to restart with. Place a new credential
 file on the Host (`bootstrap machine`) before the commit that points the Agent
-at it.
+at it. The check looks for credential files where the running Agent sees them
+(inside its container), so a commit that adds a `Volume=` to the Agent quadlet
+and points the config at a file under that new mount is refused: add the mount
+first, and point the config at it once the Agent runs with the mount.
 
 ### 6. Monitoring
 

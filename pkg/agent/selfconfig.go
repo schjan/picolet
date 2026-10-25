@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/schjan/picolet/pkg/agentcfg"
@@ -12,7 +13,7 @@ import (
 // checkSelfConfig refuses a changeset that would change the Agent's own
 // Fleet-rendered config to one the Agent could not start with: one its
 // strict loader rejects or one whose startup credential checks fail
-// (agentcfg.CheckRendered). A changed config does not restart the Agent, so
+// (agentcfg.CheckRenderedConfig). A changed config does not restart the Agent, so
 // applying it would only lock the Agent out at its next restart, when it can
 // no longer fetch a fix.
 //
@@ -25,24 +26,17 @@ func checkSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Chan
 	}
 	unit := config.AgentService(resolved.Host) + ".service"
 	file, err := resolver.AgentConfigSecret(resolved.Files, unit)
-	if err != nil {
-		return nil //nolint:nilerr // not Fleet-rendered: nothing to guard
-	}
-	if !changesFile(changeset, file.DestPath) {
+	if errors.Is(err, resolver.ErrAgentConfigNotRendered) {
 		return nil
 	}
-	if err := agentcfg.CheckRendered([]byte(file.Content)); err != nil {
+	if err != nil {
+		return fmt.Errorf("finding the Agent config mounted by %s: %w", unit, err)
+	}
+	if !changeset.Writes(file.DestPath) {
+		return nil
+	}
+	if err := agentcfg.CheckRenderedConfig([]byte(file.Content)); err != nil {
 		return fmt.Errorf("refusing the Agent config %s mounted by %s: the Agent could not start with it: %w", file.DestPath, unit, err)
 	}
 	return nil
-}
-
-// changesFile reports whether changeset creates or updates destPath.
-func changesFile(changeset *reconciler.Changeset, destPath string) bool {
-	for _, change := range changeset.Changes {
-		if change.DestPath == destPath && (change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate) {
-			return true
-		}
-	}
-	return false
 }

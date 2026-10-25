@@ -135,7 +135,7 @@ func dirHolds(dir string, info fs.FileInfo) (bool, error) {
 // file, or one names a file inside the other's directory: a credential the
 // Agent sends somewhere (git_token_path, mqtt.password_path, …) pointed at
 // another credential would send that one instead. It reads the filesystem,
-// so Load and CheckStartup run it and Parse does not.
+// so Load and CheckRenderedConfig run it and Parse does not.
 func (c *Config) checkCredentialFiles() error {
 	creds := c.Credentials()
 	for i, a := range creds {

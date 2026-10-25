@@ -71,8 +71,8 @@ func TestAgentRefusesSelfConfigItCouldNotStartWith(t *testing.T) {
 		},
 		{
 			name:      "unknown key",
-			config:    "hostname: test-host\nrepo_url: https://example.com/fleet.git\nsops:\n  age_identity_path: " + missing + "\n",
-			wantError: []string{"sops"},
+			config:    "hostname: test-host\nrepo_url: https://example.com/fleet.git\nno_such_key_ever: x\n",
+			wantError: []string{"no_such_key_ever"},
 		},
 		{
 			name:   "credential files present",

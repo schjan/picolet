@@ -43,6 +43,16 @@ func (cs *Changeset) HasChanges() bool {
 	return cs.Summary[ActionCreate] > 0 || cs.Summary[ActionUpdate] > 0 || cs.Summary[ActionDelete] > 0
 }
 
+// Writes reports whether the changeset creates or updates destPath.
+func (cs *Changeset) Writes(destPath string) bool {
+	for _, change := range cs.Changes {
+		if change.DestPath == destPath && (change.Action == ActionCreate || change.Action == ActionUpdate) {
+			return true
+		}
+	}
+	return false
+}
+
 // Diff computes the changeset between desired files and current state.
 func Diff(
 	desired []resolver.ResolvedFile,
