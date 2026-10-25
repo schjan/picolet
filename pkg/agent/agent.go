@@ -660,8 +660,7 @@ type ResolveParams struct {
 
 	// SecretGuard vets every host secret read from SecretsDir; the Agent
 	// passes agentcfg.RefuseCredentials over its credentials so a Fleet
-	// cannot deploy them. It may keep state for one resolve, so build new
-	// params per resolve. Nil vets nothing.
+	// cannot deploy them. Nil vets nothing.
 	SecretGuard resolver.SecretGuard
 
 	// Logger receives the config-load, resolver and secret-resolution log

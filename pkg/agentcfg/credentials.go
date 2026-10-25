@@ -6,10 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
-	"sync"
-	"time"
 
 	pp "github.com/schjan/picolet/pkg/protonpass"
 )
@@ -89,102 +86,54 @@ func (c *Config) CredentialsAt(secretsDir string) []Credential {
 // or bootstrap's CredentialsAt list), compared with os.SameFile so
 // symlinks, hard links and other spellings are caught.
 //
-// The guard stats each credential, and walks each directory credential,
-// once on its first call, and compares later calls with that snapshot. It
-// takes the snapshot again for a file modified since (allowing for coarse
-// file timestamps), so a file written under a directory credential after
-// the snapshot is still found. Build one per resolve (per DirSecretReader).
+// Each call stats every credential, and walks each directory credential,
+// anew: the secret file is already open, so a credential renamed, linked or
+// written into place before the call is found whatever its timestamps say.
 func RefuseCredentials(creds []Credential) func(fs.FileInfo) error {
-	g := &credentialGuard{creds: creds}
-	return g.refuse
-}
-
-// snapshotSlack is how much older than the snapshot a file's modification
-// time must be for the guard to trust the snapshot: file timestamps come
-// from a coarse clock (and some filesystems store whole seconds).
-const snapshotSlack = 2 * time.Second
-
-type credentialGuard struct {
-	creds []Credential
-
-	mu    sync.Mutex
-	taken time.Time   // when held was taken; zero before the first call
-	held  []heldFiles // per credential, in creds order
-}
-
-func (g *credentialGuard) refuse(info fs.FileInfo) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.taken.IsZero() || !info.ModTime().Before(g.taken.Add(-snapshotSlack)) {
-		g.taken = time.Now()
-		g.held = make([]heldFiles, len(g.creds))
-		for i, cred := range g.creds {
-			g.held[i] = cred.snapshot()
+	return func(info fs.FileInfo) error {
+		for _, cred := range creds {
+			held, err := cred.holds(info)
+			if err != nil {
+				return fmt.Errorf("checking Agent credential %s (%s): %w", cred.Setting, cred.Path, err)
+			}
+			if held {
+				return fmt.Errorf("it is the Agent credential %s (%s): Agent credentials cannot be deployed", cred.Setting, cred.Path)
+			}
 		}
+		return nil
 	}
-	for i, cred := range g.creds {
-		held, err := g.held[i].holds(info)
-		if err != nil {
-			return fmt.Errorf("checking Agent credential %s (%s): %w", cred.Setting, cred.Path, err)
-		}
-		if held {
-			return fmt.Errorf("it is the Agent credential %s (%s): Agent credentials cannot be deployed", cred.Setting, cred.Path)
-		}
-	}
-	return nil
-}
-
-// heldFiles is what a credential holds on disk: the file (or directory)
-// itself and, for a Dir credential, the entries under it in walk order.
-type heldFiles struct {
-	self  fs.FileInfo   // nil when the credential is not on disk
-	under []fs.FileInfo // a Dir credential's entries, up to err
-	err   error         // why the credential, or the walk past under, failed
 }
 
 // holds reports whether info is the credential file or, for a Dir
 // credential, the directory or a file anywhere under it. A credential not on
 // disk holds nothing.
 func (cred Credential) holds(info fs.FileInfo) (bool, error) {
-	return cred.snapshot().holds(info)
-}
-
-func (h heldFiles) holds(info fs.FileInfo) (bool, error) {
-	if h.self == nil {
-		return false, h.err
-	}
-	same := func(entry fs.FileInfo) bool { return os.SameFile(info, entry) }
-	if same(h.self) || slices.ContainsFunc(h.under, same) {
-		return true, nil
-	}
-	return false, h.err
-}
-
-// snapshot stats cred and, for a Dir credential, walks it.
-func (cred Credential) snapshot() heldFiles {
-	self, err := os.Stat(cred.Path)
+	onDisk, err := os.Stat(cred.Path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return heldFiles{}
+		return false, nil
 	}
 	if err != nil {
-		return heldFiles{err: err}
+		return false, err
 	}
-	h := heldFiles{self: self}
-	if cred.Dir {
-		h.under, h.err = dirEntries(cred.Path)
+	if os.SameFile(info, onDisk) {
+		return true, nil
 	}
-	return h
+	if !cred.Dir {
+		return false, nil
+	}
+	return dirHolds(cred.Path, info)
 }
 
-// dirEntries returns the info of every entry under dir, in walk order, up to
-// the walk's first error. Entries removed during the walk are skipped.
-func dirEntries(dir string) ([]fs.FileInfo, error) {
+// dirHolds reports whether info is a file anywhere under dir. The caller
+// opened info's file before this walk, so a file under dir is there to be
+// found; entries removed during the walk cannot be it.
+func dirHolds(dir string, info fs.FileInfo) (bool, error) {
 	// WalkDir does not descend into a symlinked root, so resolve it first.
 	root, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-	var entries []fs.FileInfo
+	errFound := errors.New("found")
 	err = filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
@@ -199,10 +148,15 @@ func dirEntries(dir string) ([]fs.FileInfo, error) {
 		if err != nil {
 			return err
 		}
-		entries = append(entries, entry)
+		if os.SameFile(info, entry) {
+			return errFound
+		}
 		return nil
 	})
-	return entries, err
+	if errors.Is(err, errFound) {
+		return true, nil
+	}
+	return false, err
 }
 
 // checkCredentialFiles fails when two credential settings name the same

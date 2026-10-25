@@ -61,8 +61,10 @@ func (a *Agent) setupSops() error {
 	return nil
 }
 
-// scrubber removes decrypted SOPS values from text: a *sops.Reader (nil
-// included) or the sops.Scrubber built from one.
+// scrubber removes decrypted SOPS values from text: a *sops.Reader or the
+// sops.Scrubber built from one. scrubError's nil check does not catch a nil
+// *sops.Reader in the interface; that works only because Reader.Scrub (via
+// Reader.Scrubber) handles a nil receiver.
 type scrubber interface {
 	Scrub(text string) string
 }
