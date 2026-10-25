@@ -85,9 +85,9 @@ func setFilesManagedMetric(counts map[string]float64) {
 	}
 }
 
-// recordSecretsManaged publishes the per-provider managed-count gauge
+// recordProviderRefCount publishes the per-provider managed-count gauge
 // and returns the count. Returns 0 when the provider is disabled.
-func (a *Agent) recordSecretsManaged(provider resolver.ProviderKey, enabled bool, isRef func(string) bool, files []resolver.ResolvedFile) int {
+func (a *Agent) recordProviderRefCount(provider resolver.ProviderKey, enabled bool, isRef func(string) bool, files []resolver.ResolvedFile) int {
 	if !enabled {
 		return 0
 	}
@@ -99,7 +99,7 @@ func (a *Agent) recordSecretsManaged(provider resolver.ProviderKey, enabled bool
 // recordProviderSyncSuccess bumps the success counter and last-sync gauge
 // for a provider after a tick that actually resolved at least one ref.
 // A zero count means "nothing to record" — disabled providers always produce
-// zero counts via recordSecretsManaged, so a single count==0 check covers
+// zero counts via recordProviderRefCount, so a single count==0 check covers
 // both cases.
 func (a *Agent) recordProviderSyncSuccess(provider resolver.ProviderKey, count int) {
 	if count == 0 {

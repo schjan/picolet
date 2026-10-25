@@ -38,7 +38,10 @@ type Host struct {
 // unauthenticated, so this catches drift, not a hostile edit.
 //
 // One KeylessReader serves one resolve: each file is read and inspected at
-// most once, whichever calls name it.
+// most once, whichever calls name it, and a file that failed keeps failing
+// (a canceled ctx is never cached). Like Reader it is safe for concurrent
+// use; the lock is held across a file's first read, so concurrent refs to
+// one file share that read.
 type KeylessReader struct {
 	fsys fs.FS
 	host Host
