@@ -111,8 +111,15 @@ func TestIntegrationValidateAgentBundleUnresolvedConfigMount(t *testing.T) {
 			err := validateFleet(t, fleet)
 			require.Error(t, err)
 			for _, want := range []string{"host test-host", "Agent bundle " + tt.service, secret, "/etc/picolet/config.yml"} {
-				assert.ErrorContains(t, err, want)
+				require.ErrorContains(t, err, want)
 			}
+
+			// Podman mounts a non-canonical spelling of the target at the
+			// config path too.
+			unitFile := "services/" + tt.service + "/" + tt.service + ".container.tmpl"
+			fleet[unitFile] = &fstest.MapFile{Data: []byte(strings.Replace(string(fleet[unitFile].Data),
+				"target=/etc/picolet/config.yml", "target=/etc/picolet//config.yml", 1))}
+			require.ErrorContains(t, validateFleet(t, fleet), secret)
 		})
 	}
 }

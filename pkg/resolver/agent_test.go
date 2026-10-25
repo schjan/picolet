@@ -42,3 +42,37 @@ func TestAgentConfigSecretFound(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "secret:cfg", file.DestPath)
 }
+
+// The config mount is found however Podman would read its target: cleaned,
+// and a relative target under /run/secrets; an env secret mounts nothing.
+func TestAgentConfigMountSpellings(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		spec string
+		want string // "": no config mount
+	}{
+		{spec: "cfg,target=/etc/picolet/config.yml", want: "cfg"},
+		{spec: "cfg,mode=0400,target=/etc/picolet//config.yml", want: "cfg"},
+		{spec: "cfg,target=/etc/picolet/./config.yml", want: "cfg"},
+		{spec: "cfg,type=mount,target=/etc/picolet/sub/../config.yml", want: "cfg"},
+		{spec: "cfg,type=env,target=/etc/picolet/config.yml"},
+		{spec: "cfg,target=config.yml"},
+		{spec: "cfg"},
+	}
+	for _, tt := range tests {
+		file := agentUnitFile(t, "[Container]\nImage=x\nSecret="+tt.spec+"\n")
+		name, ok := AgentConfigMount([]ResolvedFile{file}, "picolet.service")
+		assert.Equal(t, tt.want, name, tt.spec)
+		assert.Equal(t, tt.want != "", ok, tt.spec)
+	}
+}
+
+func TestParseSecretMount(t *testing.T) {
+	t.Parallel()
+	name, target, mounted := ParseSecretMount("tok")
+	assert.Equal(t, []any{"tok", "/run/secrets/tok", true}, []any{name, target, mounted})
+	name, target, mounted = ParseSecretMount("tok,target=sub/x")
+	assert.Equal(t, []any{"tok", "/run/secrets/sub/x", true}, []any{name, target, mounted})
+	_, _, mounted = ParseSecretMount("tok,type=env")
+	assert.False(t, mounted)
+}

@@ -338,19 +338,25 @@ A commit that changes an Agent's own config (the secret its bundle mounts at
 the Agent and by `picolet apply --config`, with the checks the Agent runs at
 startup: the config must parse with the running Agent's strict loader (an
 unknown key fails), and every credential file it names must exist and be
-readable on the Host. A commit that stops resolving the mounted config secret
-(renames or drops its file) while the quadlet still mounts it is refused too.
+readable on the Host. Once the Fleet renders the Agent's config, a commit
+after which the Agent's next start would find no config is refused too: one
+that stops resolving the mounted config secret (renames or drops its file),
+repoints the mount at a secret the Fleet doesn't resolve, or drops the mount.
+To manage the config by hand instead, mount a Host file at
+`/etc/picolet/config.yml` with `Volume=`.
 If a check fails, the reconciliation fails before anything is written and the
 Agent keeps its current config, so it is never left with a config it would
 refuse to restart with. Place a new credential file on the Host (`bootstrap
 machine`) before the commit that points the Agent at it.
 
 The running Agent looks for credential files inside its container, and the
-check follows the new quadlet's `Volume=`, `Mount=` and `Secret=` mounts: a file
-under a mount whose source the running container also mounts is checked there
-(moving the mount's target in the same commit works), a file under no mount is
-checked where it is spelled, and a file the new quadlet stops mounting, or
-mounts from a source the running container doesn't have, is refused. So a
+check follows the new quadlet's `Volume=`, `Mount=`, `Tmpfs=` and `Secret=`
+mounts: a file under a mount whose source the running container also mounts at
+the same place is checked there (moving the mount's target in the same commit
+works), a file under no mount is checked where it is spelled, and a file the
+new quadlet stops mounting, hides under a tmpfs, or mounts from a source the
+running container doesn't have, or from a secret or `.volume` unit the same
+commit changes, is refused. So a
 commit that adds a mount and points the config at a file under it is refused:
 land the mount change in its own commit first, and point the config at it once
 the Agent runs with the mount.

@@ -63,6 +63,17 @@ func (cs *Changeset) Deletes(destPath string) bool {
 	return false
 }
 
+// Managed reports whether destPath is a Managed File before the changeset:
+// the changeset updates, deletes or keeps it.
+func (cs *Changeset) Managed(destPath string) bool {
+	for _, change := range cs.Changes {
+		if change.DestPath == destPath && change.Action != ActionCreate {
+			return true
+		}
+	}
+	return false
+}
+
 // Diff computes the changeset between desired files and current state.
 func Diff(
 	desired []resolver.ResolvedFile,

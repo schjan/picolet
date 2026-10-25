@@ -1,10 +1,9 @@
 package agent
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
@@ -15,109 +14,178 @@ import (
 	"github.com/schjan/picolet/pkg/resolver"
 )
 
+// sourceKind is what a mount of the Agent quadlet's container mounts.
+type sourceKind int
+
+const (
+	// sourceNone is a mount no other container shares: an anonymous
+	// volume, or a tmpfs, ramfs or devpts mount.
+	sourceNone sourceKind = iota
+	// sourceVolume is a Volume= or Mount= bind or volume source: a host
+	// path or a volume name (or a .volume unit).
+	sourceVolume
+	// sourceSecret is a Podman secret, by name.
+	sourceSecret
+	// sourceSpec is any other Mount= type (glob, image, …), named by its
+	// spec without the destination.
+	sourceSpec
+)
+
+// mountSource is what a mount mounts. Sources are compared as written, so the
+// same specifier (%h) in two units matches; two mounts with equal sources
+// show the same files (subpath is the volume's subdirectory).
+type mountSource struct {
+	kind    sourceKind
+	name    string
+	subpath string
+}
+
+// shared reports whether the source is one the running container can share.
+func (s mountSource) shared() bool { return s.kind != sourceNone }
+
+func (s mountSource) String() string {
+	switch s.kind {
+	case sourceNone:
+		return "an anonymous volume or tmpfs"
+	case sourceSecret:
+		return "secret " + s.name
+	case sourceSpec:
+		return "Mount=" + s.name
+	case sourceVolume:
+	}
+	if s.subpath != "" {
+		return s.name + " (subpath " + s.subpath + ")"
+	}
+	return s.name
+}
+
 // mount is one mount of the Agent quadlet's container: what it mounts
 // (source) and where (target, inside the container).
 type mount struct {
-	// source is the Volume=/Mount= source (a host path or a volume name),
-	// or "secret <name>" for a Secret=; "" for an anonymous volume or a
-	// tmpfs, which no other container shares.
-	source string
+	source mountSource
 	target string
 }
 
 // unitMounts lists the mounts unit's [Container] group declares: Volume=,
-// Mount= of type bind or volume, and Secret= (type=mount, the default).
-// Sources are compared as written, so the same specifier (%h) in two
-// units matches.
+// Mount= (every type), Tmpfs= and Secret= (type=mount, the default).
 func unitMounts(unit *parser.UnitFile) []mount {
 	var mounts []mount
 	for _, volume := range unit.LookupAll("Container", "Volume") {
 		parts := strings.Split(volume, ":")
 		if len(parts) == 1 {
-			mounts = append(mounts, mount{target: cleanTarget(parts[0])})
+			mounts = append(mounts, mount{target: path.Clean(parts[0])})
 			continue
 		}
-		mounts = append(mounts, mount{source: cleanSource(parts[0]), target: cleanTarget(parts[1])})
+		mounts = append(mounts, mount{source: volumeSource(parts[0]), target: path.Clean(parts[1])})
 	}
 	for _, spec := range unit.LookupAll("Container", "Mount") {
 		if m, ok := parseMount(spec); ok {
 			mounts = append(mounts, m)
 		}
 	}
+	for _, tmpfs := range unit.LookupAll("Container", "Tmpfs") {
+		dir, _, _ := strings.Cut(tmpfs, ":")
+		mounts = append(mounts, mount{target: path.Clean(dir)})
+	}
 	for _, secret := range unit.LookupAll("Container", "Secret") {
-		if m, ok := parseSecretMount(secret); ok {
-			mounts = append(mounts, m)
+		if name, target, ok := resolver.ParseSecretMount(secret); ok {
+			mounts = append(mounts, mount{source: mountSource{kind: sourceSecret, name: name}, target: target})
 		}
 	}
 	return mounts
 }
 
-// parseMount parses a Mount= value (type=bind,source=…,destination=…).
-// Mounts that place no file from elsewhere (tmpfs, devpts, …) are not
-// listed.
+// volumeSource is the source of a bind or volume mount; a host path is
+// cleaned and a volume name kept; "" is an anonymous volume.
+func volumeSource(source string) mountSource {
+	switch {
+	case source == "":
+		return mountSource{}
+	case strings.HasPrefix(source, "/"):
+		return mountSource{kind: sourceVolume, name: path.Clean(source)}
+	default:
+		return mountSource{kind: sourceVolume, name: source}
+	}
+}
+
+// parseMount parses a Mount= value (type=…,source=…,destination=…). A bind
+// or volume mount is named by its source and subpath, a tmpfs, ramfs or
+// devpts mount shares nothing, and any other type is named by its spec
+// without the destination. ok is false without a destination.
 func parseMount(spec string) (mount, bool) {
-	var kind string
-	var m mount
+	fields := mountFields(spec)
+	if fields.target == "" {
+		return mount{}, false
+	}
+	switch fields.kind {
+	case "bind", "volume":
+		s := volumeSource(fields.source)
+		if s.shared() {
+			s.subpath = fields.subpath
+		}
+		return mount{source: s, target: fields.target}, true
+	case "tmpfs", "ramfs", "devpts":
+		return mount{target: fields.target}, true
+	default:
+		return mount{source: mountSource{kind: sourceSpec, name: fields.rest}, target: fields.target}, true
+	}
+}
+
+// mountSpec is a Mount= value's fields; rest is the spec without the
+// destination.
+type mountSpec struct {
+	kind, source, subpath, target, rest string
+}
+
+func mountFields(spec string) mountSpec {
+	var fields mountSpec
+	var rest []string
 	for field := range strings.SplitSeq(spec, ",") {
 		key, value, _ := strings.Cut(field, "=")
 		switch key {
 		case "type":
-			kind = value
+			fields.kind = value
 		case "source", "src":
-			m.source = cleanSource(value)
+			fields.source = value
+		case "subpath", "volume-subpath":
+			fields.subpath = value
 		case "destination", "dst", "target":
-			m.target = cleanTarget(value)
+			fields.target = path.Clean(value)
+			continue
 		}
+		rest = append(rest, field)
 	}
-	return m, (kind == "bind" || kind == "volume") && m.target != ""
+	fields.rest = strings.Join(rest, ",")
+	return fields
 }
 
-// parseSecretMount parses a Secret= value (name[,type=…][,target=…]): a
-// file secret is mounted at its target, by default /run/secrets/<name>, and
-// a relative target is under /run/secrets.
-func parseSecretMount(spec string) (mount, bool) {
-	fields := strings.Split(spec, ",")
-	name := fields[0]
-	target := name
-	for _, field := range fields[1:] {
-		key, value, _ := strings.Cut(field, "=")
-		switch key {
-		case "type":
-			if value != "mount" {
-				return mount{}, false
-			}
-		case "target":
-			target = value
-		}
-	}
-	if !path.IsAbs(target) {
-		target = path.Join("/run/secrets", target)
-	}
-	return mount{source: "secret " + name, target: path.Clean(target)}, true
-}
-
-// cleanSource normalizes a host path source; a volume name is kept.
-func cleanSource(source string) string {
-	if strings.HasPrefix(source, "/") {
-		return path.Clean(source)
-	}
-	return source
-}
-
-func cleanTarget(target string) string { return path.Clean(target) }
-
-// mountHolding returns the mount of mounts whose target holds p (the
-// deepest, as the container sees the innermost mount), and p relative to
-// that target.
-func mountHolding(mounts []mount, p string) (m mount, rel string, ok bool) {
+// mountsHolding returns the mounts whose target holds p, the deepest ones
+// (the container sees the innermost mount; more than one has the same
+// target), and p relative to that target.
+func mountsHolding(mounts []mount, p string) (held []mount, rel string) {
 	p = path.Clean(p)
 	for _, candidate := range mounts {
 		r, under := relativeTo(candidate.target, p)
-		if under && (!ok || len(candidate.target) > len(m.target)) {
-			m, rel, ok = candidate, r, true
+		switch {
+		case !under:
+		case len(held) == 0 || len(candidate.target) > len(held[0].target):
+			held, rel = []mount{candidate}, r
+		case candidate.target == held[0].target:
+			held = append(held, candidate)
 		}
 	}
-	return m, rel, ok
+	return held, rel
+}
+
+// mountHolding is mountsHolding for a container that has started: when more
+// than one mount has the deepest target, it reports the first, and ok is
+// false when no mount holds p.
+func mountHolding(mounts []mount, p string) (m mount, rel string, ok bool) {
+	held, rel := mountsHolding(mounts, p)
+	if len(held) == 0 {
+		return mount{}, "", false
+	}
+	return held[0], rel, true
 }
 
 // relativeTo returns p relative to dir when p is dir or under it.
@@ -138,96 +206,119 @@ const errMountChange = "land the mount change in its own commit first, and point
 
 // credentialLocator returns the agentcfg.Locate for a config the Agent's next
 // start reads with the mounts of next, checked by the Agent running in a
-// container with the mounts of current. A credential path under a mount of
-// next is read through the mount of current with the same source (at its
-// target); one under no mount of next is inside the image and read where it
-// is spelled, unless current mounts it: next drops that mount. A file
-// credential the running container cannot see is refused; a directory
-// credential (protonpass.session_dir) need not exist, so it is read where it
-// is spelled instead.
-func credentialLocator(next, current []mount) agentcfg.Locate {
+// container with the mounts of current; changed reports a source the
+// changeset rewrites. A credential path under a mount of next is read
+// through a mount of current with the same source, at its target, when no
+// deeper mount of current shadows it there; one under no mount of next is
+// inside the image and read where it is spelled, unless current mounts it:
+// next drops that mount. A file credential the running container cannot
+// see as the next start will is refused; a directory credential
+// (protonpass.session_dir) need not exist, so it is read where it is
+// spelled instead.
+func credentialLocator(next, current []mount, changed func(mountSource) bool) agentcfg.Locate {
 	return func(cred agentcfg.Credential) (string, error) {
-		m, rel, ok := mountHolding(next, cred.Path)
-		if !ok {
-			if held, _, ok := mountHolding(current, cred.Path); ok && !cred.Dir {
-				return "", fmt.Errorf("the running Agent's container mounts %s from %s, which the new Agent unit no longer mounts; %s",
-					held.target, describeSource(held.source), errMountChange)
-			}
-			return cred.Path, nil
+		held, rel := mountsHolding(next, cred.Path)
+		if len(held) == 0 {
+			return inImage(cred, current)
 		}
-		if m.source != "" {
-			for _, c := range current {
-				if c.source == m.source {
-					return path.Join(c.target, rel), nil
+		m, err := single(held)
+		if err != nil {
+			return "", err
+		}
+		at, shadow := translate(m, rel, current)
+		switch {
+		case cred.Dir && at != "":
+			return at, nil
+		case cred.Dir:
+			return cred.Path, nil
+		case m.source.shared() && changed(m.source):
+			return "", fmt.Errorf("the new Agent unit mounts %s from %s, which this commit changes, so the running Agent's container shows its old content; %s",
+				m.target, m.source, errMountChange)
+		case at != "":
+			return at, nil
+		case shadow != nil:
+			return "", fmt.Errorf("the new Agent unit mounts %s from %s, which the running Agent's container shadows at %s with %s; %s",
+				m.target, m.source, shadow.target, shadow.source, errMountChange)
+		}
+		return "", fmt.Errorf("the new Agent unit mounts %s from %s, which the running Agent's container does not mount there; %s",
+			m.target, m.source, errMountChange)
+	}
+}
+
+// single returns the one mount the next start shows at the deepest target
+// held lists, and refuses two different sources there.
+func single(held []mount) (mount, error) {
+	m := held[0]
+	for _, other := range held[1:] {
+		if other.source != m.source {
+			return mount{}, fmt.Errorf("the new Agent unit mounts both %s and %s at %s; %s", m.source, other.source, m.target, errMountChange)
+		}
+	}
+	return m, nil
+}
+
+// inImage locates a credential the next start reads from its image (under no
+// mount): where it is spelled, unless the running container, with the
+// mounts of current, mounts it, and then a file credential is refused.
+func inImage(cred agentcfg.Credential, current []mount) (string, error) {
+	if c, _, ok := mountHolding(current, cred.Path); ok && !cred.Dir {
+		return "", fmt.Errorf("the running Agent's container mounts %s from %s, which the new Agent unit no longer mounts; %s",
+			c.target, c.source, errMountChange)
+	}
+	return cred.Path, nil
+}
+
+// translate returns where the running container, with the mounts of
+// current, shows rel under the next start's mount m: under a mount of
+// current with m's source, unless a deeper mount of current shadows that
+// path. at is "" when there is no such place; shadow is then the mount of
+// current that shadows it, if one does.
+func translate(m mount, rel string, current []mount) (at string, shadow *mount) {
+	if !m.source.shared() {
+		return "", nil
+	}
+	for _, c := range current {
+		if c.source != m.source {
+			continue
+		}
+		p := path.Join(c.target, rel)
+		held, _ := mountsHolding(current, p)
+		if slices.Contains(held, c) {
+			return p, nil
+		}
+		shadow = &held[0]
+	}
+	return "", shadow
+}
+
+// sourceChanges returns whether the changeset creates, updates or deletes a
+// source a credential's mount comes from: a Podman secret, or a .volume unit
+// a Volume= names.
+func sourceChanges(changeset *reconciler.Changeset) func(mountSource) bool {
+	return func(source mountSource) bool {
+		switch {
+		case source.kind == sourceSecret:
+			dest := resolver.SecretDestPath(source.name)
+			return changeset.Writes(dest) || changeset.Deletes(dest)
+		case source.kind == sourceVolume && strings.HasSuffix(source.name, ".volume"):
+			for _, change := range changeset.Changes {
+				if change.Category == config.CategoryVolume && change.Action != reconciler.ActionNoop && path.Base(change.DestPath) == source.name {
+					return true
 				}
 			}
 		}
-		if cred.Dir {
-			return cred.Path, nil
-		}
-		return "", fmt.Errorf("the new Agent unit mounts %s from %s, which the running Agent's container does not mount; %s",
-			m.target, describeSource(m.source), errMountChange)
+		return false
 	}
-}
-
-func describeSource(source string) string {
-	if source == "" {
-		return "an anonymous volume"
-	}
-	return source
 }
 
 // selfConfigLocator returns how to read the credentials of the Agent config
-// the Agent's next start reads. When the changeset writes the Agent's unit
-// (its Quadlet file, newUnit), that start has newUnit's mounts while the
-// running Agent has those of the unit on disk (read with readFile), so
-// credentials are located through both (credentialLocator). Otherwise, or
-// when no unit of the Agent is on disk (the Agent runs from a unit the Fleet
-// does not manage), credentials are read where they are spelled.
-func selfConfigLocator(files []resolver.ResolvedFile, unit string, changeset *reconciler.Changeset, readFile func(string) ([]byte, error)) (agentcfg.Locate, error) {
-	newUnit := writtenUnit(files, unit, changeset)
-	if newUnit == nil {
-		return nil, nil //nolint:nilnil // a nil Locate reads credentials where they are spelled
+// the Agent's next start reads, with the mounts of the Agent's quadlet next
+// (resolved). The running Agent has the mounts of running, the unit on disk;
+// nil when there is none (the Agent runs from a unit the Fleet does not
+// manage), and then credentials are read where they are spelled.
+func selfConfigLocator(next, running *parser.UnitFile, changeset *reconciler.Changeset) agentcfg.Locate {
+	if next == nil || running == nil {
+		return nil
 	}
-	current, found, err := currentUnit(unit, changeset, readFile)
-	if err != nil || !found {
-		return nil, err
-	}
-	return credentialLocator(unitMounts(newUnit), unitMounts(current)), nil
-}
-
-// writtenUnit returns the parsed Quadlet file of unit when the changeset
-// writes it.
-func writtenUnit(files []resolver.ResolvedFile, unit string, changeset *reconciler.Changeset) *parser.UnitFile {
-	for _, file := range files {
-		if file.ServiceName == unit && file.Category == config.CategoryContainer && changeset.Writes(file.DestPath) {
-			return file.ParsedUnit
-		}
-	}
-	return nil
-}
-
-// currentUnit reads and parses the Agent's container Quadlet file on disk: the
-// file the changeset updates or deletes for unit (a rename creates a new
-// file and deletes the old one). found is false when there is none.
-func currentUnit(unit string, changeset *reconciler.Changeset, readFile func(string) ([]byte, error)) (parsed *parser.UnitFile, found bool, err error) {
-	for _, change := range changeset.Changes {
-		if change.ServiceName != unit || change.Category != config.CategoryContainer || change.Action == reconciler.ActionCreate {
-			continue
-		}
-		data, err := readFile(change.DestPath)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return nil, false, fmt.Errorf("reading the running Agent's unit %s: %w", change.DestPath, err)
-		}
-		parsed := parser.NewUnitFile()
-		parsed.Filename = path.Base(change.DestPath)
-		if err := parsed.Parse(string(data)); err != nil {
-			return nil, false, fmt.Errorf("parsing the running Agent's unit %s: %w", change.DestPath, err)
-		}
-		return parsed, true, nil
-	}
-	return nil, false, nil
+	return credentialLocator(unitMounts(next), unitMounts(running), sourceChanges(changeset))
 }

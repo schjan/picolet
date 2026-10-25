@@ -163,8 +163,10 @@ kept as is.
   ([#250](https://github.com/schjan/picolet/issues/250)).
 - The self-restart guard refuses a Fleet-rendered Agent config the Agent could
   not start with (strict parse, credential overlap, startup credential checks,
-  through the mounts of a changed Agent quadlet) or the removal of a config
-  secret the quadlet still mounts: the reconciliation fails and the Agent keeps
+  through the mounts of a changed Agent quadlet) or a commit that leaves a
+  Fleet-managed Agent config unreachable (its secret removed while still
+  mounted, the mount repointed at an unresolved secret, or the mount dropped;
+  a `Volume=` Host file there opts out): the reconciliation fails and the Agent keeps
   running on its current config. `picolet apply --config` runs the same check
   ([#252](https://github.com/schjan/picolet/issues/252)).
 - Agents warn about an unknown `host.yml` key instead of refusing the Fleet;
