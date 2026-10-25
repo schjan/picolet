@@ -186,12 +186,7 @@ func labels(keys []string) []string {
 func fileGroups(f *File) [][]string {
 	groups := make([][]string, 0, len(f.KeyGroups))
 	for _, g := range f.KeyGroups {
-		var l []string
-		for _, r := range g.Age {
-			l = append(l, r.String())
-		}
-		l = append(l, g.UnsupportedAge...)
-		groups = append(groups, l)
+		groups = append(groups, append(RecipientStrings(g.Age), g.UnsupportedAge...))
 	}
 	if len(groups) == 0 {
 		groups = append(groups, nil)

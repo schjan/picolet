@@ -156,13 +156,8 @@ func checkRef(f *keylessFile, ref Ref, direct bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	ptr := ref.Pointer.String()
-	switch describe(v).Kind {
-	case NodeMap:
-		return "", fmt.Errorf("%w: %q is a map; a string ref must end at a leaf", ErrNotLeaf, ptr)
-	case NodeList:
-		return "", fmt.Errorf("%w: %q is a list; a string ref must end at a leaf", ErrNotLeaf, ptr)
-	case NodeLeaf:
+	if kind := describe(v).Kind; kind != NodeLeaf {
+		return "", notLeafError(kind, ref.Pointer)
 	}
 	return f.leaf(v, ref.Pointer, direct)
 }

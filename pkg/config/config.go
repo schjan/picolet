@@ -39,7 +39,7 @@ func SortedUnique(values []string) []string {
 // instance, "picolet-system" under the system instance. Stopping or restarting
 // one of them synchronously kills the agent before it saves state.
 func DefaultSelfUnits() []string {
-	return []string{"picolet.service", "picolet-system.service"}
+	return []string{agentServiceUser + ".service", agentServiceSystem + ".service"}
 }
 
 // IsDefaultSelfUnit reports whether unit is one of DefaultSelfUnits.

@@ -248,11 +248,17 @@ func (p *plainFile) extract(ref Ref) (string, error) {
 	}
 	switch v.(type) {
 	case gsops.TreeBranch:
-		return "", fmt.Errorf("%w: %q is a map; a string ref must end at a leaf", ErrNotLeaf, ref.Pointer.String())
+		return "", notLeafError(NodeMap, ref.Pointer)
 	case []any:
-		return "", fmt.Errorf("%w: %q is a list; a string ref must end at a leaf", ErrNotLeaf, ref.Pointer.String())
+		return "", notLeafError(NodeList, ref.Pointer)
 	}
 	return p.leaf(v, ref.Pointer)
+}
+
+// notLeafError is the ErrNotLeaf error of a string ref whose pointer ptr
+// ends at a node of kind (a map or a list).
+func notLeafError(kind NodeKind, ptr Pointer) error {
+	return fmt.Errorf("%w: %q is a %s; a string ref must end at a leaf", ErrNotLeaf, ptr.String(), kind)
 }
 
 // leaf renders the leaf v found at ptr (see renderLeaf).
