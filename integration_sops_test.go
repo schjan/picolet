@@ -45,6 +45,20 @@ func sopsRecipient(t *testing.T, name string) string {
 	return ""
 }
 
+// sopsHostYML is test-host's host.yml declaring the corpus recipients called
+// recipients (none: no age_recipients: key).
+func sopsHostYML(t *testing.T, recipients []string) string {
+	t.Helper()
+	y := "hostname: test-host\nrole: node\n"
+	if len(recipients) > 0 {
+		y += "age_recipients:\n"
+		for _, r := range recipients {
+			y += "  - " + sopsRecipient(t, r) + "\n"
+		}
+	}
+	return y
+}
+
 // sopsFleet is a valid one-Host Fleet plus files; no Host references them.
 func sopsFleet(files map[string]*fstest.MapFile) fstest.MapFS {
 	fsys := agentBundleFleet("", "picolet-system", false, "")

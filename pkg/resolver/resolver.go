@@ -66,14 +66,18 @@ type Config struct {
 	SecretReader   SecretReader
 	OpSecretReader SecretRefReader
 	PPSecretReader SecretRefReader
-	// SopsSecretReader resolves sops:// refs: the keyless reader
-	// (sops.KeylessReader) for validate, resolve and bootstrap, the
-	// decrypting one on the Agent. Nil makes every sops:// ref fail the
-	// resolve; unlike op:// and pass://, SOPS never renders a placeholder
-	// without a reader.
+	// SopsSecretReader resolves sops:// refs on the Agent (the decrypting
+	// reader). Nil makes every sops:// ref fail the resolve; unlike op://
+	// and pass://, SOPS never renders a placeholder without a reader.
+	// validate, resolve and bootstrap use NewKeyless instead.
 	SopsSecretReader SecretRefReader
 	Rootless         bool
 	Strict           bool
+
+	// keylessSops (set only by NewKeyless) replaces SopsSecretReader with
+	// the keyless reader, built per host resolve for that Host so its
+	// recipient checks see the Host's age_recipients:.
+	keylessSops bool
 
 	// QuadletDir, SystemdDir, and DataDir override the defaults computed by
 	// ResolveDirs. Empty fields fall back to the default for the given
@@ -103,6 +107,7 @@ type Resolver struct {
 	opSecretReader SecretRefReader
 	ppSecretReader SecretRefReader
 	sopsReader     SecretRefReader
+	keylessSops    bool
 	quadletDir     string
 	systemdDir     string
 	dataDir        string
@@ -119,13 +124,15 @@ type Resolver struct {
 // Rootless reports whether the resolver is configured for rootless mode.
 func (r *Resolver) Rootless() bool { return r.rootless }
 
-// NewKeyless is New with the keyless SOPS reader over rc.FS as
+// NewKeyless is New with the keyless SOPS reader over rc.FS in place of
 // SopsSecretReader: the resolver of validate, resolve and bootstrap, where
-// sops:// values render as "<sops-secret>" and no key is read. Use it rather
-// than setting the reader by hand, so no keyless call site forgets it (which
+// sops:// values render as "<sops-secret>" and no key is read. Each host
+// resolve checks its refs for that Host, its age_recipients: included. Use it
+// rather than a hand-set reader, so no keyless call site forgets it (which
 // would fail every sops:// ref).
 func NewKeyless(rc Config) (*Resolver, error) {
-	rc.SopsSecretReader = KeylessSopsReader(rc.FS)
+	rc.SopsSecretReader = nil
+	rc.keylessSops = true
 	return New(rc)
 }
 
@@ -160,6 +167,7 @@ func New(rc Config) (*Resolver, error) {
 		opSecretReader: rc.OpSecretReader,
 		ppSecretReader: rc.PPSecretReader,
 		sopsReader:     rc.SopsSecretReader,
+		keylessSops:    rc.keylessSops,
 		quadletDir:     quadletDir,
 		systemdDir:     systemdDir,
 		dataDir:        dataDir,
@@ -271,7 +279,7 @@ func (r *Resolver) resolveHostFileSetOnCopy(ctx context.Context, hostname string
 	providers := []ProviderTemplate{
 		r.provider(OpProvider(r.opSecretReader)),
 		r.provider(PPProvider(r.ppSecretReader)),
-		r.provider(r.guardedSopsProvider()),
+		r.provider(r.guardedSopsProvider(host)),
 	}
 	// hostDataDir (not dataDir) drives filePath/manifestPath: those helpers emit
 	// path strings baked into rendered quadlets, which the host's podman must
@@ -320,9 +328,19 @@ func (r *Resolver) resolveHostFileSetOnCopy(ctx context.Context, hostname string
 	}, nil
 }
 
-// guardedSopsProvider is SopsProvider with the unit-file guard.
-func (r *Resolver) guardedSopsProvider() ProviderTemplate {
-	p := SopsProvider(r.sopsReader)
+// sopsReaderFor returns the SOPS reader of one host resolve: the keyless
+// reader for host (NewKeyless), else the configured one.
+func (r *Resolver) sopsReaderFor(host *config.HostConfig) SecretRefReader {
+	if r.keylessSops {
+		return keylessSopsReader(r.fsys, host)
+	}
+	return r.sopsReader
+}
+
+// guardedSopsProvider is SopsProvider over host's SOPS reader with the
+// unit-file guard.
+func (r *Resolver) guardedSopsProvider(host *config.HostConfig) ProviderTemplate {
+	p := SopsProvider(r.sopsReaderFor(host))
 	p.Guard = func(ref string) error { return r.sopsGuard(p.FuncName, ref) }
 	return p
 }

@@ -154,20 +154,30 @@ func decrypt(path string, data []byte, ids *Identities) (*plainFile, error) {
 // enough key groups is "not a recipient"; one whose labels do, yet whose
 // stanzas don't open, was edited outside sops.
 func dataKeyError(path string, f *File, ids *Identities) error {
-	matched, required := matchedGroups(f, ids), f.RequiredGroups()
+	if err := checkRecipients(path, f, "this Host", ids.recipients); err != nil {
+		return err
+	}
+	return editedError(path, "its age stanza for this Host's recipient does not open with this Host's identity", "re-encrypt it with `sops updatekeys %s`")
+}
+
+// checkRecipients returns an ErrNotRecipient error for the file at path when
+// recipients (who's: "this Host" or "Host <name>") appear in fewer of f's key
+// groups than it needs. It compares the file's unauthenticated labels.
+func checkRecipients(path string, f *File, who string, recipients []Recipient) error {
+	matched, required := matchedGroups(f, recipients), f.RequiredGroups()
 	if matched >= required {
-		return editedError(path, "its age stanza for this Host's recipient does not open with this Host's identity", "re-encrypt it with `sops updatekeys %s`")
+		return nil
 	}
-	recipients := make([]string, 0, len(ids.recipients))
-	for _, r := range ids.recipients {
-		recipients = append(recipients, r.String())
+	labels := make([]string, 0, len(recipients))
+	for _, r := range recipients {
+		labels = append(labels, r.String())
 	}
-	reach := "the file is not encrypted to this Host"
+	reach := "the file is not encrypted to " + who
 	if matched > 0 {
-		reach = fmt.Sprintf("the file is encrypted to this Host in %d of the %d key groups it needs", matched, required)
+		reach = fmt.Sprintf("the file is encrypted to %s in %d of the %d key groups it needs", who, matched, required)
 	}
-	return fmt.Errorf("%s: %w: %s (this Host's recipients: %s); add one of them to the file's .sops.yaml creation rule and run `sops updatekeys %s`",
-		path, ErrNotRecipient, reach, strings.Join(recipients, ", "), path)
+	return fmt.Errorf("%s: %w: %s (%s's recipients: %s); add one of them to the file's .sops.yaml creation rule and run `sops updatekeys %s`",
+		path, ErrNotRecipient, reach, who, strings.Join(labels, ", "), path)
 }
 
 // editedError builds an ErrEditedOutsideSOPS error for path: what failed,
@@ -178,12 +188,12 @@ func editedError(path, what, alternative string) error {
 		path, ErrEditedOutsideSOPS, what, path)
 }
 
-// matchedGroups counts the key groups that list one of ids' recipients.
-func matchedGroups(f *File, ids *Identities) int {
+// matchedGroups counts the key groups that list one of recipients.
+func matchedGroups(f *File, recipients []Recipient) int {
 	n := 0
 	for _, g := range f.KeyGroups {
 		for _, r := range g.Age {
-			if slices.Contains(ids.recipients, r) {
+			if slices.Contains(recipients, r) {
 				n++
 				break
 			}

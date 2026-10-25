@@ -16,23 +16,125 @@ import (
 )
 
 // resolveSops resolves test-host of a one-host Fleet whose Host gets the
-// secret template secrets/app.yml.tmpl with body tmpl; files adds Fleet-root
-// files (corpus copies). keyless passes the keyless SOPS reader, as validate
-// and resolve do; without it no SOPS reader is passed, as on the Agent.
+// secret template secrets/app.yml.tmpl with body tmpl and declares the corpus
+// recipient srv-1 (a Recipient of every corpus file); files adds Fleet-root
+// files (corpus copies) and may replace hosts/test-host/host.yml. keyless
+// resolves with NewKeyless, as validate and resolve do; without it no SOPS
+// reader is passed, as on the Agent.
 func resolveSops(t *testing.T, tmpl string, files map[string]string, keyless, strict bool) (*ResolvedHost, error) {
 	t.Helper()
-	extra := map[string]string{"secrets/app.yml.tmpl": tmpl}
+	extra := map[string]string{
+		"secrets/app.yml.tmpl":     tmpl,
+		"hosts/test-host/host.yml": sopsHostYAML(t, "srv-1"),
+	}
 	maps.Copy(extra, files)
 	fsys := pathsFleetFS("  secrets: [secrets/app.yml.tmpl]\n", extra)
 	cfg, err := config.LoadAll(fsys)
 	require.NoError(t, err)
 	rc := Config{FS: fsys, Config: cfg, Strict: strict}
+	newResolver := New
 	if keyless {
-		rc.SopsSecretReader = KeylessSopsReader(fsys)
+		newResolver = NewKeyless
 	}
-	r, err := New(rc)
+	r, err := newResolver(rc)
 	require.NoError(t, err)
 	return r.ResolveHost(t.Context(), "test-host")
+}
+
+// sopsRecipient returns the TEST-ONLY corpus recipient called name.
+func sopsRecipient(t *testing.T, name string) string {
+	t.Helper()
+	for line := range strings.Lines(sopsCorpusText(t, "recipients.txt")) {
+		if n, key, ok := strings.Cut(strings.TrimSpace(line), " "); ok && n == name {
+			return key
+		}
+	}
+	t.Fatalf("recipient %q not in corpus", name)
+	return ""
+}
+
+// sopsHostYAML is test-host's host.yml declaring the corpus recipients
+// called recipients (none: no age_recipients: key).
+func sopsHostYAML(t *testing.T, recipients ...string) string {
+	t.Helper()
+	y := "hostname: test-host\nexternal_hostname: test-host.example.net\nrole: node\nfeatures: []\n"
+	if len(recipients) > 0 {
+		y += "age_recipients:\n"
+		for _, r := range recipients {
+			y += "  - " + sopsRecipient(t, r) + "\n"
+		}
+	}
+	return y
+}
+
+// The keyless per-ref recipient checks: the Host must declare
+// age_recipients:, and one of them must reach enough of the file's key
+// groups; during a rotation either key passes.
+func TestReadSopsSecretKeylessRecipientChecks(t *testing.T) {
+	t.Parallel()
+	files := map[string]string{
+		"secrets/db.sops.yaml":     sopsCorpusFile(t, "values.sops.yaml"),     // srv-1, srv-2, operator-1
+		"secrets/groups.sops.yaml": sopsCorpusFile(t, "key-groups.sops.yaml"), // [srv-1 operator-1] [srv-2] [srv-pq], threshold 2
+	}
+	tests := []struct {
+		name       string
+		recipients []string
+		ref        string
+		want       []string // empty: the resolve passes
+	}{
+		{name: "declared recipient", recipients: []string{"srv-2"}, ref: "sops://secrets/db.sops.yaml#/db/password"},
+		{name: "rotation", recipients: []string{"srv-3", "srv-1"}, ref: "sops://secrets/db.sops.yaml#/db/password"},
+		{name: "key groups: threshold reached", recipients: []string{"srv-1", "srv-pq"}, ref: "sops://secrets/groups.sops.yaml#/db/password"},
+		{
+			name: "no age_recipients", ref: "sops://secrets/db.sops.yaml#/db/password",
+			want: []string{"Host test-host references sops://secrets/db.sops.yaml#/db/password but declares no age_recipients"},
+		},
+		{
+			name: "drift", recipients: []string{"srv-3"}, ref: "sops://secrets/db.sops.yaml#/db/password",
+			want: []string{
+				"secrets/db.sops.yaml: not a recipient: the file is not encrypted to Host test-host",
+				sopsRecipient(t, "srv-3"),
+				"add one of them to the file's .sops.yaml creation rule and run `sops updatekeys secrets/db.sops.yaml`",
+			},
+		},
+		{
+			name: "key groups: too few", recipients: []string{"srv-2"}, ref: "sops://secrets/groups.sops.yaml#/db/password",
+			want: []string{"the file is encrypted to Host test-host in 1 of the 2 key groups it needs"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fleet := maps.Clone(files)
+			fleet["hosts/test-host/host.yml"] = sopsHostYAML(t, tt.recipients...)
+			resolved, err := resolveSops(t, `v: {{ readSopsSecret "`+tt.ref+`" }}`, fleet, true, false)
+			if len(tt.want) == 0 {
+				require.NoError(t, err)
+				assert.Equal(t, "v: <sops-secret>", resolved.Files[0].Content)
+				return
+			}
+			require.Error(t, err)
+			require.ErrorContains(t, err, tt.ref)
+			for _, want := range tt.want {
+				require.ErrorContains(t, err, want)
+			}
+			for _, plain := range []string{"hunter2-test", "visible", "5432"} {
+				assert.NotContains(t, err.Error(), plain)
+			}
+		})
+	}
+}
+
+// Template data exposes the Host's age recipients in canonical form, for
+// .Host and for every .Fleet.Hosts entry.
+func TestTemplateDataAgeRecipients(t *testing.T) {
+	t.Parallel()
+	hostYAML := strings.Replace(sopsHostYAML(t, "srv-1", "srv-pq"), sopsRecipient(t, "srv-1"), strings.ToUpper(sopsRecipient(t, "srv-1")), 1)
+	resolved, err := resolveSops(t,
+		`{{ join "," .Host.AgeRecipients }}|{{ range .Fleet.Hosts }}{{ len .AgeRecipients }}{{ end }}`,
+		map[string]string{"hosts/test-host/host.yml": hostYAML}, true, false)
+	require.NoError(t, err)
+	assert.Equal(t, sopsRecipient(t, "srv-1")+","+sopsRecipient(t, "srv-pq")+"|2", resolved.Files[0].Content)
 }
 
 func TestReadSopsSecretKeylessRendersPlaceholder(t *testing.T) {
