@@ -101,7 +101,7 @@ func TestIntegrationValidateSOPSOversizedFile(t *testing.T) {
 	big := bytes.Repeat([]byte("a"), sops.MaxFileSize+1)
 	err := validateFleet(t, sopsFleet(t, map[string]*fstest.MapFile{"secrets/big.sops.bin": data(big)}))
 	require.ErrorIs(t, err, sops.ErrFileTooLarge)
-	assert.ErrorContains(t, err, "secrets/big.sops.bin")
+	require.ErrorContains(t, err, "secrets/big.sops.bin")
 	assertNoPlaintext(t, err)
 }
 
@@ -213,7 +213,7 @@ func TestIntegrationValidateSOPSCreationRules(t *testing.T) {
 			}
 			require.Error(t, err)
 			for _, w := range tt.want {
-				assert.ErrorContains(t, err, w)
+				require.ErrorContains(t, err, w)
 			}
 			assertNoPlaintext(t, err)
 		})
@@ -295,7 +295,7 @@ func TestIntegrationValidateExampleFleetSOPS(t *testing.T) {
 		require.Error(t, err)
 		for _, path := range []string{"secrets/db.sops.yaml", "services/web-app/secrets.sops.yaml"} {
 			for _, name := range []string{"operator-1", "srv-2"} {
-				assert.ErrorContains(t, err, "`"+path+"`: age recipient "+sopsRecipient(t, name)+" (owner: unknown) may not read it")
+				require.ErrorContains(t, err, "`"+path+"`: age recipient "+sopsRecipient(t, name)+" (owner: unknown) may not read it")
 			}
 		}
 		assertNoPlaintext(t, err)

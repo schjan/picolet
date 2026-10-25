@@ -76,6 +76,8 @@ func resolveBootstrapHost(ctx context.Context, repo *config.Repo, cfg resolveCon
 // credentialGuard refuses the credentials of the Agent config rendered in
 // files (a pass with placeholder secrets), seen through cfg.SecretsDir; nil
 // when the Fleet renders no Agent config.
+//
+//nolint:nilnil // a nil guard vets nothing (resolver.DirSecretReader)
 func credentialGuard(files []resolver.ResolvedFile, cfg resolveConfig) (resolver.SecretGuard, error) {
 	file, err := resolver.AgentConfigSecret(files, cfg.Service+".service")
 	if errors.Is(err, resolver.ErrAgentConfigNotRendered) {

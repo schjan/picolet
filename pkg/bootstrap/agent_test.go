@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -138,9 +139,7 @@ func writeAgentFleet(t *testing.T, agentConfig string, extra map[string]string) 
 			"Secret=picolet_system_config,target=/etc/picolet/config.yml\n",
 		"services/picolet-system/secrets/picolet_system_config.yml.tmpl": agentConfig,
 	}
-	for name, content := range extra {
-		files[name] = content
-	}
+	maps.Copy(files, extra)
 	for name, content := range files {
 		p := filepath.Join(dir, name)
 		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
