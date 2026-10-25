@@ -88,6 +88,24 @@ func TestKeylessReaderRejectsRefs(t *testing.T) {
 	}
 }
 
+// ReadDirect checks direct secrets: refs: like ReadAll, but an "" or null
+// leaf (unencrypted, so visible without a key) fails with ErrEmptyValue.
+func TestKeylessReaderReadDirect(t *testing.T) {
+	t.Parallel()
+	r := sops.NewKeylessReader(keylessFS(t), hostSrv1(t))
+	ok := []string{"sops://secrets/db.sops.yaml#/db/password", "sops://secrets/db.sops.yaml"}
+	values, err := r.ReadDirect(t.Context(), ok)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{ok[0]: sops.Placeholder, ok[1]: sops.Placeholder}, values)
+
+	for _, ref := range []string{"sops://secrets/db.sops.yaml#/db/empty", "sops://secrets/db.sops.yaml#/db/nothing"} {
+		values, err := r.ReadDirect(t.Context(), []string{ref})
+		require.ErrorIs(t, err, sops.ErrEmptyValue, ref)
+		require.ErrorContains(t, err, ref)
+		assert.Empty(t, values)
+	}
+}
+
 // Each file is opened and inspected once per ReadAll call, however many refs
 // name it; a second call reads it again.
 func TestKeylessReaderReadsEachFileOncePerCall(t *testing.T) {

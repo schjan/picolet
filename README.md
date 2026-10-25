@@ -1083,7 +1083,7 @@ roles:
 ```
 
 A group accepts exactly `paths:`, `secrets:` and `services:`. `secrets:` lists files
-(or `op://`/`pass://` refs, see [Secret Providers](#secret-providers)) deployed as
+(or `op://`/`pass://`/`sops://` refs, see [Secret Providers](#secret-providers)) deployed as
 Podman secrets whatever their path; `services:` lists [Service Bundles](#service-bundles).
 A file reached twice in one category deploys once; two sources for one destination
 are an error. A file listed under `secrets:` that `paths:` also reaches as another
@@ -1391,7 +1391,7 @@ Picolet integrates with two secret managers so cleartext credentials never live 
 
 Refs can appear in two places:
 
-- **Direct Podman secrets** in `assignments.yml` under `secrets:` — Picolet resolves the value and creates a Podman secret named after the URI components (e.g. `vault_item_field` or `share_item_field`).
+- **Direct Podman secrets** in `assignments.yml` under `secrets:` — Picolet resolves the value and creates a Podman secret named after the URI components (e.g. `vault_item_field` or `share_item_field`). A `sops://` ref is named after its JSON Pointer's segments joined by `_` (`sops://secrets/db.sops.yaml#/db/password` → `db_password`, `#/tokens/0` → `tokens_0`), or for a whole-file ref after the file's base name before `.sops.` (`sops://secrets/tls.sops.key` → `tls`). Characters are never rewritten: a segment that can't appear in a Podman secret name (anything but letters, digits, `.`, `_`, `-`) is an error, so deliver such a value through a `secrets/<name>.tmpl` that calls `readSopsSecret`. A direct `sops://` ref must name a non-empty leaf (not a map or list, not `""` or `null`); `validate` checks it without a key, recipients included, and an Agent without an age identity fails the reconciliation instead of skipping it. Its secrets count in `picolet_secrets_managed_count{provider="sops"}`.
 - **Inside templates** via `{{ readOpSecret "op://..." }}` or `{{ readProtonPassSecret "pass://..." }}` — Picolet collects all calls in a first render pass, batches them per provider, then renders again with the resolved values.
 
 ### 1Password setup

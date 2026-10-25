@@ -196,6 +196,50 @@ func TestIntegrationValidateSopsRefs(t *testing.T) {
 	}
 }
 
+// validate runs the keyless per-ref checks on a direct sops:// secrets:
+// entry too: the recipient checks, the leaf rules and the non-empty check.
+func TestIntegrationValidateDirectSopsRefs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, ref, want string
+		recipients      []string // test-host's age_recipients:; nil means srv-1
+	}{
+		{name: "valid", ref: "sops://secrets/db.sops.yaml#/db/password"},
+		{
+			name: "no age_recipients", ref: "sops://secrets/db.sops.yaml#/db/password", recipients: []string{},
+			want: "Host test-host references sops://secrets/db.sops.yaml#/db/password but declares no age_recipients",
+		},
+		{
+			name: "drift", ref: "sops://secrets/db.sops.yaml#/db/password", recipients: []string{"srv-3"},
+			want: "secrets/db.sops.yaml: not a recipient: the file is not encrypted to Host test-host",
+		},
+		{name: "not a leaf", ref: "sops://secrets/db.sops.yaml#/db", want: "not a leaf"},
+		{name: "empty leaf", ref: "sops://secrets/db.sops.yaml#/db/empty", want: "a direct secrets: entry needs a non-empty value"},
+		{name: "invalid segment", ref: "sops://secrets/db.sops.yaml#/odd_keys/m~0n", want: "can't appear in a Podman secret name"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			recipients := tt.recipients
+			if recipients == nil {
+				recipients = []string{"srv-1"}
+			}
+			err := validateFleet(t, fstest.MapFS{
+				"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
+				"assignments.yml":          &fstest.MapFile{Data: []byte("base:\n  secrets: [\"" + tt.ref + "\"]\nroles: {}\nfeatures: {}\n")},
+				"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(sopsHostYML(t, recipients))},
+				"secrets/db.sops.yaml":     &fstest.MapFile{Data: sopsCorpus(t, "values.sops.yaml")},
+			})
+			if tt.want == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.ref)
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+}
+
 func TestIntegrationResolveGolden(t *testing.T) {
 	t.Parallel()
 	repoFS := os.DirFS(testdataDir)
