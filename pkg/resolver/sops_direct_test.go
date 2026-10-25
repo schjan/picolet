@@ -62,7 +62,7 @@ func resolveDirectSops(t *testing.T, secrets []string, files map[string]string, 
 		require.NoError(t, readErr)
 		ids, parseErr := sops.ParseIdentities(identity)
 		require.NoError(t, parseErr)
-		rc.SopsSecretReader = sops.NewReader(fsys, ids).ReadAll
+		rc.Sops = sops.NewReader(fsys, ids)
 		r, err = New(rc)
 	case sopsNoReader:
 		r, err = New(rc)

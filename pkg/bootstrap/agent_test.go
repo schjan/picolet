@@ -44,10 +44,21 @@ func TestResolveAgentWithoutAgentBundle(t *testing.T) {
 	require.ErrorContains(t, err, "host node-1: agent bundle not assigned: picolet-system")
 }
 
-// bootstrap's strict render fails on readSopsSecret in the Agent bundle and
-// says why: a credential that fetches the Fleet can't be a SOPS value in it.
+// bootstrap's strict render fails on readSopsSecret and readSopsData in the
+// Agent bundle and says why: a credential that fetches the Fleet can't be a
+// SOPS value in it.
 func TestResolveAgentRejectsSopsSecret(t *testing.T) {
 	t.Parallel()
+	for _, fn := range []string{"readSopsSecret", "readSopsData"} {
+		t.Run(fn, func(t *testing.T) {
+			t.Parallel()
+			resolveAgentRejectsSops(t, fn)
+		})
+	}
+}
+
+func resolveAgentRejectsSops(t *testing.T, fn string) {
+	t.Helper()
 	dir := t.TempDir()
 	files := map[string]string{
 		"fleet.yml":        "images: {picolet: \"picolet:test\"}\nports: {picolet_system_metrics: 9418}\n",
@@ -56,7 +67,7 @@ func TestResolveAgentRejectsSopsSecret(t *testing.T) {
 		"services/picolet-system/picolet-system.container.tmpl": "[Container]\nImage={{ index .Images \"picolet\" }}\n" +
 			"Secret=picolet_system_config,target=/etc/picolet/config.yml\n",
 		"services/picolet-system/secrets/picolet_system_config.yml.tmpl": "hostname: h\n" +
-			"git_token: {{ readSopsSecret \"sops://secrets/git.sops.yaml#/token\" }}\n",
+			"git_token: {{ " + fn + " \"sops://secrets/git.sops.yaml#/token\" }}\n",
 	}
 	for name, content := range files {
 		p := filepath.Join(dir, name)
@@ -64,7 +75,7 @@ func TestResolveAgentRejectsSopsSecret(t *testing.T) {
 		require.NoError(t, os.WriteFile(p, []byte(content), 0o600))
 	}
 	_, err := ResolveAgent(t.Context(), dir, "h")
-	require.ErrorContains(t, err, `readSopsSecret "sops://secrets/git.sops.yaml#/token"`)
+	require.ErrorContains(t, err, fn+` "sops://secrets/git.sops.yaml#/token"`)
 	require.ErrorContains(t, err, "deliver the value as a --secrets-dir file and point the Agent config at its path; "+
 		"credentials needed to fetch the Fleet can't be SOPS values")
 }

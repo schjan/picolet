@@ -44,6 +44,19 @@ type SecretReader func(path string) (string, error)
 // Pass nil to disable a provider (its template function returns a placeholder).
 type SecretRefReader func(ctx context.Context, refs []string) (map[string]string, error)
 
+// SecretDataReader resolves one secret reference to structured data: a
+// map[string]any, a []any or a string (readSopsData).
+type SecretDataReader func(ctx context.Context, ref string) (any, error)
+
+// SopsReader resolves sops:// refs: the strings of readSopsSecret, in batch
+// (ReadAll), and the subtrees of readSopsData (ReadData). One SopsReader
+// serves one resolve and caches per file, so a file both helpers read is
+// read (and, on the Agent, decrypted) once.
+type SopsReader interface {
+	ReadAll(ctx context.Context, refs []string) (map[string]string, error)
+	ReadData(ctx context.Context, ref string) (any, error)
+}
+
 // ProviderKey identifies a secret provider inside the template registry.
 type ProviderKey string
 
@@ -61,19 +74,26 @@ const (
 // PlaceholderEmpty is returned when the provider is not configured (Reader == nil),
 // unless MissingReader is set: then its error fails the render instead.
 // PlaceholderPending is returned during the collect phase before refs are resolved.
+// DataFuncName, when set, names a second template function returning
+// structured data through DataReader (readSopsData). It reads each ref
+// directly, in the collect pass too (ranging over a pending placeholder
+// would fail), so DataReader must cache per file itself.
 // Strict (bootstrap, validate's Agent-bundle pass) fails every call.
 // Guard, when set, runs first on every call; its error fails the render
 // before any reader sees the ref (the SOPS unit-file guard).
+// MissingReader and Guard get the called function's name.
 type ProviderTemplate struct {
 	Key                ProviderKey
 	FuncName           string
 	Reader             SecretRefReader
+	DataFuncName       string
+	DataReader         SecretDataReader
 	IsRef              func(string) bool
 	PlaceholderEmpty   string
 	PlaceholderPending string
-	MissingReader      func(ref string) error
+	MissingReader      func(funcName, ref string) error
 	Strict             bool
-	Guard              func(ref string) error
+	Guard              func(funcName, ref string) error
 }
 
 // OpProvider returns the standard 1Password provider template.
@@ -102,54 +122,65 @@ func PPProvider(reader SecretRefReader) ProviderTemplate {
 	}
 }
 
-// SopsProvider returns the SOPS provider template. reader is the keyless
+// SopsProvider returns the SOPS provider template: readSopsSecret (strings)
+// and readSopsData (subtrees), both over reader. reader is the keyless
 // reader (validate, resolve, bootstrap) or the decrypting one (Agent); with
 // a nil reader every ref fails, so a placeholder can never be deployed as a
 // value. Each ref's path is checked like readFile's (Fleet-relative, no
 // "..") before reader sees it.
-func SopsProvider(reader SecretRefReader) ProviderTemplate {
-	if reader != nil {
-		reader = checkSopsRefs(reader)
-	}
-	return ProviderTemplate{
+func SopsProvider(reader SopsReader) ProviderTemplate {
+	p := ProviderTemplate{
 		Key:                ProviderSops,
 		FuncName:           "readSopsSecret",
-		Reader:             reader,
+		DataFuncName:       "readSopsData",
 		IsRef:              sops.IsRef,
 		PlaceholderPending: "<sops-secret-pending>",
-		MissingReader: func(ref string) error {
-			return fmt.Errorf("readSopsSecret %q: %w; set sops.age_identity_path in the Agent config", ref, sops.ErrNoIdentity)
+		MissingReader: func(funcName, ref string) error {
+			return fmt.Errorf("%s %q: %w; set sops.age_identity_path in the Agent config", funcName, ref, sops.ErrNoIdentity)
 		},
 	}
+	if reader != nil {
+		p.Reader = checkSopsRefs(reader.ReadAll)
+		p.DataReader = func(ctx context.Context, ref string) (any, error) {
+			if err := checkSopsRef(ref); err != nil {
+				return nil, err
+			}
+			return reader.ReadData(ctx, ref)
+		}
+	}
+	return p
 }
 
 // keylessSopsReader returns the keyless SOPS reader over fsys (the Fleet
 // root) for host, the reader of NewKeyless's host resolves: it checks each
 // ref without any key, against host's age_recipients: too, and renders
 // "<sops-secret>".
-func keylessSopsReader(fsys fs.FS, host *config.HostConfig) SecretRefReader {
-	return keylessSopsReaderFor(fsys, host).ReadAll
-}
-
-// keylessSopsReaderFor is the keyless SOPS reader over fsys for host.
-func keylessSopsReaderFor(fsys fs.FS, host *config.HostConfig) *sops.KeylessReader {
+func keylessSopsReader(fsys fs.FS, host *config.HostConfig) *sops.KeylessReader {
 	return sops.NewKeylessReader(fsys, sops.Host{Name: host.Hostname, Recipients: host.AgeRecipients})
 }
 
-// checkSopsRefs wraps reader so that a ref whose file path is not a clean
-// Fleet-relative path fails, naming the ref, without reaching reader.
+// checkSopsRef fails, naming the ref, when raw is not a sops:// ref or its
+// file path is not a clean Fleet-relative path.
+func checkSopsRef(raw string) error {
+	ref, err := sops.ParseRef(raw)
+	if err != nil {
+		return err
+	}
+	if _, err := config.ValidateRelPath(ref.Path); err != nil {
+		return fmt.Errorf("%s: %w", raw, err)
+	}
+	return nil
+}
+
+// checkSopsRefs wraps reader so that a ref checkSopsRef fails never reaches
+// reader.
 func checkSopsRefs(reader SecretRefReader) SecretRefReader {
 	return func(ctx context.Context, refs []string) (map[string]string, error) {
 		var valid []string
 		var errs []error
 		for _, raw := range refs {
-			ref, err := sops.ParseRef(raw)
-			if err != nil {
+			if err := checkSopsRef(raw); err != nil {
 				errs = append(errs, err)
-				continue
-			}
-			if _, err := config.ValidateRelPath(ref.Path); err != nil {
-				errs = append(errs, fmt.Errorf("%s: %w", raw, err))
 				continue
 			}
 			valid = append(valid, raw)
@@ -181,11 +212,11 @@ func strictModeText(key ProviderKey) (reason, fix string) {
 	}
 }
 
-// strictModeError is the error a provider call fails with in strict mode,
-// where no provider value can be used.
-func strictModeError(p ProviderTemplate, ref string) error {
-	reason, fix := strictModeText(p.Key)
-	return fmt.Errorf("%s %q: %s; %s", p.FuncName, ref, reason, fix)
+// strictModeError is the error a call of the provider key's function
+// funcName fails with in strict mode, where no provider value can be used.
+func strictModeError(key ProviderKey, funcName, ref string) error {
+	reason, fix := strictModeText(key)
+	return fmt.Errorf("%s %q: %s; %s", funcName, ref, reason, fix)
 }
 
 const placeholderSecret = "<secret>"
@@ -394,18 +425,12 @@ func loadTemplateSources(fsys fs.FS, include func(string) bool) (map[string]stri
 // MissingReader's error when set. Otherwise it participates in the two-phase
 // collect+resolve cycle.
 func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p ProviderTemplate, cache *RefCache) {
+	if p.DataFuncName != "" {
+		registerDataFunc(ctx, funcMap, p)
+	}
 	funcMap[p.FuncName] = func(ref string) (string, error) {
-		if err := p.precheck(ref); err != nil {
-			return "", err
-		}
-		if cache == nil {
-			if p.MissingReader != nil {
-				return "", p.MissingReader(ref)
-			}
-			return p.PlaceholderEmpty, nil
-		}
-		if !p.IsRef(ref) {
-			return "", fmt.Errorf("%s: %q is not a valid reference for this provider", p.FuncName, ref)
+		if ready, err := p.prepareCall(p.FuncName, ref, cache != nil); !ready {
+			return p.PlaceholderEmpty, err
 		}
 		if cache.resolved == nil {
 			cache.collected = append(cache.collected, ref)
@@ -428,16 +453,51 @@ func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p Provi
 	}
 }
 
-// precheck fails a call before any reader or cache sees ref: the Guard
-// first, then strict mode.
-func (p ProviderTemplate) precheck(ref string) error {
+// registerDataFunc adds the provider's data function (p.DataFuncName) to
+// funcMap: the same prechecks, missing-reader error and ref check as the
+// string function, then p.DataReader's structure for ref. It skips the
+// two-phase cache: every call, in the collect pass too, reads through
+// DataReader, which caches per file.
+func registerDataFunc(ctx context.Context, funcMap template.FuncMap, p ProviderTemplate) {
+	funcMap[p.DataFuncName] = func(ref string) (any, error) {
+		if ready, err := p.prepareCall(p.DataFuncName, ref, p.DataReader != nil); !ready {
+			return p.PlaceholderEmpty, err
+		}
+		return p.DataReader(ctx, ref)
+	}
+}
+
+// prepareCall runs the checks every provider function makes before reading
+// ref: precheck, then, without a reader (hasReader false), MissingReader's
+// error, then the ref check. ready is true only when the caller should read
+// ref; when it is false with a nil error the caller returns
+// PlaceholderEmpty (a provider without a reader and without MissingReader).
+func (p ProviderTemplate) prepareCall(funcName, ref string, hasReader bool) (ready bool, err error) {
+	if err := p.precheck(funcName, ref); err != nil {
+		return false, err
+	}
+	if !hasReader {
+		if p.MissingReader != nil {
+			return false, p.MissingReader(funcName, ref)
+		}
+		return false, nil
+	}
+	if !p.IsRef(ref) {
+		return false, fmt.Errorf("%s: %q is not a valid reference for this provider", funcName, ref)
+	}
+	return true, nil
+}
+
+// precheck fails a call of funcName before any reader or cache sees ref:
+// the Guard first, then strict mode.
+func (p ProviderTemplate) precheck(funcName, ref string) error {
 	if p.Guard != nil {
-		if err := p.Guard(ref); err != nil {
+		if err := p.Guard(funcName, ref); err != nil {
 			return err
 		}
 	}
 	if p.Strict {
-		return strictModeError(p, ref)
+		return strictModeError(p.Key, funcName, ref)
 	}
 	return nil
 }

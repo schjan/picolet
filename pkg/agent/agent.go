@@ -683,28 +683,30 @@ func loadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.Re
 	secretReader, releaseSecrets := resolver.DirSecretReader(params.SecretsDir, params.SecretGuard)
 	defer releaseSecrets()
 
+	// sopsResolver stays a nil interface without identities: a typed nil
+	// *sops.Reader in it would not count as "no reader".
 	var sopsReader *sops.Reader
-	var sopsRefReader resolver.SecretRefReader
+	var sopsResolver resolver.SopsReader
 	if params.SopsIdentities != nil {
 		sopsReader = sops.NewReader(repo.FS, params.SopsIdentities)
-		sopsRefReader = sopsReader.ReadAll
+		sopsResolver = sopsReader
 	}
 
 	log.Debug("resolving host", "hostname", params.Hostname)
 	loadStart := time.Now()
 	r, err := resolver.New(resolver.Config{
-		FS:               repo.FS,
-		Config:           repo.Config,
-		SecretReader:     secretReader,
-		OpSecretReader:   params.OpSecretReader,
-		PPSecretReader:   params.PPSecretReader,
-		SopsSecretReader: sopsRefReader,
-		Rootless:         params.Rootless,
-		QuadletDir:       params.QuadletDir,
-		SystemdDir:       params.SystemdDir,
-		DataDir:          params.DataDir,
-		HostDataDir:      params.HostDataDir,
-		Logger:           log,
+		FS:             repo.FS,
+		Config:         repo.Config,
+		SecretReader:   secretReader,
+		OpSecretReader: params.OpSecretReader,
+		PPSecretReader: params.PPSecretReader,
+		Sops:           sopsResolver,
+		Rootless:       params.Rootless,
+		QuadletDir:     params.QuadletDir,
+		SystemdDir:     params.SystemdDir,
+		DataDir:        params.DataDir,
+		HostDataDir:    params.HostDataDir,
+		Logger:         log,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating resolver: %w", err)

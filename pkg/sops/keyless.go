@@ -93,10 +93,17 @@ func (r *KeylessReader) check(ctx context.Context, raw string, files map[string]
 	if direct && isEmptyLeaf(res.file, ref) {
 		return EmptyDirectValueError(raw)
 	}
+	return r.checkHost(raw, ref, res.file)
+}
+
+// checkHost checks the Host's recipients against f, the file ref (written
+// raw) names: the Host must declare age_recipients: and appear in enough of
+// f's key groups.
+func (r *KeylessReader) checkHost(raw string, ref Ref, f *File) error {
 	if len(r.host.Recipients) == 0 {
 		return fmt.Errorf("Host %s references %s but declares no age_recipients; add its age public key to age_recipients: in its host.yml", r.host.Name, raw)
 	}
-	if err := checkRecipients(ref.Path, res.file, "Host "+r.host.Name, r.host.Recipients); err != nil {
+	if err := checkRecipients(ref.Path, f, "Host "+r.host.Name, r.host.Recipients); err != nil {
 		return fmt.Errorf("%s: %w", raw, err)
 	}
 	return nil
@@ -106,8 +113,8 @@ func (r *KeylessReader) check(ctx context.Context, raw string, files map[string]
 // fragment a leaf that is encrypted with a valid type tag, or an "" or null
 // leaf (SOPS never encrypts those). Errors never quote a value.
 func checkRef(f *File, ref Ref) error {
-	if !f.IsSOPS {
-		return fmt.Errorf("%s: %w: %s; encrypt it with `sops encrypt -i %s`", ref.Path, ErrNotSOPSFile, f.NotSOPSReason, ref.Path)
+	if err := checkSOPSFile(f, ref); err != nil {
+		return err
 	}
 	if ref.WholeFile() {
 		return nil
@@ -117,18 +124,36 @@ func checkRef(f *File, ref Ref) error {
 		return err
 	}
 	ptr := ref.Pointer.String()
+	switch describe(v).Kind {
+	case NodeMap:
+		return fmt.Errorf("%w: %q is a map; a string ref must end at a leaf", ErrNotLeaf, ptr)
+	case NodeList:
+		return fmt.Errorf("%w: %q is a list; a string ref must end at a leaf", ErrNotLeaf, ptr)
+	case NodeLeaf:
+	}
+	return checkLeaf(ref.Path, ref.Pointer, v)
+}
+
+// checkSOPSFile fails when f, the file ref names, is not a SOPS file.
+func checkSOPSFile(f *File, ref Ref) error {
+	if !f.IsSOPS {
+		return fmt.Errorf("%s: %w: %s; encrypt it with `sops encrypt -i %s`", ref.Path, ErrNotSOPSFile, f.NotSOPSReason, ref.Path)
+	}
+	return nil
+}
+
+// checkLeaf checks the leaf v found at ptr in the file at path: it must be
+// encrypted with a valid type tag, or be "" or null (SOPS never encrypts
+// those). Errors never quote a value.
+func checkLeaf(path string, ptr Pointer, v any) error {
 	node := describe(v)
 	switch {
-	case node.Kind == NodeMap:
-		return fmt.Errorf("%w: %q is a map; a string ref must end at a leaf", ErrNotLeaf, ptr)
-	case node.Kind == NodeList:
-		return fmt.Errorf("%w: %q is a list; a string ref must end at a leaf", ErrNotLeaf, ptr)
 	case v == nil || v == "":
 		return nil
 	case !node.Encrypted:
-		return fmt.Errorf("%s: %q is not encrypted (the file's encryption rules leave it in plaintext); a sops:// ref must name an encrypted value", ref.Path, ptr)
+		return fmt.Errorf("%s: %q is not encrypted (the file's encryption rules leave it in plaintext); a sops:// ref must name an encrypted value", path, ptr.String())
 	case !validTypeTags[node.Type]:
-		return fmt.Errorf("%s: %q has an invalid type tag; restore the file from git, or re-create the value with `sops edit %s`", ref.Path, ptr, ref.Path)
+		return fmt.Errorf("%s: %q has an invalid type tag; restore the file from git, or re-create the value with `sops edit %s`", path, ptr.String(), path)
 	}
 	return nil
 }
