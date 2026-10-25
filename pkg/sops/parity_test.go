@@ -186,6 +186,7 @@ func TestKeylessPlaintextInEncryptedPosition(t *testing.T) {
 
 	_, err := sops.NewReader(fsys, corpusIdentities(t, "srv-1")).ReadAll(t.Context(), refs)
 	require.ErrorIs(t, err, sops.ErrEditedOutsideSOPS)
+	assertNoPlaintext(t, err)
 
 	r := sops.NewKeylessReader(fsys, hostSrv1(t))
 	_, err = r.ReadAll(t.Context(), refs)
@@ -198,4 +199,5 @@ func TestKeylessPlaintextInEncryptedPosition(t *testing.T) {
 
 	_, err = r.ReadData(t.Context(), "sops://db.sops.yaml#/tokens")
 	require.ErrorIs(t, err, sops.ErrEditedOutsideSOPS)
+	assertNoPlaintext(t, err)
 }

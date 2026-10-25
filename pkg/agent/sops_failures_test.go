@@ -258,8 +258,8 @@ func TestAgentScrubsDecryptedValuesFromNoChangesValidation(t *testing.T) {
 	}
 }
 
-// The apply's own log lines (the rollback notice, non-fatal apply errors)
-// carry the error text, so they are scrubbed with the resolve's reader too.
+// The apply's own log lines (the rollback notice, a failed rollback,
+// non-fatal apply errors) carry the error text, so they are scrubbed with the resolve's reader too.
 func TestApplyScrubsLoggedErrors(t *testing.T) {
 	t.Parallel()
 	leak := errors.New("backend said: hunter2-test")
@@ -272,6 +272,13 @@ func TestApplyScrubsLoggedErrors(t *testing.T) {
 			t.Helper()
 			pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(leak)
 			sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
+			_, err := a.applyWithRollback(t.Context(), "sha", secretChange, nil, nil, nil, "", "", reader)
+			require.ErrorIs(t, err, errRollbackPerformed)
+		},
+		"rollback failed": func(t *testing.T, a *Agent, sys *appliermocks.MockSystemdManager, pod *appliermocks.MockPodmanClient, reader *sops.Reader) {
+			t.Helper()
+			pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(errors.New("create failed"))
+			sys.EXPECT().DaemonReload(mock.Anything).Return(leak)
 			_, err := a.applyWithRollback(t.Context(), "sha", secretChange, nil, nil, nil, "", "", reader)
 			require.ErrorIs(t, err, errRollbackPerformed)
 		},
@@ -297,7 +304,7 @@ func TestApplyScrubsLoggedErrors(t *testing.T) {
 
 			assert.Contains(t, logs.String(), message)
 			assert.Contains(t, logs.String(), sops.Redacted)
-			assert.NotContains(t, logs.String(), "hunter2-test")
+			assertNoFixturePlaintext(t, map[string]string{"logs": logs.String()})
 		})
 	}
 }

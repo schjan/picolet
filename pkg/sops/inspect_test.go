@@ -205,6 +205,7 @@ func TestLookupMissingPath(t *testing.T) {
 			_, err = f.Lookup(p)
 			require.ErrorIs(t, err, sops.ErrBadPointer)
 			assert.Contains(t, err.Error(), want)
+			assertNoPlaintext(t, err)
 		})
 	}
 }
@@ -224,4 +225,5 @@ func TestLookupOnNonSOPSFile(t *testing.T) {
 	require.NoError(t, err)
 	_, err = inspectCorpus(t, "plaintext.sops.yaml").Lookup(p)
 	require.ErrorIs(t, err, sops.ErrNotSOPSFile)
+	assertNoPlaintext(t, err)
 }

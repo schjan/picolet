@@ -31,11 +31,13 @@ func TestReaderIgnoresAmbientKeys(t *testing.T) {
 	_, err := sops.NewReader(fsys, corpusIdentities(t, "srv-3")).ReadAll(t.Context(),
 		[]string{"sops://corpus/values.sops.json#/db/password"})
 	require.ErrorIs(t, err, sops.ErrNotRecipient)
+	assertNoPlaintext(t, err)
 
 	// No identity configured: the environment is no fallback either.
 	_, err = sops.NewReader(fsys, nil).ReadAll(t.Context(),
 		[]string{"sops://corpus/values.sops.json#/db/password"})
 	require.ErrorIs(t, err, sops.ErrNoIdentity)
+	assertNoPlaintext(t, err)
 
 	// The identities passed in still work, and the KMS/PGP stanzas next to
 	// the age ones are never tried against a backend.

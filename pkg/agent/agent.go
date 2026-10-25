@@ -1152,7 +1152,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		defer rollbackCancel()
 
 		if rbErr := rollback.Restore(rollbackCtx, snap, a.writer, a.systemd, rollback.WithLogger(a.logger)); rbErr != nil {
-			a.logger.Error("rollback failed", "error", rbErr)
+			a.logger.Error("rollback failed", "error", scrubError(sopsReader, rbErr))
 		} else {
 			a.logger.Warn("rollback complete", "sha", headSHA)
 		}

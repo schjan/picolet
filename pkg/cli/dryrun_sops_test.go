@@ -163,6 +163,7 @@ func TestApplyWithConfigDoesNotDecryptSops(t *testing.T) {
 	require.ErrorContains(t, err, "sops://", "the message still names the failing ref")
 	require.NotContains(t, err.Error(), "set sops.age_identity_path",
 		"apply must not point at a sops block that would not help it")
+	assertNoPlaintext(t, err)
 }
 
 // `dry-run --config` decrypts, so a validation error that embeds a decrypted
@@ -177,7 +178,6 @@ func TestDryRunWithConfigScrubsValidationErrors(t *testing.T) {
 	_, err := dryRunChangeset(t.Context(), fleet, "test-host", configPath, "")
 	require.ErrorContains(t, err, "validation failed")
 	require.ErrorContains(t, err, sops.Redacted)
-	for _, leak := range []string{"hunter2-test", "hunter2..."} {
-		assert.NotContains(t, err.Error(), leak)
-	}
+	assertNoPlaintext(t, err)
+	assert.NotContains(t, err.Error(), "hunter2...")
 }

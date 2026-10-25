@@ -142,6 +142,7 @@ func TestReadSopsSecretRejectedInUnitFiles(t *testing.T) {
 				require.ErrorContains(t, err, tt.file+`: readSopsSecret "`+guardRef+`": `+
 					"SOPS values can't be rendered into "+tt.kind)
 				require.ErrorContains(t, err, "use Secret= (or a secret mounted as a file) instead")
+				assertNoPlaintext(t, err)
 				assert.False(t, rec.asked(guardRef), "the decrypting reader must not be asked for a guarded ref")
 			})
 		}
@@ -208,6 +209,7 @@ func TestReadSopsSecretGuardPrecedesStrictAndMissingReader(t *testing.T) {
 			require.NoError(t, err)
 			_, err = r.ResolveHost(t.Context(), "test-host")
 			require.ErrorIs(t, err, ErrSopsInUnitFile)
+			assertNoPlaintext(t, err)
 		})
 	}
 }

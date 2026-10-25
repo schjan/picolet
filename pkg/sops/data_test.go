@@ -68,12 +68,14 @@ func TestReaderReadDataBadPointer(t *testing.T) {
 	require.ErrorIs(t, err, sops.ErrBadPointer)
 	assert.Contains(t, err.Error(), "sops://corpus/values.sops.yaml#/db/nope")
 	assert.Contains(t, err.Error(), `key "nope" not found at "/db"`)
+	assertNoPlaintext(t, err)
 }
 
 func TestReaderReadDataNoIdentity(t *testing.T) {
 	t.Parallel()
 	_, err := sops.NewReader(os.DirFS(corpusDir), nil).ReadData(t.Context(), "sops://corpus/values.sops.yaml#/db")
 	require.ErrorIs(t, err, sops.ErrNoIdentity)
+	assertNoPlaintext(t, err)
 }
 
 // ReadAll and ReadData share the Reader's file cache: a file both read is
@@ -161,6 +163,7 @@ func TestKeylessReaderReadDataRejects(t *testing.T) {
 			}
 			assert.Contains(t, err.Error(), tt.want)
 			assert.Contains(t, err.Error(), tt.ref)
+			assertNoPlaintext(t, err)
 		})
 	}
 }

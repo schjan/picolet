@@ -78,7 +78,7 @@ func TestKeylessReaderRejectsRefs(t *testing.T) {
 			require.Error(t, err)
 			assert.Empty(t, values)
 			assert.Contains(t, err.Error(), tt.ref)
-			assert.NotContains(t, err.Error(), "hunter2")
+			assertNoPlaintext(t, err)
 			if tt.is != nil {
 				require.ErrorIs(t, err, tt.is)
 			}
@@ -113,6 +113,7 @@ func TestKeylessReaderReadDirect(t *testing.T) {
 		require.ErrorIs(t, err, sops.ErrEmptyValue, ref)
 		require.ErrorContains(t, err, ref)
 		assert.Empty(t, values)
+		assertNoPlaintext(t, err)
 	}
 }
 
@@ -129,6 +130,7 @@ func TestKeylessReaderReadsEachFileOncePerCall(t *testing.T) {
 	}
 	_, err := r.ReadAll(t.Context(), refs)
 	require.ErrorIs(t, err, sops.ErrBadPointer)
+	assertNoPlaintext(t, err)
 	assert.Equal(t, int32(1), fsys.opens["secrets/db.sops.yaml"].Load())
 
 	_, err = r.ReadAll(t.Context(), refs[:1])
@@ -246,7 +248,7 @@ func TestKeylessReaderRecipientChecksFail(t *testing.T) {
 			for _, want := range tt.want {
 				assert.Contains(t, err.Error(), want)
 			}
-			assert.NotContains(t, err.Error(), "hunter2")
+			assertNoPlaintext(t, err)
 		})
 	}
 }
@@ -256,4 +258,5 @@ func TestKeylessReaderNotRecipientIsErrNotRecipient(t *testing.T) {
 	_, err := sops.NewKeylessReader(recipientFS(t), keylessHost(t, "srv-3", "srv-3")).
 		ReadAll(t.Context(), []string{"sops://secrets/db.sops.yaml#/db/password"})
 	require.ErrorIs(t, err, sops.ErrNotRecipient)
+	assertNoPlaintext(t, err)
 }

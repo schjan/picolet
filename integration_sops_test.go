@@ -93,7 +93,7 @@ func TestIntegrationValidateSOPSPlaintextFile(t *testing.T) {
 		require.ErrorContains(t, err, want)
 	}
 	assert.NotContains(t, err.Error(), "secrets/ok.sops.yaml")
-	assert.NotContains(t, err.Error(), "hunter2")
+	assertNoPlaintext(t, err)
 }
 
 func TestIntegrationValidateSOPSOversizedFile(t *testing.T) {
@@ -102,6 +102,7 @@ func TestIntegrationValidateSOPSOversizedFile(t *testing.T) {
 	err := validateFleet(t, sopsFleet(t, map[string]*fstest.MapFile{"secrets/big.sops.bin": data(big)}))
 	require.ErrorIs(t, err, sops.ErrFileTooLarge)
 	assert.ErrorContains(t, err, "secrets/big.sops.bin")
+	assertNoPlaintext(t, err)
 }
 
 func sopsRules(body string) *fstest.MapFile {
@@ -214,6 +215,7 @@ func TestIntegrationValidateSOPSCreationRules(t *testing.T) {
 			for _, w := range tt.want {
 				assert.ErrorContains(t, err, w)
 			}
+			assertNoPlaintext(t, err)
 		})
 	}
 }
@@ -239,6 +241,7 @@ func TestIntegrationValidateSOPSSymlinkedRulesOnDisk(t *testing.T) {
 	err = validateFleet(t, root.FS())
 	require.ErrorContains(t, err, ".sops.yaml: is a symlink")
 	assert.NotContains(t, err.Error(), "recipients differ")
+	assertNoPlaintext(t, err)
 }
 
 // exampleFleetMapFS copies the example Fleet into a MapFS, so a test can
@@ -295,6 +298,7 @@ func TestIntegrationValidateExampleFleetSOPS(t *testing.T) {
 				assert.ErrorContains(t, err, "`"+path+"`: age recipient "+sopsRecipient(t, name)+" (owner: unknown) may not read it")
 			}
 		}
+		assertNoPlaintext(t, err)
 	})
 	t.Run("file no longer referenced", func(t *testing.T) {
 		t.Parallel()
@@ -315,6 +319,7 @@ func TestIntegrationValidateExampleFleetSOPS(t *testing.T) {
 		fsys["secrets/api.sops.yaml"] = data(sopsCorpus(t, "plaintext.sops.yaml"))
 		err := validateFleet(t, fsys)
 		require.ErrorContains(t, err, "`secrets/api.sops.yaml` is not SOPS-encrypted (no sops metadata)")
+		assertNoPlaintext(t, err)
 	})
 }
 

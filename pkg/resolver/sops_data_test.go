@@ -139,6 +139,7 @@ func TestReadSopsDataBadRefs(t *testing.T) {
 				}
 				require.ErrorContains(t, err, tt.want)
 				require.ErrorContains(t, err, tt.ref)
+				assertNoPlaintext(t, err)
 			})
 		}
 	}
@@ -153,6 +154,7 @@ func TestReadSopsDataWithoutReaderFails(t *testing.T) {
 	require.ErrorIs(t, err, sops.ErrNoIdentity)
 	require.ErrorContains(t, err, fmt.Sprintf("readSopsData %q", ref))
 	require.ErrorContains(t, err, "set sops.age_identity_path")
+	assertNoPlaintext(t, err)
 }
 
 // Strict mode (bootstrap, validate's Agent-bundle pass) fails on
@@ -168,6 +170,7 @@ func TestReadSopsDataStrictFails(t *testing.T) {
 			require.ErrorContains(t, err, fmt.Sprintf("readSopsData %q: SOPS values can't be used in strict mode", ref))
 			require.ErrorContains(t, err, "deliver the value as a --secrets-dir file and point the Agent config at its path; "+
 				"credentials needed to fetch the Fleet can't be SOPS values")
+			assertNoPlaintext(t, err)
 		})
 	}
 }
@@ -218,6 +221,7 @@ func TestReadSopsDataRejectedInUnitFiles(t *testing.T) {
 				require.ErrorIs(t, err, ErrSopsInUnitFile)
 				require.ErrorContains(t, err, tt.file+`: readSopsData "`+guardRef+`": `+
 					"SOPS values can't be rendered into "+tt.kind)
+				assertNoPlaintext(t, err)
 				assert.False(t, rec.asked(guardRef), "the decrypting reader must not be asked for a guarded ref")
 			})
 		}
