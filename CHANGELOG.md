@@ -54,7 +54,8 @@ kept as is.
   load (`… name the same credential file`), and `readSecretFile` and file
   `secrets:` refuse every Agent credential file: *Agent credentials cannot be
   deployed*, in the Agent and in `picolet bootstrap` (the credentials of the
-  Agent config it renders, below `--secrets-dir`)
+  Agent config it renders, below `--secrets-dir`, and always
+  `--secrets-dir`'s `age-identity`)
   ([#251](https://github.com/schjan/picolet/issues/251)).
 - SOPS files (`<name>.sops.<ext>`) and SOPS's `.sops.yaml`/`.sops.yml` are
   skipped by `paths:` directory and Service Bundle walks, and an explicit

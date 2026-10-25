@@ -70,13 +70,15 @@ func (c *Config) RefuseCredential(info fs.FileInfo) error {
 	return refuseCredential(c.Credentials(), info)
 }
 
-// RefuseCredentialAt is RefuseCredential for a reader that sees the Agent's
+// CredentialsAt is Credentials for a reader that sees the Agent's
 // secrets_dir at secretsDir, as `picolet bootstrap` sees it at --secrets-dir:
-// a credential below secrets_dir is refused at its path and at the same
-// place below secretsDir.
-func (c *Config) RefuseCredentialAt(secretsDir string) func(fs.FileInfo) error {
+// a credential below secrets_dir is listed at its path and again at the same
+// place below secretsDir. A relative credential path (relative to the
+// Agent's working directory, which bootstrap cannot know) is listed at its
+// own path only.
+func (c *Config) CredentialsAt(secretsDir string) []Credential {
 	creds := c.Credentials()
-	for _, cred := range c.Credentials() {
+	for _, cred := range creds { // ranges over the credentials before the appends
 		rel, err := filepath.Rel(c.SecretsDir, cred.Path)
 		if err != nil || !filepath.IsLocal(rel) {
 			continue
@@ -84,6 +86,12 @@ func (c *Config) RefuseCredentialAt(secretsDir string) func(fs.FileInfo) error {
 		cred.Path = filepath.Join(secretsDir, rel)
 		creds = append(creds, cred)
 	}
+	return creds
+}
+
+// RefuseCredentials is RefuseCredential for an explicit credential list (a
+// CredentialsAt list).
+func RefuseCredentials(creds []Credential) func(fs.FileInfo) error {
 	return func(info fs.FileInfo) error { return refuseCredential(creds, info) }
 }
 

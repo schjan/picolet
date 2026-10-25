@@ -177,3 +177,39 @@ func TestBootstrapRefusesAgentCredential(t *testing.T) {
 
 	require.NoError(t, run("api-key"))
 }
+
+// Without a Fleet-rendered Agent config (the unit mounts none; the health
+// address comes from --health-addr), bootstrap cannot know the Agent's
+// credentials, yet it still refuses the conventional identity file
+// age-identity below --secrets-dir.
+func TestBootstrapRefusesConventionalIdentityWithoutRenderedConfig(t *testing.T) {
+	t.Parallel()
+	secretsDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(secretsDir, "age-identity"), []byte("AGE-SECRET-KEY-FIXTURE"), 0o600))
+	dir := writeAgentFleet(t, "unused: true\n", map[string]string{ //nolint:gosec // G101: Fleet file names and a template, not credentials
+		"services/picolet-system/picolet-system.container.tmpl": "[Container]\nImage={{ index .Images \"picolet\" }}\n",
+		"services/picolet-system/secrets/leak.tmpl":             `{{ readSecretFile "age-identity" }}`,
+	})
+	_, err := prepare(t.Context(), RunConfig{
+		Service: "picolet-system", SystemdMode: SystemdSystem,
+		Hostname: "h", RepoDir: dir, SecretsDir: secretsDir, HealthAddr: "127.0.0.1:9418",
+	})
+	require.ErrorContains(t, err, "Agent credentials cannot be deployed")
+	assert.NotContains(t, err.Error(), "AGE-SECRET-KEY-FIXTURE")
+}
+
+// The guard comes from the Agent config rendered with placeholder secrets;
+// a config whose credential settings change once the real secret files are
+// read would deploy credentials the guard never saw, so bootstrap fails.
+func TestBootstrapRefusesCredentialsThatDependOnSecretFiles(t *testing.T) {
+	t.Parallel()
+	const agentConfig = "hostname: h\nrepo_url: https://example.com/fleet.git\n" +
+		"git_token_path: {{ readSecretFile \"token-path\" }}\n"
+	secretsDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(secretsDir, "token-path"), []byte("/etc/picolet/secrets/git-token"), 0o600))
+	_, err := prepare(t.Context(), RunConfig{
+		Service: "picolet-system", SystemdMode: SystemdSystem,
+		Hostname: "h", RepoDir: writeAgentFleet(t, agentConfig, nil), SecretsDir: secretsDir,
+	})
+	require.ErrorContains(t, err, "credential settings must not depend on a secret file")
+}
