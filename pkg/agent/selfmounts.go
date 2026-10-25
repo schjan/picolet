@@ -14,245 +14,6 @@ import (
 	"github.com/schjan/picolet/pkg/resolver"
 )
 
-// sourceKind is what a mount of the Agent quadlet's container mounts.
-type sourceKind int
-
-const (
-	// sourceNone is a mount no other container shares: an anonymous
-	// volume, or a tmpfs, ramfs or devpts mount.
-	sourceNone sourceKind = iota
-	// sourceVolume is a Volume= or Mount= bind or volume source: a host
-	// path or a volume name.
-	sourceVolume
-	// sourceVolumeUnit is a Volume= or Mount= source naming a .volume unit
-	// (the Fleet may manage it).
-	sourceVolumeUnit
-	// sourceSecret is a Podman secret, by name.
-	sourceSecret
-	// sourceSpec is any other Mount= type (glob, image, …), named by its
-	// spec without the destination.
-	sourceSpec
-)
-
-// mountSource is what a mount mounts. Sources are compared as written, so the
-// same specifier (%h) in two units matches; two mounts with equal sources
-// show the same files. For a bind or volume source, subpath is the
-// subdirectory it mounts (cleaned, relative) and options the sorted options
-// that may change what it shows (contentOptions).
-type mountSource struct {
-	kind    sourceKind
-	name    string
-	subpath string
-	options string
-}
-
-// shared reports whether the source is one the running container can share.
-func (s mountSource) shared() bool { return s.kind != sourceNone }
-
-func (s mountSource) String() string {
-	switch s.kind {
-	case sourceNone:
-		return "an anonymous volume or tmpfs"
-	case sourceSecret:
-		return "secret " + s.name
-	case sourceSpec:
-		return "Mount=" + s.name
-	case sourceVolume, sourceVolumeUnit:
-	}
-	var details []string
-	if s.subpath != "" {
-		details = append(details, "subpath "+s.subpath)
-	}
-	if s.options != "" {
-		details = append(details, "options "+s.options)
-	}
-	if len(details) == 0 {
-		return s.name
-	}
-	return s.name + " (" + strings.Join(details, ", ") + ")"
-}
-
-// mount is one mount of the Agent quadlet's container: what it mounts
-// (source) and where (target, inside the container).
-type mount struct {
-	source mountSource
-	target string
-}
-
-// unitMounts lists the mounts unit's [Container] group declares, read as
-// Quadlet reads them: Volume= (source:target[:options]), Mount= (every
-// type), Tmpfs= and Secret= (type=mount, the default).
-func unitMounts(unit *parser.UnitFile) []mount {
-	var mounts []mount
-	for _, volume := range unit.LookupAll("Container", "Volume") {
-		parts := strings.SplitN(volume, ":", 3)
-		if len(parts) == 1 {
-			mounts = append(mounts, mount{target: path.Clean(parts[0])})
-			continue
-		}
-		source := volumeSource(parts[0])
-		if len(parts) == 3 && source.shared() {
-			source.subpath, source.options = volumeOptions(strings.Split(parts[2], ","), volumeNeutralOptions)
-		}
-		mounts = append(mounts, mount{source: source, target: path.Clean(parts[1])})
-	}
-	for _, spec := range unit.LookupAllArgs("Container", "Mount") {
-		if m, ok := parseMount(spec); ok {
-			mounts = append(mounts, m)
-		}
-	}
-	for _, tmpfs := range unit.LookupAll("Container", "Tmpfs") {
-		dir, _, _ := strings.Cut(tmpfs, ":")
-		mounts = append(mounts, mount{target: path.Clean(dir)})
-	}
-	for _, secret := range unit.LookupAllArgs("Container", "Secret") {
-		if name, target, ok := resolver.ParseSecretMount(secret); ok {
-			mounts = append(mounts, mount{source: mountSource{kind: sourceSecret, name: name}, target: target})
-		}
-	}
-	return mounts
-}
-
-// volumeSource is the source of a bind or volume mount; a host path is
-// cleaned and a volume name kept; "" is an anonymous volume.
-func volumeSource(source string) mountSource {
-	switch {
-	case source == "":
-		return mountSource{}
-	case strings.HasPrefix(source, "/"):
-		return mountSource{kind: sourceVolume, name: path.Clean(source)}
-	case strings.HasSuffix(source, ".volume"):
-		return mountSource{kind: sourceVolumeUnit, name: source}
-	default:
-		return mountSource{kind: sourceVolume, name: source}
-	}
-}
-
-// volumeNeutralOptions are the Volume= options that change only access,
-// labelling or propagation, never which files a mount shows or who may read
-// them.
-var volumeNeutralOptions = []string{
-	"ro", "rw", "z", "Z",
-	"exec", "noexec", "suid", "nosuid", "dev", "nodev",
-	"private", "rprivate", "shared", "rshared", "slave", "rslave", "unbindable", "runbindable",
-}
-
-// mountNeutralKeys are the Mount= keys that change only access, labelling or
-// propagation (see volumeNeutralOptions).
-var mountNeutralKeys = []string{"ro", "readonly", "rw", "relabel", "bind-propagation", "z", "Z"}
-
-// volumeOptions splits a bind or volume mount's options into its subpath
-// (subpath= or volume-subpath=, cleaned and relative to the source) and the
-// sorted rest, minus those whose key is in neutral.
-func volumeOptions(options, neutral []string) (subpath, rest string) {
-	var kept []string
-	for _, option := range options {
-		key, value, _ := strings.Cut(option, "=")
-		switch {
-		case option == "":
-		case key == "subpath" || key == "volume-subpath":
-			subpath = strings.TrimPrefix(path.Clean("/"+value), "/")
-		case !slices.Contains(neutral, key):
-			kept = append(kept, option)
-		}
-	}
-	slices.Sort(kept)
-	return subpath, strings.Join(kept, ",")
-}
-
-// parseMount parses a Mount= value (type=…,source=…,destination=…). A bind
-// or volume mount is named by its source, subpath and options, a tmpfs,
-// ramfs or devpts mount shares nothing, and any other type is named by its
-// spec without the destination. ok is false without a destination.
-func parseMount(spec string) (mount, bool) {
-	fields := mountFields(spec)
-	if fields.target == "" {
-		return mount{}, false
-	}
-	switch fields.kind {
-	case "bind", "volume":
-		s := volumeSource(fields.source)
-		if s.shared() {
-			s.subpath, s.options = volumeOptions(fields.options, mountNeutralKeys)
-		}
-		return mount{source: s, target: fields.target}, true
-	case "tmpfs", "ramfs", "devpts":
-		return mount{target: fields.target}, true
-	default:
-		return mount{source: mountSource{kind: sourceSpec, name: fields.rest}, target: fields.target}, true
-	}
-}
-
-// mountSpec is a Mount= value's fields: rest is the spec without the
-// destination, options its fields other than type, source and destination.
-type mountSpec struct {
-	kind, source, target, rest string
-	options                    []string
-}
-
-func mountFields(spec string) mountSpec {
-	var fields mountSpec
-	var rest []string
-	for field := range strings.SplitSeq(spec, ",") {
-		key, value, _ := strings.Cut(field, "=")
-		switch key {
-		case "type":
-			fields.kind = value
-		case "source", "src":
-			fields.source = value
-		case "destination", "dst", "target":
-			fields.target = path.Clean(value)
-			continue
-		default:
-			fields.options = append(fields.options, field)
-		}
-		rest = append(rest, field)
-	}
-	fields.rest = strings.Join(rest, ",")
-	return fields
-}
-
-// mountsHolding returns the mounts whose target holds p, the deepest ones
-// (the container sees the innermost mount; more than one has the same
-// target), and p relative to that target.
-func mountsHolding(mounts []mount, p string) (held []mount, rel string) {
-	p = path.Clean(p)
-	for _, candidate := range mounts {
-		r, under := relativeTo(candidate.target, p)
-		switch {
-		case !under:
-		case len(held) == 0 || len(candidate.target) > len(held[0].target):
-			held, rel = []mount{candidate}, r
-		case candidate.target == held[0].target:
-			held = append(held, candidate)
-		}
-	}
-	return held, rel
-}
-
-// mountHolding is mountsHolding for a container that has started: when more
-// than one mount has the deepest target, it reports the first, and ok is
-// false when no mount holds p.
-func mountHolding(mounts []mount, p string) (m mount, rel string, ok bool) {
-	held, rel := mountsHolding(mounts, p)
-	if len(held) == 0 {
-		return mount{}, "", false
-	}
-	return held[0], rel, true
-}
-
-// relativeTo returns p relative to dir when p is dir or under it.
-func relativeTo(dir, p string) (string, bool) {
-	if p == dir {
-		return ".", true
-	}
-	prefix := strings.TrimSuffix(dir, "/") + "/"
-	if rest, ok := strings.CutPrefix(p, prefix); ok {
-		return rest, true
-	}
-	return "", false
-}
-
 // errMountChange ends every refusal of a credential the running container
 // cannot check.
 const errMountChange = "land the mount change in its own commit first, and point the config at the mount once the Agent runs with it"
@@ -416,5 +177,22 @@ func selfConfigLocator(next, running *parser.UnitFile, changeset *reconciler.Cha
 	if next == nil || running == nil {
 		return nil
 	}
-	return credentialLocator(unitMounts(next), unitMounts(running), sourceChanges(changeset))
+	locate := credentialLocator(unitMounts(next), unitMounts(running), sourceChanges(changeset))
+	if opaque := slices.Concat(opaqueMounts(next), opaqueMounts(running)); len(opaque) > 0 {
+		return refuseOpaque(opaque, locate)
+	}
+	return locate
+}
+
+// refuseOpaque wraps locate to refuse every file credential: opaque lists
+// mounts of the next or running unit the guard cannot read (opaqueMounts),
+// so it cannot tell what the next start sees at any path.
+func refuseOpaque(opaque []string, locate agentcfg.Locate) agentcfg.Locate {
+	return func(cred agentcfg.Credential) (string, error) {
+		if cred.Dir {
+			return locate(cred)
+		}
+		return "", fmt.Errorf("the Agent unit passes %s in PodmanArgs=, which mounts what the guard cannot follow, so it cannot tell what the next start sees at %s; "+
+			"declare the Agent's mounts with Volume=, Mount=, Tmpfs= or Secret=", strings.Join(opaque, ", "), cred.Path)
+	}
 }

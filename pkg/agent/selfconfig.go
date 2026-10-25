@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"strings"
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
 
@@ -88,28 +89,42 @@ func agentQuadlet(files []resolver.ResolvedFile, unit string) *resolver.Resolved
 // with the unit next, would find no config at the Agent config path while
 // the running Agent reads a Fleet-managed one: next mounts a secret the
 // Fleet does not resolve (a misspelled or never-resolved config secret;
-// one the changeset removes is refused by checkLostSources), or mounts
-// nothing there. The running config is Fleet-managed when the secret
-// mounted there by running (the unit on disk; nil when there is none) is a
-// Managed File. A Host file mounted there is a hand-managed config and
+// one the changeset removes is refused by checkLostSources), mounts
+// nothing there, or mounts something other than a Host path there (a
+// volume, tmpfs, image or glob mount, which holds no config of its own).
+// The running config is Fleet-managed when the secret mounted there by
+// running (the unit on disk; nil when there is none) is a Managed File. A
+// Host file or directory bind-mounted there is a hand-managed config and
 // passes, as does any config that was never Fleet-managed.
 func checkLostSelfConfig(next, running *parser.UnitFile, unit string, changeset *reconciler.Changeset) error {
 	managed, fleetManaged := managedConfigSecret(running, changeset)
-	nextName, mounted := resolver.AgentConfigMountOf(next)
 	if !fleetManaged {
 		return nil
 	}
-	if mounted {
+	if nextName, mounted := resolver.AgentConfigMountOf(next); mounted {
 		return fmt.Errorf("refusing the Agent unit %s: it mounts the secret %s at %s, which the Fleet does not resolve, "+
 			"while the running Agent reads the Fleet-managed config secret %s there, so the Agent could not start; "+
 			"resolve %s in the Agent bundle, or keep mounting %s", unit, nextName, resolver.AgentConfigTarget, managed, nextName, managed)
 	}
-	if m, _, ok := mountHolding(unitMounts(next), resolver.AgentConfigTarget); ok && m.source.shared() {
+	const fix = "keep the Secret= mount, or bind-mount a Host file there with Volume= to manage the config by hand"
+	m, _, ok := mountHolding(unitMounts(next), resolver.AgentConfigTarget)
+	switch {
+	case ok && isHostPath(m.source):
 		return nil
+	case ok && m.source.shared():
+		return fmt.Errorf("refusing the Agent unit %s: it mounts %s at %s, not a Host path, while the running Agent reads the Fleet-managed config secret %s there, "+
+			"so the Agent could not start; %s", unit, m.source, m.target, managed, fix)
 	}
 	return fmt.Errorf("refusing the Agent unit %s: it mounts nothing at %s, while the running Agent reads the Fleet-managed config secret %s there, "+
-		"so the Agent could not start; keep the Secret= mount, or mount a Host file there with Volume= to manage the config by hand",
-		unit, resolver.AgentConfigTarget, managed)
+		"so the Agent could not start; %s", unit, resolver.AgentConfigTarget, managed, fix)
+}
+
+// isHostPath reports whether source is a bind mount of a Host path: an
+// absolute one, one relative to the unit's directory (Quadlet makes it
+// absolute) or one starting with a systemd specifier such as %h (systemd
+// expands it to an absolute path); anything else is a volume name.
+func isHostPath(source mountSource) bool {
+	return source.kind == sourceVolume && strings.ContainsAny(source.name[:1], "/.%")
 }
 
 // managedConfigSecret returns the secret unit mounts at the Agent config path

@@ -569,8 +569,9 @@ func webhookConfig(hookPath string) *string {
 // the running Agent reads a Fleet-managed config is refused when the Agent's
 // next start would find no config: the mount names a secret the Fleet does
 // not resolve (whether the old config file stays, is renamed or is dropped),
-// or the new quadlet mounts nothing at the config path. A Host file mounted
-// there is a hand-managed config and passes.
+// or the new quadlet mounts nothing at the config path, or only a volume,
+// tmpfs or other mount that is not a Host path. A Host file (or directory)
+// bind-mounted there is a hand-managed config and passes.
 func TestCheckSelfConfigRefusesLosingFleetManagedConfig(t *testing.T) {
 	t.Parallel()
 	valid := new("hostname: test-host\nrepo_url: https://example.com/fleet.git\n")
@@ -617,6 +618,49 @@ func TestCheckSelfConfigRefusesLosingFleetManagedConfig(t *testing.T) {
 		{
 			name:   "repointed at another resolved secret",
 			change: selfConfigChange{next: "[Container]\nImage=x\nSecret=picolet_cfg,target=/etc/picolet/config.yml\n", files: []resolver.ResolvedFile{renamed}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.change.running = agentBundleUnit("")
+			assertRefusal(t, tt.change.check(t), tt.wantError)
+		})
+	}
+}
+
+// A hand-managed config is a Host file (or directory) bind-mounted at the
+// config path; a volume, .volume unit or glob mount there holds no config, so
+// it is refused while the running Agent reads a Fleet-managed one.
+func TestCheckSelfConfigHandManagedConfigIsHostPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		change    selfConfigChange
+		wantError []string // empty: passes
+	}{
+		{
+			name:   "Host file in the user's home mounted at the config path",
+			change: selfConfigChange{next: "[Container]\nImage=x\nVolume=%h/.config/picolet/config.yml:/etc/picolet/config.yml:ro\n"},
+		},
+		{
+			name:   "Host directory mounted over the config directory",
+			change: selfConfigChange{next: "[Container]\nImage=x\nMount=type=bind,src=/srv/picolet,dst=/etc/picolet\n"},
+		},
+		{
+			name:      "named volume over /etc",
+			change:    selfConfigChange{next: "[Container]\nImage=x\nVolume=scratch:/etc\n"},
+			wantError: []string{"scratch", "not a Host path", "picolet_system_config"},
+		},
+		{
+			name:      "volume unit at the config directory",
+			change:    selfConfigChange{next: "[Container]\nImage=x\nVolume=cfg.volume:/etc/picolet\n"},
+			wantError: []string{"cfg.volume", "not a Host path"},
+		},
+		{
+			name:      "glob mount at the config directory",
+			change:    selfConfigChange{next: "[Container]\nImage=x\nMount=type=glob,src=/srv/*,dst=/etc/picolet\n"},
+			wantError: []string{"not a Host path"},
 		},
 	}
 	for _, tt := range tests {
@@ -683,6 +727,45 @@ func TestCheckSelfConfigRefusesShadowedCredentials(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			assertRefusal(t, selfConfigChange{running: agentBundleUnit(tt.running), next: agentBundleUnit(tt.next), config: tt.config}.check(t), tt.wantError)
+		})
+	}
+}
+
+// Mounts passed through PodmanArgs= are followed like Volume= ones: a
+// credential whose PodmanArgs= mount the commit drops (or swaps for another
+// option) is refused, as is one under a mount a PodmanArgs= option adds. A
+// --volumes-from on either unit mounts what the guard cannot read, so every
+// file credential is refused.
+func TestCheckSelfConfigFollowsPodmanArgsMounts(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
+	args := "PodmanArgs=--volume /srv/s:" + dir + "\n"
+	from := "PodmanArgs=--volumes-from other\n"
+	tests := []struct {
+		name      string
+		running   string
+		next      string
+		wantError []string // empty: passes
+	}{
+		{name: "PodmanArgs= mount dropped", running: args, next: "", wantError: []string{"/srv/s", "no longer mounts", "own commit"}},
+		{
+			name: "PodmanArgs= mount swapped for another option", running: args, next: "PodmanArgs=--security-opt apparmor=unconfined\n",
+			wantError: []string{"/srv/s", "no longer mounts"},
+		},
+		{name: "PodmanArgs= mount added", running: "", next: args, wantError: []string{"/srv/s", "own commit"}},
+		{name: "PodmanArgs= mount kept", running: args, next: args},
+		{name: "PodmanArgs= mount moved to Volume=", running: args, next: "Volume=/srv/s:" + dir + "\n"},
+		{name: "--volumes-from on both units", running: from, next: from, wantError: []string{"--volumes-from other", "PodmanArgs="}},
+		{name: "--volumes-from dropped", running: from, next: "", wantError: []string{"--volumes-from other"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := selfConfigChange{
+				running: agentBundleUnit(tt.running), next: agentBundleUnit(tt.next), config: webhookConfig(filepath.Join(dir, "hook")),
+			}.check(t)
+			assertRefusal(t, err, tt.wantError)
 		})
 	}
 }
