@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1003,7 +1004,13 @@ func TestAgentChecksRelativeSelfConfigCredentialsThroughNewUnitMounts(t *testing
 	})
 	t.Run("WorkingDir added", func(t *testing.T) {
 		t.Parallel()
+		// Nest the new working directory deeper than the relative path
+		// climbs, so its ".." segments can't clamp at / and land back on
+		// the real file, whatever directory the test runs from.
 		elsewhere := t.TempDir()
+		for range strings.Count(relFromCwd(t, seen), "..") + 1 {
+			elsewhere = filepath.Join(elsewhere, "d")
+		}
 		runMountChangeCase(t, current, config, current+"WorkingDir="+elsewhere+"\n", config,
 			[]string{"webhook_secret_path", "not readable"})
 	})

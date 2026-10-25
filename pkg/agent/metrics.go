@@ -3,6 +3,8 @@ package agent
 import (
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/health"
@@ -79,9 +81,15 @@ func RecordTimerJobRuns(store *status.Store, hr *health.CheckResult) {
 // Because the label set is fixed, each call is a pure Set — no Reset() needed,
 // so a concurrent Prometheus scrape never sees zero or partial values.
 func setFilesManagedMetric(counts map[string]float64) {
+	setFilesManaged(metrics.FilesManagedTotal, counts)
+}
+
+// setFilesManaged sets one series per deployable category on g, so a test
+// can check it on its own gauge while parallel Agent tests write the global.
+func setFilesManaged(g *prometheus.GaugeVec, counts map[string]float64) {
 	for _, cat := range config.Deployable() {
 		category := cat.String()
-		metrics.FilesManagedTotal.WithLabelValues(category).Set(counts[category])
+		g.WithLabelValues(category).Set(counts[category])
 	}
 }
 
