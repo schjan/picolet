@@ -1,0 +1,15 @@
+=== (whole file) ===
+; TEST-ONLY fixture values for the picolet SOPS corpus. Not real secrets.
+[db]
+user     = app
+password = hunter2-test
+
+[api]
+token = alpha-token
+
+=== /db/user ===
+app
+=== /db/password ===
+hunter2-test
+=== /api/token ===
+alpha-token
