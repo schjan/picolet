@@ -185,7 +185,7 @@ func TestReadSopsSecretKeylessRejectedRefs(t *testing.T) {
 	tampered := strings.Replace(sopsCorpusFile(t, "values.sops.yaml"), "type:int]", "type:nope]", 1)
 	tests := []struct{ name, ref, want string }{
 		{name: "missing file", ref: "sops://secrets/gone.sops.yaml#/db/password", want: "file does not exist"},
-		{name: "no sops infix", ref: "sops://secrets/db.yaml#/db/password", want: "needs `.sops.` before its extension"},
+		{name: "no sops infix", ref: "sops://secrets/db.yaml#/db/password", want: "needs `.sops.` directly before its final extension"},
 		{name: "dot-dot", ref: "sops://secrets/../secrets/db.sops.yaml#/db/password", want: "clean relative path"},
 		{name: "absolute", ref: "sops:///etc/db.sops.yaml#/db/password", want: "clean relative path"},
 		{name: "plaintext sops file", ref: "sops://secrets/plain.sops.yaml#/db/password", want: "not a SOPS file"},

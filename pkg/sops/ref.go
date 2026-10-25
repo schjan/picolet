@@ -14,8 +14,9 @@ var (
 	// ErrBadPointer is returned (wrapped) for a malformed JSON Pointer or one
 	// that names no node in the file.
 	ErrBadPointer = errors.New("bad pointer")
-	// ErrNotSOPSPath is returned (wrapped) for a path without the `.sops.`
-	// infix, and for SOPS's own config files (.sops.yaml, .sops.yml).
+	// ErrNotSOPSPath is returned (wrapped) for a path whose base name is not
+	// `<name>.sops.<ext>`, and for SOPS's own config files (.sops.yaml,
+	// .sops.yml).
 	ErrNotSOPSPath = errors.New("not a SOPS path")
 	// ErrInvalidSecretName is returned (wrapped) when a direct ref cannot be
 	// turned into a Podman secret name.
@@ -83,18 +84,27 @@ func IsConfigPath(p string) bool {
 	return sopsConfigNames[path.Base(p)]
 }
 
-// IsSOPSPath reports whether p names a SOPS file: its base name carries
-// `.sops.` somewhere before its final extension, followed by at least one
-// character (`db.sops.yaml`, `db.sops.prod.yaml`). The format is then chosen
-// from the final extension, so `db.sops.yaml.bak` is a SOPS path read as
-// binary. SOPS's config files `.sops.yaml` and `.sops.yml` are never SOPS
-// paths.
+// IsSOPSPath reports whether p names a SOPS file: its base name is
+// `<name>.sops.<ext>`, `.sops.` directly before the final extension
+// (`db.sops.yaml`; not `db.sops.prod.yaml` or `db.sops.yaml.bak`, which are
+// ordinary files). The format is then chosen from that extension. SOPS's
+// config files `.sops.yaml` and `.sops.yml` are never SOPS paths.
 func IsSOPSPath(p string) bool {
 	if IsConfigPath(p) {
 		return false
 	}
-	_, ext, ok := strings.Cut(path.Base(p), ".sops.")
-	return ok && ext != ""
+	_, ok := sopsFileName(path.Base(p))
+	return ok
+}
+
+// sopsFileName returns the <name> of a base name `<name>.sops.<ext>`, and
+// whether base has that form.
+func sopsFileName(base string) (string, bool) {
+	ext := path.Ext(base)
+	if len(ext) < 2 {
+		return "", false
+	}
+	return strings.CutSuffix(strings.TrimSuffix(base, ext), ".sops")
 }
 
 // IsRef reports whether s is a sops:// Secret Reference, by scheme;
@@ -126,7 +136,7 @@ func ParseRef(s string) (Ref, error) {
 		return Ref{}, fmt.Errorf("%s: missing file path", s)
 	}
 	if !IsSOPSPath(p) {
-		return Ref{}, fmt.Errorf("%s: %w: %q needs `.sops.` before its extension (e.g. db.sops.yaml)", s, ErrNotSOPSPath, p)
+		return Ref{}, fmt.Errorf("%s: %w: %q needs `.sops.` directly before its final extension (e.g. db.sops.yaml)", s, ErrNotSOPSPath, p)
 	}
 	r := Ref{raw: s, Path: p, whole: !hasFrag}
 	if !hasFrag {
@@ -153,14 +163,14 @@ func (r Ref) WholeFile() bool { return r.whole }
 const maxSecretNameLen = 253
 
 // SecretName returns the Podman secret name of a direct secrets: ref: the
-// pointer's segments joined by "_", or, for a whole-file ref, the file's base
-// name before `.sops.`. Characters are never rewritten: a segment outside
+// pointer's segments joined by "_", or, for a whole-file ref, the <name> of
+// the file's base name `<name>.sops.<ext>`. Characters are never rewritten: a segment outside
 // [A-Za-z0-9_.-], an empty segment, a name not starting with a letter or
 // digit, or a name over 253 characters is an error.
 func (r Ref) SecretName() (string, error) {
 	segs := r.Pointer.segments
 	if r.whole {
-		stem, _, _ := strings.Cut(path.Base(r.Path), ".sops.")
+		stem, _ := sopsFileName(path.Base(r.Path))
 		segs = []string{stem}
 	}
 	for _, seg := range segs {

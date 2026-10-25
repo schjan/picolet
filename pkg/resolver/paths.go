@@ -25,8 +25,12 @@ func expandPathEntries(fsys fs.FS, entries []string) (*expansion, error) {
 			errs = append(errs, fmt.Errorf("paths entry %q: must be relative to the Fleet root", entry))
 			continue
 		}
-		if isExplicitSOPSFile(fsys, root) {
+		if isExplicitFile(fsys, root, sops.IsSOPSPath) {
 			errs = append(errs, explicitSOPSError("paths", entry, root))
+			continue
+		}
+		if isExplicitFile(fsys, root, sops.IsConfigPath) {
+			errs = append(errs, fmt.Errorf("paths entry %q: SOPS config file is never deployed (walks skip .sops.yaml and .sops.yml)", entry))
 			continue
 		}
 		if err := expanded.expandTree(fsys, root, ""); err != nil {
@@ -43,8 +47,8 @@ func expandPathEntries(fsys fs.FS, entries []string) (*expansion, error) {
 // picolet.yml.tmpl) is skipped, however it was reached; a file of that name
 // anywhere else is an ordinary file. SOPS files (sops.IsSOPSPath) and SOPS's
 // config files (.sops.yaml, .sops.yml) are skipped wherever a walk finds them,
-// so ciphertext is never deployed; callers reject an explicit entry naming a
-// SOPS file before walking (isExplicitSOPSFile).
+// so ciphertext is never deployed; callers reject an explicit entry naming
+// either before walking (isExplicitFile).
 func (e *expansion) expandTree(fsys fs.FS, root, prefix string) error {
 	var errs []error
 	walkErr := fs.WalkDir(fsys, root, func(srcPath string, d fs.DirEntry, err error) error {
@@ -69,11 +73,12 @@ func (e *expansion) expandTree(fsys fs.FS, root, prefix string) error {
 	return errors.Join(append(errs, walkErr)...)
 }
 
-// isExplicitSOPSFile reports whether a `paths:` entry root names a SOPS file
-// (not a directory that happens to carry `.sops.` in its name). A root that
-// cannot be stat'ed is left to the walk, which reports it.
-func isExplicitSOPSFile(fsys fs.FS, root string) bool {
-	if !sops.IsSOPSPath(root) {
+// isExplicitFile reports whether a `paths:` entry root names a file (not a
+// directory that happens to match) for which match is true: a SOPS file or
+// a SOPS config file. A root that cannot be stat'ed is left to the walk,
+// which reports it.
+func isExplicitFile(fsys fs.FS, root string, match func(string) bool) bool {
+	if !match(root) {
 		return false
 	}
 	info, err := fs.Stat(fsys, root)

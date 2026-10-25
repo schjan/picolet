@@ -67,6 +67,23 @@ func TestResolveHostPathsDirectorySkipsSOPSFiles(t *testing.T) {
 	}, pathsDeployments(resolved.Files))
 }
 
+// A base name is a SOPS path only as <name>.sops.<ext>: `.sops.` anywhere
+// else (a backup, a second extension) leaves an ordinary file the walk
+// deploys like any other.
+func TestResolveHostPathsDeploysFilesWithSOPSInfixElsewhere(t *testing.T) {
+	t.Parallel()
+	resolved, err := resolvePaths(t, "  paths: [files/]\n", map[string]string{
+		"files/db.sops.yaml":      sopsCorpusFile(t, "values.sops.yaml"),
+		"files/db.sops.yaml.bak":  "backup\n",
+		"files/db.sops.prod.yaml": "prod: true\n",
+	})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []pathsDeployment{
+		{SrcPath: "files/db.sops.yaml.bak", DestPath: "/var/lib/picolet/files/db.sops.yaml.bak", Category: config.CategoryFile, RelPath: "db.sops.yaml.bak"},
+		{SrcPath: "files/db.sops.prod.yaml", DestPath: "/var/lib/picolet/files/db.sops.prod.yaml", Category: config.CategoryFile, RelPath: "db.sops.prod.yaml"},
+	}, pathsDeployments(resolved.Files))
+}
+
 // A file that merely mentions sops keeps today's rules: outside files/ an
 // unknown extension is still an error.
 func TestResolveHostPathsSOPSLookalikeKeepsExtensionRule(t *testing.T) {
@@ -95,6 +112,16 @@ func TestResolveHostRejectsExplicitSOPSEntries(t *testing.T) {
 			want: `paths entry "services/web/app.sops.env": SOPS file is reachable only through a sops:// ref`,
 		},
 		{
+			name: "paths entry naming .sops.yaml",
+			base: "  paths: [files/.sops.yaml]\n",
+			want: `paths entry "files/.sops.yaml": SOPS config file is never deployed`,
+		},
+		{
+			name: "paths entry naming .sops.yml",
+			base: "  paths: [.sops.yml]\n",
+			want: `paths entry ".sops.yml": SOPS config file is never deployed`,
+		},
+		{
 			name: "plain secrets entry",
 			base: "  secrets: [secrets/db.sops.yaml]\n",
 			want: `secrets entry "secrets/db.sops.yaml": SOPS file is reachable only through a sops:// ref (sops://secrets/db.sops.yaml#/...)`,
@@ -111,6 +138,8 @@ func TestResolveHostRejectsExplicitSOPSEntries(t *testing.T) {
 			_, err := resolvePaths(t, tt.base, map[string]string{
 				"secrets/db.sops.yaml":      sopsCorpusFile(t, "values.sops.yaml"),
 				"services/web/app.sops.env": sopsCorpusFile(t, "values.sops.env"),
+				"files/.sops.yaml":          "creation_rules: []\n",
+				".sops.yml":                 "creation_rules: []\n",
 			})
 			require.ErrorContains(t, err, tt.want)
 		})
