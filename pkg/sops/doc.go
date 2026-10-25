@@ -15,5 +15,7 @@
 // fixed classes (ErrNoIdentity, ErrNotRecipient, ErrEditedOutsideSOPS,
 // ErrBadPointer, ErrNotLeaf, ErrNotSOPSPath, ErrNotSOPSFile,
 // ErrFileTooLarge) and never carry an upstream error string, a decrypted
-// value or a hash of one.
+// value or a hash of one. A Reader serves one resolve: it decrypts each file
+// once, and Scrub removes the values it decrypted from error text that other
+// code (template helpers, validators) may have embedded them in.
 package sops

@@ -50,6 +50,9 @@ func TestAgentRefusesToDeployItsOwnCredentials(t *testing.T) {
 		{"mqtt.password_path", false, func(c *agentcfg.Config, p string) {
 			c.MQTT = &agentcfg.MQTTConfig{PasswordPath: p}
 		}},
+		{"sops.age_identity_path", false, func(c *agentcfg.Config, p string) {
+			c.Sops = &agentcfg.SopsConfig{AgeIdentityPath: p}
+		}},
 	}
 	for _, k := range kinds {
 		for _, via := range []string{"readSecretFile", "secrets entry"} {
@@ -94,7 +97,7 @@ func TestAgentStillResolvesOtherHostSecrets(t *testing.T) {
 	cfg := &agentcfg.Config{Hostname: "test-host", SecretsDir: secretsDir, GitTokenPath: filepath.Join(secretsDir, "git.token")}
 	a := newTestAgent(t, cfg, WithRepoPath(credentialFleet(t, "api.token", "")))
 
-	resolved, err := a.loadAndResolve(t.Context())
+	resolved, _, err := a.loadAndResolve(t.Context())
 	require.NoError(t, err)
 	require.Len(t, resolved.Files, 1)
 	assert.Equal(t, "TOKEN=token\n", resolved.Files[0].Content)

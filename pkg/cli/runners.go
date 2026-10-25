@@ -210,10 +210,16 @@ func ppReaderFromConfig(ctx context.Context, cfg *agentcfg.Config) (resolver.Sec
 }
 
 // dryRunResolveWithConfig resolves the host using agent config (secrets, RepoSubDir, rootless-aware state).
+// With a sops block it decrypts sops:// refs like the Agent, so an unchanged
+// SOPS-backed file does not show as changed.
 func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath string) (*resolver.ResolvedHost, *state.Store, bool, error) {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
 		return nil, nil, false, err
+	}
+	sopsIDs, _, err := cfg.LoadSopsIdentities()
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("setting up sops: %w", err)
 	}
 
 	opReader, err := opReaderFromConfig(ctx, cfg)
@@ -233,6 +239,7 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 		Rootless:       cfg.Rootless,
 		OpSecretReader: opReader,
 		PPSecretReader: ppReader,
+		SopsIdentities: sopsIDs,
 		HostDataDir:    cfg.EffectiveHostDataDir(),
 	})
 	if err != nil {
@@ -270,33 +277,10 @@ func dryRunResolveBasic(ctx context.Context, repoDir, hostname string) (*resolve
 }
 
 func runDryRun(ctx context.Context, repoDir, hostname, configPath string) error {
-	var (
-		resolved *resolver.ResolvedHost
-		store    *state.Store
-		rootless bool
-		err      error
-	)
-
-	if configPath != "" {
-		resolved, store, rootless, err = dryRunResolveWithConfig(ctx, repoDir, hostname, configPath)
-	} else {
-		resolved, store, err = dryRunResolveBasic(ctx, repoDir, hostname)
-	}
+	changeset, err := dryRunChangeset(ctx, repoDir, hostname, configPath)
 	if err != nil {
 		return err
 	}
-	files := resolved.Files
-
-	if err := validator.ValidateFiles(files, validator.Target{Rootless: rootless, HostDataDir: resolved.HostDataDir}); err != nil {
-		return fmt.Errorf("validation failed: %w", err)
-	}
-
-	st, err := store.Load()
-	if err != nil {
-		return fmt.Errorf("loading state: %w", err)
-	}
-
-	changeset := reconciler.Diff(files, st)
 
 	if !changeset.HasChanges() {
 		slog.Info("no changes detected")
@@ -321,6 +305,37 @@ func runDryRun(ctx context.Context, repoDir, hostname, configPath string) error 
 	}
 
 	return nil
+}
+
+// dryRunChangeset resolves and validates the Host as a dry-run does and
+// diffs it against the state, without writing anything.
+func dryRunChangeset(ctx context.Context, repoDir, hostname, configPath string) (*reconciler.Changeset, error) {
+	var (
+		resolved *resolver.ResolvedHost
+		store    *state.Store
+		rootless bool
+		err      error
+	)
+
+	if configPath != "" {
+		resolved, store, rootless, err = dryRunResolveWithConfig(ctx, repoDir, hostname, configPath)
+	} else {
+		resolved, store, err = dryRunResolveBasic(ctx, repoDir, hostname)
+	}
+	if err != nil {
+		return nil, err
+	}
+	files := resolved.Files
+
+	if err := validator.ValidateFiles(files, validator.Target{Rootless: rootless, HostDataDir: resolved.HostDataDir}); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	st, err := store.Load()
+	if err != nil {
+		return nil, fmt.Errorf("loading state: %w", err)
+	}
+	return reconciler.Diff(files, st), nil
 }
 
 // runValidate validates every Host of the Fleet at repoDir. Config load,

@@ -34,9 +34,19 @@ var (
 // Reader decrypts sops:// refs from a Fleet FS with explicit age identities.
 // It never reads a key from anywhere else: no environment variable, no file
 // in the home directory, no command, no plugin, no KMS and no network.
+//
+// A Reader serves one resolve: it keeps every file it decrypted (and every
+// file that failed) for its lifetime, so each file is decrypted at most once
+// however many ReadAll calls reach it, and it remembers the decrypted values
+// so the caller can scrub them from error text (Scrub). Create a new Reader
+// per resolve; never keep one in a package variable or across resolves.
 type Reader struct {
 	fsys fs.FS
 	ids  *Identities
+
+	mu     sync.Mutex
+	files  map[string]fileResult
+	values map[string]struct{} // decrypted leaf values, for Scrub
 }
 
 // NewReader returns a Reader over fsys (the Fleet root) that decrypts with
@@ -46,19 +56,20 @@ type Reader struct {
 // the whole process (see silenceSOPSLogs); picolet never wants their output.
 func NewReader(fsys fs.FS, ids *Identities) *Reader {
 	silenceSOPSLogs()
-	return &Reader{fsys: fsys, ids: ids}
+	return &Reader{fsys: fsys, ids: ids, files: map[string]fileResult{}, values: map[string]struct{}{}}
 }
 
 // ReadAll resolves refs and returns the values of those that resolved plus
 // one joined error carrying every failed ref's error (each names its ref),
 // the shape of the other providers' readers. Each file is decrypted at most
-// once per call. Errors never contain a decrypted value or a hash of one.
+// once per Reader. Errors never contain a decrypted value or a hash of one.
 func (r *Reader) ReadAll(ctx context.Context, refs []string) (map[string]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	values := make(map[string]string, len(refs))
-	files := map[string]fileResult{}
 	var errs []error
 	for _, raw := range refs {
-		v, err := r.read(ctx, raw, files)
+		v, err := r.read(ctx, raw, r.files)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -66,6 +77,23 @@ func (r *Reader) ReadAll(ctx context.Context, refs []string) (map[string]string,
 		values[raw] = v
 	}
 	return values, errors.Join(errs...)
+}
+
+// DecryptedFiles returns how many files this Reader decrypted successfully;
+// 0 for a nil Reader.
+func (r *Reader) DecryptedFiles() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, res := range r.files {
+		if res.err == nil {
+			n++
+		}
+	}
+	return n
 }
 
 type fileResult struct {
@@ -88,6 +116,9 @@ func (r *Reader) read(ctx context.Context, raw string, files map[string]fileResu
 		}
 		res.plain, res.err = r.decryptFile(ref.Path)
 		files[ref.Path] = res
+		if res.err == nil {
+			res.plain.collectLeaves(r.values)
+		}
 	}
 	if res.err != nil {
 		return "", fmt.Errorf("%s: %w", raw, res.err)

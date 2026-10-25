@@ -27,6 +27,7 @@ import (
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/rollback"
+	"github.com/schjan/picolet/pkg/sops"
 	"github.com/schjan/picolet/pkg/state"
 	"github.com/schjan/picolet/pkg/status"
 	"github.com/schjan/picolet/pkg/validator"
@@ -91,6 +92,9 @@ type Agent struct {
 
 	opReader resolver.SecretRefReader // nil when 1Password not configured; initialized in Run, consumed in secrets.go
 	ppReader resolver.SecretRefReader // nil when Proton Pass not configured; initialized in Run, consumed in secrets.go
+	// sopsIDs are the age identities sops:// refs are decrypted with; nil
+	// when the config has no sops block. Set by setupSops in Run.
+	sopsIDs *sops.Identities
 	// Accessed only by the agent tick loop, which runs serially.
 	lastOPRefresh time.Time // zero = never refreshed; in-memory only (restart always re-fetches)
 	lastPPRefresh time.Time // zero = never refreshed; in-memory only (restart always re-fetches)
@@ -290,6 +294,10 @@ func (a *Agent) Run(ctx context.Context) error {
 			defer closeCancel()
 			a.mqttClient.Close(closeCtx)
 		}()
+	}
+
+	if err := a.setupSops(); err != nil {
+		return err
 	}
 
 	// Initialize 1Password client (if configured)
@@ -594,6 +602,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	a.markRefreshAttempted()
 	a.recordProviderSyncSuccess(resolver.ProviderOnePassword, result.OpSecretsCount)
 	a.recordProviderSyncSuccess(resolver.ProviderProtonPass, result.PPSecretsCount)
+	a.recordProviderSyncSuccess(resolver.ProviderSops, result.SopsFilesDecrypted)
 	metrics.ReconciliationTotal.WithLabelValues("success").Inc()
 	if result.HasChanges {
 		a.recordEvent("success", pollResult.HeadSHA, "reconciliation complete")
@@ -610,6 +619,13 @@ type ResolveParams struct {
 	Rootless       bool
 	OpSecretReader resolver.SecretRefReader
 	PPSecretReader resolver.SecretRefReader
+
+	// SopsIdentities decrypt sops:// refs: the resolve gets its own
+	// decrypting reader over the Fleet (sops.NewReader), which decrypts each
+	// file at most once. Nil passes no SOPS reader, so a sops:// ref fails
+	// the resolve with the no-identity error; the keyless reader is never
+	// used here.
+	SopsIdentities *sops.Identities
 
 	// QuadletDir, SystemdDir, and DataDir override the defaults computed by
 	// resolver.ResolveDirs. Empty fields fall back to the default. Used by
@@ -638,7 +654,17 @@ type ResolveParams struct {
 
 // LoadAndResolveHost loads fleet config from repoPath and resolves the desired state plus host metadata.
 // It is the shared implementation behind Agent.loadAndResolve and CLI subcommands (apply, dry-run).
+// Its error never carries a value decrypted from a sops:// ref.
 func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.ResolvedHost, error) {
+	resolved, _, err := loadAndResolveHost(ctx, params)
+	return resolved, err
+}
+
+// loadAndResolveHost is LoadAndResolveHost that also returns the SOPS reader
+// the resolve decrypted with (nil without params.SopsIdentities), so the
+// Agent can scrub the decrypted values from later errors and count the files
+// it decrypted. The returned error is already scrubbed.
+func loadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.ResolvedHost, *sops.Reader, error) {
 	log := params.Logger
 	if log == nil {
 		log = slog.Default()
@@ -650,45 +676,57 @@ func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.Re
 	}
 	repo, err := config.OpenRepo(params.RepoPath, loadOpts...)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer repo.Close()
 
 	secretReader, releaseSecrets := resolver.DirSecretReader(params.SecretsDir, params.SecretGuard)
 	defer releaseSecrets()
 
+	var sopsReader *sops.Reader
+	var sopsRefReader resolver.SecretRefReader
+	if params.SopsIdentities != nil {
+		sopsReader = sops.NewReader(repo.FS, params.SopsIdentities)
+		sopsRefReader = sopsReader.ReadAll
+	}
+
 	log.Debug("resolving host", "hostname", params.Hostname)
 	loadStart := time.Now()
 	r, err := resolver.New(resolver.Config{
-		FS:             repo.FS,
-		Config:         repo.Config,
-		SecretReader:   secretReader,
-		OpSecretReader: params.OpSecretReader,
-		PPSecretReader: params.PPSecretReader,
-		Rootless:       params.Rootless,
-		QuadletDir:     params.QuadletDir,
-		SystemdDir:     params.SystemdDir,
-		DataDir:        params.DataDir,
-		HostDataDir:    params.HostDataDir,
-		Logger:         log,
+		FS:               repo.FS,
+		Config:           repo.Config,
+		SecretReader:     secretReader,
+		OpSecretReader:   params.OpSecretReader,
+		PPSecretReader:   params.PPSecretReader,
+		SopsSecretReader: sopsRefReader,
+		Rootless:         params.Rootless,
+		QuadletDir:       params.QuadletDir,
+		SystemdDir:       params.SystemdDir,
+		DataDir:          params.DataDir,
+		HostDataDir:      params.HostDataDir,
+		Logger:           log,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("creating resolver: %w", err)
+		return nil, nil, fmt.Errorf("creating resolver: %w", err)
 	}
 	resolved, err := r.ResolveHost(ctx, params.Hostname)
 	if err != nil {
-		return nil, fmt.Errorf("resolving host %s: %w", params.Hostname, err)
+		return nil, sopsReader, scrubError(sopsReader, fmt.Errorf("resolving host %s: %w", params.Hostname, err))
 	}
 	log.Debug("host resolved", "hostname", params.Hostname, "files", len(resolved.Files), "duration", time.Since(loadStart).Round(time.Millisecond))
-	return resolved, nil
+	return resolved, sopsReader, nil
 }
 
-func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, error) {
+// loadAndResolve resolves this Agent's Host. It returns the SOPS reader the
+// resolve decrypted with (nil without a sops block); scrub every later error
+// of the reconciliation with it (scrubError). The returned error is already
+// scrubbed.
+func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, *sops.Reader, error) {
 	fleetPath := a.repoPath
 	if a.cfg.RepoSubDir != "" {
 		fleetPath = filepath.Join(a.repoPath, a.cfg.RepoSubDir)
 	}
-	return LoadAndResolveHost(ctx, ResolveParams{
+	return loadAndResolveHost(ctx, ResolveParams{
 		RepoPath:       fleetPath,
 		Hostname:       a.cfg.Hostname,
 		SecretsDir:     a.cfg.SecretsDir,
@@ -696,6 +734,7 @@ func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, err
 		Rootless:       a.cfg.Rootless,
 		OpSecretReader: a.opReader,
 		PPSecretReader: a.ppReader,
+		SopsIdentities: a.sopsIDs,
 		LenientHosts:   true,
 		// Override fields are passed raw; resolver.New applies the
 		// ResolveDirs fallback for any field left empty.
@@ -719,6 +758,9 @@ type ReconcileResult struct {
 	OpSecretsCount int
 	// PPSecretsCount is the number of pass:// secrets resolved in this cycle.
 	PPSecretsCount int
+	// SopsFilesDecrypted is the number of SOPS files the cycle's resolve
+	// decrypted (through templates or direct refs); > 0 is a SOPS sync.
+	SopsFilesDecrypted int
 }
 
 // refSecretsCounts groups the per-provider direct-secret counts that flow
@@ -728,11 +770,23 @@ type refSecretsCounts struct {
 }
 
 // ReconcileOnce runs a single reconciliation cycle: load config, resolve, diff, validate, apply, save state.
+// Its error never carries a value decrypted from a sops:// ref (scrubError).
 func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.State, store *state.Store) (*ReconcileResult, error) {
-	resolved, err := a.loadAndResolve(ctx)
+	resolved, sopsReader, err := a.loadAndResolve(ctx)
 	if err != nil {
 		return nil, err
 	}
+	result, err := a.reconcileResolved(ctx, headSHA, st, store, resolved, sopsReader)
+	if result != nil {
+		result.SopsFilesDecrypted = sopsReader.DecryptedFiles()
+	}
+	return result, scrubError(sopsReader, err)
+}
+
+// reconcileResolved is ReconcileOnce after the resolve: diff, validate,
+// apply, save state. Errors it logs or records itself are scrubbed with
+// sopsReader first.
+func (a *Agent) reconcileResolved(ctx context.Context, headSHA string, st *state.State, store *state.Store, resolved *resolver.ResolvedHost, sopsReader *sops.Reader) (*ReconcileResult, error) {
 	files := resolved.Files
 	a.recordHostMetadata(resolved.Host)
 
@@ -747,7 +801,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		if len(st.PendingHooks) > 0 {
 			return a.retryPendingHooks(ctx, resolved, st, store, changeset, counts)
 		}
-		return a.reconcileNoChanges(headSHA, resolved, changeset, st, store, counts)
+		return a.reconcileNoChanges(headSHA, resolved, sopsReader, changeset, st, store, counts)
 	}
 
 	a.logger.Info("changes detected",
@@ -758,12 +812,14 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 
 	deps, err := a.analyze(resolved)
 	if err != nil {
+		err = scrubError(sopsReader, err)
 		a.logger.Warn("validation failed", "error", err)
 		a.recordEvent("failure", headSHA, fmt.Sprintf("validation failed: %v", err))
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
 	if err := checkSelfConfig(resolved, changeset); err != nil {
+		err = scrubError(sopsReader, err)
 		a.logger.Warn("agent config check failed", "error", err)
 		a.recordEvent("failure", headSHA, fmt.Sprintf("agent config check failed: %v", err))
 		return nil, fmt.Errorf("agent config check failed: %w", err)
@@ -826,10 +882,12 @@ func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Stor
 // during refreshResolvedSnapshot are logged and recorded as status_error
 // without aborting the verify-OK signal, because nothing triggered the tick.
 // Here, something *did* trigger the tick (secret-provider refresh or git
-// change that rendered identically), so a bad render is actionable.
-func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHost, changeset *reconciler.Changeset, st *state.State, store *state.Store, counts refSecretsCounts) (*ReconcileResult, error) {
+// change that rendered identically), so a bad render is actionable. The
+// error is scrubbed with sopsReader before it reaches the event.
+func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHost, sopsReader *sops.Reader, changeset *reconciler.Changeset, st *state.State, store *state.Store, counts refSecretsCounts) (*ReconcileResult, error) {
 	deps, err := a.analyze(resolved)
 	if err != nil {
+		err = scrubError(sopsReader, err)
 		a.recordEvent("failure", headSHA, fmt.Sprintf("validation failed: %v", err))
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
@@ -1298,14 +1356,14 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 }
 
 func (a *Agent) refreshResolvedSnapshot(ctx context.Context) error {
-	resolved, err := a.loadAndResolve(ctx)
+	resolved, sopsReader, err := a.loadAndResolve(ctx)
 	if err != nil {
 		return err
 	}
 	a.recordHostMetadata(resolved.Host)
 	deps, err := a.analyze(resolved)
 	if err != nil {
-		return fmt.Errorf("validation failed: %w", err)
+		return scrubError(sopsReader, fmt.Errorf("validation failed: %w", err))
 	}
 	a.statusStore.SetDependencies(deps)
 	return nil

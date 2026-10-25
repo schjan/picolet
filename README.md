@@ -1433,6 +1433,18 @@ pass-cli vault list
 pass-cli item list --share-id <share-id>
 ```
 
+### SOPS setup
+
+The Agent decrypts `sops://` refs only with the age identities in the file its config names; there is no default path, no inline key and no environment fallback:
+
+```yaml
+# /etc/picolet/config.yml
+sops:
+  age_identity_path: /etc/picolet/secrets/age-identity  # required inside the block
+```
+
+The file holds one or more `AGE-SECRET-KEY-…` lines (two during a rotation). Deliver it like any other Bootstrap credential (the `--secrets-dir` file `age-identity`, or a `bootstrap:` entry). A missing, unreadable or unparsable file, or one holding no identity, stops the Agent at startup; a file readable by group or others logs a warning. The identity is an Agent credential: `readSecretFile` and `secrets:` refuse it, and the Agent refuses to apply a Fleet-rendered config of its own whose identity file is missing. Each file is decrypted at most once per reconciliation; a decrypt failure (not a recipient, edited outside sops) fails the reconciliation like any other error, and decrypted values are removed from error text before it reaches logs, dashboard events, MQTT or GitHub deployment statuses. A reconciliation that decrypted at least one SOPS file counts as a sync in `picolet_secret_sync_total{provider="sops"}` and `picolet_secret_last_sync_timestamp{provider="sops"}`. `picolet dry-run --config` decrypts the same way, so an unchanged SOPS-backed file shows no change.
+
 ### Limitations and operational notes
 
 - **PAT expiry.** Personal Access Tokens have a mandatory expiration. Rotate before they expire and `systemctl restart picolet` to pick up the new token.
