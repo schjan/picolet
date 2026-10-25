@@ -62,6 +62,8 @@ const (
 // unless MissingReader is set: then its error fails the render instead.
 // PlaceholderPending is returned during the collect phase before refs are resolved.
 // Strict (bootstrap, validate's Agent-bundle pass) fails every call.
+// Guard, when set, runs first on every call; its error fails the render
+// before any reader sees the ref (the SOPS unit-file guard).
 type ProviderTemplate struct {
 	Key                ProviderKey
 	FuncName           string
@@ -71,6 +73,7 @@ type ProviderTemplate struct {
 	PlaceholderPending string
 	MissingReader      func(ref string) error
 	Strict             bool
+	Guard              func(ref string) error
 }
 
 // OpProvider returns the standard 1Password provider template.
@@ -387,8 +390,8 @@ func loadTemplateSources(fsys fs.FS, include func(string) bool) (map[string]stri
 // collect+resolve cycle.
 func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p ProviderTemplate, cache *RefCache) {
 	funcMap[p.FuncName] = func(ref string) (string, error) {
-		if p.Strict {
-			return "", strictModeError(p, ref)
+		if err := p.precheck(ref); err != nil {
+			return "", err
 		}
 		if cache == nil {
 			if p.MissingReader != nil {
@@ -418,6 +421,20 @@ func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p Provi
 		}
 		return val, nil
 	}
+}
+
+// precheck fails a call before any reader or cache sees ref: the Guard
+// first, then strict mode.
+func (p ProviderTemplate) precheck(ref string) error {
+	if p.Guard != nil {
+		if err := p.Guard(ref); err != nil {
+			return err
+		}
+	}
+	if p.Strict {
+		return strictModeError(p, ref)
+	}
+	return nil
 }
 
 func indentFunc(n int, s string) string {

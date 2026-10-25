@@ -115,6 +115,10 @@ type Resolver struct {
 	rootless       bool
 	strict         bool
 	logger         *slog.Logger
+	// rendering is the top-level file being rendered when SOPS values may
+	// not be rendered into it (sopsGuard); nil otherwise. Set by withRender
+	// on the per-resolve copy resolveHostFileSet makes.
+	rendering *unitRender
 }
 
 // Rootless reports whether the resolver is configured for rootless mode.
@@ -253,6 +257,20 @@ func (r *Resolver) ResolveServicesForHost(ctx context.Context, hostname string, 
 }
 
 func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host *config.HostConfig, fileSet *config.ResolvedFileSet, templatePrefixes []string) (*ResolvedHost, error) {
+	return r.forResolve().resolveHostFileSetOnCopy(ctx, hostname, host, fileSet, templatePrefixes)
+}
+
+// forResolve returns the Resolver copy one resolve renders on: rendering is
+// per-resolve state, and one Resolver may resolve Hosts concurrently
+// (validate). The copy is shallow; every other field is read-only during a
+// resolve, so a new mutable field must be copied here too.
+func (r *Resolver) forResolve() *Resolver {
+	rr := *r
+	rr.rendering = nil
+	return &rr
+}
+
+func (r *Resolver) resolveHostFileSetOnCopy(ctx context.Context, hostname string, host *config.HostConfig, fileSet *config.ResolvedFileSet, templatePrefixes []string) (*ResolvedHost, error) {
 	tmplData, err := NewTemplateData(r.cfg, hostname)
 	if err != nil {
 		return nil, err
@@ -261,7 +279,7 @@ func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host
 	providers := []ProviderTemplate{
 		r.provider(OpProvider(r.opSecretReader)),
 		r.provider(PPProvider(r.ppSecretReader)),
-		r.provider(SopsProvider(r.sopsReaderFor(host))),
+		r.provider(r.guardedSopsProvider(host)),
 	}
 	// hostDataDir (not dataDir) drives filePath/manifestPath: those helpers emit
 	// path strings baked into rendered quadlets, which the host's podman must
@@ -317,6 +335,14 @@ func (r *Resolver) sopsReaderFor(host *config.HostConfig) SecretRefReader {
 		return keylessSopsReader(r.fsys, host)
 	}
 	return r.sopsReader
+}
+
+// guardedSopsProvider is SopsProvider over host's SOPS reader with the
+// unit-file guard.
+func (r *Resolver) guardedSopsProvider(host *config.HostConfig) ProviderTemplate {
+	p := SopsProvider(r.sopsReaderFor(host))
+	p.Guard = func(ref string) error { return r.sopsGuard(p.FuncName, ref) }
+	return p
 }
 
 func (r *Resolver) provider(p ProviderTemplate) ProviderTemplate {
@@ -599,7 +625,13 @@ func detectCollisions(files []ResolvedFile) error {
 }
 
 func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateData, srcPath string, spec config.Spec, destPath string) (*ResolvedFile, error) {
-	content, err := r.renderOrRead(registry, tmplData, srcPath)
+	var (
+		content string
+		err     error
+	)
+	r.withRender(guardedRender(srcPath, spec.Dest), func() {
+		content, err = r.renderOrRead(registry, tmplData, srcPath)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("resolving %s: %w", srcPath, err)
 	}
@@ -752,7 +784,13 @@ func (r *Resolver) buildHooks(registry *template.Template, tmplData *TemplateDat
 }
 
 func (r *Resolver) resolveHooksFile(registry *template.Template, tmplData *TemplateData, ref hookRef, files []ResolvedFile) ([]config.Hook, error) {
-	content, err := r.renderOrRead(registry, tmplData, ref.SrcPath)
+	var (
+		content string
+		err     error
+	)
+	r.withRender(hookRender(ref.SrcPath), func() {
+		content, err = r.renderOrRead(registry, tmplData, ref.SrcPath)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("resolving hooks %s: %w", ref.SrcPath, err)
 	}
@@ -864,20 +902,30 @@ func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, re
 // Secret templates are included: they may call provider reader functions;
 // direct provider refs (op://, pass://) are not templates and are skipped.
 func (r *Resolver) collectTemplateRefs(registry *template.Template, tmplData *TemplateData, expanded *expansion) {
-	allPaths := make([]string, 0, len(expanded.Files)+len(expanded.Hooks))
-	for _, ref := range expanded.Files {
-		if !isProviderRef(ref.SrcPath) {
-			allPaths = append(allPaths, ref.SrcPath)
-		}
-	}
-	for _, ref := range expanded.Hooks {
-		allPaths = append(allPaths, ref.SrcPath)
-	}
-	for _, path := range allPaths {
+	collect := func(path string, g *unitRender) {
 		if !config.IsTemplate(path) {
+			return
+		}
+		// The unit-file guard runs here too, so a guarded file's refs are
+		// never collected and never reach a decrypting reader.
+		r.withRender(g, func() {
+			_ = registry.ExecuteTemplate(io.Discard, path, tmplData) // errors are non-fatal in collect phase
+		})
+	}
+	for _, ref := range expanded.Files {
+		if isProviderRef(ref.SrcPath) {
 			continue
 		}
-		_ = registry.ExecuteTemplate(io.Discard, path, tmplData) // errors are non-fatal in collect phase
+		spec, ok := config.SpecFor(ref.Category)
+		if !ok {
+			// No row, no known guard: skip collecting (fail closed), so no
+			// ref of it reaches a decrypting reader; resolving it fails later.
+			continue
+		}
+		collect(ref.SrcPath, guardedRender(ref.SrcPath, spec.Dest))
+	}
+	for _, ref := range expanded.Hooks {
+		collect(ref.SrcPath, hookRender(ref.SrcPath))
 	}
 }
 
