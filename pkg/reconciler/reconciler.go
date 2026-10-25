@@ -53,6 +53,16 @@ func (cs *Changeset) Writes(destPath string) bool {
 	return false
 }
 
+// Deletes reports whether the changeset deletes destPath.
+func (cs *Changeset) Deletes(destPath string) bool {
+	for _, change := range cs.Changes {
+		if change.DestPath == destPath && change.Action == ActionDelete {
+			return true
+		}
+	}
+	return false
+}
+
 // Diff computes the changeset between desired files and current state.
 func Diff(
 	desired []resolver.ResolvedFile,

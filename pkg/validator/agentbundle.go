@@ -48,8 +48,25 @@ func renderAgentBundle(ctx context.Context, fsys fs.FS, cfg *config.Config, host
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)
 	}
-	if _, err := r.ResolveServicesForHost(ctx, hostname, []string{service}); err != nil {
+	resolved, err := r.ResolveServicesForHost(ctx, hostname, []string{service})
+	if err != nil {
 		return err
+	}
+	return checkAgentConfigMount(resolved.Files, service+".service")
+}
+
+// checkAgentConfigMount fails when unit mounts a config secret at the Agent
+// config path that the bundle does not resolve (its file renamed or
+// dropped): bootstrap could not read the config, and the Agent's next start
+// would find none. A unit without such a mount reads a config the Fleet does
+// not render.
+func checkAgentConfigMount(files []resolver.ResolvedFile, unit string) error {
+	name, ok := resolver.AgentConfigMount(files, unit)
+	if !ok {
+		return nil
+	}
+	if _, err := resolver.AgentConfigSecret(files, unit); err != nil {
+		return fmt.Errorf("%s mounts the secret %s at %s, but the bundle resolves no such secret", unit, name, resolver.AgentConfigTarget)
 	}
 	return nil
 }

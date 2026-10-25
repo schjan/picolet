@@ -108,7 +108,7 @@ func TestLoadSopsIdentitiesBrokenFile(t *testing.T) {
 func TestCheckRenderedRejectsMissingIdentityFile(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "age-identity")
-	err := CheckRenderedConfig([]byte("hostname: node-1\nrepo_url: https://example.com/fleet.git\nsops:\n  age_identity_path: " + missing + "\n"))
+	err := CheckRenderedConfig([]byte("hostname: node-1\nrepo_url: https://example.com/fleet.git\nsops:\n  age_identity_path: "+missing+"\n"), nil)
 	require.ErrorContains(t, err, "sops.age_identity_path")
 	require.ErrorContains(t, err, missing)
 }
@@ -117,7 +117,7 @@ func TestCheckStartupAcceptsIdentityFile(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "age-identity")
 	require.NoError(t, os.WriteFile(path, testIdentity(t, "srv-1"), 0o600))
-	err := CheckRenderedConfig([]byte("hostname: node-1\nrepo_url: https://example.com/fleet.git\nsops:\n  age_identity_path: " + path + "\n"))
+	err := CheckRenderedConfig([]byte("hostname: node-1\nrepo_url: https://example.com/fleet.git\nsops:\n  age_identity_path: "+path+"\n"), nil)
 	require.NoError(t, err)
 }
 

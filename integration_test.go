@@ -93,6 +93,30 @@ protonpass:
   github_private_key_ref: pass://share/app/key`)))
 }
 
+// An Agent bundle whose quadlet mounts a config secret at
+// /etc/picolet/config.yml that the bundle does not resolve (a renamed or
+// dropped file) fails validate: bootstrap and the Agent's next start would
+// find no config.
+func TestIntegrationValidateAgentBundleUnresolvedConfigMount(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ user, service string }{{"", "picolet-system"}, {"app", "picolet"}} {
+		t.Run(tt.service, func(t *testing.T) {
+			t.Parallel()
+			fleet := agentBundleFleet(tt.user, tt.service, true, "")
+			secret := strings.ReplaceAll(tt.service, "-", "_") + "_config"
+			cfgFile := "services/" + tt.service + "/secrets/" + secret + ".yml.tmpl"
+			fleet["services/"+tt.service+"/secrets/renamed.yml.tmpl"] = fleet[cfgFile]
+			delete(fleet, cfgFile)
+
+			err := validateFleet(t, fleet)
+			require.Error(t, err)
+			for _, want := range []string{"host test-host", "Agent bundle " + tt.service, secret, "/etc/picolet/config.yml"} {
+				assert.ErrorContains(t, err, want)
+			}
+		})
+	}
+}
+
 // agentBundleFleet is a one-host Fleet whose Host test-host (user: user, or
 // rootful when empty) carries the Agent bundle service, assigned to it when
 // assign; configBody is appended to the bundle's Agent config template.

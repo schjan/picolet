@@ -22,7 +22,23 @@ var ErrAgentConfigNotRendered = errors.New("agent config is not Fleet-rendered")
 // quadlet (the one generating unitName) mounts at the Agent config path
 // (Secret=<name>,target=/etc/picolet/config.yml).
 func AgentConfigSecret(files []ResolvedFile, unitName string) (*ResolvedFile, error) {
-	name := ""
+	name, ok := AgentConfigMount(files, unitName)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s declares no Secret=...,target=%s mount for the agent config", ErrAgentConfigNotRendered, unitName, AgentConfigTarget)
+	}
+	for i := range files {
+		if files[i].Category == config.CategorySecret && files[i].DestPath == "secret:"+name {
+			return &files[i], nil
+		}
+	}
+	return nil, fmt.Errorf("%w: config secret %s referenced by %s was not resolved by the bundle", ErrAgentConfigNotRendered, name, unitName)
+}
+
+// AgentConfigMount returns the name of the secret the quadlet generating
+// unitName mounts at the Agent config path, whether or not the Fleet
+// resolves that secret; ok is false when no resolved quadlet declares such a
+// mount.
+func AgentConfigMount(files []ResolvedFile, unitName string) (name string, ok bool) {
 	for _, file := range files {
 		if file.ServiceName != unitName || file.ParsedUnit == nil {
 			continue
@@ -34,13 +50,5 @@ func AgentConfigSecret(files []ResolvedFile, unitName string) (*ResolvedFile, er
 			}
 		}
 	}
-	if name == "" {
-		return nil, fmt.Errorf("%w: %s declares no Secret=...,target=%s mount for the agent config", ErrAgentConfigNotRendered, unitName, AgentConfigTarget)
-	}
-	for i := range files {
-		if files[i].Category == config.CategorySecret && files[i].DestPath == "secret:"+name {
-			return &files[i], nil
-		}
-	}
-	return nil, fmt.Errorf("%w: config secret %s referenced by %s was not resolved by the bundle", ErrAgentConfigNotRendered, name, unitName)
+	return name, name != ""
 }
