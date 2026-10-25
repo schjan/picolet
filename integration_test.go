@@ -31,7 +31,7 @@ func TestIntegrationValidate(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg, SopsSecretReader: resolver.KeylessSopsReader(repoFS)})
 	require.NoError(t, err)
 	require.NoError(t, validator.ValidateAll(t.Context(), repoFS, r, cfg))
 }
@@ -43,12 +43,15 @@ func TestIntegrationValidate(t *testing.T) {
 func TestIntegrationValidateAgentBundleStrict(t *testing.T) {
 	t.Parallel()
 	const fix = "use a YAML-value reference and let the agent resolve it at runtime"
+	const sopsFix = "deliver the value as a --secrets-dir file and point the Agent config at its path; " +
+		"credentials needed to fetch the Fleet can't be SOPS values"
 	tests := []struct {
-		name, user, service, fn, ref string
+		name, user, service, fn, ref, fix string
 	}{
-		{name: "rootful readOpSecret", service: "picolet-system", fn: "readOpSecret", ref: "op://vault/item/token"},
-		{name: "rootful readProtonPassSecret", service: "picolet-system", fn: "readProtonPassSecret", ref: "pass://share/item/token"},
-		{name: "user readOpSecret", user: "app", service: "picolet", fn: "readOpSecret", ref: "op://vault/item/token"},
+		{name: "rootful readOpSecret", service: "picolet-system", fn: "readOpSecret", ref: "op://vault/item/token", fix: fix},
+		{name: "rootful readProtonPassSecret", service: "picolet-system", fn: "readProtonPassSecret", ref: "pass://share/item/token", fix: fix},
+		{name: "user readOpSecret", user: "app", service: "picolet", fn: "readOpSecret", ref: "op://vault/item/token", fix: fix},
+		{name: "rootful readSopsSecret", service: "picolet-system", fn: "readSopsSecret", ref: "sops://secrets/git.sops.yaml#/token", fix: sopsFix},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -56,7 +59,7 @@ func TestIntegrationValidateAgentBundleStrict(t *testing.T) {
 			body := fmt.Sprintf(`{{ $ref := %q }}git_token: {{ %s $ref }}`, tt.ref, tt.fn)
 			err := validateFleet(t, agentBundleFleet(tt.user, tt.service, true, body))
 			require.Error(t, err)
-			for _, want := range []string{"host test-host", "Agent bundle " + tt.service, fmt.Sprintf("%s %q", tt.fn, tt.ref), fix} {
+			for _, want := range []string{"host test-host", "Agent bundle " + tt.service, fmt.Sprintf("%s %q", tt.fn, tt.ref), tt.fix} {
 				assert.ErrorContains(t, err, want)
 			}
 		})
@@ -120,9 +123,56 @@ func validateFleet(t *testing.T, repoFS fstest.MapFS) error {
 	t.Helper()
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg, SopsSecretReader: resolver.KeylessSopsReader(repoFS)})
 	require.NoError(t, err)
 	return validator.ValidateAll(t.Context(), repoFS, r, cfg)
+}
+
+// validate checks every readSopsSecret ref keyless and fails, naming the
+// ref, on what it can tell is wrong without a key.
+func TestIntegrationValidateSopsRefs(t *testing.T) {
+	t.Parallel()
+	values := sopsCorpus(t, "values.sops.yaml")
+	tests := []struct{ name, ref, want string }{
+		{name: "valid", ref: "sops://secrets/db.sops.yaml#/db/password"},
+		{name: "missing file", ref: "sops://secrets/gone.sops.yaml#/db/password", want: "file does not exist"},
+		{name: "no sops infix", ref: "sops://secrets/db.yaml#/db/password", want: "not a SOPS path"},
+		{name: "dot-dot", ref: "sops://secrets/../secrets/db.sops.yaml#/db/password", want: "clean relative path"},
+		{name: "not a SOPS file", ref: "sops://secrets/plain.sops.yaml#/db/password", want: "not a SOPS file"},
+		{name: "missing path", ref: "sops://secrets/db.sops.yaml#/db/nope", want: "bad pointer"},
+		{name: "not a leaf", ref: "sops://secrets/db.sops.yaml#/db", want: "not a leaf"},
+		{name: "unencrypted leaf", ref: "sops://secrets/db.sops.yaml#/note_unencrypted", want: "is not encrypted"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fleet := fstest.MapFS{
+				"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
+				"assignments.yml":          &fstest.MapFile{Data: []byte("base:\n  secrets: [secrets/app.yml.tmpl]\nroles: {}\nfeatures: {}\n")},
+				"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte("hostname: test-host\nrole: node\n")},
+				"secrets/app.yml.tmpl":     &fstest.MapFile{Data: []byte(`password: {{ readSopsSecret "` + tt.ref + `" }}`)},
+				"secrets/db.sops.yaml":     &fstest.MapFile{Data: values},
+				"secrets/db.yaml":          &fstest.MapFile{Data: values},
+				"secrets/plain.sops.yaml":  &fstest.MapFile{Data: sopsCorpus(t, "plaintext.sops.yaml")},
+			}
+			err := validateFleet(t, fleet)
+			if tt.want == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			require.ErrorContains(t, err, tt.ref)
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+}
+
+// sopsCorpus reads a file of the shared SOPS fixture corpus.
+func sopsCorpus(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := os.ReadFile("testdata/sops/corpus/" + name)
+	require.NoError(t, err)
+	return data
 }
 
 func TestIntegrationResolveGolden(t *testing.T) {
@@ -131,7 +181,7 @@ func TestIntegrationResolveGolden(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg, SopsSecretReader: resolver.KeylessSopsReader(repoFS)})
 	require.NoError(t, err)
 	g := goldie.New(t, goldie.WithFixtureDir("testdata/fixtures"))
 
@@ -331,7 +381,7 @@ func TestIntegrationMultiHostConsistency(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg, SopsSecretReader: resolver.KeylessSopsReader(repoFS)})
 	require.NoError(t, err)
 	allResolved, err := r.ResolveAll(t.Context())
 	require.NoError(t, err)

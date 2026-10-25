@@ -57,6 +57,16 @@ func TestRunResolveHeader(t *testing.T) {
 	}
 }
 
+// resolve is keyless: a readSopsSecret value prints as <sops-secret>, never
+// as its plaintext (the example Fleet's file is a copy of the SOPS corpus).
+func TestRunResolveSopsKeyless(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	require.NoError(t, runResolve(t.Context(), &out, "../../testdata/example-fleet", "web-1"))
+	assert.Contains(t, out.String(), "password: <sops-secret>")
+	assert.NotContains(t, out.String(), "hunter2-test")
+}
+
 // Cannot use t.Parallel(): t.Setenv() mutates a process-global, so the test
 // (and its subtests) must remain serial.
 func TestDataDirAndLockPathFromConfig(t *testing.T) { //nolint:paralleltest // see comment above

@@ -66,8 +66,14 @@ type Config struct {
 	SecretReader   SecretReader
 	OpSecretReader SecretRefReader
 	PPSecretReader SecretRefReader
-	Rootless       bool
-	Strict         bool
+	// SopsSecretReader resolves sops:// refs: the keyless reader
+	// (sops.KeylessReader) for validate, resolve and bootstrap, the
+	// decrypting one on the Agent. Nil makes every sops:// ref fail the
+	// resolve; unlike op:// and pass://, SOPS never renders a placeholder
+	// without a reader.
+	SopsSecretReader SecretRefReader
+	Rootless         bool
+	Strict           bool
 
 	// QuadletDir, SystemdDir, and DataDir override the defaults computed by
 	// ResolveDirs. Empty fields fall back to the default for the given
@@ -96,6 +102,7 @@ type Resolver struct {
 	secretReader   SecretReader
 	opSecretReader SecretRefReader
 	ppSecretReader SecretRefReader
+	sopsReader     SecretRefReader
 	quadletDir     string
 	systemdDir     string
 	dataDir        string
@@ -138,6 +145,7 @@ func New(rc Config) (*Resolver, error) {
 		secretReader:   rc.SecretReader,
 		opSecretReader: rc.OpSecretReader,
 		ppSecretReader: rc.PPSecretReader,
+		sopsReader:     rc.SopsSecretReader,
 		quadletDir:     quadletDir,
 		systemdDir:     systemdDir,
 		dataDir:        dataDir,
@@ -235,6 +243,7 @@ func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host
 	providers := []ProviderTemplate{
 		r.provider(OpProvider(r.opSecretReader)),
 		r.provider(PPProvider(r.ppSecretReader)),
+		r.provider(SopsProvider(r.sopsReader)),
 	}
 	// hostDataDir (not dataDir) drives filePath/manifestPath: those helpers emit
 	// path strings baked into rendered quadlets, which the host's podman must

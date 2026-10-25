@@ -1337,6 +1337,7 @@ The template data root exposes `.Images`, `.Ports`, `.Fleet` (all hosts + full c
 | `readSecretFile(path)` | Read secret (placeholder in CI mode) |
 | `readOpSecret(ref)` | Resolve a 1Password reference, e.g. `op://vault/item/field` |
 | `readProtonPassSecret(ref)` | Resolve a Proton Pass reference, e.g. `pass://share/item/field` |
+| `readSopsSecret(ref)` | Read one value of a SOPS-encrypted file in the Fleet, e.g. `sops://secrets/db.sops.yaml#/db/password` (path relative to the Fleet root, fragment a JSON Pointer to a leaf; no fragment for the whole file). `validate` and `resolve` check the ref without a key and render `<sops-secret>`; an Agent without an age identity fails the resolve |
 | `manifestPath(relPath)` | Return the absolute deployed path for a manifest file (handles rootless/rootful, and `host_data_dir` for containerized picolet). `relPath` is relative to the service's `manifests/` dir |
 | `filePath(relPath)` | Return the absolute deployed path for a file (handles rootless/rootful, and `host_data_dir` for containerized picolet). `relPath` is relative to the service's `files/` dir |
 | `has(item, slice)` | Sprig: check if a value is present in a list |
@@ -1367,7 +1368,9 @@ All files are validated before deployment: quadlet files via Podman's own `quadl
 
 Secrets always require non-empty content. Repo-backed YAML secrets (`.yml` / `.yaml`, including `.tmpl`) are also syntax-validated after template rendering. External placeholder secrets in repo-only validation mode are skipped for YAML syntax checks.
 
-`validate` also renders each Host's Agent bundle (`picolet` for a Host with `user:`, `picolet-system` for the rootful Host; Hosts without it assigned are skipped) the way `bootstrap` does: strictly, with no secret provider. A `readOpSecret`/`readProtonPassSecret` call in the bundle fails with the Host, the bundle, the ref and the fix, since `bootstrap` would fail on it too; put the ref in the Agent config as a YAML value (e.g. `onepassword.git_token_ref: op://…`) and let the Agent resolve it at runtime.
+`validate` also renders each Host's Agent bundle (`picolet` for a Host with `user:`, `picolet-system` for the rootful Host; Hosts without it assigned are skipped) the way `bootstrap` does: strictly, with no secret provider. A `readOpSecret`/`readProtonPassSecret` call in the bundle fails with the Host, the bundle, the ref and the fix, since `bootstrap` would fail on it too; put the ref in the Agent config as a YAML value (e.g. `onepassword.git_token_ref: op://…`) and let the Agent resolve it at runtime. A `readSopsSecret` call in the bundle fails the same way: deliver the value as a `--secrets-dir` file and point the Agent config at its path, since credentials needed to fetch the Fleet can't be SOPS values.
+
+`validate` checks every `readSopsSecret` ref without a key: the path is a clean Fleet-relative `*.sops.*` path, the file exists and is a SOPS file, and the pointer ends at a leaf that is encrypted with a valid type tag (`""` and `null` leaves, which SOPS never encrypts, pass).
 
 Run `./picolet validate` in CI to catch errors before pushing.
 

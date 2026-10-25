@@ -8,6 +8,7 @@ import (
 
 	"github.com/schjan/picolet/pkg/onepassword"
 	"github.com/schjan/picolet/pkg/protonpass"
+	"github.com/schjan/picolet/pkg/sops"
 )
 
 // BootstrapFiles maps a file name in a Host's secrets directory to the
@@ -33,7 +34,13 @@ func (b BootstrapFiles) validate() error {
 		if name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
 			return fmt.Errorf("%q is not a file name", name)
 		}
-		if ref := b[name]; !onepassword.IsRef(ref) && !protonpass.IsRef(ref) {
+		ref := b[name]
+		if strings.HasPrefix(ref, sops.Scheme) {
+			// Bootstrap credentials fetch the Fleet; a SOPS value lives in it.
+			return fmt.Errorf("%s: a sops:// reference can't be a bootstrap: entry; "+
+				"deliver the value as a --secrets-dir file instead", name)
+		}
+		if !onepassword.IsRef(ref) && !protonpass.IsRef(ref) {
 			return fmt.Errorf("%s is not a Secret Reference (op://vault/item/field or pass://share/item/field): "+
 				"bootstrap: lists references, never values", name)
 		}

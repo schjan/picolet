@@ -329,7 +329,12 @@ func runValidate(ctx context.Context, repoDir string, logger *slog.Logger) error
 		return err
 	}
 	defer repo.Close()
-	r, err := resolver.New(resolver.Config{FS: repo.FS, Config: repo.Config, Logger: logger})
+	r, err := resolver.New(resolver.Config{
+		FS:               repo.FS,
+		Config:           repo.Config,
+		SopsSecretReader: resolver.KeylessSopsReader(repo.FS),
+		Logger:           logger,
+	})
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)
 	}
@@ -342,7 +347,8 @@ func runResolve(ctx context.Context, out io.Writer, repoDir, host string) error 
 		return err
 	}
 	defer repo.Close()
-	r, err := resolver.New(resolver.Config{FS: repo.FS, Config: repo.Config})
+	// resolve is keyless: sops:// values render as <sops-secret>.
+	r, err := resolver.New(resolver.Config{FS: repo.FS, Config: repo.Config, SopsSecretReader: resolver.KeylessSopsReader(repo.FS)})
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)
 	}

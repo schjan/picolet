@@ -2,6 +2,7 @@
 Image={{index .Images "web-app"}}
 ContainerName=web-app
 Network=web-app.network
+Secret=web_app_db,type=mount,target=/run/secrets/db.yml
 
 [Install]
 WantedBy=default.target

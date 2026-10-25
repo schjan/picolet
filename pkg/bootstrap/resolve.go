@@ -57,9 +57,11 @@ func resolveBootstrapHost(ctx context.Context, repo *config.Repo, cfg resolveCon
 		FS:           repo.FS,
 		Config:       repo.Config,
 		SecretReader: readSecret,
-		Rootless:     cfg.Rootless,
-		Strict:       true,
-		DataDir:      cfg.DataDir,
+		// bootstrap never decrypts; strict mode fails every sops:// call.
+		SopsSecretReader: resolver.KeylessSopsReader(repo.FS),
+		Rootless:         cfg.Rootless,
+		Strict:           true,
+		DataDir:          cfg.DataDir,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating resolver: %w", err)

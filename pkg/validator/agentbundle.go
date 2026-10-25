@@ -36,14 +36,15 @@ func validateAgentBundles(ctx context.Context, fsys fs.FS, cfg *config.Config, l
 }
 
 // renderAgentBundle resolves service for hostname in strict mode with no
-// provider readers and placeholder file secrets.
+// provider readers (only the keyless SOPS one) and placeholder file secrets.
 func renderAgentBundle(ctx context.Context, fsys fs.FS, cfg *config.Config, hostname, service string, log *slog.Logger) error {
 	r, err := resolver.New(resolver.Config{
-		FS:           fsys,
-		Config:       cfg,
-		SecretReader: func(string) (string, error) { return unresolvedSecretPlaceholder, nil },
-		Strict:       true,
-		Logger:       log,
+		FS:               fsys,
+		Config:           cfg,
+		SecretReader:     func(string) (string, error) { return unresolvedSecretPlaceholder, nil },
+		SopsSecretReader: resolver.KeylessSopsReader(fsys),
+		Strict:           true,
+		Logger:           log,
 	})
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)
