@@ -28,6 +28,10 @@ roles:
   web:
     services:
       - web-app
+    # A direct sops:// secret: the Podman secret db_password (the pointer's
+    # segments joined by "_"), holding the decrypted value.
+    secrets:
+      - "sops://services/web-app/secrets.sops.yaml#/db/password"
   e2e:
     paths:
       - quadlets/containers/simple.container.tmpl

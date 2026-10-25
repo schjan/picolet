@@ -24,6 +24,7 @@ import (
 	"github.com/schjan/picolet/pkg/config"
 	op "github.com/schjan/picolet/pkg/onepassword"
 	pp "github.com/schjan/picolet/pkg/protonpass"
+	"github.com/schjan/picolet/pkg/sops"
 )
 
 // ResolvedFile represents a single rendered file with its destination path.
@@ -304,7 +305,7 @@ func (r *Resolver) resolveHostFileSetOnCopy(ctx context.Context, hostname string
 	}
 
 	// Batch-resolve direct (non-template) secret refs in one call per provider.
-	resolvedDirect, err := r.batchResolveDirectSecrets(ctx, secretSources(expanded.Files))
+	resolvedDirect, err := r.batchResolveDirectSecrets(ctx, host, secretSources(expanded.Files))
 	if err != nil {
 		return nil, err
 	}
@@ -537,8 +538,20 @@ func (r *Resolver) dataDestPath(logicalPath string) string {
 }
 
 // secretDestPath returns the DestPath for either a provider-backed ref
-// (op:// or pass://) or a file-based secret. Parsing is pure — no I/O.
+// (op://, pass:// or sops://) or a file-based secret. Parsing is pure — no
+// I/O.
 func (r *Resolver) secretDestPath(srcPath string) (string, error) {
+	if sops.IsRef(srcPath) {
+		parsed, err := sops.ParseRef(srcPath)
+		if err != nil {
+			return "", err
+		}
+		name, err := parsed.SecretName()
+		if err != nil {
+			return "", err
+		}
+		return "secret:" + name, nil
+	}
 	if op.IsRef(srcPath) {
 		parsed, err := op.ParseOpRef(srcPath)
 		if err != nil {
@@ -596,9 +609,9 @@ func (r *Resolver) buildFiles(
 }
 
 // isProviderRef reports whether a secrets entry is a provider ref (op://,
-// pass://) rather than a repo or host-only secret file.
+// pass://, sops://) rather than a repo or host-only secret file.
 func isProviderRef(src string) bool {
-	return op.IsRef(src) || pp.IsRef(src)
+	return op.IsRef(src) || pp.IsRef(src) || sops.IsRef(src)
 }
 
 func detectCollisions(files []ResolvedFile) error {
@@ -835,25 +848,29 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 	}, nil
 }
 
-// batchResolveDirectSecrets resolves all provider-backed (op:// + pass://)
-// refs in the secrets list, one batched call per provider. Returns a single
-// map keyed by ref. A resolution failure is fatal to prevent reconciler.Diff
-// from marking unresolved secrets for deletion (which would remove them from
-// Podman). When a provider is not configured, its refs are skipped with a
-// warning so the rest of the reconcile can proceed.
+// batchResolveDirectSecrets resolves all provider-backed (op://, pass://,
+// sops://) refs in the secrets list, one batched call per provider. Returns
+// a single map keyed by ref. A resolution failure is fatal to prevent
+// reconciler.Diff from marking unresolved secrets for deletion (which would
+// remove them from Podman). When op:// or pass:// is not configured, its
+// refs are skipped with a warning so the rest of the reconcile can proceed;
+// sops:// refs never are (resolveSopsDirectRefs).
 //
 //nolint:nilnil // nil map signals "no provider-backed secrets to resolve"
-func (r *Resolver) batchResolveDirectSecrets(ctx context.Context, allSecrets []string) (map[string]string, error) {
-	opRefs, ppRefs := splitDirectRefs(allSecrets)
-	if len(opRefs) == 0 && len(ppRefs) == 0 {
+func (r *Resolver) batchResolveDirectSecrets(ctx context.Context, host *config.HostConfig, allSecrets []string) (map[string]string, error) {
+	refs := splitDirectRefs(allSecrets)
+	if len(refs.op) == 0 && len(refs.pp) == 0 && len(refs.sops) == 0 {
 		return nil, nil
 	}
 
 	results := make(map[string]string)
-	if err := r.resolveProviderRefs(ctx, ProviderOnePassword, r.opSecretReader, opRefs, results); err != nil {
+	if err := r.resolveProviderRefs(ctx, ProviderOnePassword, r.opSecretReader, refs.op, results); err != nil {
 		return nil, err
 	}
-	if err := r.resolveProviderRefs(ctx, ProviderProtonPass, r.ppSecretReader, ppRefs, results); err != nil {
+	if err := r.resolveProviderRefs(ctx, ProviderProtonPass, r.ppSecretReader, refs.pp, results); err != nil {
+		return nil, err
+	}
+	if err := r.resolveSopsDirectRefs(ctx, host, refs.sops, results); err != nil {
 		return nil, err
 	}
 	if len(results) == 0 {
@@ -862,16 +879,86 @@ func (r *Resolver) batchResolveDirectSecrets(ctx context.Context, allSecrets []s
 	return results, nil
 }
 
-func splitDirectRefs(allSecrets []string) (opRefs, ppRefs []string) {
+// directRefs are a secrets list's provider refs, split by scheme.
+type directRefs struct {
+	op, pp, sops []string
+}
+
+func splitDirectRefs(allSecrets []string) directRefs {
+	var refs directRefs
 	for _, path := range allSecrets {
 		switch {
 		case op.IsRef(path):
-			opRefs = append(opRefs, path)
+			refs.op = append(refs.op, path)
 		case pp.IsRef(path):
-			ppRefs = append(ppRefs, path)
+			refs.pp = append(refs.pp, path)
+		case sops.IsRef(path):
+			refs.sops = append(refs.sops, path)
 		}
 	}
-	return opRefs, ppRefs
+	return refs
+}
+
+// resolveSopsDirectRefs resolves direct sops:// refs into into, through the
+// host resolve's SOPS reader (directSopsReader), in the same batch as the
+// other providers. Unlike op:// and pass://, they are never skipped: strict
+// mode fails them even with the keyless reader, and without a reader they
+// fail with the no-identity error, so a placeholder is never deployed as a
+// value.
+func (r *Resolver) resolveSopsDirectRefs(ctx context.Context, host *config.HostConfig, refs []string, into map[string]string) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	if r.strict {
+		reason, fix := strictModeText(ProviderSops)
+		return fmt.Errorf("direct secrets %s: %s; %s", strings.Join(refs, ", "), reason, fix)
+	}
+	reader := r.directSopsReader(host)
+	if reader == nil {
+		return fmt.Errorf("direct secrets %s: %w; set sops.age_identity_path in the Agent config",
+			strings.Join(refs, ", "), sops.ErrNoIdentity)
+	}
+	r.logger.Debug("batch-resolving secrets", "provider", ProviderSops, "count", len(refs))
+	results, err := reader(ctx, refs)
+	if err != nil {
+		return fmt.Errorf("resolving %s secrets: %w", ProviderSops, err)
+	}
+	maps.Copy(into, results)
+	return nil
+}
+
+// directSopsReader returns the reader of host's direct sops:// refs, nil
+// without one: the keyless reader in direct mode (NewKeyless), else the
+// configured reader with an empty value rejected. Either way each ref's
+// path is checked like a template ref's (checkSopsRefs).
+func (r *Resolver) directSopsReader(host *config.HostConfig) SecretRefReader {
+	if r.keylessSops {
+		return checkSopsRefs(keylessSopsReader(r.fsys, host).ReadDirect)
+	}
+	if r.sopsReader == nil {
+		return nil
+	}
+	return checkSopsRefs(rejectEmptyDirect(r.sopsReader.ReadAll))
+}
+
+// rejectEmptyDirect wraps a decrypting reader so that a ref resolving to ""
+// (an "" or null leaf, which SOPS leaves unencrypted) fails: a direct
+// secrets: entry needs a non-empty value.
+func rejectEmptyDirect(reader SecretRefReader) SecretRefReader {
+	return func(ctx context.Context, refs []string) (map[string]string, error) {
+		values, err := reader(ctx, refs)
+		var errs []error
+		if err != nil {
+			errs = append(errs, err)
+		}
+		for _, ref := range refs {
+			if v, ok := values[ref]; ok && v == "" {
+				delete(values, ref)
+				errs = append(errs, sops.EmptyDirectValueError(ref))
+			}
+		}
+		return values, errors.Join(errs...)
+	}
 }
 
 func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, reader SecretRefReader, refs []string, into map[string]string) error {
@@ -900,7 +987,8 @@ func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, re
 // reader-function calls (readOpSecret, readProtonPassSecret, …). Output is
 // discarded — only the side effect of populating each provider's RefCache matters.
 // Secret templates are included: they may call provider reader functions;
-// direct provider refs (op://, pass://) are not templates and are skipped.
+// direct provider refs (op://, pass://, sops://) are not templates and are
+// skipped.
 func (r *Resolver) collectTemplateRefs(registry *template.Template, tmplData *TemplateData, expanded *expansion) {
 	collect := func(path string, g *unitRender) {
 		if !config.IsTemplate(path) {
@@ -930,7 +1018,7 @@ func (r *Resolver) collectTemplateRefs(registry *template.Template, tmplData *Te
 }
 
 // buildDirectSecretFile creates a ResolvedFile for a pre-resolved
-// provider-backed secret (op:// or pass://).
+// provider-backed secret (op://, pass:// or sops://).
 func (r *Resolver) buildDirectSecretFile(ref, content string) (*ResolvedFile, error) {
 	destPath, err := r.secretDestPath(ref)
 	if err != nil {

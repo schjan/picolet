@@ -133,7 +133,7 @@ func SopsProvider(reader SopsReader) ProviderTemplate {
 		Key:                ProviderSops,
 		FuncName:           "readSopsSecret",
 		DataFuncName:       "readSopsData",
-		IsRef:              func(ref string) bool { return strings.HasPrefix(ref, sops.Scheme) },
+		IsRef:              sops.IsRef,
 		PlaceholderPending: "<sops-secret-pending>",
 		MissingReader: func(funcName, ref string) error {
 			return fmt.Errorf("%s %q: %w; set sops.age_identity_path in the Agent config", funcName, ref, sops.ErrNoIdentity)

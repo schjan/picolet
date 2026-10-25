@@ -108,6 +108,10 @@ func IsSOPSPath(p string) bool {
 	return ok && ext != ""
 }
 
+// IsRef reports whether s is a sops:// Secret Reference, by scheme;
+// ParseRef checks the rest.
+func IsRef(s string) bool { return strings.HasPrefix(s, Scheme) }
+
 // Ref is a parsed sops:// Secret Reference:
 // sops://<fleet-relative path>[#<JSON Pointer>]. Without a fragment it names
 // the whole file.
