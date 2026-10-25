@@ -886,11 +886,13 @@ func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Stor
 	// deployed state. On apply failure (rollback) we keep the previous good
 	// map rather than advertising deps for a state we couldn't reach.
 	a.statusStore.SetDependencies(deps)
+	// Before the apply's error log lines, so a hook's "exhausted retry
+	// budget" line comes first, as it always has.
+	a.recordApply(st, changeset, applyResult, headSHA, hooks)
 	a.logNonRetryableApplyErrors(applyResult, sopsReader)
 
 	a.markAppliedWithMetrics(st, headSHA)
 	a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
-	a.recordApply(st, changeset, applyResult, headSHA, hooks)
 
 	if err := store.Save(st); err != nil {
 		return nil, fmt.Errorf("saving state: %w", err)
