@@ -49,6 +49,9 @@ func keylessTree(path string, data []byte, f *File) (gsops.TreeBranches, error) 
 // fixed token per reason, never the value, so walkError can tell it apart in
 // upstream's wrapped error text.
 type cipherFailure struct {
+	// value is the refused value as the file holds it: for reasonNotEncrypted
+	// a plaintext secret. It exists only so walkError can find its pointer;
+	// never print it, put it in an error or log it.
 	value  string
 	reason string
 }

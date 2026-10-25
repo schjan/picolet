@@ -164,9 +164,9 @@ const maxSecretNameLen = 253
 
 // SecretName returns the Podman secret name of a direct secrets: ref: the
 // pointer's segments joined by "_", or, for a whole-file ref, the <name> of
-// the file's base name `<name>.sops.<ext>`. Characters are never rewritten: a segment outside
-// [A-Za-z0-9_.-], an empty segment, a name not starting with a letter or
-// digit, or a name over 253 characters is an error.
+// the file's base name `<name>.sops.<ext>`. Characters are never rewritten:
+// a segment outside [A-Za-z0-9_.-], an empty segment, a name not starting
+// with a letter or digit, or a name over 253 characters is an error.
 func (r Ref) SecretName() (string, error) {
 	segs := r.Pointer.segments
 	if r.whole {
