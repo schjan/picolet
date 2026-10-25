@@ -1485,6 +1485,8 @@ The file holds one or more `AGE-SECRET-KEY-…` lines (two during a rotation). D
 
 The reference Agent config templates (the `picolet` and `picolet-system` bundles in `deploy/fleet-repo`) emit this block only for a Host whose `host.yml` declares `age_recipients:`. So deliver `age-identity` and run `bootstrap machine` before you push `age_recipients:`; if the identity isn't there yet, the Agent refuses the new config, fails that reconciliation and keeps running on its old config. When none of the Agent's identities is among its Host's `age_recipients:` but every decrypt succeeds, the Agent logs a warning on each reconciliation that decrypts SOPS files, naming both sets of public keys. Nothing fails.
 
+Don't create `/etc/sops/audit.yaml` where picolet runs: the built-in `getsops` library reads it at process start in every command, so a malformed file panics picolet and a Postgres audit backend is contacted at startup and on every decrypt. The Agent image has no such file; only the CLI on a Machine or in CI is exposed.
+
 #### References and SOPS files
 
 A `sops://` ref names a SOPS file by its path relative to the Fleet root, and optionally a value in it by an [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901) JSON Pointer:
@@ -1574,7 +1576,6 @@ Git keeps every commit, so a leak is fixed by **rotation, never by rewriting his
 - **CI stays keyless.** `validate` never decrypts, so a CI job never holds an identity; that is a security property, not a limitation.
 - **Public repositories.** Ciphertext in git is permanent and counts as safe against every reader, a public mirror included. For a public Fleet, use hybrid post-quantum (`age1pq1…`) recipients.
 - **Foreign code.** A Host that runs foreign code (a CI runner whose jobs control that user's Podman) must treat its identity as exposed to that code, and must never share a file's audience with a Host that runs no foreign code: give it its own files.
-- **`/etc/sops/audit.yaml`.** The built-in `getsops` library reads this file at process start (package init), in every picolet command: a malformed file panics picolet, and a configured Postgres audit backend is contacted at startup (picolet exits when it can't connect) and on every decrypt. The Agent image has no such file, so the Agent is unaffected; only the CLI on a Machine or in CI is exposed. Don't create that file there.
 
 ### Limitations and operational notes
 

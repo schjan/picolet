@@ -65,6 +65,7 @@ kept as is.
   `secrets:` ref in the Agent bundle fails CI; YAML-value refs such as
   `onepassword.git_token_ref` pass
   ([#253](https://github.com/schjan/picolet/issues/253)).
+
 ### Added
 
 - `.pod`, `.build` and `.image` Quadlets
@@ -150,6 +151,7 @@ kept as is.
 - CI runs `govulncheck` (on every change and weekly) against the built binary's
   dependencies, failing on any finding not excluded with a reason
   ([#254](https://github.com/schjan/picolet/issues/254)).
+
 ### Changed
 
 - An Agent restart clears the failed-SHA gate (and records a

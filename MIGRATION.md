@@ -67,6 +67,11 @@ podman exec picolet-system sh -c '
     /etc/picolet/config.yml | sort | uniq -d | sed "s/^/named twice: /"'
 ```
 
+The two key lists are the credential settings of `Config.Credentials()`
+(by their last key) and differ on purpose: `protonpass.session_dir` is a
+directory, so the readability check (`-r`, for files) skips it, while the
+duplicate check includes it.
+
 It prints nothing when the Host is ready. For each `missing:` line, deliver the
 file (`picolet bootstrap machine --secrets-dir`, or a `bootstrap:` entry) or
 remove the setting from the Agent config template; for each `named twice:`

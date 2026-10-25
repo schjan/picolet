@@ -76,9 +76,9 @@ jobs:
   e2e:
     # Podman >= 5.2 for Quadlet .build: ubuntu-24.04 images ship 4.9.3 since
     # actions/runner-images#14642; ubuntu-26.04 ships 5.7.0 (preview image).
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 5
-    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
 
@@ -133,7 +133,8 @@ jobs:
   test-onepassword:
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 5
-    # Only run on main branch pushes and PRs from the same repo (not forks)
+    # Only run on main branch pushes and PRs from the same repo (not forks,
+    # not the scheduled govulncheck run)
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v7
@@ -152,7 +153,8 @@ jobs:
   test-protonpass:
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 5
-    # Only run on main branch pushes and PRs from the same repo (not forks)
+    # Only run on main branch pushes and PRs from the same repo (not forks,
+    # not the scheduled govulncheck run)
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v7
