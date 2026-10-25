@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"sync"
 )
 
 // Placeholder is what the keyless reader renders for a whole file, an
@@ -35,21 +36,27 @@ type Host struct {
 // against each file's recipient labels: the Host must declare
 // age_recipients:, and appear in enough key groups. The labels are
 // unauthenticated, so this catches drift, not a hostile edit.
+//
+// One KeylessReader serves one resolve: each file is read and inspected at
+// most once, whichever calls name it.
 type KeylessReader struct {
 	fsys fs.FS
 	host Host
+
+	mu    sync.Mutex
+	files map[string]inspected
 }
 
 // NewKeylessReader returns a KeylessReader over fsys (the Fleet root) that
 // checks refs for host.
 func NewKeylessReader(fsys fs.FS, host Host) *KeylessReader {
-	return &KeylessReader{fsys: fsys, host: host}
+	return &KeylessReader{fsys: fsys, host: host, files: map[string]inspected{}}
 }
 
 // ReadAll checks refs and returns the keyless value of each ref that passes
 // (Placeholder, or a plaintext leaf's value), plus one joined error carrying
 // every failed ref's error (each names its ref), the shape of
-// Reader.ReadAll. Each file is read and inspected at most once per call.
+// Reader.ReadAll.
 func (r *KeylessReader) ReadAll(ctx context.Context, refs []string) (map[string]string, error) {
 	return r.readAll(ctx, refs, false)
 }
@@ -63,10 +70,9 @@ func (r *KeylessReader) ReadDirect(ctx context.Context, refs []string) (map[stri
 
 func (r *KeylessReader) readAll(ctx context.Context, refs []string, direct bool) (map[string]string, error) {
 	values := make(map[string]string, len(refs))
-	files := map[string]inspected{}
 	var errs []error
 	for _, raw := range refs {
-		v, err := r.check(ctx, raw, files, direct)
+		v, err := r.check(ctx, raw, direct)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -82,30 +88,40 @@ type inspected struct {
 }
 
 // check checks the string ref raw and returns its keyless value.
-func (r *KeylessReader) check(ctx context.Context, raw string, files map[string]inspected, direct bool) (string, error) {
+func (r *KeylessReader) check(ctx context.Context, raw string, direct bool) (string, error) {
 	ref, err := ParseRef(raw)
 	if err != nil {
 		return "", err
 	}
-	res, ok := files[ref.Path]
-	if !ok {
-		if err := ctx.Err(); err != nil {
-			return "", fmt.Errorf("%s: %w", raw, err)
-		}
-		res.file, res.err = r.inspect(ref.Path)
-		files[ref.Path] = res
+	f, err := r.file(ctx, ref.Path)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", raw, err)
 	}
-	if res.err != nil {
-		return "", fmt.Errorf("%s: %w", raw, res.err)
-	}
-	v, err := checkRef(res.file, ref, direct)
+	v, err := checkRef(f, ref, direct)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", raw, err)
 	}
 	if direct && v == "" {
 		return "", EmptyDirectValueError(raw)
 	}
-	return v, r.checkHost(raw, ref, res.file.File)
+	return v, r.checkHost(raw, ref, f.File)
+}
+
+// file returns the inspected file at path, reading it on the first call
+// (unless ctx is done) and from the reader's cache after.
+func (r *KeylessReader) file(ctx context.Context, path string) (*keylessFile, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if res, ok := r.files[path]; ok {
+		return res.file, res.err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var res inspected
+	res.file, res.err = r.inspect(path)
+	r.files[path] = res
+	return res.file, res.err
 }
 
 // checkHost checks the Host's recipients against f, the file ref (written

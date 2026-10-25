@@ -53,10 +53,7 @@ func (r *KeylessReader) ReadData(ctx context.Context, raw string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w", raw, err)
-	}
-	f, err := r.inspect(ref.Path)
+	f, err := r.file(ctx, ref.Path)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", raw, err)
 	}

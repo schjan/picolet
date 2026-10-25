@@ -138,6 +138,10 @@ type Resolver struct {
 	// sopsCalls counts this resolve's readSopsSecret/readSopsData calls
 	// (sopsGuard), so buildFiles can tell which files read a SOPS value.
 	sopsCalls int
+	// keylessReader is this resolve's keyless SOPS reader (NewKeyless),
+	// built for its Host on the per-resolve copy; it serves the template
+	// helpers and the direct refs alike, so each file is read once.
+	keylessReader *sops.KeylessReader
 }
 
 // Rootless reports whether the resolver is configured for rootless mode.
@@ -288,10 +292,14 @@ func (r *Resolver) forResolve() *Resolver {
 	rr.rendering = nil
 	rr.sopsFiles = sopsFileSet{}
 	rr.sopsCalls = 0
+	rr.keylessReader = nil
 	return &rr
 }
 
 func (r *Resolver) resolveHostFileSetOnCopy(ctx context.Context, hostname string, host *config.HostConfig, fileSet *config.ResolvedFileSet, templatePrefixes []string) (*ResolvedHost, error) {
+	if r.keylessSops {
+		r.keylessReader = keylessSopsReader(r.fsys, host)
+	}
 	tmplData, err := NewTemplateData(r.cfg, hostname)
 	if err != nil {
 		return nil, err
@@ -300,7 +308,7 @@ func (r *Resolver) resolveHostFileSetOnCopy(ctx context.Context, hostname string
 	providers := []ProviderTemplate{
 		r.provider(OpProvider(r.opSecretReader)),
 		r.provider(PPProvider(r.ppSecretReader)),
-		r.provider(r.guardedSopsProvider(host)),
+		r.provider(r.guardedSopsProvider()),
 	}
 	// hostDataDir (not dataDir) drives filePath/manifestPath: those helpers emit
 	// path strings baked into rendered quadlets, which the host's podman must
@@ -325,7 +333,7 @@ func (r *Resolver) resolveHostFileSetOnCopy(ctx context.Context, hostname string
 	}
 
 	// Batch-resolve direct (non-template) secret refs in one call per provider.
-	resolvedDirect, err := r.batchResolveDirectSecrets(ctx, host, secretSources(expanded.Files))
+	resolvedDirect, err := r.batchResolveDirectSecrets(ctx, secretSources(expanded.Files))
 	if err != nil {
 		return nil, err
 	}
@@ -350,13 +358,13 @@ func (r *Resolver) resolveHostFileSetOnCopy(ctx context.Context, hostname string
 	}, nil
 }
 
-// sopsReaderFor returns the SOPS reader of one host resolve: the keyless
-// reader for host (NewKeyless), else the configured one (nil without one),
-// recording the files its refs reach into the resolve's sopsFiles.
-func (r *Resolver) sopsReaderFor(host *config.HostConfig) SopsReader { //nolint:ireturn // the keyless or the configured reader, two concrete types
+// resolveSopsReader returns the SOPS reader of this host resolve: its keyless
+// reader (NewKeyless), else the configured one (nil without one), recording
+// the files its refs reach into the resolve's sopsFiles.
+func (r *Resolver) resolveSopsReader() SopsReader { //nolint:ireturn // the keyless or the configured reader, two concrete types
 	reader := r.sopsReader
 	if r.keylessSops {
-		reader = keylessSopsReader(r.fsys, host)
+		reader = r.keylessReader
 	}
 	if reader == nil {
 		return nil
@@ -364,10 +372,10 @@ func (r *Resolver) sopsReaderFor(host *config.HostConfig) SopsReader { //nolint:
 	return sopsFileRecorder{reader: reader, files: r.sopsFiles}
 }
 
-// guardedSopsProvider is SopsProvider over host's SOPS reader with the
-// unit-file guard.
-func (r *Resolver) guardedSopsProvider(host *config.HostConfig) ProviderTemplate {
-	p := SopsProvider(r.sopsReaderFor(host))
+// guardedSopsProvider is SopsProvider over this host resolve's SOPS reader
+// with the unit-file guard.
+func (r *Resolver) guardedSopsProvider() ProviderTemplate {
+	p := SopsProvider(r.resolveSopsReader())
 	p.Guard = r.sopsGuard
 	return p
 }
@@ -885,7 +893,7 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 // sops:// refs never are (resolveSopsDirectRefs).
 //
 //nolint:nilnil // nil map signals "no provider-backed secrets to resolve"
-func (r *Resolver) batchResolveDirectSecrets(ctx context.Context, host *config.HostConfig, allSecrets []string) (map[string]string, error) {
+func (r *Resolver) batchResolveDirectSecrets(ctx context.Context, allSecrets []string) (map[string]string, error) {
 	refs := splitDirectRefs(allSecrets)
 	if len(refs.op) == 0 && len(refs.pp) == 0 && len(refs.sops) == 0 {
 		return nil, nil
@@ -898,7 +906,7 @@ func (r *Resolver) batchResolveDirectSecrets(ctx context.Context, host *config.H
 	if err := r.resolveProviderRefs(ctx, ProviderProtonPass, r.ppSecretReader, refs.pp, results); err != nil {
 		return nil, err
 	}
-	if err := r.resolveSopsDirectRefs(ctx, host, refs.sops, results); err != nil {
+	if err := r.resolveSopsDirectRefs(ctx, refs.sops, results); err != nil {
 		return nil, err
 	}
 	if len(results) == 0 {
@@ -933,14 +941,14 @@ func splitDirectRefs(allSecrets []string) directRefs {
 // mode fails them even with the keyless reader, and without a reader they
 // fail with the no-identity error, so a placeholder is never deployed as a
 // value.
-func (r *Resolver) resolveSopsDirectRefs(ctx context.Context, host *config.HostConfig, refs []string, into map[string]string) error {
+func (r *Resolver) resolveSopsDirectRefs(ctx context.Context, refs []string, into map[string]string) error {
 	if len(refs) == 0 {
 		return nil
 	}
 	if r.strict {
 		return strictDirectError(ProviderSops, refs)
 	}
-	reader := r.directSopsReader(host)
+	reader := r.directSopsReader()
 	if reader == nil {
 		return fmt.Errorf("direct secrets %s: %w; %s", strings.Join(refs, ", "), sops.ErrNoIdentity, sops.NoIdentityHint)
 	}
@@ -953,13 +961,14 @@ func (r *Resolver) resolveSopsDirectRefs(ctx context.Context, host *config.HostC
 	return nil
 }
 
-// directSopsReader returns the reader of host's direct sops:// refs, nil
-// without one: the keyless reader in direct mode (NewKeyless), else the
-// configured reader with an empty value rejected. Either way each ref's
-// path is checked like a template ref's (checkSopsRefs).
-func (r *Resolver) directSopsReader(host *config.HostConfig) SecretRefReader {
+// directSopsReader returns the reader of this host resolve's direct
+// sops:// refs, nil without one: the resolve's keyless reader in direct
+// mode (NewKeyless), else the configured reader with an empty value
+// rejected. Either way each ref's path is checked like a template ref's
+// (checkSopsRefs).
+func (r *Resolver) directSopsReader() SecretRefReader {
 	if r.keylessSops {
-		return checkSopsRefs(r.sopsFiles.recordRefs(keylessSopsReader(r.fsys, host).ReadDirect))
+		return checkSopsRefs(r.sopsFiles.recordRefs(r.keylessReader.ReadDirect))
 	}
 	if r.sopsReader == nil {
 		return nil

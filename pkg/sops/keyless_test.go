@@ -117,9 +117,9 @@ func TestKeylessReaderReadDirect(t *testing.T) {
 	}
 }
 
-// Each file is opened and inspected once per ReadAll call, however many refs
-// name it; a second call reads it again.
-func TestKeylessReaderReadsEachFileOncePerCall(t *testing.T) {
+// A KeylessReader serves one resolve: each file is opened and inspected
+// once, however many refs and calls (ReadAll, ReadDirect, ReadData) name it.
+func TestKeylessReaderReadsEachFileOnce(t *testing.T) {
 	t.Parallel()
 	fsys := countingFS{FS: keylessFS(t), opens: map[string]*atomic.Int32{"secrets/db.sops.yaml": {}}}
 	r := sops.NewKeylessReader(fsys, hostSrv1(t))
@@ -135,7 +135,11 @@ func TestKeylessReaderReadsEachFileOncePerCall(t *testing.T) {
 
 	_, err = r.ReadAll(t.Context(), refs[:1])
 	require.NoError(t, err)
-	assert.Equal(t, int32(2), fsys.opens["secrets/db.sops.yaml"].Load())
+	_, err = r.ReadDirect(t.Context(), refs[:1])
+	require.NoError(t, err)
+	_, err = r.ReadData(t.Context(), "sops://secrets/db.sops.yaml#/db")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), fsys.opens["secrets/db.sops.yaml"].Load())
 }
 
 func TestKeylessReaderCancelledContext(t *testing.T) {
