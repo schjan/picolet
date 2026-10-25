@@ -16,7 +16,9 @@ func IsRef(s string) bool {
 	return err == nil
 }
 
-// OpRef is a parsed op:// secret reference (Scope is the vault).
+// OpRef is a parsed op:// secret reference: an alias of the parser shared
+// with Proton Pass, whose Scope field is the vault (the field was Vault
+// before the parsers were shared). No code outside this module uses it.
 type OpRef = secretref.Ref
 
 // ParseOpRef parses a 1Password secret reference of the form "op://vault/item/field".

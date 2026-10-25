@@ -23,7 +23,9 @@ func IsRef(s string) bool {
 	return err == nil
 }
 
-// PassRef is a parsed pass:// secret reference (Scope is the share).
+// PassRef is a parsed pass:// secret reference: an alias of the parser
+// shared with 1Password, whose Scope field is the share (the field was Share
+// before the parsers were shared). No code outside this module uses it.
 type PassRef = secretref.Ref
 
 // ParseRef parses a Proton Pass secret reference of the form

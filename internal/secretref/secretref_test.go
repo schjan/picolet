@@ -19,21 +19,22 @@ import (
 type provider struct {
 	scheme string // "op" or "pass"
 	scope  string // "vault" or "share"
+	other  string // the other provider's scheme
 	parse  func(string) (secretref.Ref, error)
 	isRef  func(string) bool
 }
 
 // TestParse runs every case against both providers: $s stands for the
-// provider's scheme, $scope for its scope label and $ref for the quoted ref,
-// so each error text is checked byte for byte as each provider printed it
-// before the parsers were shared.
+// provider's scheme, $o for the other provider's, $scope for its scope label
+// and $ref for the quoted ref, so each error text is checked byte for byte
+// as each provider printed it before the parsers were shared.
 //
 //nolint:funlen // table-driven test
 func TestParse(t *testing.T) {
 	t.Parallel()
 	providers := []provider{
-		{scheme: "op", scope: "vault", parse: op.ParseOpRef, isRef: op.IsRef},
-		{scheme: "pass", scope: "share", parse: pp.ParseRef, isRef: pp.IsRef},
+		{scheme: "op", scope: "vault", other: "pass", parse: op.ParseOpRef, isRef: op.IsRef},
+		{scheme: "pass", scope: "share", other: "op", parse: pp.ParseRef, isRef: pp.IsRef},
 	}
 	tests := []struct {
 		name     string
@@ -68,6 +69,7 @@ func TestParse(t *testing.T) {
 		},
 		{name: "missing prefix", ref: "secrets/foo.yml", wantErr: "invalid $s:// reference $ref: missing $s:// prefix"},
 		{name: "wrong scheme", ref: "other://vault/item/field", wantErr: "invalid $s:// reference $ref: missing $s:// prefix"},
+		{name: "other provider scheme", ref: "$o://a/b/c", wantErr: "invalid $s:// reference $ref: missing $s:// prefix"},
 		{name: "only scope and item", ref: "$s://$scope/item", wantErr: "invalid $s:// reference $ref: expected $s://$scope/item/field"},
 		{name: "empty scope", ref: "$s:///item/field", wantErr: "invalid $s:// reference $ref: expected $s://$scope/item/field"},
 		{name: "empty item", ref: "$s://$scope//field", wantErr: "invalid $s:// reference $ref: expected $s://$scope/item/field"},
@@ -79,7 +81,7 @@ func TestParse(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(p.scheme+"/"+tt.name, func(t *testing.T) {
 				t.Parallel()
-				sub := strings.NewReplacer("$scope", p.scope, "$s", p.scheme).Replace
+				sub := strings.NewReplacer("$scope", p.scope, "$s", p.scheme, "$o", p.other).Replace
 				ref := sub(tt.ref)
 				got, err := p.parse(ref)
 				if tt.wantErr != "" {
