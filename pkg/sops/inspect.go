@@ -123,9 +123,9 @@ func checkSize(name string, data []byte) error {
 	return nil
 }
 
-// store is the part of a SOPS store picolet uses: loading an encrypted file
+// sopsStore is the part of a SOPS store picolet uses: loading an encrypted file
 // without any key, and emitting decrypted data as `sops decrypt` does.
-type store interface {
+type sopsStore interface {
 	gsops.EncryptedFileLoader
 	gsops.PlainFileEmitter
 	gsops.ValueEmitter
@@ -136,7 +136,7 @@ type store interface {
 // decrypted output renders as `sops decrypt` prints it.
 //
 //nolint:ireturn // the store's concrete type depends on the format
-func storeFor(path string) (Format, store) {
+func storeFor(path string) (Format, sopsStore) {
 	c := config.NewStoresConfig()
 	switch formats.FormatForPath(path) {
 	case formats.Yaml:

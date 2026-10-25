@@ -2,6 +2,7 @@ package sops
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +41,9 @@ type Reader struct {
 
 // NewReader returns a Reader over fsys (the Fleet root) that decrypts with
 // ids. With nil ids every ref fails with ErrNoIdentity.
+//
+// The first call discards the output of SOPS's package-global loggers for
+// the whole process (see silenceSOPSLogs); picolet never wants their output.
 func NewReader(fsys fs.FS, ids *Identities) *Reader {
 	silenceSOPSLogs()
 	return &Reader{fsys: fsys, ids: ids}
@@ -97,7 +101,7 @@ func (r *Reader) read(ctx context.Context, raw string, files map[string]fileResu
 
 // plainFile is a decrypted SOPS file and the store that renders it.
 type plainFile struct {
-	store    store
+	store    sopsStore
 	branches gsops.TreeBranches
 }
 
@@ -109,9 +113,12 @@ func (r *Reader) decryptFile(path string) (*plainFile, error) {
 	return decrypt(path, data, r.ids)
 }
 
-// decrypt decrypts a SOPS file with ids through upstream's tree decrypt,
-// which verifies the MAC. Upstream error strings are never passed on: a type
-// tag mismatch embeds the plaintext, and a MAC mismatch prints a hash of it.
+// decrypt decrypts a SOPS file with ids through upstream's tree decrypt and
+// verifies the MAC the way upstream's cmd/sops/common.DecryptTree does (with
+// IgnoreMac false); keep the two in step on a SOPS upgrade. It mirrors
+// DecryptTree rather than calling it because upstream error strings are never
+// passed on: a type tag mismatch embeds the plaintext, and a MAC mismatch
+// prints a hash of it.
 func decrypt(path string, data []byte, ids *Identities) (*plainFile, error) {
 	f, err := Inspect(path, data)
 	if err != nil {
@@ -133,11 +140,11 @@ func decrypt(path string, data []byte, ids *Identities) (*plainFile, error) {
 	cipher := aes.NewCipher()
 	computedMAC, err := tree.Decrypt(key, cipher)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w: a value does not decrypt; restore the file from git, or re-create the value with `sops edit %s`", path, ErrEditedOutsideSOPS, path)
+		return nil, editedError(path, "a value does not decrypt", "re-create the value with `sops edit %s`")
 	}
 	fileMAC, err := cipher.Decrypt(tree.Metadata.MessageAuthenticationCode, key, tree.Metadata.LastModified.Format(time.RFC3339))
-	if s, ok := fileMAC.(string); err != nil || !ok || s != computedMAC {
-		return nil, fmt.Errorf("%s: %w: its MAC does not match its content; restore the file from git, or edit values only with `sops edit %s`", path, ErrEditedOutsideSOPS, path)
+	if s, ok := fileMAC.(string); err != nil || !ok || subtle.ConstantTimeCompare([]byte(s), []byte(computedMAC)) != 1 {
+		return nil, editedError(path, "its MAC does not match its content", "edit values only with `sops edit %s`")
 	}
 	return &plainFile{store: st, branches: tree.Branches}, nil
 }
@@ -149,18 +156,26 @@ func decrypt(path string, data []byte, ids *Identities) (*plainFile, error) {
 func dataKeyError(path string, f *File, ids *Identities) error {
 	matched, required := matchedGroups(f, ids), f.RequiredGroups()
 	if matched >= required {
-		return fmt.Errorf("%s: %w: its age stanza for this Host's recipient does not open with this Host's identity; restore the file from git, or re-encrypt it with `sops updatekeys %s`", path, ErrEditedOutsideSOPS, path)
+		return editedError(path, "its age stanza for this Host's recipient does not open with this Host's identity", "re-encrypt it with `sops updatekeys %s`")
 	}
 	recipients := make([]string, 0, len(ids.recipients))
 	for _, r := range ids.recipients {
 		recipients = append(recipients, r.String())
 	}
-	reach := "is not encrypted to this Host"
+	reach := "the file is not encrypted to this Host"
 	if matched > 0 {
-		reach = fmt.Sprintf("is encrypted to this Host in %d of the %d key groups it needs", matched, required)
+		reach = fmt.Sprintf("the file is encrypted to this Host in %d of the %d key groups it needs", matched, required)
 	}
-	return fmt.Errorf("%s: %w: %s %s (this Host's recipients: %s); add one of them to the file's .sops.yaml creation rule and run `sops updatekeys %s`",
-		path, ErrNotRecipient, path, reach, strings.Join(recipients, ", "), path)
+	return fmt.Errorf("%s: %w: %s (this Host's recipients: %s); add one of them to the file's .sops.yaml creation rule and run `sops updatekeys %s`",
+		path, ErrNotRecipient, reach, strings.Join(recipients, ", "), path)
+}
+
+// editedError builds an ErrEditedOutsideSOPS error for path: what failed,
+// then the shared remediation ("restore the file from git, or ...") with
+// alternative, a format whose one %s is the path.
+func editedError(path, what, alternative string) error {
+	return fmt.Errorf("%s: %w: %s; restore the file from git, or "+alternative,
+		path, ErrEditedOutsideSOPS, what, path)
 }
 
 // matchedGroups counts the key groups that list one of ids' recipients.
