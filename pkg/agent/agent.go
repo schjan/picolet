@@ -796,7 +796,7 @@ func (a *Agent) reconcileResolved(ctx context.Context, headSHA string, st *state
 	}
 	// A SOPS sync is counted per decrypted file (SopsFilesDecrypted), not
 	// per direct secret, so only the managed count is recorded here.
-	a.recordProviderRefCount(resolver.ProviderSops, a.sopsIDs != nil, sops.IsRef, files)
+	_ = a.recordProviderRefCount(resolver.ProviderSops, a.sopsIDs != nil, sops.IsRef, files)
 
 	changeset := reconciler.Diff(files, st)
 

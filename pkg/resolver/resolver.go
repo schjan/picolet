@@ -947,7 +947,10 @@ func (r *Resolver) directSopsReader(host *config.HostConfig) SecretRefReader {
 func rejectEmptyDirect(reader SecretRefReader) SecretRefReader {
 	return func(ctx context.Context, refs []string) (map[string]string, error) {
 		values, err := reader(ctx, refs)
-		errs := []error{err}
+		var errs []error
+		if err != nil {
+			errs = append(errs, err)
+		}
 		for _, ref := range refs {
 			if v, ok := values[ref]; ok && v == "" {
 				delete(values, ref)

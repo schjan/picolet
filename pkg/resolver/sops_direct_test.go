@@ -24,6 +24,19 @@ const (
 	sopsDecrypting                       // the Agent with the TEST-ONLY identity srv-1
 )
 
+// String names the mode in subtest names.
+func (m sopsReaderMode) String() string {
+	switch m {
+	case sopsNoReader:
+		return "no-reader"
+	case sopsKeyless:
+		return "keyless"
+	case sopsDecrypting:
+		return "decrypting"
+	}
+	return fmt.Sprintf("mode(%d)", int(m))
+}
+
 // resolveDirectSops resolves test-host of a one-host Fleet whose base
 // assignment lists secrets (direct sops:// refs, file secrets) and whose
 // Host declares the corpus recipient srv-1; files adds Fleet-root files and
@@ -159,7 +172,7 @@ func TestDirectSopsSecretErrors(t *testing.T) {
 	files["secrets/db_password.tmpl"] = "static"
 	for _, tt := range tests {
 		for _, mode := range []sopsReaderMode{sopsKeyless, sopsDecrypting} {
-			t.Run(fmt.Sprintf("%s/mode=%d", tt.name, mode), func(t *testing.T) {
+			t.Run(tt.name+"/"+mode.String(), func(t *testing.T) {
 				t.Parallel()
 				_, err := resolveDirectSops(t, tt.secrets, files, mode, false)
 				require.Error(t, err)
@@ -219,7 +232,7 @@ func TestDirectSopsSecretStrictFails(t *testing.T) {
 	t.Parallel()
 	ref := "sops://secrets/db.sops.yaml#/db/password"
 	for _, mode := range []sopsReaderMode{sopsKeyless, sopsNoReader} {
-		t.Run(fmt.Sprintf("mode=%d", mode), func(t *testing.T) {
+		t.Run(mode.String(), func(t *testing.T) {
 			t.Parallel()
 			_, err := resolveDirectSops(t, []string{ref}, directSopsFiles(t), mode, true)
 			require.ErrorContains(t, err, ref)
