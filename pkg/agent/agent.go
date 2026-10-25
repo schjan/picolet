@@ -776,6 +776,7 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	if err != nil {
 		return nil, err
 	}
+	a.warnIdentityDrift(resolved.Host, sopsReader)
 	result, err := a.reconcileResolved(ctx, headSHA, st, store, resolved, sopsReader)
 	if result != nil {
 		result.SopsFilesDecrypted = sopsReader.DecryptedFiles()

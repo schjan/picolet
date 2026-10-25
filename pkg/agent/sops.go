@@ -3,9 +3,41 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"slices"
 
+	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/sops"
 )
+
+// warnIdentityDrift logs a warning when the resolve decrypted SOPS files
+// although none of the Agent's identities is among the Host's
+// age_recipients:. The decrypts succeeded, so nothing fails; the warning
+// makes the drift between host.yml and the identity file visible. Only
+// public keys are logged.
+func (a *Agent) warnIdentityDrift(host *config.HostConfig, reader *sops.Reader) {
+	if host == nil || reader.DecryptedFiles() == 0 {
+		return
+	}
+	own := a.sopsIDs.Recipients()
+	for _, r := range own {
+		if slices.Contains(host.AgeRecipients, r) {
+			return
+		}
+	}
+	a.logger.Warn("the Agent's age identities match none of its Host's age_recipients",
+		"host", host.Hostname,
+		"age_recipients", recipientStrings(host.AgeRecipients),
+		"identity_recipients", recipientStrings(own),
+		"fix", "add the identity's public key to age_recipients: in host.yml, or deliver the identity of a declared recipient")
+}
+
+func recipientStrings(rs []sops.Recipient) []string {
+	out := make([]string, len(rs))
+	for i, r := range rs {
+		out[i] = r.String()
+	}
+	return out
+}
 
 // setupSops loads the age identities named by the Agent config's sops block,
 // the only identities the Agent decrypts sops:// refs with. A config without

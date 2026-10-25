@@ -5,3 +5,9 @@ external_hostname: vps-1.example.net
 role: vps
 features: [agent-system]
 machine: vps-1
+# Its age public key turns SOPS on in its Agent config (the picolet-system
+# bundle), though nothing it runs reads a sops:// ref yet.
+# TEST-ONLY recipient srv-3 of the picolet fixture corpus (testdata/sops):
+# never encrypt a real secret to it.
+age_recipients:
+  - age1pre96p2krmjun420xp2jtzgzyryr3gvvvzqvqj439nzvcrjx953sj5vmaa
