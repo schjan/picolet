@@ -17,7 +17,7 @@ type SecretGuard func(info fs.FileInfo) error
 // name or symlink cannot reach files outside. The directory is opened on the
 // first read, so a resolve that reads no host secret does not need it to
 // exist. A non-nil guard is asked about every file before it is read (the
-// Agent passes agentcfg's Config.RefuseCredential). Call release once the
+// Agent passes agentcfg.RefuseCredentials). Call release once the
 // resolve is done.
 func DirSecretReader(dir string, guard SecretGuard) (read SecretReader, release func()) {
 	var root *os.Root

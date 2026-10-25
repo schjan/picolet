@@ -12,7 +12,7 @@ import (
 )
 
 // Credential is a file the Agent authenticates with, named by an Agent
-// config setting. A Fleet must never deploy one (Config.RefuseCredential),
+// config setting. A Fleet must never deploy one (RefuseCredentials),
 // and no two settings may name the same one (checked by Load).
 type Credential struct {
 	Setting string // config key, e.g. "git_token_path"
@@ -62,14 +62,6 @@ func protonPassSessionDir(c *ProtonPassConfig) string {
 	return ""
 }
 
-// RefuseCredential returns an error when info (the file a secret read
-// opened) is one of the Agent's credentials, compared with os.SameFile so
-// symlinks, hard links and other spellings are caught. It is the Agent's
-// resolver.SecretGuard.
-func (c *Config) RefuseCredential(info fs.FileInfo) error {
-	return refuseCredential(c.Credentials(), info)
-}
-
 // CredentialsAt is Credentials for a reader that sees the Agent's
 // secrets_dir at secretsDir, as `picolet bootstrap` sees it at --secrets-dir:
 // a credential below secrets_dir is listed at its path and again at the same
@@ -89,23 +81,27 @@ func (c *Config) CredentialsAt(secretsDir string) []Credential {
 	return creds
 }
 
-// RefuseCredentials is RefuseCredential for an explicit credential list (a
-// CredentialsAt list).
+// RefuseCredentials returns the resolver.SecretGuard that refuses a secret
+// read whose opened file (info) is one of creds (the Agent's Credentials(),
+// or bootstrap's CredentialsAt list), compared with os.SameFile so
+// symlinks, hard links and other spellings are caught.
+//
+// Each call stats every credential, and walks each directory credential,
+// anew: the secret file is already open, so a credential renamed, linked or
+// written into place before the call is found whatever its timestamps say.
 func RefuseCredentials(creds []Credential) func(fs.FileInfo) error {
-	return func(info fs.FileInfo) error { return refuseCredential(creds, info) }
-}
-
-func refuseCredential(creds []Credential, info fs.FileInfo) error {
-	for _, cred := range creds {
-		held, err := cred.holds(info)
-		if err != nil {
-			return fmt.Errorf("checking Agent credential %s (%s): %w", cred.Setting, cred.Path, err)
+	return func(info fs.FileInfo) error {
+		for _, cred := range creds {
+			held, err := cred.holds(info)
+			if err != nil {
+				return fmt.Errorf("checking Agent credential %s (%s): %w", cred.Setting, cred.Path, err)
+			}
+			if held {
+				return fmt.Errorf("it is the Agent credential %s (%s): Agent credentials cannot be deployed", cred.Setting, cred.Path)
+			}
 		}
-		if held {
-			return fmt.Errorf("it is the Agent credential %s (%s): Agent credentials cannot be deployed", cred.Setting, cred.Path)
-		}
+		return nil
 	}
-	return nil
 }
 
 // holds reports whether info is the credential file or, for a Dir

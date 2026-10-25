@@ -35,13 +35,14 @@ import (
 // Agent's unit: a unit change can repoint the mount at another managed
 // secret that is itself unchanged, and the Agent's next start reads that
 // one. The credential files are looked up through the new unit's mounts
-// (selfConfigLocator).
+// (selfConfigLocator); getwd is the running Agent's working directory
+// (os.Getwd), which a relative path may resolve against (nextWorkingDir).
 //
 // A changeset whose resolve renders no Agent quadlet (the Agent bundle
 // unassigned, or its container quadlet dropped) decommissions the Fleet's
 // Agent unit: the guard does not check it, and the apply deletes the unit
 // and the config secret it mounts.
-func CheckSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Changeset, readFile func(string) ([]byte, error)) error {
+func CheckSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Changeset, readFile func(string) ([]byte, error), getwd func() (string, error)) error {
 	if resolved.Host == nil {
 		return nil
 	}
@@ -68,7 +69,7 @@ func CheckSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Chan
 	if !changeset.Writes(file.DestPath) && !writesUnit {
 		return nil
 	}
-	locate := selfConfigLocator(quadlet.ParsedUnit, running, writesUnit, changeset)
+	locate := selfConfigLocator(quadlet.ParsedUnit, running, writesUnit, changeset, getwd)
 	if err := agentcfg.CheckRenderedConfig([]byte(file.Content), locate); err != nil {
 		return fmt.Errorf("refusing the Agent config %s mounted by %s: the Agent could not start with it: %w", file.DestPath, unit, err)
 	}
@@ -107,7 +108,8 @@ func checkLostSelfConfig(next, running *parser.UnitFile, unit string, changeset 
 			"resolve %s in the Agent bundle, or keep mounting %s", unit, nextName, resolver.AgentConfigTarget, managed, nextName, managed)
 	}
 	const fix = "keep the Secret= mount, or bind-mount a Host file there with Volume= to manage the config by hand"
-	m, _, ok := mountHolding(unitMounts(next), resolver.AgentConfigTarget)
+	mounts, _ := unitMounts(next)
+	m, _, ok := mountHolding(mounts, resolver.AgentConfigTarget)
 	switch {
 	case ok && isHostPath(m.source):
 		return nil

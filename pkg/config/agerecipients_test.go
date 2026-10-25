@@ -1,40 +1,21 @@
 package config
 
 import (
-	"bufio"
 	"bytes"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-)
 
-// testRecipient returns the TEST-ONLY corpus recipient called name.
-func testRecipient(t *testing.T, name string) string {
-	t.Helper()
-	f, err := os.Open(filepath.Join("..", "..", "testdata", "sops", "recipients.txt"))
-	require.NoError(t, err)
-	defer func() { _ = f.Close() }()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 64*1024)
-	for sc.Scan() {
-		if n, key, ok := strings.Cut(sc.Text(), " "); ok && n == name {
-			return key
-		}
-	}
-	require.NoError(t, sc.Err())
-	t.Fatalf("recipient %q not in corpus", name)
-	return ""
-}
+	"github.com/schjan/picolet/internal/testsops"
+)
 
 func TestLoadAllParsesAgeRecipients(t *testing.T) {
 	t.Parallel()
-	x25519 := testRecipient(t, "srv-1")
-	hybrid := testRecipient(t, "srv-pq")
+	x25519 := testsops.Recipient(t, "srv-1")
+	hybrid := testsops.Recipient(t, "srv-pq")
 	fsys := topologyFleet(agentPorts, map[string]string{
 		"srv-1": "hostname: srv-1\nrole: node\nage_recipients:\n  - " + strings.ToUpper(x25519) + "\n  - " + hybrid + "\n",
 		"srv-2": "hostname: srv-2\nrole: node\nuser: pi\n",
@@ -61,7 +42,7 @@ func TestLoadAllRejectsUnsupportedAgeRecipients(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			fsys := topologyFleet(agentPorts, map[string]string{
-				"srv-1": "hostname: srv-1\nrole: node\nage_recipients:\n  - " + testRecipient(t, "srv-1") + "\n  - " + tt.entry + "\n",
+				"srv-1": "hostname: srv-1\nrole: node\nage_recipients:\n  - " + testsops.Recipient(t, "srv-1") + "\n  - " + tt.entry + "\n",
 			})
 			_, err := LoadAll(fsys)
 			require.ErrorContains(t, err, "host srv-1: age_recipients[1]: ")
@@ -76,7 +57,7 @@ func TestLoadAllRejectsUnsupportedAgeRecipients(t *testing.T) {
 func TestLoadAllLenientHostsKnowsAgeRecipients(t *testing.T) {
 	t.Parallel()
 	fsys := topologyFleet(agentPorts, map[string]string{
-		"srv-1": "hostname: srv-1\nrole: node\nage_recipients: [" + testRecipient(t, "srv-1") + "]\n",
+		"srv-1": "hostname: srv-1\nrole: node\nage_recipients: [" + testsops.Recipient(t, "srv-1") + "]\n",
 	})
 	cfg, err := LoadAll(fsys, LenientHosts())
 	require.NoError(t, err)
@@ -91,8 +72,8 @@ func TestLoadAllLenientHostsKnowsAgeRecipients(t *testing.T) {
 func TestLoadAllLenientHostsIgnoresMalformedAgeRecipients(t *testing.T) {
 	t.Parallel()
 	fsys := topologyFleet(agentPorts, map[string]string{
-		"srv-1": "hostname: srv-1\nrole: node\nage_recipients:\n  - " + testRecipient(t, "srv-1") + "\n  - age1notakey\n",
-		"srv-2": "hostname: srv-2\nrole: node\nuser: pi\nage_recipients: [" + testRecipient(t, "srv-2") + "]\n",
+		"srv-1": "hostname: srv-1\nrole: node\nage_recipients:\n  - " + testsops.Recipient(t, "srv-1") + "\n  - age1notakey\n",
+		"srv-2": "hostname: srv-2\nrole: node\nuser: pi\nage_recipients: [" + testsops.Recipient(t, "srv-2") + "]\n",
 	})
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
@@ -138,7 +119,7 @@ func TestLoadAllLenientHostsIgnoresMalformedAgeRecipientsShape(t *testing.T) {
 			t.Parallel()
 			fsys := topologyFleet(agentPorts, map[string]string{
 				"srv-1": "hostname: srv-1\nrole: node\nage_recipients:" + tt.value,
-				"srv-2": "hostname: srv-2\nrole: node\nuser: pi\nage_recipients: [" + testRecipient(t, "srv-2") + "]\n",
+				"srv-2": "hostname: srv-2\nrole: node\nuser: pi\nage_recipients: [" + testsops.Recipient(t, "srv-2") + "]\n",
 			})
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewTextHandler(&logs, nil))

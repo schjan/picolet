@@ -82,11 +82,7 @@ func (p *sopsPass) check(path string) {
 // checkSOPSFile reads and inspects the SOPS file at path; a file that is too
 // large or not encrypted is an error.
 func checkSOPSFile(fsys fs.FS, path string) (*sops.File, error) {
-	data, err := sops.ReadFile(fsys, path)
-	if err != nil {
-		return nil, err
-	}
-	f, err := sops.Inspect(path, data)
+	f, err := sops.InspectFile(fsys, path)
 	if err != nil {
 		return nil, err
 	}

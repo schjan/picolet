@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -14,30 +13,22 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/sops"
 )
-
-// corpusIdentities parses the TEST-ONLY identity files called names into one
-// identity set, as an Agent's identity file holding several keys would be.
-func corpusIdentities(t *testing.T, names ...string) *sops.Identities {
-	t.Helper()
-	var data []byte
-	for _, name := range names {
-		b, err := os.ReadFile(filepath.Join(corpusDir, "identities", name+".agekey"))
-		require.NoError(t, err)
-		data = append(data, b...)
-	}
-	ids, err := sops.ParseIdentities(data)
-	require.NoError(t, err)
-	return ids
-}
 
 // corpusReader returns a Reader over testdata/sops, so refs read
 // sops://corpus/<file>.
 func corpusReader(t *testing.T, names ...string) *sops.Reader {
 	t.Helper()
-	return sops.NewReader(os.DirFS(corpusDir), corpusIdentities(t, names...))
+	return sops.NewReader(os.DirFS(corpusDir), testsops.Identities(t, names...))
 }
+
+// morePlaintexts are the values in testdata/sops/plain beyond values.yaml's
+// (testsops.Plaintexts) long enough to be recognisable in an error. (The
+// value "edited" of tampered-mac.sops.yaml is left out: it is part of the
+// class name "edited outside sops".)
+var morePlaintexts = []string{"VEVTVC1PTkxZIGZpeHR1cmUga2V5", "TEST-ONLY fixture values"}
 
 func TestReaderSingleRef(t *testing.T) {
 	t.Parallel()
@@ -85,32 +76,7 @@ func TestReaderPartialFailure(t *testing.T) {
 	require.Equal(t, "hunter2-test", got[good])
 	require.Contains(t, got[otherFile], "BEGIN TEST-ONLY KEY")
 	require.NotContains(t, got, missing)
-	assertNoPlaintext(t, err)
-}
-
-// fixturePlaintexts are the values in testdata/sops/plain long enough to be
-// recognisable in an error. (The value "edited" of tampered-mac.sops.yaml is
-// left out: it is part of the class name "edited outside sops".)
-var fixturePlaintexts = []string{
-	"hunter2-test", "alpha-token", "beta-token", "gamma-secret", "srv1-pass",
-	"slash-key", "tilde-key", "5432", "0.75", "visible",
-	"VEVTVC1PTkxZIGZpeHR1cmUga2V5", "TEST-ONLY fixture values",
-}
-
-// hexRun matches a run of hex digits as long as a truncated hash; SOPS's MAC
-// is a 128-digit SHA-512.
-var hexRun = regexp.MustCompile(`[0-9A-Fa-f]{32,}`)
-
-// assertNoPlaintext fails when err carries a fixture plaintext or anything
-// that looks like a hash of one.
-func assertNoPlaintext(t *testing.T, err error) {
-	t.Helper()
-	require.Error(t, err)
-	msg := err.Error()
-	for _, p := range fixturePlaintexts {
-		require.NotContains(t, msg, p, "error leaks a fixture plaintext")
-	}
-	require.Empty(t, hexRun.FindAllString(msg, -1), "error carries a hash-like hex run")
+	testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 }
 
 var yamlPointers = []string{
@@ -211,13 +177,13 @@ var errorClassCases = []struct {
 		want: sops.ErrNotRecipient,
 		contains: []string{
 			"sops://corpus/values.sops.env#/DB_PASSWORD", "corpus/values.sops.env",
-			corpusRecipientOf("srv-2"), ".sops.yaml", "sops updatekeys corpus/values.sops.env",
+			testsops.RecipientOf("srv-2"), ".sops.yaml", "sops updatekeys corpus/values.sops.env",
 		},
 	},
 	{
 		name: "not a recipient with either rotation key", ref: "sops://corpus/values.sops.env#/DB_PASSWORD",
 		ids: []string{"srv-2", "srv-3"}, want: sops.ErrNotRecipient,
-		contains: []string{corpusRecipientOf("srv-2"), corpusRecipientOf("srv-3")},
+		contains: []string{testsops.RecipientOf("srv-2"), testsops.RecipientOf("srv-3")},
 	},
 	{
 		name: "not a recipient in enough key groups", ref: "sops://corpus/key-groups.sops.yaml#/db/password",
@@ -225,7 +191,7 @@ var errorClassCases = []struct {
 	},
 	{
 		name: "no stanza for a post-quantum Host", ref: "sops://corpus/blob.sops.bin",
-		ids: []string{"srv-pq"}, want: sops.ErrNotRecipient, contains: []string{corpusRecipientOf("srv-pq")},
+		ids: []string{"srv-pq"}, want: sops.ErrNotRecipient, contains: []string{testsops.RecipientOf("srv-pq")},
 	},
 	{
 		name: "edited outside sops: MAC", ref: "sops://corpus/tampered-mac.sops.yaml#/db/password",
@@ -249,7 +215,7 @@ var errorClassCases = []struct {
 		// The pre-check runs before decrypting: srv-2's stanza would open,
 		// but no label names srv-2, so it is not a recipient.
 		name: "not a recipient: stanza relabelled away", ref: "sops://corpus/tampered-recipient.sops.yaml#/db/user",
-		ids: []string{"srv-2"}, want: sops.ErrNotRecipient, contains: []string{corpusRecipientOf("srv-2")},
+		ids: []string{"srv-2"}, want: sops.ErrNotRecipient, contains: []string{testsops.RecipientOf("srv-2")},
 	},
 	{
 		name: "bad pointer: no such key", ref: "sops://corpus/values.sops.yaml#/db/nope",
@@ -300,7 +266,7 @@ func TestReaderErrorClasses(t *testing.T) {
 			t.Parallel()
 			var ids *sops.Identities
 			if tc.ids != nil {
-				ids = corpusIdentities(t, tc.ids...)
+				ids = testsops.Identities(t, tc.ids...)
 			}
 			fsys := tc.fsys
 			if fsys == nil {
@@ -313,23 +279,9 @@ func TestReaderErrorClasses(t *testing.T) {
 				require.ErrorContains(t, err, s)
 			}
 			require.Empty(t, got)
-			assertNoPlaintext(t, err)
+			testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 		})
 	}
-}
-
-// corpusRecipientOf reads a TEST-ONLY recipient outside a test (for tables).
-func corpusRecipientOf(name string) string {
-	data, err := os.ReadFile(filepath.Join(corpusDir, "recipients.txt"))
-	if err != nil {
-		panic(err)
-	}
-	for line := range strings.SplitSeq(string(data), "\n") {
-		if n, key, ok := strings.Cut(line, " "); ok && n == name {
-			return key
-		}
-	}
-	panic("recipient " + name + " not in corpus")
 }
 
 // TestReaderFileErrorPerRef reads two refs into a file that fails: each ref
@@ -347,7 +299,7 @@ func TestReaderFileErrorPerRef(t *testing.T) {
 	for _, ref := range refs {
 		require.ErrorContains(t, err, ref)
 	}
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err, morePlaintexts...)
 }
 
 // A scalar leaf that is not a string (int, bool, float) renders as

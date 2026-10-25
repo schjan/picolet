@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/sops"
 )
 
@@ -33,7 +34,7 @@ func TestCreationRulesMatchSOPSCLI(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &golden))
 	require.NotEmpty(t, golden.Cases)
 
-	rcp := corpusRecipient(t, "srv-1")
+	rcp := testsops.Recipient(t, "srv-1")
 	for _, c := range golden.Cases {
 		t.Run(c.Name, func(t *testing.T) {
 			t.Parallel()
@@ -100,8 +101,8 @@ type checkRecipientsCase struct {
 
 func checkRecipientsCases(t *testing.T) []checkRecipientsCase {
 	t.Helper()
-	srv1, srv2, srv3 := corpusRecipient(t, "srv-1"), corpusRecipient(t, "srv-2"), corpusRecipient(t, "srv-3")
-	op, pq := corpusRecipient(t, "operator-1"), corpusRecipient(t, "srv-pq")
+	srv1, srv2, srv3 := testsops.Recipient(t, "srv-1"), testsops.Recipient(t, "srv-2"), testsops.Recipient(t, "srv-3")
+	op, pq := testsops.Recipient(t, "operator-1"), testsops.Recipient(t, "srv-pq")
 	const update = "run `sops updatekeys secrets/db.sops.yaml`"
 
 	return []checkRecipientsCase{

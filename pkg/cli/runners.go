@@ -34,22 +34,23 @@ import (
 )
 
 // loadRunConfig loads the Agent config for the run command and runs the
-// startup checks. The same checks guard a Fleet-rendered Agent config before
-// it is applied (agentcfg.CheckRenderedConfig), so a commit cannot lock the
-// Agent out.
-func loadRunConfig(configPath string) (*agentcfg.Config, error) {
+// startup checks, returning what they loaded for the Agent. The same checks
+// guard a Fleet-rendered Agent config before it is applied
+// (agentcfg.CheckRenderedConfig), so a commit cannot lock the Agent out.
+func loadRunConfig(configPath string) (*agentcfg.Config, agentcfg.Startup, error) {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
-		return nil, err
+		return nil, agentcfg.Startup{}, err
 	}
-	if err := cfg.CheckStartup(); err != nil {
-		return nil, fmt.Errorf("invalid config %s: %w", configPath, err)
+	startup, err := cfg.CheckStartup()
+	if err != nil {
+		return nil, agentcfg.Startup{}, fmt.Errorf("invalid config %s: %w", configPath, err)
 	}
-	return cfg, nil
+	return cfg, startup, nil
 }
 
 func runAgent(ctx context.Context, configPath string) error {
-	cfg, err := loadRunConfig(configPath)
+	cfg, startup, err := loadRunConfig(configPath)
 	if err != nil {
 		return err
 	}
@@ -71,6 +72,7 @@ func runAgent(ctx context.Context, configPath string) error {
 	}
 
 	opts := []agent.Option{
+		agent.WithStartup(startup),
 		agent.WithSystemd(systemd),
 		agent.WithPodman(podman),
 		agent.WithFileWriter(applier.NewAtomicFileWriter()),
@@ -225,12 +227,14 @@ func refProvidersFromConfig(ctx context.Context, cfg *agentcfg.Config) (agent.Se
 }
 
 // resolveWithConfig resolves hostname from the Fleet below repoDir with
-// params built like the Agent's (agent.ResolveParamsFromConfig) and the
-// given providers. The returned scrub removes the resolve's decrypted SOPS
-// values from a later error.
-func resolveWithConfig(ctx context.Context, cfg *agentcfg.Config, repoDir, hostname string, providers agent.SecretProviders) (*resolver.ResolvedHost, func(error) error, error) {
+// params built like the Agent's (agent.ResolveParamsFromConfig), the given
+// providers and noSopsHint as the no-identity error's fix ("" for the
+// Agent's). The returned scrub removes the resolve's decrypted SOPS values
+// from a later error.
+func resolveWithConfig(ctx context.Context, cfg *agentcfg.Config, repoDir, hostname string, providers agent.SecretProviders, noSopsHint string) (*resolver.ResolvedHost, func(error) error, error) {
 	params := agent.ResolveParamsFromConfig(cfg, repoDir, providers)
 	params.Hostname = hostname
+	params.NoSopsIdentityHint = noSopsHint
 	return agent.LoadAndResolveHost(ctx, params)
 }
 
@@ -252,7 +256,7 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 		return nil, nil, false, nil, err
 	}
 	providers.Sops = sopsIDs
-	resolved, scrub, err := resolveWithConfig(ctx, cfg, repoDir, hostname, providers)
+	resolved, scrub, err := resolveWithConfig(ctx, cfg, repoDir, hostname, providers, "")
 	if err != nil {
 		return nil, nil, false, nil, err
 	}
@@ -598,10 +602,7 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	if err != nil {
 		return err
 	}
-	params := agent.ResolveParamsFromConfig(cfg, repoDir, providers)
-	params.Hostname = hostname
-	params.NoSopsIdentityHint = applyNoSopsHint
-	resolved, scrub, err := agent.LoadAndResolveHost(ctx, params)
+	resolved, scrub, err := resolveWithConfig(ctx, cfg, repoDir, hostname, providers, applyNoSopsHint)
 	if err != nil {
 		return err
 	}
@@ -624,9 +625,10 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 
 	deps, err := validator.AnalyzeFiles(files, validator.Target{Rootless: cfg.Rootless, HostDataDir: resolved.HostDataDir})
 	if err != nil {
+		// Defensive: apply decrypts nothing, so scrub has nothing to remove.
 		return scrub(fmt.Errorf("validation failed: %w", err))
 	}
-	if err := agent.CheckSelfConfig(resolved, changeset, os.ReadFile); err != nil {
+	if err := agent.CheckSelfConfig(resolved, changeset, os.ReadFile, os.Getwd); err != nil {
 		return scrub(fmt.Errorf("agent config check failed: %w", err))
 	}
 

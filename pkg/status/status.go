@@ -147,11 +147,12 @@ type Store struct {
 	snapshot   Snapshot
 	eventLimit int
 
-	// secretProviders and failedSHACount feed the metrics collectors only
-	// (read via SecretProviders and FailedSHACount), so they live outside
-	// Snapshot.
+	// secretProviders, failedSHACount and filesManaged feed the metrics
+	// collectors only (read via SecretProviders, FailedSHACount and
+	// FilesManaged), so they live outside Snapshot.
 	secretProviders map[string]SecretProvider
 	failedSHACount  int
+	filesManaged    map[string]float64
 }
 
 // NewStore creates an empty status store.
@@ -423,6 +424,28 @@ func (s *Store) FailedSHACount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.failedSHACount
+}
+
+// SetFilesManaged records the number of Managed Files per category,
+// replacing the previous counts.
+func (s *Store) SetFilesManaged(byCategory map[string]float64) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.filesManaged = maps.Clone(byCategory)
+}
+
+// FilesManaged returns a copy of the per-category Managed File counts; nil
+// until SetFilesManaged was called.
+func (s *Store) FilesManaged() map[string]float64 {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return maps.Clone(s.filesManaged)
 }
 
 func cloneSnapshot(in Snapshot) Snapshot {

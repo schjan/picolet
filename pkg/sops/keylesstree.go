@@ -3,7 +3,6 @@ package sops
 import (
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -28,17 +27,17 @@ type keylessFile struct {
 	walkErr error
 }
 
-// keylessTree walks the SOPS file at path (data, inspected as f) through
+// keylessTree walks the SOPS file at path (inspected as f) through
 // upstream's tree decrypt with placeholderCipher, so which values count as
 // encrypted is decided by the file's encryption rules exactly as in the
 // Agent's decrypt. What fails here fails the Agent's decrypt too; what needs
-// the key (the MAC, the ciphertext itself) is left to the Agent.
-func keylessTree(path string, data []byte, f *File) (gsops.TreeBranches, error) {
+// the key (the MAC, the ciphertext itself) is left to the Agent. It walks a
+// copy of f's tree, so f keeps the file as written (walkError and Lookup
+// read it).
+func keylessTree(path string, f *File) (gsops.TreeBranches, error) {
 	silenceSOPSLogs()
-	tree, err := f.store.LoadEncryptedFile(data)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w: cannot be parsed", path, ErrNotSOPSFile)
-	}
+	tree := f.parsedTree()
+	tree.Branches = cloneBranches(tree.Branches)
 	c := &placeholderCipher{}
 	if _, err := tree.Decrypt(nil, c); err != nil {
 		return nil, c.walkError(path, f, err)

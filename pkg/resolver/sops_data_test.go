@@ -2,14 +2,13 @@ package resolver
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/sops"
 )
@@ -27,23 +26,13 @@ const dataTmpl = `{{- range $k, $v := readSopsData "sops://secrets/db.sops.yaml#
 {{- end }}
 port {{ readSopsData "sops://secrets/db.sops.yaml#/db/port" }}`
 
-// corpusIDs parses the TEST-ONLY corpus identity called name.
-func corpusIDs(t *testing.T, name string) *sops.Identities {
-	t.Helper()
-	identity, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sops", "identities", name+".agekey"))
-	require.NoError(t, err)
-	ids, err := sops.ParseIdentities(identity)
-	require.NoError(t, err)
-	return ids
-}
-
 // The keyless resolve (validate, resolve) renders the real structure with
 // every encrypted string leaf as "<sops-secret>" and every encrypted int,
 // float or bool leaf as a value of its type; "" and null render empty.
 func TestReadSopsDataKeyless(t *testing.T) {
 	t.Parallel()
 	resolved, err := resolveSops(t, dataTmpl,
-		map[string]string{"secrets/db.sops.yaml": sopsCorpusFile(t, "values.sops.yaml")}, true, false)
+		map[string]string{"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml")}, true, false)
 	require.NoError(t, err)
 	require.Len(t, resolved.Files, 1)
 	p := sops.Placeholder
@@ -67,7 +56,7 @@ port 0`, resolved.Files[0].Content)
 func TestReadSopsDataDecrypting(t *testing.T) {
 	t.Parallel()
 	mapFS := pathsFleetFS("  secrets: [secrets/app.yml.tmpl]\n", map[string]string{
-		"secrets/db.sops.yaml": sopsCorpusFile(t, "values.sops.yaml"),
+		"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml"),
 		"secrets/app.yml.tmpl": dataTmpl + `
 pw {{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`,
 	})
@@ -75,7 +64,7 @@ pw {{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`,
 	require.NoError(t, err)
 	opens := &atomic.Int32{}
 	fsys := openCountingFS{FS: mapFS, name: "secrets/db.sops.yaml", opens: opens}
-	reader := sops.NewReader(fsys, corpusIDs(t, "srv-1"))
+	reader := sops.NewReader(fsys, testsops.Identities(t, "srv-1"))
 
 	r, err := New(Config{FS: fsys, Config: cfg, Sops: reader})
 	require.NoError(t, err)
@@ -119,7 +108,7 @@ func TestReadSopsDataBadRefs(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/keyless=%v", tt.name, keyless), func(t *testing.T) {
 				t.Parallel()
 				mapFS := pathsFleetFS("  secrets: [secrets/app.yml.tmpl]\n", map[string]string{
-					"secrets/db.sops.yaml":     sopsCorpusFile(t, "values.sops.yaml"),
+					"secrets/db.sops.yaml":     testsops.CorpusText(t, "values.sops.yaml"),
 					"hosts/test-host/host.yml": sopsHostYAML(t, "srv-1"),
 					"secrets/app.yml.tmpl":     `{{ range readSopsData "` + tt.ref + `" }}{{ . }}{{ end }}`,
 				})
@@ -129,7 +118,7 @@ func TestReadSopsDataBadRefs(t *testing.T) {
 				if keyless {
 					r, err = NewKeyless(Config{FS: mapFS, Config: cfg})
 				} else {
-					r, err = New(Config{FS: mapFS, Config: cfg, Sops: sops.NewReader(mapFS, corpusIDs(t, "srv-1"))})
+					r, err = New(Config{FS: mapFS, Config: cfg, Sops: sops.NewReader(mapFS, testsops.Identities(t, "srv-1"))})
 				}
 				require.NoError(t, err)
 				_, err = r.ResolveHost(t.Context(), "test-host")
@@ -139,7 +128,7 @@ func TestReadSopsDataBadRefs(t *testing.T) {
 				}
 				require.ErrorContains(t, err, tt.want)
 				require.ErrorContains(t, err, tt.ref)
-				assertNoPlaintext(t, err)
+				testsops.AssertNoPlaintext(t, err)
 			})
 		}
 	}
@@ -150,11 +139,11 @@ func TestReadSopsDataWithoutReaderFails(t *testing.T) {
 	t.Parallel()
 	ref := "sops://secrets/db.sops.yaml#/db"
 	_, err := resolveSops(t, `{{ range readSopsData "`+ref+`" }}{{ . }}{{ end }}`,
-		map[string]string{"secrets/db.sops.yaml": sopsCorpusFile(t, "values.sops.yaml")}, false, false)
+		map[string]string{"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml")}, false, false)
 	require.ErrorIs(t, err, sops.ErrNoIdentity)
 	require.ErrorContains(t, err, fmt.Sprintf("readSopsData %q", ref))
 	require.ErrorContains(t, err, "set sops.age_identity_path")
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err)
 }
 
 // Strict mode (bootstrap, validate's Agent-bundle pass) fails on
@@ -166,11 +155,11 @@ func TestReadSopsDataStrictFails(t *testing.T) {
 		t.Run(fmt.Sprintf("keyless=%v", keyless), func(t *testing.T) {
 			t.Parallel()
 			_, err := resolveSops(t, `{{ range readSopsData "`+ref+`" }}{{ . }}{{ end }}`,
-				map[string]string{"secrets/db.sops.yaml": sopsCorpusFile(t, "values.sops.yaml")}, keyless, true)
+				map[string]string{"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml")}, keyless, true)
 			require.ErrorContains(t, err, fmt.Sprintf("readSopsData %q: SOPS values can't be used in strict mode", ref))
 			require.ErrorContains(t, err, "deliver the value as a --secrets-dir file and point the Agent config at its path; "+
 				"credentials needed to fetch the Fleet can't be SOPS values")
-			assertNoPlaintext(t, err)
+			testsops.AssertNoPlaintext(t, err)
 		})
 	}
 }
@@ -221,7 +210,7 @@ func TestReadSopsDataRejectedInUnitFiles(t *testing.T) {
 				require.ErrorIs(t, err, ErrSopsInUnitFile)
 				require.ErrorContains(t, err, tt.file+`: readSopsData "`+guardRef+`": `+
 					"SOPS values can't be rendered into "+tt.kind)
-				assertNoPlaintext(t, err)
+				testsops.AssertNoPlaintext(t, err)
 				assert.False(t, rec.asked(guardRef), "the decrypting reader must not be asked for a guarded ref")
 			})
 		}

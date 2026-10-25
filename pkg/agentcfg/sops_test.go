@@ -8,16 +8,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/sops"
 )
-
-// testIdentity returns the TEST-ONLY corpus identity called name.
-func testIdentity(t *testing.T, name string) []byte {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sops", "identities", name+".agekey"))
-	require.NoError(t, err)
-	return data
-}
 
 func TestParseSopsBlockRequiresIdentityPath(t *testing.T) {
 	t.Parallel()
@@ -46,7 +39,7 @@ func TestLoadSopsIdentities(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "age-identity")
-	both := append(testIdentity(t, "srv-1"), testIdentity(t, "srv-2")...)
+	both := testsops.IdentityFile(t, "srv-1", "srv-2")
 	require.NoError(t, os.WriteFile(path, both, 0o600))
 	cfg := Config{Sops: &SopsConfig{AgeIdentityPath: path}}
 
@@ -100,7 +93,8 @@ func TestLoadSopsIdentitiesBrokenFile(t *testing.T) {
 			// The startup checks, and with them the self-restart guard,
 			// refuse the same file.
 			cfg.Hostname, cfg.RepoURL = "node-1", "https://example.com/fleet.git"
-			require.Error(t, cfg.CheckStartup())
+			_, err = cfg.CheckStartup()
+			require.Error(t, err)
 		})
 	}
 }
@@ -116,7 +110,7 @@ func TestCheckRenderedRejectsMissingIdentityFile(t *testing.T) {
 func TestCheckStartupAcceptsIdentityFile(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "age-identity")
-	require.NoError(t, os.WriteFile(path, testIdentity(t, "srv-1"), 0o600))
+	require.NoError(t, os.WriteFile(path, testsops.IdentityFile(t, "srv-1"), 0o600))
 	err := CheckRenderedConfig([]byte("hostname: node-1\nrepo_url: https://example.com/fleet.git\nsops:\n  age_identity_path: "+path+"\n"), nil)
 	require.NoError(t, err)
 }
@@ -125,7 +119,7 @@ func TestLoadRejectsIdentityFileSharedWithAnotherCredential(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "age-identity")
-	require.NoError(t, os.WriteFile(path, testIdentity(t, "srv-1"), 0o600))
+	require.NoError(t, os.WriteFile(path, testsops.IdentityFile(t, "srv-1"), 0o600))
 	cfgPath := filepath.Join(dir, "config.yml")
 	require.NoError(t, os.WriteFile(cfgPath, []byte("hostname: node-1\ngit_token_path: "+path+"\nsops:\n  age_identity_path: "+path+"\n"), 0o600))
 	_, err := Load(cfgPath)

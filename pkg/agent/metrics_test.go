@@ -107,8 +107,8 @@ func TestRecordHealthMetrics_RunRecordLifecycle(t *testing.T) {
 // including pod, image and build — and none for the unsupported artifact row.
 func TestSetFilesManagedMetric(t *testing.T) {
 	t.Parallel()
-	// Its own gauge: parallel Agent tests write metrics.FilesManagedTotal.
-	gauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_files_managed_total"}, []string{"category"})
+	store := status.NewStore()
+	collector := metrics.NewFilesManagedCollector(store)
 
 	// Distinct non-zero counts: a missing label would read back as 0.
 	counts := map[string]float64{
@@ -124,11 +124,20 @@ func TestSetFilesManagedMetric(t *testing.T) {
 		"file":      10,
 		"secret":    11,
 	}
-	setFilesManaged(gauge, counts)
+	setFilesManaged(store, counts)
 
-	require.Equal(t, len(counts), testutil.CollectAndCount(gauge))
+	require.Equal(t, len(counts), testutil.CollectAndCount(collector))
+	got := map[string]float64{}
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(collector)
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	for _, family := range families {
+		for _, m := range family.GetMetric() {
+			got[m.GetLabel()[0].GetValue()] = m.GetGauge().GetValue()
+		}
+	}
 	for category, want := range counts {
-		got := testutil.ToFloat64(gauge.WithLabelValues(category))
-		assert.InDelta(t, want, got, 0.001, "category %s", category)
+		assert.InDelta(t, want, got[category], 0.001, "category %s", category)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/sops"
 )
@@ -56,7 +57,7 @@ func resolveDirectSops(t *testing.T, secrets []string, files map[string]string, 
 	case sopsKeyless:
 		r, err = NewKeyless(rc)
 	case sopsDecrypting:
-		rc.Sops = sops.NewReader(fsys, corpusIDs(t, "srv-1"))
+		rc.Sops = sops.NewReader(fsys, testsops.Identities(t, "srv-1"))
 		r, err = New(rc)
 	case sopsNoReader:
 		r, err = New(rc)
@@ -69,8 +70,8 @@ func resolveDirectSops(t *testing.T, secrets []string, files map[string]string, 
 func directSopsFiles(t *testing.T) map[string]string {
 	t.Helper()
 	return map[string]string{
-		"secrets/db.sops.yaml": sopsCorpusFile(t, "values.sops.yaml"),
-		"secrets/tls.sops.pem": sopsCorpusFile(t, "tls.sops.pem"),
+		"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml"),
+		"secrets/tls.sops.pem": testsops.CorpusText(t, "tls.sops.pem"),
 	}
 }
 
@@ -176,7 +177,7 @@ func TestDirectSopsSecretErrors(t *testing.T) {
 				for _, want := range tt.want {
 					require.ErrorContains(t, err, want)
 				}
-				assertNoPlaintext(t, err)
+				testsops.AssertNoPlaintext(t, err)
 			})
 		}
 	}
@@ -203,7 +204,7 @@ func TestDirectSopsSecretKeylessRecipientChecks(t *testing.T) {
 			_, err := resolveDirectSops(t, []string{ref}, files, sopsKeyless, false)
 			require.ErrorContains(t, err, ref)
 			require.ErrorContains(t, err, tt.want)
-			assertNoPlaintext(t, err)
+			testsops.AssertNoPlaintext(t, err)
 		})
 	}
 }
@@ -218,7 +219,7 @@ func TestDirectSopsSecretWithoutReaderFails(t *testing.T) {
 	assert.Nil(t, resolved)
 	require.ErrorContains(t, err, ref)
 	require.ErrorContains(t, err, "no age identity configured; set sops.age_identity_path in the Agent config")
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err)
 }
 
 // Strict mode (bootstrap, validate's Agent-bundle pass) fails a direct
@@ -235,7 +236,7 @@ func TestDirectSopsSecretStrictFails(t *testing.T) {
 			require.ErrorContains(t, err, "direct secrets "+ref+": SOPS values can't be used in strict mode; "+
 				"deliver the value as a --secrets-dir file and point the Agent config at its path; "+
 				"credentials needed to fetch the Fleet can't be SOPS values")
-			assertNoPlaintext(t, err)
+			testsops.AssertNoPlaintext(t, err)
 		})
 	}
 }

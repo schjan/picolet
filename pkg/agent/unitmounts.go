@@ -78,9 +78,13 @@ type mount struct {
 // unitMounts lists the mounts unit's [Container] group declares, read as
 // Quadlet reads them: Volume= (source:target[:options]), Mount= (every
 // type), Tmpfs= and Secret= (type=mount, the default), then the mounts its
-// PodmanArgs= pass to podman run (podmanArgsMounts).
-func unitMounts(unit *parser.UnitFile) []mount {
-	var mounts []mount
+// PodmanArgs= pass to podman run (-v/--volume, --mount, --tmpfs, --secret; a
+// .volume source there is a volume name, not a unit). It returns apart the
+// PodmanArgs= options that mount something the guard cannot read
+// (--volumes-from, which mounts what another container mounts), each as
+// "flag value". A flag is read wherever it appears, even as another flag's
+// value, so a mount is never missed.
+func unitMounts(unit *parser.UnitFile) (mounts []mount, opaque []string) {
 	for _, volume := range unit.LookupAll("Container", "Volume") {
 		mounts = append(mounts, parseVolume(volume))
 	}
@@ -97,28 +101,24 @@ func unitMounts(unit *parser.UnitFile) []mount {
 			mounts = append(mounts, m)
 		}
 	}
-	mounts, _ = podmanArgsMounts(unit, mounts)
-	return mounts
+	podmanArgsValues(unit, podmanMountFlags, func(flag, value string) {
+		if flag == "volumes-from" {
+			opaque = append(opaque, "--"+flag+" "+value)
+		} else if m, ok := parsePodmanMount(flag, value); ok {
+			mounts = append(mounts, m)
+		}
+	})
+	return mounts, opaque
 }
 
-// opaqueMounts lists the options unit's PodmanArgs= pass to podman run that
-// mount something the guard cannot read (--volumes-from, which mounts what
-// another container mounts), each as "flag value".
-func opaqueMounts(unit *parser.UnitFile) []string {
-	_, opaque := podmanArgsMounts(unit, nil)
-	return opaque
-}
-
-// podmanArgsMounts appends to mounts the mounts unit's PodmanArgs= pass to
-// podman run (-v/--volume, --mount, --tmpfs, --secret; a .volume source
-// there is a volume name, not a unit), and returns the opaque ones
-// (opaqueMounts) apart. A flag is read wherever it appears, even as another
-// flag's value, so a mount is never missed.
-func podmanArgsMounts(unit *parser.UnitFile, mounts []mount) ([]mount, []string) {
-	var opaque []string
+// podmanArgsValues calls each, in order, with every flag of unit's
+// PodmanArgs= that spec recognizes (podmanFlag) and its value (the next
+// argument when the flag carries none; a flag at the end without one is
+// dropped).
+func podmanArgsValues(unit *parser.UnitFile, spec flagSpec, each func(flag, value string)) {
 	args := unit.LookupAllArgs("Container", "PodmanArgs")
 	for i := 0; i < len(args); i++ {
-		flag, value, hasValue := podmanMountFlag(args[i])
+		flag, value, hasValue := podmanFlag(args[i], spec)
 		if flag == "" {
 			continue
 		}
@@ -129,13 +129,8 @@ func podmanArgsMounts(unit *parser.UnitFile, mounts []mount) ([]mount, []string)
 			i++
 			value = args[i]
 		}
-		if flag == "volumes-from" {
-			opaque = append(opaque, "--"+flag+" "+value)
-		} else if m, ok := parsePodmanMount(flag, value); ok {
-			mounts = append(mounts, m)
-		}
+		each(flag, value)
 	}
-	return mounts, opaque
 }
 
 // parsePodmanMount parses the value of the podman run mount flag flag (its
@@ -154,27 +149,34 @@ func parsePodmanMount(flag, value string) (mount, bool) {
 	}
 }
 
-// podmanMountLongFlags are the podman run flags that mount something.
-var podmanMountLongFlags = []string{"volume", "mount", "tmpfs", "secret", "volumes-from"}
+// flagSpec names podman run flags to look for: their long names, and the
+// one-letter flag short, whose long name is shortName.
+type flagSpec struct {
+	longs     []string
+	short     rune
+	shortName string
+}
+
+// podmanMountFlags are the podman run flags that mount something.
+var podmanMountFlags = flagSpec{
+	longs: []string{"volume", "mount", "tmpfs", "secret", "volumes-from"},
+	short: 'v', shortName: "volume",
+}
+
+// podmanWorkdirFlags is podman run's working-directory flag.
+var podmanWorkdirFlags = flagSpec{longs: []string{"workdir"}, short: 'w', shortName: "workdir"}
 
 // podmanValueShorthands are podman run's one-letter flags that take a value.
 const podmanValueShorthands = "acehlmpuvw"
 
-// podmanMountFlag reports the mount flag arg starts (its long name, "" for
-// none) and the value it carries: --flag=value, -vvalue or -v=value, also
-// after one-letter boolean flags (-dv). hasValue is false when the value is
-// the next argument.
-func podmanMountFlag(arg string) (flag, value string, hasValue bool) {
-	return podmanFlag(arg, podmanMountLongFlags, 'v', "volume")
-}
-
-// podmanFlag reports which of the podman run flags longs (long names) or
-// the one-letter flag short (long name shortName) arg starts ("" for none)
-// and the value it carries, as podmanMountFlag does.
-func podmanFlag(arg string, longs []string, short rune, shortName string) (flag, value string, hasValue bool) {
+// podmanFlag reports which of spec's podman run flags arg starts, by its
+// long name ("" for none), and the value it carries: --flag=value, -vvalue
+// or -v=value, also after one-letter boolean flags (-dv). hasValue is false
+// when the value is the next argument.
+func podmanFlag(arg string, spec flagSpec) (flag, value string, hasValue bool) {
 	if long, ok := strings.CutPrefix(arg, "--"); ok {
 		name, value, hasValue := strings.Cut(long, "=")
-		if !slices.Contains(longs, name) {
+		if !slices.Contains(spec.longs, name) {
 			return "", "", false
 		}
 		return name, value, hasValue
@@ -185,9 +187,9 @@ func podmanFlag(arg string, longs []string, short rune, shortName string) (flag,
 	}
 	for i, c := range cluster {
 		switch {
-		case c == short:
+		case c == spec.short:
 			value := strings.TrimPrefix(cluster[i+1:], "=")
-			return shortName, value, value != ""
+			return spec.shortName, value, value != ""
 		case strings.ContainsRune(podmanValueShorthands, c):
 			return "", "", false
 		}
@@ -202,21 +204,9 @@ func podmanFlag(arg string, longs []string, short rune, shortName string) (flag,
 func workingDir(unit *parser.UnitFile) (dir string, set bool) {
 	dir, _ = unit.Lookup("Container", "WorkingDir")
 	set = dir != "" // Quadlet skips an empty WorkingDir=
-	args := unit.LookupAllArgs("Container", "PodmanArgs")
-	for i := 0; i < len(args); i++ {
-		flag, value, hasValue := podmanFlag(args[i], []string{"workdir"}, 'w', "workdir")
-		if flag == "" {
-			continue
-		}
-		if !hasValue {
-			if i+1 == len(args) {
-				break
-			}
-			i++
-			value = args[i]
-		}
+	podmanArgsValues(unit, podmanWorkdirFlags, func(_, value string) {
 		dir, set = value, true
-	}
+	})
 	return dir, set
 }
 

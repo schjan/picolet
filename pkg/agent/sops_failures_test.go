@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/internal/testlog"
+	"github.com/schjan/picolet/internal/testsops"
 	appliermocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
@@ -32,12 +33,12 @@ import (
 // renders the same files: nothing is written and nothing restarts.
 func TestAgentReencryptedSopsFileChangesNothing(t *testing.T) {
 	t.Parallel()
-	h := newSopsHarness(t, sopsFleet(dbPasswordSecret, map[string]string{"secrets/db.sops.yaml": sopsCorpus(t, "values.sops.yaml")}),
+	h := newSopsHarness(t, sopsFleet(dbPasswordSecret, map[string]string{"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml")}),
 		writeIdentityFile(t, "srv-1"))
 	require.NoError(t, h.tick(t))
 	require.Equal(t, "hunter2-test", h.secret("db_password"))
 
-	pushToTestRepo(t, h.bareDir, map[string]string{"secrets/db.sops.yaml": sopsCorpus(t, "values-reencrypted.sops.yaml")})
+	pushToTestRepo(t, h.bareDir, map[string]string{"secrets/db.sops.yaml": testsops.CorpusText(t, "values-reencrypted.sops.yaml")})
 	h.reset()
 	require.NoError(t, h.tick(t))
 
@@ -72,7 +73,7 @@ func TestAgentSopsDecryptFailures(t *testing.T) {
 			if tc.identities != nil {
 				identityPath = writeIdentityFile(t, tc.identities...)
 			}
-			h := newSopsHarness(t, sopsFleet(dbPasswordSecret, map[string]string{"secrets/db.sops.yaml": sopsCorpus(t, tc.file)}), identityPath)
+			h := newSopsHarness(t, sopsFleet(dbPasswordSecret, map[string]string{"secrets/db.sops.yaml": testsops.CorpusText(t, tc.file)}), identityPath)
 
 			err := h.tick(t)
 			require.ErrorIs(t, err, tc.want)
@@ -117,7 +118,7 @@ func TestAgentScrubsDecryptedValuesFromErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			files := sopsFleet(`{{ readSopsSecret "sops://secrets/db.sops.yaml#/tokens/0" }}`, map[string]string{
-				"secrets/db.sops.yaml":   sopsCorpus(t, "values.sops.yaml"),
+				"secrets/db.sops.yaml":   testsops.CorpusText(t, "values.sops.yaml"),
 				"manifests/app.yml.tmpl": tc.manifest,
 			}, "manifests/app.yml.tmpl")
 			h := newSopsHarness(t, files, writeIdentityFile(t, "srv-1"))
@@ -151,7 +152,7 @@ func TestScrubErrorKeepsErrorsIs(t *testing.T) {
 	plain := errors.New("plain")
 	assert.Same(t, plain, scrubError(nil, plain))
 
-	reader := sops.NewReader(os.DirFS(sopsCorpusDir), mustIdentities(t, "srv-1"))
+	reader := sops.NewReader(os.DirFS(testsops.Dir), testsops.Identities(t, "srv-1"))
 	_, err := reader.ReadAll(t.Context(), []string{"sops://corpus/values.sops.yaml#/db/password"})
 	require.NoError(t, err)
 	assert.Same(t, plain, scrubError(reader, plain), "nothing to scrub: the error as is")
@@ -164,15 +165,6 @@ func TestScrubErrorKeepsErrorsIs(t *testing.T) {
 	require.NoError(t, errors.Unwrap(scrubbed))
 	_, ok := errors.AsType[*applier.HookFallbackError](scrubbed)
 	assert.False(t, ok)
-}
-
-func mustIdentities(t *testing.T, names ...string) *sops.Identities {
-	t.Helper()
-	data, err := os.ReadFile(writeIdentityFile(t, names...))
-	require.NoError(t, err)
-	ids, err := sops.ParseIdentities(data)
-	require.NoError(t, err)
-	return ids
 }
 
 // A broken identity file stops the Agent at startup.
@@ -228,7 +220,7 @@ func TestAgentWarnsOnGroupReadableIdentityFile(t *testing.T) {
 func TestAgentScrubsDecryptedValuesFromNoChangesValidation(t *testing.T) {
 	t.Parallel()
 	files := sopsFleet(`{{ readSopsSecret "sops://secrets/db.sops.yaml#/tokens/0" }}`, map[string]string{
-		"secrets/db.sops.yaml":   sopsCorpus(t, "values.sops.yaml"),
+		"secrets/db.sops.yaml":   testsops.CorpusText(t, "values.sops.yaml"),
 		"manifests/app.yml.tmpl": "apiVersion: v1\nkind: {{ readSopsSecret \"sops://secrets/db.sops.yaml#/db/password\" }}\nmetadata:\n  name: app\n",
 	}, "manifests/app.yml.tmpl")
 	h := newSopsHarness(t, files, writeIdentityFile(t, "srv-1"))
@@ -287,7 +279,7 @@ func TestApplyScrubsLoggedErrors(t *testing.T) {
 	for message, run := range tests {
 		t.Run(message, func(t *testing.T) {
 			t.Parallel()
-			reader := sops.NewReader(os.DirFS(sopsCorpusDir), mustIdentities(t, "srv-1"))
+			reader := sops.NewReader(os.DirFS(testsops.Dir), testsops.Identities(t, "srv-1"))
 			_, err := reader.ReadAll(t.Context(), []string{"sops://corpus/values.sops.yaml#/db/password"})
 			require.NoError(t, err)
 			sys, pod, fw := newBareMocks(t)
@@ -308,7 +300,7 @@ func TestApplyScrubsLoggedErrors(t *testing.T) {
 func TestAgentCountsSopsSyncOnFailedTick(t *testing.T) {
 	t.Parallel()
 	files := sopsFleet(dbPasswordSecret, map[string]string{
-		"secrets/db.sops.yaml":   sopsCorpus(t, "values.sops.yaml"),
+		"secrets/db.sops.yaml":   testsops.CorpusText(t, "values.sops.yaml"),
 		"manifests/app.yml.tmpl": "apiVersion: v1\nkind: Pod\nmetadata: [unclosed\n",
 	}, "manifests/app.yml.tmpl")
 	h := newSopsHarness(t, files, writeIdentityFile(t, "srv-1"))
@@ -318,17 +310,6 @@ func TestAgentCountsSopsSyncOnFailedTick(t *testing.T) {
 	assert.Equal(t, uint64(1), syncs)
 	assert.True(t, synced)
 }
-
-// fixturePlaintexts are the values of testdata/sops/plain/values.yaml long
-// enough to be recognisable in a message.
-var fixturePlaintexts = []string{
-	"hunter2-test", "alpha-token", "beta-token", "gamma-secret", "srv1-pass",
-	"slash-key", "tilde-key", "5432", "0.75", "visible",
-}
-
-// hashLike matches a hex run as long as a truncated hash (SOPS's MAC is a
-// 128-digit SHA-512).
-var hashLike = regexp.MustCompile(`[0-9A-Fa-f]{32,}`)
 
 // runNoise matches what a tick's texts carry of their own and a short
 // fixture plaintext ("5432") could turn up in by chance: temp paths (random
@@ -341,7 +322,7 @@ func assertNoFixturePlaintext(t *testing.T, texts map[string]string) {
 	t.Helper()
 	assertNoFixtureLeak(t, texts)
 	for where, text := range texts {
-		assert.Empty(t, hashLike.FindAllString(text, -1), "%s carries a hash-like hex run", where)
+		assert.Empty(t, testsops.HexRun.FindAllString(text, -1), "%s carries a hash-like hex run", where)
 	}
 }
 
@@ -354,7 +335,7 @@ func assertNoFixtureLeak(t *testing.T, texts map[string]string) {
 	for where, text := range texts {
 		text = strings.ToLower(text)
 		masked := runNoise.ReplaceAllString(text, "")
-		for _, p := range fixturePlaintexts {
+		for _, p := range testsops.Plaintexts {
 			assert.NotContains(t, masked, strings.ToLower(p), "%s leaks a fixture plaintext", where)
 			sum256, sum512 := sha256.Sum256([]byte(p)), sha512.Sum512([]byte(p))
 			for _, sum := range []string{hex.EncodeToString(sum256[:]), hex.EncodeToString(sum512[:])} {

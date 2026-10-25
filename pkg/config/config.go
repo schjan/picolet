@@ -38,8 +38,14 @@ func SortedUnique(values []string) []string {
 // deployed from its own fleet bundle: "picolet" under the user systemd
 // instance, "picolet-system" under the system instance. Stopping or restarting
 // one of them synchronously kills the agent before it saves state.
+//
+// The unit names come from the Agent bundle names (agentServiceUser,
+// agentServiceSystem) because each bundle's container quadlet is named after
+// its bundle (picolet/picolet.container → picolet.service). Renaming a
+// bundle therefore changes which units the validator and applier treat as
+// the Agent's own; keep the two in step.
 func DefaultSelfUnits() []string {
-	return []string{"picolet.service", "picolet-system.service"}
+	return []string{agentServiceUser + ".service", agentServiceSystem + ".service"}
 }
 
 // IsDefaultSelfUnit reports whether unit is one of DefaultSelfUnits.

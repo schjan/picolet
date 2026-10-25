@@ -102,3 +102,35 @@ func (c *FailedSHACollector) Describe(ch chan<- *prometheus.Desc) {
 func (c *FailedSHACollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, float64(c.store.FailedSHACount()))
 }
+
+// FilesManagedCollector emits picolet_files_managed_total from the injected
+// *status.Store: one series per category the Agent recorded (every
+// deployable one), none before its first record.
+type FilesManagedCollector struct {
+	store *status.Store
+	desc  *prometheus.Desc
+}
+
+// NewFilesManagedCollector constructs the collector reading from store.
+func NewFilesManagedCollector(store *status.Store) *FilesManagedCollector {
+	return &FilesManagedCollector{
+		store: store,
+		desc: prometheus.NewDesc(
+			"picolet_files_managed_total",
+			"Current number of managed files by category.",
+			[]string{"category"}, nil,
+		),
+	}
+}
+
+// Describe implements prometheus.Collector.
+func (c *FilesManagedCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.desc
+}
+
+// Collect implements prometheus.Collector.
+func (c *FilesManagedCollector) Collect(ch chan<- prometheus.Metric) {
+	for category, n := range c.store.FilesManaged() {
+		ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, n, category)
+	}
+}

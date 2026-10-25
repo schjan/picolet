@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/internal/testlog"
+	"github.com/schjan/picolet/internal/testsops"
 	agentmocks "github.com/schjan/picolet/mocks/agent"
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
@@ -32,28 +33,12 @@ import (
 // dbPasswordSecret is a secret template reading the corpus' db password.
 const dbPasswordSecret = `{{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}` //nolint:gosec // G101: a template, not a credential
 
-// sopsCorpusDir is the TEST-ONLY SOPS fixture corpus.
-var sopsCorpusDir = filepath.Join("..", "..", "testdata", "sops")
-
-func sopsCorpus(t *testing.T, name string) string {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join(sopsCorpusDir, "corpus", name))
-	require.NoError(t, err)
-	return string(data)
-}
-
 // writeIdentityFile writes the TEST-ONLY corpus identities called names into
 // one identity file (mode 0600) and returns its path.
 func writeIdentityFile(t *testing.T, names ...string) string {
 	t.Helper()
-	var data []byte
-	for _, name := range names {
-		b, err := os.ReadFile(filepath.Join(sopsCorpusDir, "identities", name+".agekey"))
-		require.NoError(t, err)
-		data = append(data, b...)
-	}
 	path := filepath.Join(t.TempDir(), "age-identity")
-	require.NoError(t, os.WriteFile(path, data, 0o600)) //nolint:gosec // G703: a path below t.TempDir()
+	require.NoError(t, os.WriteFile(path, testsops.IdentityFile(t, names...), 0o600))
 	return path
 }
 
@@ -253,7 +238,7 @@ func TestAgentDeploysDecryptedSopsValues(t *testing.T) {
 			t.Parallel()
 			extra := map[string]string{}
 			for dst, src := range tc.files {
-				extra[dst] = sopsCorpus(t, src)
+				extra[dst] = testsops.CorpusText(t, src)
 			}
 			h := newSopsHarness(t, sopsFleet(tc.secret, extra), writeIdentityFile(t, tc.identities...))
 			require.NoError(t, h.tick(t))
@@ -281,7 +266,7 @@ picolet_secret_sync_total{provider="sops"} 1
 // restarts nothing.
 func TestAgentDeploysDirectSopsSecret(t *testing.T) {
 	t.Parallel()
-	files := sopsFleet("", map[string]string{"secrets/db.sops.yaml": sopsCorpus(t, "values.sops.yaml")})
+	files := sopsFleet("", map[string]string{"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml")})
 	delete(files, "secrets/db_password.tmpl")
 	files["assignments.yml"] = "base:\n  paths:\n    - quadlets/app.container\n" +
 		"  secrets:\n    - \"sops://secrets/db.sops.yaml#/db/password\"\n"
@@ -296,7 +281,7 @@ func TestAgentDeploysDirectSopsSecret(t *testing.T) {
 picolet_secrets_managed_count{provider="sops"} 1
 `), "picolet_secrets_managed_count"))
 
-	pushToTestRepo(t, h.bareDir, map[string]string{"secrets/db.sops.yaml": sopsCorpus(t, "values-reencrypted.sops.yaml")})
+	pushToTestRepo(t, h.bareDir, map[string]string{"secrets/db.sops.yaml": testsops.CorpusText(t, "values-reencrypted.sops.yaml")})
 	h.reset()
 	require.NoError(t, h.tick(t))
 	h.mu.Lock()
@@ -311,7 +296,7 @@ picolet_secrets_managed_count{provider="sops"} 1
 func TestAgentRecordsSopsValuesInState(t *testing.T) {
 	t.Parallel()
 	files := sopsFleet(dbPasswordSecret, map[string]string{
-		"secrets/db.sops.yaml": sopsCorpus(t, "values.sops.yaml"),
+		"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml"),
 		"files/pin.tmpl":       `pin={{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`,
 		"files/plain.txt":      "plain",
 	}, "files/pin.tmpl", "files/plain.txt")
@@ -336,7 +321,7 @@ func TestAgentRecordsSopsValuesInState(t *testing.T) {
 func TestAgentRefreshesSopsValuesOfUnchangedFile(t *testing.T) {
 	t.Parallel()
 	files := sopsFleet(dbPasswordSecret, map[string]string{
-		"secrets/db.sops.yaml": sopsCorpus(t, "values.sops.yaml"),
+		"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml"),
 		"files/pin.tmpl":       "pin=hunter2-test",
 	}, "files/pin.tmpl")
 	h := newSopsHarness(t, files, writeIdentityFile(t, "srv-1"))

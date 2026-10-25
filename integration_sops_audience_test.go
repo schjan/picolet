@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/validator"
@@ -21,7 +22,7 @@ func sopsOperatorsYML(t *testing.T, names ...string) *fstest.MapFile {
 	t.Helper()
 	y := ""
 	for _, n := range names {
-		y += n + ":\n  age_recipients:\n    - " + sopsRecipient(t, n) + "\n"
+		y += n + ":\n  age_recipients:\n    - " + testsops.Recipient(t, n) + "\n"
 	}
 	return data([]byte(y))
 }
@@ -54,10 +55,10 @@ func audienceFleet(t *testing.T) fstest.MapFS {
 			"  web:\n    secrets: [secrets/web.yml.tmpl]\n" +
 			"  db:\n    secrets: [\"sops://secrets/shared.sops.yaml#/tokens/0\"]\n" +
 			"features: {}\n")),
-		"hosts/web-a/host.yml":     data([]byte("hostname: web-a\nrole: web\nage_recipients:\n  - " + sopsRecipient(t, "srv-1") + "\n")),
-		"hosts/db-b/host.yml":      data([]byte("hostname: db-b\nrole: db\nage_recipients:\n  - " + sopsRecipient(t, "srv-2") + "\n")),
+		"hosts/web-a/host.yml":     data([]byte("hostname: web-a\nrole: web\nage_recipients:\n  - " + testsops.Recipient(t, "srv-1") + "\n")),
+		"hosts/db-b/host.yml":      data([]byte("hostname: db-b\nrole: db\nage_recipients:\n  - " + testsops.Recipient(t, "srv-2") + "\n")),
 		"secrets/web.yml.tmpl":     data([]byte(`password: {{ readSopsSecret (printf "sops://secrets/%s.sops.yaml#/db/password" "shared") }}` + "\n")),
-		"secrets/shared.sops.yaml": data(sopsCorpus(t, "values.sops.yaml")),
+		"secrets/shared.sops.yaml": data(testsops.CorpusFile(t, "values.sops.yaml")),
 		config.OperatorsFile:       sopsOperatorsYML(t, "operator-1"),
 	}
 }
@@ -78,7 +79,7 @@ func TestIntegrationValidateSOPSAudiencePasses(t *testing.T) {
 func TestIntegrationValidateSOPSAudienceFails(t *testing.T) {
 	t.Parallel()
 	const shared = "secrets/shared.sops.yaml"
-	srv1, srv2, op := sopsRecipient(t, "srv-1"), sopsRecipient(t, "srv-2"), sopsRecipient(t, "operator-1")
+	srv1, srv2, op := testsops.Recipient(t, "srv-1"), testsops.Recipient(t, "srv-2"), testsops.Recipient(t, "operator-1")
 	tests := []struct {
 		name   string
 		change func(fstest.MapFS)
@@ -109,7 +110,7 @@ func TestIntegrationValidateSOPSAudienceFails(t *testing.T) {
 		{
 			name: "unreferenced file",
 			change: func(fsys fstest.MapFS) {
-				fsys["secrets/old.sops.yaml"] = data(sopsCorpus(t, "encrypted-regex.sops.yaml")) // srv-1
+				fsys["secrets/old.sops.yaml"] = data(testsops.CorpusFile(t, "encrypted-regex.sops.yaml")) // srv-1
 			},
 			want: "`secrets/old.sops.yaml`: age recipient " + srv1 + " (owner: Host web-a) may not read it: " +
 				"no Host references the file, so only Operators may read it; " + audienceFixes("secrets/old.sops.yaml"),
@@ -123,7 +124,7 @@ func TestIntegrationValidateSOPSAudienceFails(t *testing.T) {
 			err := validateFleet(t, fsys)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.want)
-			assertNoPlaintext(t, err)
+			testsops.AssertNoPlaintext(t, err)
 		})
 	}
 }
@@ -136,14 +137,14 @@ func TestIntegrationValidateSOPSAudienceSkippedOnResolveFailure(t *testing.T) {
 	// The leak of the "cross-Host leak" case, plus a Host whose ref fails.
 	fsys["assignments.yml"] = data([]byte("base: {}\nroles:\n  web:\n    secrets: [secrets/web.yml.tmpl]\n" +
 		"  broken:\n    secrets: [secrets/broken.yml.tmpl]\nfeatures: {}\n"))
-	fsys["hosts/broken-c/host.yml"] = data([]byte("hostname: broken-c\nrole: broken\nage_recipients:\n  - " + sopsRecipient(t, "srv-3") + "\n"))
+	fsys["hosts/broken-c/host.yml"] = data([]byte("hostname: broken-c\nrole: broken\nage_recipients:\n  - " + testsops.Recipient(t, "srv-3") + "\n"))
 	fsys["secrets/broken.yml.tmpl"] = data([]byte(`x: {{ readSopsSecret "sops://secrets/gone.sops.yaml#/x" }}` + "\n"))
 
 	var logs bytes.Buffer
 	err := validateFleet(t, fsys, validator.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 	require.ErrorContains(t, err, "host broken-c: resolve")
 	assert.NotContains(t, err.Error(), "may not read it")
-	assertNoPlaintext(t, err)
+	testsops.AssertNoPlaintext(t, err)
 	assert.Contains(t, logs.String(), "skipping the SOPS audience pass")
 	assert.Contains(t, logs.String(), "broken-c")
 }
@@ -161,7 +162,7 @@ func TestIntegrationValidateWarnsOnPublishedTestRecipients(t *testing.T) {
 	var logs bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logs, nil))
 	require.NoError(t, validator.ValidateAll(t.Context(), fsys, r, cfg, validator.WithLogger(log)))
-	for _, want := range []string{"host=web-a", "host=db-b", "operator=operator-1", sopsRecipient(t, "srv-1")} {
+	for _, want := range []string{"host=web-a", "host=db-b", "operator=operator-1", testsops.Recipient(t, "srv-1")} {
 		assert.Contains(t, logs.String(), want)
 	}
 	assert.Contains(t, logs.String(), "published test recipient")

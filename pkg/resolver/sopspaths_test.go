@@ -1,36 +1,21 @@
 package resolver
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/config"
 )
-
-// sopsCorpusFile reads a file of the shared SOPS fixture corpus.
-func sopsCorpusFile(t *testing.T, name string) string {
-	t.Helper()
-	return sopsCorpusText(t, filepath.Join("corpus", name))
-}
-
-// sopsCorpusText reads a file of testdata/sops by its relative path.
-func sopsCorpusText(t *testing.T, name string) string {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sops", name))
-	require.NoError(t, err)
-	return string(data)
-}
 
 func TestResolveHostBundleSkipsSOPSFiles(t *testing.T) {
 	t.Parallel()
 	resolved, err := resolvePaths(t, "  services: [web]\n", bundleFiles("web", map[string]string{
 		"web.container":     pathsUnit,
-		"secrets.sops.yaml": sopsCorpusFile(t, "values.sops.yaml"),
-		"app.sops.env":      sopsCorpusFile(t, "values.sops.env"),
+		"secrets.sops.yaml": testsops.CorpusText(t, "values.sops.yaml"),
+		"app.sops.env":      testsops.CorpusText(t, "values.sops.env"),
 		"nested/.sops.yaml": "creation_rules: []\n",
 		".sops.yml":         "creation_rules: []\n",
 	}))
@@ -43,7 +28,7 @@ func TestResolveHostBundleSkipsSOPSFiles(t *testing.T) {
 func TestResolveHostBundleOfOnlySOPSFilesIsEmpty(t *testing.T) {
 	t.Parallel()
 	_, err := resolvePaths(t, "  services: [web]\n", bundleFiles("web", map[string]string{
-		"secrets.sops.yaml": sopsCorpusFile(t, "values.sops.yaml"),
+		"secrets.sops.yaml": testsops.CorpusText(t, "values.sops.yaml"),
 	}))
 	require.ErrorContains(t, err, "services/web: empty service bundle")
 }
@@ -52,9 +37,9 @@ func TestResolveHostPathsDirectorySkipsSOPSFiles(t *testing.T) {
 	t.Parallel()
 	resolved, err := resolvePaths(t, "  paths: [secrets/, files/]\n", map[string]string{
 		"secrets/api.yml":      "token: x\n",
-		"secrets/db.sops.yaml": sopsCorpusFile(t, "values.sops.yaml"),
+		"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml"),
 		"secrets/.sops.yaml":   "creation_rules: []\n",
-		"files/tls.sops.pem":   sopsCorpusFile(t, "tls.sops.pem"),
+		"files/tls.sops.pem":   testsops.CorpusText(t, "tls.sops.pem"),
 		"files/.sops.yaml":     "creation_rules: []\n",
 		"files/sops-notes.md":  "notes\n",
 		"files/app.sops":       "not a SOPS path: nothing follows the infix\n",
@@ -73,7 +58,7 @@ func TestResolveHostPathsDirectorySkipsSOPSFiles(t *testing.T) {
 func TestResolveHostPathsDeploysFilesWithSOPSInfixElsewhere(t *testing.T) {
 	t.Parallel()
 	resolved, err := resolvePaths(t, "  paths: [files/]\n", map[string]string{
-		"files/db.sops.yaml":      sopsCorpusFile(t, "values.sops.yaml"),
+		"files/db.sops.yaml":      testsops.CorpusText(t, "values.sops.yaml"),
 		"files/db.sops.yaml.bak":  "backup\n",
 		"files/db.sops.prod.yaml": "prod: true\n",
 	})
@@ -136,8 +121,8 @@ func TestResolveHostRejectsExplicitSOPSEntries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := resolvePaths(t, tt.base, map[string]string{
-				"secrets/db.sops.yaml":      sopsCorpusFile(t, "values.sops.yaml"),
-				"services/web/app.sops.env": sopsCorpusFile(t, "values.sops.env"),
+				"secrets/db.sops.yaml":      testsops.CorpusText(t, "values.sops.yaml"),
+				"services/web/app.sops.env": testsops.CorpusText(t, "values.sops.env"),
 				"files/.sops.yaml":          "creation_rules: []\n",
 				".sops.yml":                 "creation_rules: []\n",
 			})

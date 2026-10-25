@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/internal/testlog"
+	"github.com/schjan/picolet/internal/testsops"
 )
 
 // TEST-ONLY public keys of the picolet fixture corpus (testdata/sops).
@@ -51,7 +52,7 @@ func TestAgentWarnsOnIdentityDrift(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			files := sopsFleet(tc.secret, map[string]string{
-				"secrets/db.sops.yaml":     sopsCorpus(t, "values.sops.yaml"),
+				"secrets/db.sops.yaml":     testsops.CorpusText(t, "values.sops.yaml"),
 				"hosts/test-host/host.yml": driftHostYML(tc.recipients...),
 			})
 			h := newSopsHarness(t, files, writeIdentityFile(t, "srv-1"))

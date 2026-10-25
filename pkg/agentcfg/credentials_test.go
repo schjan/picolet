@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -177,4 +178,40 @@ func TestLoadRejectsCredentialSettingsNamingSameMissingPath(t *testing.T) {
 	_, err := Load(writeConfig(t, "hostname: n\ngit_token_path: {a}\nwebhook_secret_path: {b}\n", missing, missing+"/../absent"))
 	require.ErrorContains(t, err, "git_token_path")
 	require.ErrorContains(t, err, "webhook_secret_path")
+}
+
+// TestRefuseCredentialsCatchesCredentialRenamedIntoPlaceWithOldModTime pins
+// that the guard looks at disk on every call: a credential renamed into
+// place (or into a Dir credential) after an earlier call keeps its old
+// modification time, and must still be refused.
+func TestRefuseCredentialsCatchesCredentialRenamedIntoPlaceWithOldModTime(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	token := filepath.Join(dir, "git-token")
+	sessionDir := filepath.Join(dir, "session")
+	require.NoError(t, os.WriteFile(token, []byte("old"), 0o600))
+	require.NoError(t, os.Mkdir(sessionDir, 0o700))
+	other := filepath.Join(dir, "other")
+	require.NoError(t, os.WriteFile(other, []byte("x"), 0o600))
+
+	guard := RefuseCredentials([]Credential{
+		{Setting: "git_token_path", Path: token},
+		{Setting: "protonpass.session_dir", Path: sessionDir, Dir: true},
+	})
+	stat := func(path string) os.FileInfo {
+		t.Helper()
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		return info
+	}
+	require.NoError(t, guard(stat(other)), "first call: not a credential")
+
+	old := time.Now().Add(-time.Hour)
+	for _, dest := range []string{token, filepath.Join(sessionDir, "key")} {
+		staged := filepath.Join(dir, "staged")
+		require.NoError(t, os.WriteFile(staged, []byte("new"), 0o600))
+		require.NoError(t, os.Chtimes(staged, old, old))
+		require.NoError(t, os.Rename(staged, dest))
+		require.ErrorContains(t, guard(stat(dest)), "Agent credentials cannot be deployed", dest)
+	}
 }

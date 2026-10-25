@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/sops"
 )
 
@@ -28,7 +29,7 @@ func TestParseRecipientAcceptsX25519(t *testing.T) {
 func TestParseRecipientAcceptsHybridPostQuantum(t *testing.T) {
 	t.Parallel()
 
-	pq := corpusRecipient(t, "srv-pq")
+	pq := testsops.Recipient(t, "srv-pq")
 	require.True(t, strings.HasPrefix(pq, "age1pq1"))
 
 	r, err := sops.ParseRecipient(pq)

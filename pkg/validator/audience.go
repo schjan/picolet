@@ -104,18 +104,17 @@ func audienceError(path, label string, owners []string, unreferenced bool) error
 func warnPublishedTestRecipients(log *slog.Logger, cfg *config.Config, ops config.Operators) {
 	const msg = "age recipient is a published test recipient of picolet's fixture corpus; " +
 		"its identity is public, so never encrypt a real secret to it"
-	for _, name := range cfg.SortedHostnames() {
-		for _, r := range cfg.Hosts[name].AgeRecipients {
+	warn := func(kind, name string, recipients []sops.Recipient) {
+		for _, r := range recipients {
 			if sops.IsPublishedTestRecipient(r) {
-				log.Warn(msg, "host", name, "recipient", r.String())
+				log.Warn(msg, kind, name, "recipient", r.String())
 			}
 		}
 	}
+	for _, name := range cfg.SortedHostnames() {
+		warn("host", name, cfg.Hosts[name].AgeRecipients)
+	}
 	for _, op := range ops {
-		for _, r := range op.AgeRecipients {
-			if sops.IsPublishedTestRecipient(r) {
-				log.Warn(msg, "operator", op.Name, "recipient", r.String())
-			}
-		}
+		warn("operator", op.Name, op.AgeRecipients)
 	}
 }

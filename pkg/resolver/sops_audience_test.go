@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/config"
 )
 
@@ -16,7 +17,7 @@ import (
 // secrets: entry.
 func TestResolveHostRecordsSopsFiles(t *testing.T) {
 	t.Parallel()
-	values := sopsCorpusFile(t, "values.sops.yaml")
+	values := testsops.CorpusText(t, "values.sops.yaml")
 	tmpl := `a: {{ readSopsSecret "sops://secrets/a.sops.yaml#/db/password" }}
 {{- range $k, $v := readSopsData "sops://secrets/b.sops.yaml#/db" }}
 {{ $k }}: {{ $v }}
@@ -52,7 +53,7 @@ c: {{ readSopsSecret (printf "sops://hosts/%s/c.sops.yaml#/db/user" .Host.Hostna
 func TestResolveHostWithoutSopsRefsRecordsNoFiles(t *testing.T) {
 	t.Parallel()
 	resolved, err := resolveSops(t, "plain: value\n", map[string]string{
-		"secrets/db.sops.yaml": sopsCorpusFile(t, "values.sops.yaml"),
+		"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml"),
 	}, true, false)
 	require.NoError(t, err)
 	assert.Empty(t, resolved.SopsFiles)
@@ -62,14 +63,14 @@ func TestResolveHostWithoutSopsRefsRecordsNoFiles(t *testing.T) {
 // each see only their own files (run under -race).
 func TestResolveHostRecordsSopsFilesPerResolve(t *testing.T) {
 	t.Parallel()
-	values := sopsCorpusFile(t, "values.sops.yaml")
+	values := testsops.CorpusText(t, "values.sops.yaml")
 	extra := map[string]string{
 		"secrets/app.yml.tmpl": `v: {{ readSopsSecret (printf "sops://hosts/%s/app.sops.yaml#/db/user" .Host.Hostname) }}` + "\n",
 	}
 	const n = 8
 	for i := range n {
 		host := fmt.Sprintf("host-%d", i)
-		extra["hosts/"+host+"/host.yml"] = "hostname: " + host + "\nrole: node\nage_recipients:\n  - " + sopsRecipient(t, "srv-1") + "\n"
+		extra["hosts/"+host+"/host.yml"] = "hostname: " + host + "\nrole: node\nage_recipients:\n  - " + testsops.Recipient(t, "srv-1") + "\n"
 		extra["hosts/"+host+"/app.sops.yaml"] = values
 	}
 	fsys := pathsFleetFS("  secrets: [secrets/app.yml.tmpl]\n", extra)

@@ -46,8 +46,8 @@ func (r *Reader) ReadData(ctx context.Context, raw string) (any, error) {
 // structure (key names are cleartext) with every leaf's keyless value
 // (keylessFile.leaf): a placeholder of the leaf's type for an encrypted leaf
 // (Placeholder for a string), the decrypting Reader's value for a plaintext
-// one. Errors name ref. The file is read and inspected anew on
-// each call.
+// one. Errors name ref. It shares ReadAll's per-reader file cache, so each
+// file is read and inspected at most once.
 func (r *KeylessReader) ReadData(ctx context.Context, raw string) (any, error) {
 	ref, err := ParseRef(raw)
 	if err != nil {

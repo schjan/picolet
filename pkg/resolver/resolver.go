@@ -22,8 +22,6 @@ import (
 	"go.yaml.in/yaml/v4"
 
 	"github.com/schjan/picolet/pkg/config"
-	op "github.com/schjan/picolet/pkg/onepassword"
-	pp "github.com/schjan/picolet/pkg/protonpass"
 	"github.com/schjan/picolet/pkg/sops"
 )
 
@@ -580,30 +578,12 @@ func (r *Resolver) dataDestPath(logicalPath string) string {
 // (op://, pass:// or sops://) or a file-based secret. Parsing is pure — no
 // I/O.
 func (r *Resolver) secretDestPath(srcPath string) (string, error) {
-	if sops.IsRef(srcPath) {
-		parsed, err := sops.ParseRef(srcPath)
-		if err != nil {
-			return "", err
-		}
-		name, err := parsed.SecretName()
+	if p, ok := schemeOfRef(srcPath); ok {
+		name, err := p.secretName(srcPath)
 		if err != nil {
 			return "", err
 		}
 		return SecretDestPath(name), nil
-	}
-	if op.IsRef(srcPath) {
-		parsed, err := op.ParseOpRef(srcPath)
-		if err != nil {
-			return "", err
-		}
-		return SecretDestPath(parsed.PodmanSecretName()), nil
-	}
-	if pp.IsRef(srcPath) {
-		parsed, err := pp.ParseRef(srcPath)
-		if err != nil {
-			return "", err
-		}
-		return SecretDestPath(parsed.PodmanSecretName()), nil
 	}
 	filename := destFilename(srcPath)
 	return SecretDestPath(strings.TrimSuffix(filename, filepath.Ext(filename))), nil
@@ -652,7 +632,8 @@ func (r *Resolver) buildFiles(
 // isProviderRef reports whether a secrets entry is a provider ref (op://,
 // pass://, sops://) rather than a repo or host-only secret file.
 func isProviderRef(src string) bool {
-	return op.IsRef(src) || pp.IsRef(src) || sops.IsRef(src)
+	_, ok := schemeOfRef(src)
+	return ok
 }
 
 func detectCollisions(files []ResolvedFile) error {
@@ -900,18 +881,18 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 //nolint:nilnil // nil map signals "no provider-backed secrets to resolve"
 func (r *Resolver) batchResolveDirectSecrets(ctx context.Context, allSecrets []string) (map[string]string, error) {
 	refs := splitDirectRefs(allSecrets)
-	if len(refs.op) == 0 && len(refs.pp) == 0 && len(refs.sops) == 0 {
+	if len(refs) == 0 {
 		return nil, nil
 	}
 
 	results := make(map[string]string)
-	if err := r.resolveProviderRefs(ctx, ProviderOnePassword, r.opSecretReader, refs.op, results); err != nil {
+	if err := r.resolveProviderRefs(ctx, ProviderOnePassword, r.opSecretReader, refs[ProviderOnePassword], results); err != nil {
 		return nil, err
 	}
-	if err := r.resolveProviderRefs(ctx, ProviderProtonPass, r.ppSecretReader, refs.pp, results); err != nil {
+	if err := r.resolveProviderRefs(ctx, ProviderProtonPass, r.ppSecretReader, refs[ProviderProtonPass], results); err != nil {
 		return nil, err
 	}
-	if err := r.resolveSopsDirectRefs(ctx, refs.sops, results); err != nil {
+	if err := r.resolveSopsDirectRefs(ctx, refs[ProviderSops], results); err != nil {
 		return nil, err
 	}
 	if len(results) == 0 {
@@ -920,21 +901,12 @@ func (r *Resolver) batchResolveDirectSecrets(ctx context.Context, allSecrets []s
 	return results, nil
 }
 
-// directRefs are a secrets list's provider refs, split by scheme.
-type directRefs struct {
-	op, pp, sops []string
-}
-
-func splitDirectRefs(allSecrets []string) directRefs {
-	var refs directRefs
+// splitDirectRefs returns a secrets list's provider refs by provider.
+func splitDirectRefs(allSecrets []string) map[ProviderKey][]string {
+	refs := map[ProviderKey][]string{}
 	for _, path := range allSecrets {
-		switch {
-		case op.IsRef(path):
-			refs.op = append(refs.op, path)
-		case pp.IsRef(path):
-			refs.pp = append(refs.pp, path)
-		case sops.IsRef(path):
-			refs.sops = append(refs.sops, path)
+		if p, ok := schemeOfRef(path); ok {
+			refs[p.Key] = append(refs[p.Key], path)
 		}
 	}
 	return refs
@@ -951,7 +923,7 @@ func (r *Resolver) resolveSopsDirectRefs(ctx context.Context, refs []string, int
 		return nil
 	}
 	if r.strict {
-		return strictDirectError(ProviderSops, refs)
+		return schemeOf(ProviderSops).strictDirectError(refs)
 	}
 	reader := r.directSopsReader()
 	if reader == nil {
@@ -1007,7 +979,7 @@ func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, re
 	}
 	if reader == nil {
 		if r.strict {
-			return strictDirectError(name, refs)
+			return schemeOf(name).strictDirectError(refs)
 		}
 		r.logger.Warn("skipping secrets (provider not configured)", "provider", name, "count", len(refs))
 		return nil

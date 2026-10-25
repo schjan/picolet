@@ -47,9 +47,10 @@ type Reader struct {
 	fsys fs.FS
 	ids  *Identities
 
-	mu     sync.Mutex
-	files  map[string]fileResult
-	values map[string]struct{} // decrypted leaf values, for Scrub
+	mu      sync.Mutex
+	files   map[string]fileResult
+	values  map[string]struct{} // decrypted leaf values, for Scrub
+	needles []string            // scrubNeedles(values); nil until Scrubber needs it, reset when values grow
 }
 
 // NewReader returns a Reader over fsys (the Fleet root) that decrypts with
@@ -136,6 +137,7 @@ func (r *Reader) openFile(ctx context.Context, raw string, files map[string]file
 		files[ref.Path] = res
 		if res.err == nil {
 			res.plain.collectLeaves(r.values)
+			r.needles = nil
 		}
 	}
 	if res.err != nil {
@@ -151,24 +153,21 @@ type plainFile struct {
 }
 
 func (r *Reader) decryptFile(path string) (*plainFile, error) {
-	data, err := ReadFile(r.fsys, path)
+	f, err := InspectFile(r.fsys, path)
 	if err != nil {
 		return nil, err
 	}
-	return decrypt(path, data, r.ids)
+	return decrypt(path, f, r.ids)
 }
 
-// decrypt decrypts a SOPS file with ids through upstream's tree decrypt and
-// verifies the MAC the way upstream's cmd/sops/common.DecryptTree does (with
+// decrypt decrypts the SOPS file at path (inspected as f, whose tree it
+// decrypts in place) with ids through upstream's tree decrypt and verifies
+// the MAC the way upstream's cmd/sops/common.DecryptTree does (with
 // IgnoreMac false); keep the two in step on a SOPS upgrade. It mirrors
 // DecryptTree rather than calling it because upstream error strings are never
 // passed on: a type tag mismatch embeds the plaintext, and a MAC mismatch
 // prints a hash of it.
-func decrypt(path string, data []byte, ids *Identities) (*plainFile, error) {
-	f, err := Inspect(path, data)
-	if err != nil {
-		return nil, err
-	}
+func decrypt(path string, f *File, ids *Identities) (*plainFile, error) {
 	if !f.IsSOPS {
 		return nil, fmt.Errorf("%s: %w: %s", path, ErrNotSOPSFile, f.NotSOPSReason)
 	}
@@ -177,11 +176,7 @@ func decrypt(path string, data []byte, ids *Identities) (*plainFile, error) {
 	if err := checkRecipients(path, f, "this Host", ids.recipients); err != nil {
 		return nil, err
 	}
-	_, st := storeFor(path)
-	tree, err := st.LoadEncryptedFile(data)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w: cannot be parsed", path, ErrNotSOPSFile)
-	}
+	tree := f.parsedTree()
 	key, err := tree.Metadata.GetDataKeyWithKeyServices(
 		[]keyservice.KeyServiceClient{ageKeyService{ids: ids.ids}}, []string{"age"})
 	if err != nil {
@@ -196,7 +191,7 @@ func decrypt(path string, data []byte, ids *Identities) (*plainFile, error) {
 	if s, ok := fileMAC.(string); err != nil || !ok || subtle.ConstantTimeCompare([]byte(s), []byte(computedMAC)) != 1 {
 		return nil, editedError(path, "its MAC does not match its content", "edit values only with `sops edit %s`")
 	}
-	return &plainFile{store: st, branches: tree.Branches}, nil
+	return &plainFile{store: f.store, branches: tree.Branches}, nil
 }
 
 // checkRecipients returns an ErrNotRecipient error for the file at path when
@@ -253,11 +248,17 @@ func (p *plainFile) extract(ref Ref) (string, error) {
 	}
 	switch v.(type) {
 	case gsops.TreeBranch:
-		return "", fmt.Errorf("%w: %q is a map; a string ref must end at a leaf", ErrNotLeaf, ref.Pointer.String())
+		return "", notLeafError(NodeMap, ref.Pointer)
 	case []any:
-		return "", fmt.Errorf("%w: %q is a list; a string ref must end at a leaf", ErrNotLeaf, ref.Pointer.String())
+		return "", notLeafError(NodeList, ref.Pointer)
 	}
 	return p.leaf(v, ref.Pointer)
+}
+
+// notLeafError is the ErrNotLeaf error of a string ref whose pointer ptr
+// ends at a node of kind (a map or a list).
+func notLeafError(kind NodeKind, ptr Pointer) error {
+	return fmt.Errorf("%w: %q is a %s; a string ref must end at a leaf", ErrNotLeaf, ptr.String(), kind)
 }
 
 // leaf renders the leaf v found at ptr (see renderLeaf).

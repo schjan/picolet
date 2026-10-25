@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/schjan/picolet/internal/testsops"
 )
 
 // operatorsFleet is a two-Host Fleet (srv-1 declares the corpus recipient
@@ -14,7 +16,7 @@ import (
 func operatorsFleet(t *testing.T, body string) fstest.MapFS {
 	t.Helper()
 	fsys := topologyFleet(agentPorts, map[string]string{
-		"srv-1": "hostname: srv-1\nrole: node\nage_recipients:\n  - " + testRecipient(t, "srv-1") + "\n",
+		"srv-1": "hostname: srv-1\nrole: node\nage_recipients:\n  - " + testsops.Recipient(t, "srv-1") + "\n",
 		"srv-2": "hostname: srv-2\nrole: node\nuser: pi\n",
 	})
 	if body != "" {
@@ -32,7 +34,7 @@ func loadOperators(t *testing.T, fsys fstest.MapFS) (Operators, error) {
 
 func TestLoadOperators(t *testing.T) {
 	t.Parallel()
-	op, pq := testRecipient(t, "operator-1"), testRecipient(t, "srv-pq")
+	op, pq := testsops.Recipient(t, "operator-1"), testsops.Recipient(t, "srv-pq")
 	fsys := operatorsFleet(t, "bob:\n  age_recipients:\n    - "+pq+"\n"+
 		"alice:\n  age_recipients:\n    - "+strings.ToUpper(op)+"\n")
 
@@ -56,7 +58,7 @@ func TestLoadOperatorsMissingFileMeansNoOperators(t *testing.T) {
 
 func TestLoadOperatorsRejects(t *testing.T) {
 	t.Parallel()
-	op, srv1 := testRecipient(t, "operator-1"), testRecipient(t, "srv-1")
+	op, srv1 := testsops.Recipient(t, "operator-1"), testsops.Recipient(t, "srv-1")
 	tests := []struct{ name, body, want string }{
 		{
 			name: "unknown key",
