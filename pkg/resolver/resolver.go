@@ -408,7 +408,7 @@ func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*expansio
 func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*expansion, error) {
 	expanded, bundleErr := expandServiceBundles(r.fsys, fileSet.Services)
 	fromPaths, pathsErr := expandPathEntries(r.fsys, fileSet.Paths)
-	if err := errors.Join(bundleErr, pathsErr); err != nil {
+	if err := errors.Join(bundleErr, pathsErr, rejectPlainSOPSSecrets(fileSet.Secrets)); err != nil {
 		return nil, err
 	}
 	expanded.append(fromPaths)
