@@ -44,19 +44,21 @@ func TestLoadAllMalformedAgeRecipients(t *testing.T) {
 	// age_recipients: value of the wrong shape.
 	tests := []struct {
 		name, entry, value string
-		want               []string // the first follows "host srv-1: " in strict errors
+		wantPrefix         string   // follows "host srv-1: " in strict errors
+		want               []string // further fragments of the error
 	}{
-		{name: "malformed", entry: "age1notakey", want: []string{"age_recipients[1]: ", "is not an age recipient"}},
-		{name: "SSH", entry: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl", want: []string{"age_recipients[1]: ", "SSH recipients are not supported"}},
-		{name: "plugin", entry: "age1yubikey1qwt50d05nh5vutpdzmlg5wn80xq5negm4uj9ghv0snvdd3yysf5yw3rhl3t", want: []string{"age_recipients[1]: ", "plugin recipients are not supported"}},
-		{name: "map", value: "\n  srv: age1x\n", want: []string{"age_recipients: must be a list of age recipients"}},
-		{name: "string", value: " age1x\n", want: []string{"age_recipients: must be a list of age recipients"}},
-		{name: "nested list", value: "\n  - [age1x]\n", want: []string{"age_recipients[0]: must be a string"}},
-		{name: "map entry", value: "\n  - {key: age1x}\n", want: []string{"age_recipients[0]: must be a string"}},
+		{name: "malformed", entry: "age1notakey", wantPrefix: "age_recipients[1]: ", want: []string{"is not an age recipient"}},
+		{name: "SSH", entry: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl", wantPrefix: "age_recipients[1]: ", want: []string{"SSH recipients are not supported"}},
+		{name: "plugin", entry: "age1yubikey1qwt50d05nh5vutpdzmlg5wn80xq5negm4uj9ghv0snvdd3yysf5yw3rhl3t", wantPrefix: "age_recipients[1]: ", want: []string{"plugin recipients are not supported"}},
+		{name: "map", value: "\n  srv: age1x\n", wantPrefix: "age_recipients: must be a list of age recipients"},
+		{name: "string", value: " age1x\n", wantPrefix: "age_recipients: must be a list of age recipients"},
+		{name: "nested list", value: "\n  - [age1x]\n", wantPrefix: "age_recipients[0]: must be a string"},
+		{name: "map entry", value: "\n  - {key: age1x}\n", wantPrefix: "age_recipients[0]: must be a string"},
 	}
-	for _, lenient := range []bool{false, true} {
+	for _, mode := range []string{"strict", "lenient"} {
+		lenient := mode == "lenient"
 		for _, tt := range tests {
-			t.Run(map[bool]string{false: "strict/", true: "lenient/"}[lenient]+tt.name, func(t *testing.T) {
+			t.Run(mode+"/"+tt.name, func(t *testing.T) {
 				t.Parallel()
 				value := tt.value
 				if tt.entry != "" {
@@ -68,8 +70,8 @@ func TestLoadAllMalformedAgeRecipients(t *testing.T) {
 				})
 				if !lenient {
 					_, err := LoadAll(fsys)
-					require.ErrorContains(t, err, "host srv-1: "+tt.want[0])
-					for _, frag := range tt.want[1:] {
+					require.ErrorContains(t, err, "host srv-1: "+tt.wantPrefix)
+					for _, frag := range tt.want {
 						require.ErrorContains(t, err, frag)
 					}
 					return
@@ -79,7 +81,7 @@ func TestLoadAllMalformedAgeRecipients(t *testing.T) {
 				require.NoError(t, err)
 				assert.Empty(t, cfg.Hosts["srv-1"].AgeRecipients, "the malformed list is ignored")
 				assert.Len(t, cfg.Hosts["srv-2"].AgeRecipients, 1)
-				for _, frag := range append([]string{"level=WARN", "hosts/srv-1/host.yml"}, tt.want...) {
+				for _, frag := range append([]string{"level=WARN", "hosts/srv-1/host.yml", tt.wantPrefix}, tt.want...) {
 					assert.Contains(t, logs.String(), frag)
 				}
 			})
