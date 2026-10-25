@@ -26,9 +26,8 @@ func TestReconcileRebuildsOnContainerfileChangeAtHostDataDir(t *testing.T) {
 	writeTestFile(t, repoDir, "quadlets/app.container", "[Container]\nImage=app.build\n")
 	writeTestFile(t, repoDir, "files/app/Containerfile", "FROM alpine:1\n")
 
-	sys, pod, fw := newBareMocks(t)
 	cfg := &agentcfg.Config{Hostname: "test-host", SecretsDir: t.TempDir(), HostDataDir: "/srv/picolet"}
-	a := newTestAgent(t, cfg, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw), WithRepoPath(repoDir),
+	a, sys, pod, fw := newMockedAgent(t, cfg, WithRepoPath(repoDir),
 		WithDataDir(dataDir), WithQuadletDir(quadletDir), WithSystemdDir(t.TempDir()))
 	store := state.NewStore(filepath.Join(t.TempDir(), "state.json"))
 	containerfile := filepath.Join(dataDir, "files/app/Containerfile")

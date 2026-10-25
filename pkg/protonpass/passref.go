@@ -6,10 +6,7 @@
 // natively; Picolet only validates and forwards the URI.
 package protonpass
 
-import (
-	"fmt"
-	"strings"
-)
+import "github.com/schjan/picolet/internal/secretref"
 
 // Prefix is the URI scheme prefix for Proton Pass secret references.
 const Prefix = "pass://"
@@ -26,36 +23,14 @@ func IsRef(s string) bool {
 	return err == nil
 }
 
-// PassRef is a parsed pass:// secret reference.
-type PassRef struct {
-	Share string
-	Item  string
-	Field string
-}
+// PassRef is a parsed pass:// secret reference: an alias of the parser
+// shared with 1Password, whose Scope field is the share (the field was Share
+// before the parsers were shared). No code outside this module uses it.
+type PassRef = secretref.Ref
 
 // ParseRef parses a Proton Pass secret reference of the form
 // "pass://share/item/field". The field component may contain slashes
 // (e.g. "pass://share/item/section/field").
 func ParseRef(ref string) (PassRef, error) {
-	path, ok := strings.CutPrefix(ref, Prefix)
-	if !ok {
-		return PassRef{}, fmt.Errorf("invalid pass:// reference %q: missing pass:// prefix", ref)
-	}
-	parts := strings.SplitN(path, "/", 3)
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return PassRef{}, fmt.Errorf("invalid pass:// reference %q: expected pass://share/item/field", ref)
-	}
-	return PassRef{
-		Share: parts[0],
-		Item:  parts[1],
-		Field: parts[2],
-	}, nil
-}
-
-// PodmanSecretName returns the canonical Podman secret name derived from this reference.
-// "pass://share/item/field" produces "share_item_field". Slashes in the field
-// component are replaced with underscores.
-func (r PassRef) PodmanSecretName() string {
-	field := strings.ReplaceAll(r.Field, "/", "_")
-	return r.Share + "_" + r.Item + "_" + field
+	return secretref.Parse(Prefix, "share", ref)
 }

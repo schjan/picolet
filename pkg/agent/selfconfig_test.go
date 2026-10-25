@@ -1,32 +1,20 @@
 package agent
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
 )
-
-// initAgentBundleRepo creates a bare repo whose rootful test-host runs its
-// own Agent bundle (picolet-system) with the given rendered Agent config.
-func initAgentBundleRepo(t *testing.T, agentConfig string) (bareDir, headSHA string) {
-	t.Helper()
-	return initAgentBundleRepoWithUnit(t, agentBundleUnit(""), agentConfig)
-}
 
 // agentBundleUnit is the test Agent quadlet with the extra [Container] lines
 // mounts (Volume=/Secret= lines).
@@ -37,33 +25,22 @@ Secret=picolet_system_config,target=/etc/picolet/config.yml
 ` + mounts
 }
 
-// initAgentBundleRepoWithUnit is initAgentBundleRepo with the Agent quadlet's
-// content.
-func initAgentBundleRepoWithUnit(t *testing.T, unit, agentConfig string) (bareDir, headSHA string) {
-	t.Helper()
-	bareDir = filepath.Join(t.TempDir(), "bare.git")
-	workDir := filepath.Join(t.TempDir(), "work")
-	repo, err := git.PlainInit(workDir, false)
-	require.NoError(t, err)
-
-	writeTestFile(t, workDir, "fleet.yml", "images: {}\nports: {picolet_system_metrics: 9418}\n")
-	writeTestFile(t, workDir, "assignments.yml", "base:\n  services:\n    - picolet-system\n")
-	writeTestFile(t, workDir, "hosts/test-host/host.yml", "hostname: test-host\nrole: server\nfeatures: []\n")
-	writeTestFile(t, workDir, "services/picolet-system/picolet-system.container", unit)
-	writeTestFile(t, workDir, "services/picolet-system/secrets/picolet_system_config.yml", agentConfig)
-
-	wt, err := repo.Worktree()
-	require.NoError(t, err)
-	_, err = wt.Add(".")
-	require.NoError(t, err)
-	head, err := wt.Commit("initial", &git.CommitOptions{
-		Author: &object.Signature{Name: "test", Email: "test@test.com"},
-	})
-	require.NoError(t, err)
-	_, err = git.PlainClone(bareDir, true, &git.CloneOptions{URL: workDir})
-	require.NoError(t, err)
-	return bareDir, head.String()
+// agentBundleFiles is a Fleet whose rootful test-host runs its own Agent
+// bundle (picolet-system) with the Agent quadlet unit and the bundle secret
+// configName (picolet_system_config.yml, or a .tmpl of it) holding body.
+func agentBundleFiles(unit, configName, body string) map[string]string {
+	return map[string]string{
+		"fleet.yml":                "images: {}\nports: {picolet_system_metrics: 9418}\n",
+		"assignments.yml":          "base:\n  services:\n    - picolet-system\n",
+		"hosts/test-host/host.yml": "hostname: test-host\nrole: server\nfeatures: []\n",
+		"services/picolet-system/picolet-system.container": unit,
+		"services/picolet-system/secrets/" + configName:    body,
+	}
 }
+
+// mocksSelfConfig takes the calls of applying an Agent bundle: an apply's,
+// plus its secret creates and unit starts.
+const mocksSelfConfig = mocksApply | mockStarts | mockSecrets
 
 // TestAgentRefusesSelfConfigItCouldNotStartWith runs the Agent loop on a
 // Fleet that renders the Agent's own config: a config naming a missing
@@ -83,7 +60,7 @@ func TestAgentRefusesSelfConfigItCouldNotStartWith(t *testing.T) {
 	}{
 		{
 			name:      "missing credential file",
-			config:    "hostname: test-host\nrepo_url: https://example.com/fleet.git\nwebhook_secret_path: " + missing + "\n",
+			config:    *webhookConfig(missing),
 			wantError: []string{"webhook_secret_path", missing},
 		},
 		{
@@ -115,64 +92,39 @@ func TestAgentRefusesSelfConfigItCouldNotStartWith(t *testing.T) {
 // every wantError fragment.
 func runSelfConfigCase(t *testing.T, agentConfig string, wantError []string) {
 	t.Helper()
-	bareDir, headSHA := initAgentBundleRepo(t, agentConfig)
-	statePath := filepath.Join(t.TempDir(), "state.json")
-
-	sys, pod, fw := newBareMocks(t)
-	setupNoopMocks(sys, pod)
-	var written map[string][]byte
-	var createdSecrets []string
+	bareDir, headSHA := initFleetRepo(t, agentBundleFiles(agentBundleUnit(""), "picolet_system_config.yml", agentConfig))
+	h := newLoopHarness(t, bareDir)
+	h.cfg.PollInterval = 200 * time.Millisecond
+	// Only the applying case may write; the strict mocks fail the refusing
+	// cases on any write, on every tick until the failed-SHA gate closes.
+	h.mocks = mocksNoop
 	if len(wantError) == 0 {
-		// Only the applying case may write; the strict mocks fail the
-		// refusing cases on any write.
-		written = setupApplyMocks(sys, pod, fw)
-		pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
-		pod.EXPECT().SecretCreate(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-			RunAndReturn(func(_ context.Context, name string, _ []byte, _ bool) error {
-				createdSecrets = append(createdSecrets, name)
-				return nil
-			}).Maybe()
-		sys.EXPECT().StartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
+		h.mocks = mocksSelfConfig
 	}
+	h.runUntil(t, func() bool {
+		st, err := h.store.Load()
+		return err == nil && (st.AppliedSHA != "" || st.FailedCount >= 3)
+	})
 
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: 200 * time.Millisecond,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(filepath.Join(t.TempDir(), "clone")),
-		WithStatePath(statePath),
-	)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-	defer cancel()
-	require.NoError(t, a.Run(ctx))
-
-	st, err := state.NewStore(statePath).Load()
+	st, err := h.store.Load()
 	require.NoError(t, err)
 	if len(wantError) == 0 {
 		assert.Equal(t, headSHA, st.AppliedSHA)
 		assert.Empty(t, st.FailedSHA)
-		assert.Contains(t, createdSecrets, "picolet_system_config")
-		assert.Contains(t, written, "/etc/containers/systemd/picolet/picolet-system.container")
+		assert.Contains(t, h.created, "picolet_system_config")
+		assert.Contains(t, h.written, "/etc/containers/systemd/picolet/picolet-system.container")
 		return
 	}
 	assert.Equal(t, headSHA, st.FailedSHA, "the reconciliation fails like any pre-apply failure")
 	assert.Empty(t, st.AppliedSHA)
 	assert.Empty(t, st.ManagedFiles, "nothing is written")
 
-	_, err = a.ReconcileOnce(t.Context(), headSHA, state.NewState(), state.NewStore(filepath.Join(t.TempDir(), "state.json")))
+	_, err = h.a.ReconcileOnce(t.Context(), headSHA, state.NewState(), state.NewStore(filepath.Join(t.TempDir(), "state.json")))
 	require.Error(t, err)
 	for _, want := range wantError {
 		assert.Contains(t, err.Error(), want)
 	}
+	h.assertNothingWritten(t)
 }
 
 // TestAgentRefusesMountSwitchToSelfConfigItCouldNotStartWith covers a commit
@@ -185,57 +137,25 @@ func TestAgentRefusesMountSwitchToSelfConfigItCouldNotStartWith(t *testing.T) {
 		quadlet    = "services/picolet-system/picolet-system.container"
 		nextConfig = "services/picolet-system/secrets/picolet_system_config_next.yml"
 	)
-	bareDir, _ := initAgentBundleRepo(t, "hostname: test-host\nrepo_url: https://example.com/fleet.git\n")
+	bareDir, _ := initFleetRepo(t, agentBundleFiles(agentBundleUnit(""), "picolet_system_config.yml", "hostname: test-host\nrepo_url: https://example.com/fleet.git\n"))
 	pushToTestRepo(t, bareDir, map[string]string{
 		nextConfig: "hostname: test-host\nrepo_url: https://example.com/fleet.git\nno_such_key_ever: x\n",
 	})
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
-
-	sys, pod, fw := newBareMocks(t)
-	written := setupApplyMocks(sys, pod, fw)
-	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
-	pod.EXPECT().SecretCreate(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
-	sys.EXPECT().StartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Second,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(repoDir),
-		WithStatePath(statePath),
-	)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-	defer cancel()
-	require.NoError(t, a.Run(ctx))
-	store := state.NewStore(statePath)
-	st, err := store.Load()
-	require.NoError(t, err)
-	require.NotEmpty(t, st.AppliedSHA, "the first commit applies: its mounted config is valid")
-	require.Contains(t, st.ManagedFiles, "secret:picolet_system_config_next", "the next config is already managed")
+	h := newLoopHarness(t, bareDir)
+	h.mocks = mocksSelfConfig
+	h.runUntilApplied(t)
+	require.Contains(t, h.st.ManagedFiles, "secret:picolet_system_config_next", "the next config is already managed")
 
 	// Repoint only the mount; the managed secret stays unchanged (Noop).
-	writeTestFile(t, repoDir, quadlet, `[Container]
+	writeTestFile(t, h.repoDir, quadlet, `[Container]
 Image=ghcr.io/schjan/picolet:latest
 Secret=picolet_system_config_next,target=/etc/picolet/config.yml
 `)
-	clear(written)
-	_, err = a.ReconcileOnce(t.Context(), "switch-sha", st, store)
+	h.reset()
+	_, err := h.a.ReconcileOnce(t.Context(), "switch-sha", h.st, h.store)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no_such_key_ever")
-	assert.Empty(t, written, "nothing is written")
-	st2, err := store.Load()
-	require.NoError(t, err)
-	assert.Equal(t, st.AppliedSHA, st2.AppliedSHA)
+	h.assertNothingWritten(t)
 }
 
 // TestAgentRefusesDroppingMountedSelfConfig covers a commit that renames the
@@ -249,15 +169,17 @@ func TestAgentRefusesDroppingMountedSelfConfig(t *testing.T) {
 		oldConfig = "services/picolet-system/secrets/picolet_system_config.yml"
 		newConfig = "services/picolet-system/secrets/picolet_cfg.yml"
 	)
-	bareDir, _ := initAgentBundleRepo(t, "hostname: test-host\nrepo_url: https://example.com/fleet.git\n")
-	h := startSelfConfigAgent(t, bareDir)
+	bareDir, _ := initFleetRepo(t, agentBundleFiles(agentBundleUnit(""), "picolet_system_config.yml", "hostname: test-host\nrepo_url: https://example.com/fleet.git\n"))
+	h := newLoopHarness(t, bareDir)
+	h.mocks = mocksSelfConfig | mockSecretRemoves
+	h.runUntilApplied(t)
 	require.Contains(t, h.st.ManagedFiles, "secret:picolet_system_config", "the first commit renders the Agent config")
 
 	// Rename the config's file: the Fleet now resolves picolet_cfg, while
 	// the unit still mounts picolet_system_config.
 	require.NoError(t, os.Remove(filepath.Join(h.repoDir, oldConfig)))
 	writeTestFile(t, h.repoDir, newConfig, "hostname: test-host\nrepo_url: https://example.com/fleet.git\n")
-	h.clearWrites()
+	h.reset()
 	_, err := h.a.ReconcileOnce(t.Context(), "rename-sha", h.st, h.store)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "picolet_system_config")
@@ -266,84 +188,6 @@ func TestAgentRefusesDroppingMountedSelfConfig(t *testing.T) {
 	st, err := h.store.Load()
 	require.NoError(t, err)
 	assert.Contains(t, st.ManagedFiles, "secret:picolet_system_config")
-}
-
-// selfConfigHarness is an Agent whose Fleet's first commit has applied,
-// recording what the following reconciliations write.
-type selfConfigHarness struct {
-	a       *Agent
-	repoDir string
-	store   *state.Store
-	st      *state.State // after the first commit
-	written map[string][]byte
-	created []string // secrets
-	removed []string // secrets
-}
-
-// startSelfConfigAgent runs the Agent on the Fleet in bareDir until its first
-// commit applies; the harness holds that commit's writes until clearWrites.
-func startSelfConfigAgent(t *testing.T, bareDir string, opts ...Option) *selfConfigHarness {
-	t.Helper()
-	h := &selfConfigHarness{repoDir: filepath.Join(t.TempDir(), "clone")}
-	statePath := filepath.Join(t.TempDir(), "state.json")
-	sys, pod, fw := newBareMocks(t)
-	h.written = setupApplyMocks(sys, pod, fw)
-	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
-	pod.EXPECT().SecretCreate(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-		RunAndReturn(func(_ context.Context, name string, _ []byte, _ bool) error {
-			h.created = append(h.created, name)
-			return nil
-		}).Maybe()
-	pod.EXPECT().SecretRemove(mock.Anything, mock.Anything).
-		RunAndReturn(func(_ context.Context, name string) error {
-			h.removed = append(h.removed, name)
-			return nil
-		}).Maybe()
-	sys.EXPECT().StartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Second,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-	h.a = newTestAgent(t, cfg, append([]Option{
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(h.repoDir),
-		WithStatePath(statePath),
-	}, opts...)...)
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-	defer cancel()
-	require.NoError(t, h.a.Run(ctx))
-	h.store = state.NewStore(statePath)
-	var err error
-	h.st, err = h.store.Load()
-	require.NoError(t, err)
-	require.NotEmpty(t, h.st.AppliedSHA, "the first commit applies")
-	return h
-}
-
-// clearWrites forgets the writes recorded so far.
-func (h *selfConfigHarness) clearWrites() {
-	clear(h.written)
-	h.created, h.removed = nil, nil
-}
-
-// assertNothingWritten checks that no reconciliation since clearWrites wrote
-// a file or created or removed a secret, and that the applied SHA is still
-// the first commit's.
-func (h *selfConfigHarness) assertNothingWritten(t *testing.T) {
-	t.Helper()
-	assert.Empty(t, h.written, "nothing is written")
-	assert.Empty(t, h.created, "no secret is created")
-	assert.Empty(t, h.removed, "no secret is removed")
-	st, err := h.store.Load()
-	require.NoError(t, err)
-	assert.Equal(t, h.st.AppliedSHA, st.AppliedSHA)
 }
 
 // TestAgentChecksSelfConfigCredentialsThroughNewUnitMounts covers a commit
@@ -360,9 +204,6 @@ func TestAgentChecksSelfConfigCredentialsThroughNewUnitMounts(t *testing.T) {
 	seen := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(seen, "hook"), []byte("secret\n"), 0o600))
 	moved := filepath.Join(t.TempDir(), "not-mounted-here") // a target the running container lacks
-	config := func(hookPath string) string {
-		return "hostname: test-host\nrepo_url: https://example.com/fleet.git\nwebhook_secret_path: " + hookPath + "\n"
-	}
 	current := agentBundleUnit("Volume=/host/secrets:" + seen + ":ro\n")
 
 	tests := []struct {
@@ -374,42 +215,42 @@ func TestAgentChecksSelfConfigCredentialsThroughNewUnitMounts(t *testing.T) {
 		{
 			name:      "mount dropped",
 			unit:      agentBundleUnit(""),
-			config:    config(filepath.Join(seen, "hook")),
+			config:    *webhookConfig(filepath.Join(seen, "hook")),
 			wantError: []string{"webhook_secret_path", seen, "no longer mounts", "own commit"},
 		},
 		{
 			name:      "mount repointed at another source",
 			unit:      agentBundleUnit("Volume=/host/other:" + seen + ":ro\n"),
-			config:    config(filepath.Join(seen, "hook")),
+			config:    *webhookConfig(filepath.Join(seen, "hook")),
 			wantError: []string{"webhook_secret_path", "/host/other", "own commit"},
 		},
 		{
 			name:      "new mount and config in one commit",
 			unit:      current + "Volume=/host/new:" + moved + ":ro\n",
-			config:    config(filepath.Join(moved, "hook")),
+			config:    *webhookConfig(filepath.Join(moved, "hook")),
 			wantError: []string{"webhook_secret_path", "/host/new", "own commit"},
 		},
 		{
 			name:      "same source at a new target, file missing",
 			unit:      agentBundleUnit("Volume=/host/secrets/:" + moved + ":ro\n"),
-			config:    config(filepath.Join(moved, "absent")),
+			config:    *webhookConfig(filepath.Join(moved, "absent")),
 			wantError: []string{"webhook_secret_path", filepath.Join(seen, "absent"), "not readable"},
 		},
 		{
 			name:   "same source at a new target",
 			unit:   agentBundleUnit("Volume=/host/secrets/:" + moved + ":ro\n"),
-			config: config(filepath.Join(moved, "hook")),
+			config: *webhookConfig(filepath.Join(moved, "hook")),
 		},
 		{
 			name:   "mount kept",
 			unit:   current + "Volume=/host/data:/var/lib/picolet\n",
-			config: config(filepath.Join(seen, "hook")),
+			config: *webhookConfig(filepath.Join(seen, "hook")),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			runMountChangeCase(t, current, config(filepath.Join(seen, "hook")), tt.unit, tt.config, tt.wantError)
+			runMountChangeCase(t, current, *webhookConfig(filepath.Join(seen, "hook")), tt.unit, tt.config, tt.wantError)
 		})
 	}
 }
@@ -421,14 +262,11 @@ func TestAgentChecksSelfConfigCredentialsThroughSecretMounts(t *testing.T) {
 	seen := filepath.Join(t.TempDir(), "hook")
 	require.NoError(t, os.WriteFile(seen, []byte("secret\n"), 0o600))
 	moved := filepath.Join(t.TempDir(), "hook")
-	config := func(hookPath string) string {
-		return "hostname: test-host\nrepo_url: https://example.com/fleet.git\nwebhook_secret_path: " + hookPath + "\n"
-	}
 	current := agentBundleUnit("Secret=hook_secret,target=" + seen + "\n")
-	runMountChangeCase(t, current, config(seen),
-		agentBundleUnit("Secret=hook_secret,mode=0400,target="+moved+"\n"), config(moved), nil)
-	runMountChangeCase(t, current, config(seen),
-		agentBundleUnit("Secret=other_secret,target="+moved+"\n"), config(moved), []string{"secret other_secret", "own commit"})
+	runMountChangeCase(t, current, *webhookConfig(seen),
+		agentBundleUnit("Secret=hook_secret,mode=0400,target="+moved+"\n"), *webhookConfig(moved), nil)
+	runMountChangeCase(t, current, *webhookConfig(seen),
+		agentBundleUnit("Secret=other_secret,target="+moved+"\n"), *webhookConfig(moved), []string{"secret other_secret", "own commit"})
 }
 
 // runMountChangeCase applies a first commit with the Agent quadlet unit and
@@ -442,9 +280,11 @@ func runMountChangeCase(t *testing.T, unit, config, nextUnit, nextConfig string,
 		quadlet    = "services/picolet-system/picolet-system.container"
 		configFile = "services/picolet-system/secrets/picolet_system_config.yml"
 	)
-	bareDir, _ := initAgentBundleRepoWithUnit(t, unit, config)
+	bareDir, _ := initFleetRepo(t, agentBundleFiles(unit, "picolet_system_config.yml", config))
 	quadletDir := t.TempDir()
-	h := startSelfConfigAgent(t, bareDir, append([]Option{WithQuadletDir(quadletDir)}, opts...)...)
+	h := newLoopHarness(t, bareDir, append([]Option{WithQuadletDir(quadletDir)}, opts...)...)
+	h.mocks = mocksSelfConfig | mockSecretRemoves
+	h.runUntilApplied(t)
 	// The running Agent's container was started from the unit on disk; the
 	// mocked file writer wrote nothing there.
 	unitPath := filepath.Join(quadletDir, "picolet-system.container")
@@ -453,7 +293,7 @@ func runMountChangeCase(t *testing.T, unit, config, nextUnit, nextConfig string,
 
 	writeTestFile(t, h.repoDir, quadlet, nextUnit)
 	writeTestFile(t, h.repoDir, configFile, nextConfig)
-	h.clearWrites()
+	h.reset()
 	_, err := h.a.ReconcileOnce(t.Context(), "next-sha", h.st, h.store)
 	if len(wantError) == 0 {
 		require.NoError(t, err)
@@ -571,6 +411,44 @@ func webhookConfig(hookPath string) *string {
 	return new("hostname: test-host\nrepo_url: https://example.com/fleet.git\nwebhook_secret_path: " + hookPath + "\n")
 }
 
+// changeCase is one CheckSelfConfig table row.
+type changeCase struct {
+	name      string
+	change    selfConfigChange
+	wantError []string // empty: passes
+}
+
+// runChangeCases checks each case's change, after defaults (when not nil)
+// fills in what the table leaves out, in a parallel subtest.
+func runChangeCases(t *testing.T, cases []changeCase, defaults func(*selfConfigChange)) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if defaults != nil {
+				defaults(&tc.change)
+			}
+			assertRefusal(t, tc.change.check(t), tc.wantError)
+		})
+	}
+}
+
+// mountLines is the runChangeCases defaults for tables whose running and
+// next hold only the Agent quadlet's extra mount lines: it wraps both in
+// agentBundleUnit and sets config where a case leaves it nil.
+func mountLines(config *string) func(*selfConfigChange) {
+	return func(c *selfConfigChange) {
+		c.running, c.next = agentBundleUnit(c.running), agentBundleUnit(c.next)
+		if c.config == nil {
+			c.config = config
+		}
+	}
+}
+
+// runningAgentBundle is the runChangeCases defaults for tables whose cases
+// change the default Agent quadlet on disk.
+func runningAgentBundle(c *selfConfigChange) { c.running = agentBundleUnit("") }
+
 // A commit that changes the Agent quadlet's config mount, or drops it, while
 // the running Agent reads a Fleet-managed config is refused when the Agent's
 // next start would find no config: the mount names a secret the Fleet does
@@ -582,11 +460,7 @@ func TestCheckSelfConfigRefusesLosingFleetManagedConfig(t *testing.T) {
 	t.Parallel()
 	valid := new("hostname: test-host\nrepo_url: https://example.com/fleet.git\n")
 	renamed := resolver.ResolvedFile{DestPath: "secret:picolet_cfg", Category: config.CategorySecret, Content: *valid}
-	tests := []struct {
-		name      string
-		change    selfConfigChange
-		wantError []string // empty: passes
-	}{
+	runChangeCases(t, []changeCase{
 		{
 			name:      "repointed at an unresolved secret, old config kept",
 			change:    selfConfigChange{next: "[Container]\nImage=x\nSecret=picolet_typo,target=/etc/picolet/config.yml\n", config: valid},
@@ -625,14 +499,7 @@ func TestCheckSelfConfigRefusesLosingFleetManagedConfig(t *testing.T) {
 			name:   "repointed at another resolved secret",
 			change: selfConfigChange{next: "[Container]\nImage=x\nSecret=picolet_cfg,target=/etc/picolet/config.yml\n", files: []resolver.ResolvedFile{renamed}},
 		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			tt.change.running = agentBundleUnit("")
-			assertRefusal(t, tt.change.check(t), tt.wantError)
-		})
-	}
+	}, runningAgentBundle)
 }
 
 // A hand-managed config is a Host file (or directory) bind-mounted at the
@@ -640,11 +507,7 @@ func TestCheckSelfConfigRefusesLosingFleetManagedConfig(t *testing.T) {
 // it is refused while the running Agent reads a Fleet-managed one.
 func TestCheckSelfConfigHandManagedConfigIsHostPath(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name      string
-		change    selfConfigChange
-		wantError []string // empty: passes
-	}{
+	runChangeCases(t, []changeCase{
 		{
 			name:   "Host file in the user's home mounted at the config path",
 			change: selfConfigChange{next: "[Container]\nImage=x\nVolume=%h/.config/picolet/config.yml:/etc/picolet/config.yml:ro\n"},
@@ -668,29 +531,7 @@ func TestCheckSelfConfigHandManagedConfigIsHostPath(t *testing.T) {
 			change:    selfConfigChange{next: "[Container]\nImage=x\nMount=type=glob,src=/srv/*,dst=/etc/picolet\n"},
 			wantError: []string{"not a Host path"},
 		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			tt.change.running = agentBundleUnit("")
-			assertRefusal(t, tt.change.check(t), tt.wantError)
-		})
-	}
-}
-
-// The config mount is found however its target is spelled: Podman mounts
-// /etc/picolet//config.yml at the Agent config path too.
-func TestCheckSelfConfigFindsNonCanonicalConfigMount(t *testing.T) {
-	t.Parallel()
-	bad := new("hostname: test-host\nrepo_url: https://example.com/fleet.git\nno_such_key_ever: 1\n")
-	for _, target := range []string{"/etc/picolet//config.yml", "/etc/picolet/./config.yml", "/etc/picolet/sub/../config.yml"} {
-		err := selfConfigChange{
-			running: agentBundleUnit(""),
-			next:    "[Container]\nImage=x\nSecret=picolet_system_config,target=" + target + "\n",
-			config:  bad,
-		}.check(t)
-		require.ErrorContains(t, err, "no_such_key_ever", target)
-	}
+	}, runningAgentBundle)
 }
 
 // Mounts that shadow a credential's directory, and mounts of a type the
@@ -702,39 +543,35 @@ func TestCheckSelfConfigRefusesShadowedCredentials(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "hook"), []byte("x"), 0o600))
-	hook := webhookConfig(filepath.Join(dir, "hook"))
 	nested := webhookConfig(filepath.Join(dir, "sub", "hook"))
 	volume := "Volume=/srv/s:" + dir + "\n"
 	glob := "Mount=type=glob,src=/srv/s/*,dst=" + dir + "\n"
-	tests := []struct {
-		name      string
-		running   string
-		next      string
-		config    *string
-		wantError []string // empty: passes
-	}{
-		{name: "Tmpfs= over the mount", running: volume, next: volume + "Tmpfs=" + dir + "\n", config: hook, wantError: []string{dir, "mounts both"}},
-		{name: "Mount=type=tmpfs over the mount", running: volume, next: volume + "Mount=type=tmpfs,destination=" + dir + "\n", config: hook, wantError: []string{dir, "mounts both"}},
-		{name: "Tmpfs= below the mount", running: volume, next: volume + "Tmpfs=" + dir + "/sub\n", config: nested, wantError: []string{"own commit"}},
-		{name: "glob mount repointed", running: glob, next: "Mount=type=glob,src=/srv/other/*,dst=" + dir + "\n", config: hook, wantError: []string{"/srv/other/*", "own commit"}},
-		{name: "glob mount dropped", running: glob, next: "", config: hook, wantError: []string{"/srv/s/*", "no longer mounts"}},
-		{name: "glob mount kept", running: glob, next: glob, config: hook},
+	runChangeCases(t, []changeCase{
+		{name: "Tmpfs= over the mount", change: selfConfigChange{running: volume, next: volume + "Tmpfs=" + dir + "\n"}, wantError: []string{dir, "mounts both"}},
 		{
-			name: "nested mount dropped", running: volume + "Volume=/srv/b:" + dir + "/sub\n", next: volume, config: nested,
+			name: "Mount=type=tmpfs over the mount", change: selfConfigChange{running: volume, next: volume + "Mount=type=tmpfs,destination=" + dir + "\n"},
+			wantError: []string{dir, "mounts both"},
+		},
+		{name: "Tmpfs= below the mount", change: selfConfigChange{running: volume, next: volume + "Tmpfs=" + dir + "/sub\n", config: nested}, wantError: []string{"own commit"}},
+		{
+			name: "glob mount repointed", change: selfConfigChange{running: glob, next: "Mount=type=glob,src=/srv/other/*,dst=" + dir + "\n"},
+			wantError: []string{"/srv/other/*", "own commit"},
+		},
+		{name: "glob mount dropped", change: selfConfigChange{running: glob, next: ""}, wantError: []string{"/srv/s/*", "no longer mounts"}},
+		{name: "glob mount kept", change: selfConfigChange{running: glob, next: glob}},
+		{
+			name: "nested mount dropped", change: selfConfigChange{running: volume + "Volume=/srv/b:" + dir + "/sub\n", next: volume, config: nested},
 			wantError: []string{"/srv/b", "own commit"},
 		},
-		{name: "nested mount kept", running: volume + "Volume=/srv/b:" + dir + "/sub\n", next: volume + "Volume=/srv/b:" + dir + "/sub\n", config: nested},
+		{name: "nested mount kept", change: selfConfigChange{running: volume + "Volume=/srv/b:" + dir + "/sub\n", next: volume + "Volume=/srv/b:" + dir + "/sub\n", config: nested}},
 		{
-			name: "volume subpath changed", running: "Mount=type=volume,source=creds,subpath=a,destination=" + dir + "\n",
-			next: "Mount=type=volume,source=creds,subpath=b,destination=" + dir + "\n", config: hook, wantError: []string{"own commit"},
+			name: "volume subpath changed", change: selfConfigChange{
+				running: "Mount=type=volume,source=creds,subpath=a,destination=" + dir + "\n",
+				next:    "Mount=type=volume,source=creds,subpath=b,destination=" + dir + "\n",
+			},
+			wantError: []string{"own commit"},
 		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			assertRefusal(t, selfConfigChange{running: agentBundleUnit(tt.running), next: agentBundleUnit(tt.next), config: tt.config}.check(t), tt.wantError)
-		})
-	}
+	}, mountLines(webhookConfig(filepath.Join(dir, "hook"))))
 }
 
 // Mounts passed through PodmanArgs= are followed like Volume= ones: a
@@ -748,32 +585,18 @@ func TestCheckSelfConfigFollowsPodmanArgsMounts(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
 	args := "PodmanArgs=--volume /srv/s:" + dir + "\n"
 	from := "PodmanArgs=--volumes-from other\n"
-	tests := []struct {
-		name      string
-		running   string
-		next      string
-		wantError []string // empty: passes
-	}{
-		{name: "PodmanArgs= mount dropped", running: args, next: "", wantError: []string{"/srv/s", "no longer mounts", "own commit"}},
+	runChangeCases(t, []changeCase{
+		{name: "PodmanArgs= mount dropped", change: selfConfigChange{running: args, next: ""}, wantError: []string{"/srv/s", "no longer mounts", "own commit"}},
 		{
-			name: "PodmanArgs= mount swapped for another option", running: args, next: "PodmanArgs=--security-opt apparmor=unconfined\n",
+			name: "PodmanArgs= mount swapped for another option", change: selfConfigChange{running: args, next: "PodmanArgs=--security-opt apparmor=unconfined\n"},
 			wantError: []string{"/srv/s", "no longer mounts"},
 		},
-		{name: "PodmanArgs= mount added", running: "", next: args, wantError: []string{"/srv/s", "own commit"}},
-		{name: "PodmanArgs= mount kept", running: args, next: args},
-		{name: "PodmanArgs= mount moved to Volume=", running: args, next: "Volume=/srv/s:" + dir + "\n"},
-		{name: "--volumes-from on both units", running: from, next: from, wantError: []string{"--volumes-from other", "PodmanArgs="}},
-		{name: "--volumes-from dropped", running: from, next: "", wantError: []string{"--volumes-from other"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := selfConfigChange{
-				running: agentBundleUnit(tt.running), next: agentBundleUnit(tt.next), config: webhookConfig(filepath.Join(dir, "hook")),
-			}.check(t)
-			assertRefusal(t, err, tt.wantError)
-		})
-	}
+		{name: "PodmanArgs= mount added", change: selfConfigChange{running: "", next: args}, wantError: []string{"/srv/s", "own commit"}},
+		{name: "PodmanArgs= mount kept", change: selfConfigChange{running: args, next: args}},
+		{name: "PodmanArgs= mount moved to Volume=", change: selfConfigChange{running: args, next: "Volume=/srv/s:" + dir + "\n"}},
+		{name: "--volumes-from on both units", change: selfConfigChange{running: from, next: from}, wantError: []string{"--volumes-from other", "PodmanArgs="}},
+		{name: "--volumes-from dropped", change: selfConfigChange{running: from, next: ""}, wantError: []string{"--volumes-from other"}},
+	}, mountLines(webhookConfig(filepath.Join(dir, "hook"))))
 }
 
 // A credential whose mount source the same commit changes (the secret or the
@@ -786,11 +609,7 @@ func TestCheckSelfConfigRefusesCredentialWhoseSourceChanges(t *testing.T) {
 	secretUnit := agentBundleUnit("Secret=hook_secret,target=" + filepath.Join(dir, "hook") + "\n")
 	volumeUnit := agentBundleUnit("Volume=creds.volume:" + dir + "\n")
 	const volumePath = "/etc/containers/systemd/picolet/creds.volume"
-	tests := []struct {
-		name      string
-		change    selfConfigChange
-		wantError []string // empty: passes
-	}{
+	runChangeCases(t, []changeCase{
 		{
 			name: "secret rewritten",
 			change: selfConfigChange{
@@ -816,14 +635,7 @@ func TestCheckSelfConfigRefusesCredentialWhoseSourceChanges(t *testing.T) {
 			name:   "secret not managed",
 			change: selfConfigChange{running: secretUnit, next: secretUnit},
 		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			tt.change.config = webhookConfig(filepath.Join(dir, "hook"))
-			assertRefusal(t, tt.change.check(t), tt.wantError)
-		})
-	}
+	}, func(c *selfConfigChange) { c.config = webhookConfig(filepath.Join(dir, "hook")) })
 }
 
 // A commit that removes a source the Agent quadlet mounts (a Podman secret,
@@ -837,50 +649,39 @@ func TestCheckSelfConfigRefusesRemovingMountedSource(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
 	hook := filepath.Join(dir, "hook")
 	const volumePath = "/etc/containers/systemd/picolet/creds.volume"
-	tests := []struct {
-		name      string
-		running   string // extra mount lines of the Agent quadlet on disk
-		next      string // extra mount lines of the Agent quadlet the commit renders
-		managed   []string
-		wantError []string // empty: passes
-	}{
+	// running holds the extra mount lines of the Agent quadlet on disk, which
+	// the commit renders unchanged, with the config.
+	runChangeCases(t, []changeCase{
 		{
-			name: "credential secret", running: "Secret=hook_secret,target=" + hook + "\n", managed: []string{"secret:hook_secret"},
+			name: "credential secret", change: selfConfigChange{running: "Secret=hook_secret,target=" + hook + "\n", managed: []string{"secret:hook_secret"}},
 			wantError: []string{"hook_secret", hook, "still mounts"},
 		},
 		{
-			name: "secret spelled with source=", running: "Secret=source=hook_secret,target=" + hook + "\n", managed: []string{"secret:hook_secret"},
+			name: "secret spelled with source=", change: selfConfigChange{running: "Secret=source=hook_secret,target=" + hook + "\n", managed: []string{"secret:hook_secret"}},
 			wantError: []string{"secret hook_secret", "still mounts"},
 		},
 		{
-			name: "secret not a credential", running: "Secret=other,target=/run/other\n", managed: []string{"secret:other"},
+			name: "secret not a credential", change: selfConfigChange{running: "Secret=other,target=/run/other\n", managed: []string{"secret:other"}},
 			wantError: []string{"other", "still mounts"},
 		},
 		{
-			name: "env secret", running: "Secret=token,type=env,target=TOKEN\n", managed: []string{"secret:token"},
+			name: "env secret", change: selfConfigChange{running: "Secret=token,type=env,target=TOKEN\n", managed: []string{"secret:token"}},
 			wantError: []string{"token", "still mounts"},
 		},
 		{
-			name: "volume unit of a Volume=", running: "Volume=creds.volume:" + dir + "\n", managed: []string{volumePath},
+			name: "volume unit of a Volume=", change: selfConfigChange{running: "Volume=creds.volume:" + dir + "\n", managed: []string{volumePath}},
 			wantError: []string{"creds.volume", "still mounts"},
 		},
 		{
-			name: "volume unit of a Mount=", running: "Mount=type=volume,source=creds.volume,destination=" + dir + "\n", managed: []string{volumePath},
+			name: "volume unit of a Mount=", change: selfConfigChange{running: "Mount=type=volume,source=creds.volume,destination=" + dir + "\n", managed: []string{volumePath}},
 			wantError: []string{"creds.volume", "still mounts"},
 		},
-		{name: "secret not mounted", managed: []string{"secret:hook_secret"}},
-		{name: "secret mounted, not managed", running: "Secret=hook_secret,target=" + hook + "\n"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			unit := agentBundleUnit(tt.running)
-			err := selfConfigChange{
-				running: unit, next: unit, config: webhookConfig(hook), managed: tt.managed, unchanged: true,
-			}.check(t)
-			assertRefusal(t, err, tt.wantError)
-		})
-	}
+		{name: "secret not mounted", change: selfConfigChange{managed: []string{"secret:hook_secret"}}},
+		{name: "secret mounted, not managed", change: selfConfigChange{running: "Secret=hook_secret,target=" + hook + "\n"}},
+	}, func(c *selfConfigChange) {
+		c.next, c.unchanged = c.running, true
+		mountLines(webhookConfig(hook))(c)
+	})
 
 	t.Run("mount dropped in the same commit", func(t *testing.T) {
 		t.Parallel()
@@ -901,49 +702,47 @@ func TestCheckSelfConfigComparesVolumeOptions(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
 	volume := func(options string) string { return "Volume=creds:" + dir + options + "\n" }
-	tests := []struct {
-		name      string
-		running   string
-		next      string
-		wantError []string // empty: passes
-	}{
-		{name: "subpath changed", running: volume(":subpath=/a"), next: volume(":subpath=/b"), wantError: []string{"subpath", "own commit"}},
-		{name: "subpath dropped", running: volume(":subpath=/a"), next: volume(""), wantError: []string{"own commit"}},
-		{name: "subpath added", running: volume(":ro"), next: volume(":ro,subpath=a"), wantError: []string{"own commit"}},
+	runChangeCases(t, []changeCase{
+		{name: "subpath changed", change: selfConfigChange{running: volume(":subpath=/a"), next: volume(":subpath=/b")}, wantError: []string{"subpath", "own commit"}},
+		{name: "subpath dropped", change: selfConfigChange{running: volume(":subpath=/a"), next: volume("")}, wantError: []string{"own commit"}},
+		{name: "subpath added", change: selfConfigChange{running: volume(":ro"), next: volume(":ro,subpath=a")}, wantError: []string{"own commit"}},
 		{
-			name: "overlay upperdir changed", running: volume(":O,upperdir=/u1,workdir=/w"), next: volume(":O,upperdir=/u2,workdir=/w"),
+			name:      "overlay upperdir changed",
+			change:    selfConfigChange{running: volume(":O,upperdir=/u1,workdir=/w"), next: volume(":O,upperdir=/u2,workdir=/w")},
 			wantError: []string{"upperdir=/u2", "own commit"},
 		},
-		{name: "subpath spelled differently", running: volume(":subpath=/a/"), next: volume(":subpath=a")},
-		{name: "access and label options changed", running: volume(":ro,z"), next: volume(":Z")},
-		{name: "options reordered", running: volume(":U,ro,subpath=a"), next: volume(":subpath=a,ro,U")},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := selfConfigChange{
-				running: agentBundleUnit(tt.running), next: agentBundleUnit(tt.next), config: webhookConfig(filepath.Join(dir, "hook")),
-			}.check(t)
-			assertRefusal(t, err, tt.wantError)
-		})
-	}
+		{name: "subpath spelled differently", change: selfConfigChange{running: volume(":subpath=/a/"), next: volume(":subpath=a")}},
+		{name: "access and label options changed", change: selfConfigChange{running: volume(":ro,z"), next: volume(":Z")}},
+		{name: "options reordered", change: selfConfigChange{running: volume(":U,ro,subpath=a"), next: volume(":subpath=a,ro,U")}},
+	}, mountLines(webhookConfig(filepath.Join(dir, "hook"))))
 }
 
 // The running Agent's config secret is found however Podman reads its
-// Secret= line: with a source= key, or quoted. A config the Agent could not
-// start with is refused there too.
+// Secret= line: with a source= key, or quoted; and the new unit's config
+// mount however its target is spelled: Podman mounts
+// /etc/picolet//config.yml at the Agent config path too. A config the Agent
+// could not start with is refused there too.
 func TestCheckSelfConfigFindsConfigMountSpellings(t *testing.T) {
 	t.Parallel()
-	bad := new("hostname: test-host\nrepo_url: https://example.com/fleet.git\nno_such_key_ever: 1\n")
+	var cases []changeCase
 	for _, line := range []string{
 		"Secret=source=picolet_system_config,target=/etc/picolet/config.yml",
 		"Secret=target=/etc/picolet/config.yml,source=picolet_system_config",
 		`Secret="picolet_system_config,target=/etc/picolet/config.yml"`,
 	} {
 		unit := "[Container]\nImage=x\n" + line + "\n"
-		err := selfConfigChange{running: unit, next: unit, config: bad}.check(t)
-		require.ErrorContains(t, err, "no_such_key_ever", line)
+		cases = append(cases, changeCase{name: line, change: selfConfigChange{running: unit, next: unit}, wantError: []string{"no_such_key_ever"}})
 	}
+	for _, target := range []string{"/etc/picolet//config.yml", "/etc/picolet/./config.yml", "/etc/picolet/sub/../config.yml"} {
+		cases = append(cases, changeCase{
+			name:      target,
+			change:    selfConfigChange{running: agentBundleUnit(""), next: "[Container]\nImage=x\nSecret=picolet_system_config,target=" + target + "\n"},
+			wantError: []string{"no_such_key_ever"},
+		})
+	}
+	runChangeCases(t, cases, func(c *selfConfigChange) {
+		c.config = new("hostname: test-host\nrepo_url: https://example.com/fleet.git\nno_such_key_ever: 1\n")
+	})
 }
 
 // TestAgentRefusesRemovingMountedCredentialSecret runs the Agent loop on a
@@ -956,17 +755,18 @@ func TestAgentRefusesRemovingMountedCredentialSecret(t *testing.T) {
 	hook := filepath.Join(t.TempDir(), "hook")
 	require.NoError(t, os.WriteFile(hook, []byte("x"), 0o600))
 	unit := agentBundleUnit("Secret=hook_secret,target=" + hook + "\n")
-	bareDir, _ := initAgentBundleRepoWithUnit(t, unit,
-		"hostname: test-host\nrepo_url: https://example.com/fleet.git\nwebhook_secret_path: "+hook+"\n")
+	bareDir, _ := initFleetRepo(t, agentBundleFiles(unit, "picolet_system_config.yml", *webhookConfig(hook)))
 	pushToTestRepo(t, bareDir, map[string]string{hookFile: "hook\n"})
 	quadletDir := t.TempDir()
-	h := startSelfConfigAgent(t, bareDir, WithQuadletDir(quadletDir))
+	h := newLoopHarness(t, bareDir, WithQuadletDir(quadletDir))
+	h.mocks = mocksSelfConfig | mockSecretRemoves
+	h.runUntilApplied(t)
 	require.Contains(t, h.st.ManagedFiles, "secret:hook_secret", "the first commit manages the credential secret")
 	unitPath := filepath.Join(quadletDir, "picolet-system.container")
 	require.NoError(t, os.WriteFile(unitPath, h.written[unitPath], 0o600))
 
 	require.NoError(t, os.Remove(filepath.Join(h.repoDir, hookFile)))
-	h.clearWrites()
+	h.reset()
 	_, err := h.a.ReconcileOnce(t.Context(), "drop-sha", h.st, h.store)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "hook_secret")
@@ -997,8 +797,7 @@ func TestAgentChecksRelativeSelfConfigCredentialsThroughNewUnitMounts(t *testing
 	// The first apply has no running unit on disk and reads the path as
 	// spelled; the next commit spells it relative to the running Agent's
 	// working directory, fixed at seen.
-	config := "hostname: test-host\nrepo_url: https://example.com/fleet.git\nwebhook_secret_path: " + filepath.Join(seen, "hook") + "\n"
-	relative := "hostname: test-host\nrepo_url: https://example.com/fleet.git\nwebhook_secret_path: hook\n"
+	config, relative := *webhookConfig(filepath.Join(seen, "hook")), *webhookConfig("hook")
 	inSeen := withGetwd(seen)
 	current := agentBundleUnit("Volume=/host/secrets:" + seen + ":ro\n")
 	t.Run("mount dropped", func(t *testing.T) {
@@ -1031,45 +830,29 @@ func TestCheckSelfConfigResolvesRelativeCredentialsAgainstWorkingDir(t *testing.
 	seen := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(seen, "hook"), []byte("x"), 0o600))
 	mounted := "Volume=/host/secrets:" + seen + ":ro\n"
-	fromCwd := relFromCwd(t, filepath.Join(seen, "hook"))
+	fromCwd := webhookConfig(relFromCwd(t, filepath.Join(seen, "hook")))
 	absolute := []string{"webhook_secret_path", "relative", "absolute"}
-	tests := []struct {
-		name      string
-		running   string
-		next      string
-		config    string
-		sameUnit  bool     // the commit writes only the config
-		wantError []string // empty: passes
-	}{
-		{name: "no working directory on either unit", running: mounted, next: mounted, config: fromCwd},
-		{name: "WorkingDir= on the new unit", running: mounted, next: mounted + "WorkingDir=" + seen + "\n", config: "hook"},
-		{name: "same WorkingDir= on both units", running: mounted + "WorkingDir=" + seen + "\n", next: mounted + "WorkingDir=" + seen + "\n", config: "hook"},
-		{name: "PodmanArgs= --workdir", running: mounted, next: mounted + "PodmanArgs=--workdir " + seen + "\n", config: "hook"},
-		{name: "PodmanArgs= -w", running: mounted, next: mounted + "PodmanArgs=-w=" + seen + "\n", config: "hook"},
+	// config defaults to webhook_secret_path: hook.
+	runChangeCases(t, []changeCase{
+		{name: "no working directory on either unit", change: selfConfigChange{running: mounted, next: mounted, config: fromCwd}},
+		{name: "WorkingDir= on the new unit", change: selfConfigChange{running: mounted, next: mounted + "WorkingDir=" + seen + "\n"}},
+		{name: "same WorkingDir= on both units", change: selfConfigChange{running: mounted + "WorkingDir=" + seen + "\n", next: mounted + "WorkingDir=" + seen + "\n"}},
+		{name: "PodmanArgs= --workdir", change: selfConfigChange{running: mounted, next: mounted + "PodmanArgs=--workdir " + seen + "\n"}},
+		{name: "PodmanArgs= -w", change: selfConfigChange{running: mounted, next: mounted + "PodmanArgs=-w=" + seen + "\n"}},
 		{
-			name: "PodmanArgs= --workdir overrides WorkingDir=", running: mounted,
-			next: mounted + "WorkingDir=/nowhere\nPodmanArgs=--workdir=" + seen + "\n", config: "hook",
+			name:   "PodmanArgs= --workdir overrides WorkingDir=",
+			change: selfConfigChange{running: mounted, next: mounted + "WorkingDir=/nowhere\nPodmanArgs=--workdir=" + seen + "\n"},
 		},
 		{
-			name: "WorkingDir= under a dropped mount", running: mounted, next: "WorkingDir=" + seen + "\n", config: "hook",
+			name: "WorkingDir= under a dropped mount", change: selfConfigChange{running: mounted, next: "WorkingDir=" + seen + "\n"},
 			wantError: []string{"webhook_secret_path", "no longer mounts", "own commit"},
 		},
-		{name: "WorkingDir= dropped", running: mounted + "WorkingDir=" + seen + "\n", next: mounted, config: "hook", wantError: absolute},
-		{name: "WorkingDir= with a specifier", running: mounted, next: mounted + "WorkingDir=%h/secrets\n", config: "hook", wantError: absolute},
-		{name: "relative WorkingDir=", running: mounted, next: mounted + "WorkingDir=secrets\n", config: "hook", wantError: absolute},
+		{name: "WorkingDir= dropped", change: selfConfigChange{running: mounted + "WorkingDir=" + seen + "\n", next: mounted}, wantError: absolute},
+		{name: "WorkingDir= with a specifier", change: selfConfigChange{running: mounted, next: mounted + "WorkingDir=%h/secrets\n"}, wantError: absolute},
+		{name: "relative WorkingDir=", change: selfConfigChange{running: mounted, next: mounted + "WorkingDir=secrets\n"}, wantError: absolute},
 		{
-			name: "unit unchanged keeps reading against the running working directory", running: mounted + "WorkingDir=%h\n",
-			next: mounted + "WorkingDir=%h\n", config: fromCwd, sameUnit: true,
+			name:   "unit unchanged keeps reading against the running working directory",
+			change: selfConfigChange{running: mounted + "WorkingDir=%h\n", next: mounted + "WorkingDir=%h\n", config: fromCwd, unchangedUnit: true},
 		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			change := selfConfigChange{
-				running: agentBundleUnit(tt.running), next: agentBundleUnit(tt.next), config: webhookConfig(tt.config),
-				unchangedUnit: tt.sameUnit,
-			}
-			assertRefusal(t, change.check(t), tt.wantError)
-		})
-	}
+	}, mountLines(webhookConfig("hook")))
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"maps"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 
@@ -17,29 +18,93 @@ import (
 	"github.com/schjan/picolet/pkg/sops"
 )
 
-// resolveSops resolves test-host of a one-host Fleet whose Host gets the
-// secret template secrets/app.yml.tmpl with body tmpl and declares the corpus
-// recipient srv-1 (a Recipient of every corpus file); files adds Fleet-root
-// files (corpus copies) and may replace hosts/test-host/host.yml. keyless
-// resolves with NewKeyless, as validate and resolve do; without it no SOPS
-// reader is passed, as on the Agent.
-func resolveSops(t *testing.T, tmpl string, files map[string]string, keyless, strict bool) (*ResolvedHost, error) {
+// sopsReaderMode says which SOPS reader a test resolve passes.
+type sopsReaderMode int
+
+const (
+	sopsNoReader   sopsReaderMode = iota // the Agent without a sops: block
+	sopsKeyless                          // validate, resolve (NewKeyless)
+	sopsDecrypting                       // the Agent with the TEST-ONLY identity srv-1
+	sopsRecording                        // the Agent, through a recordingSopsReader
+)
+
+// String names the mode in subtest names.
+func (m sopsReaderMode) String() string {
+	switch m {
+	case sopsNoReader:
+		return "no-reader"
+	case sopsKeyless:
+		return "keyless"
+	case sopsDecrypting:
+		return "decrypting"
+	case sopsRecording:
+		return "recording"
+	}
+	return fmt.Sprintf("mode(%d)", int(m))
+}
+
+// appTmpl is the secret template most SOPS tests render, and appTmplBase
+// the base assignment that delivers it.
+const (
+	appTmpl     = "secrets/app.yml.tmpl"
+	appTmplBase = "  secrets: [" + appTmpl + "]\n"
+)
+
+// secretsBase is a base assignment listing secrets (file secrets and
+// direct sops:// refs).
+func secretsBase(secrets ...string) string {
+	base := "  secrets:\n"
+	for _, s := range secrets {
+		base += "    - \"" + s + "\"\n"
+	}
+	return base
+}
+
+// sopsProbe is what a sopsResolver resolve can be observed through.
+type sopsProbe struct {
+	opens  *atomic.Int32        // opens of secrets/db.sops.yaml, by the resolver and its reader
+	reader *sops.Reader         // the decrypting reader (sopsDecrypting only)
+	rec    *recordingSopsReader // asked only in sopsRecording mode
+}
+
+// sopsResolver builds a Resolver over a one-host Fleet with assignment base
+// body base whose Host test-host declares the corpus recipient srv-1 (a
+// Recipient of every corpus file), and that holds the corpus file
+// values.sops.yaml at secrets/db.sops.yaml; files adds Fleet-root files and
+// may replace either. mode picks the SOPS reader.
+func sopsResolver(t *testing.T, base string, files map[string]string, mode sopsReaderMode, strict bool) (*Resolver, sopsProbe) {
 	t.Helper()
 	extra := map[string]string{
-		"secrets/app.yml.tmpl":     tmpl,
+		"secrets/db.sops.yaml":     testsops.CorpusText(t, "values.sops.yaml"),
 		"hosts/test-host/host.yml": sopsHostYAML(t, "srv-1"),
 	}
 	maps.Copy(extra, files)
-	fsys := pathsFleetFS("  secrets: [secrets/app.yml.tmpl]\n", extra)
-	cfg, err := config.LoadAll(fsys)
+	mapFS := pathsFleetFS(base, extra)
+	cfg, err := config.LoadAll(mapFS)
 	require.NoError(t, err)
+	probe := sopsProbe{opens: &atomic.Int32{}, rec: &recordingSopsReader{}}
+	fsys := openCountingFS{FS: mapFS, name: "secrets/db.sops.yaml", opens: probe.opens}
 	rc := Config{FS: fsys, Config: cfg, Strict: strict}
 	newResolver := New
-	if keyless {
+	switch mode {
+	case sopsNoReader:
+	case sopsKeyless:
 		newResolver = NewKeyless
+	case sopsDecrypting:
+		probe.reader = sops.NewReader(fsys, testsops.Identities(t, "srv-1"))
+		rc.Sops = probe.reader
+	case sopsRecording:
+		rc.Sops = probe.rec
 	}
 	r, err := newResolver(rc)
 	require.NoError(t, err)
+	return r, probe
+}
+
+// resolveSopsFleet resolves test-host of sopsResolver's Fleet.
+func resolveSopsFleet(t *testing.T, base string, files map[string]string, mode sopsReaderMode, strict bool) (*ResolvedHost, error) {
+	t.Helper()
+	r, _ := sopsResolver(t, base, files, mode, strict)
 	return r.ResolveHost(t.Context(), "test-host")
 }
 
@@ -63,7 +128,7 @@ func sopsHostYAML(t *testing.T, recipients ...string) string {
 func TestReadSopsSecretKeylessRecipientChecks(t *testing.T) {
 	t.Parallel()
 	files := map[string]string{
-		"secrets/db.sops.yaml":     testsops.CorpusText(t, "values.sops.yaml"),     // srv-1, srv-2, operator-1
+		// secrets/db.sops.yaml (sopsResolver's): srv-1, srv-2, operator-1
 		"secrets/groups.sops.yaml": testsops.CorpusText(t, "key-groups.sops.yaml"), // [srv-1 operator-1] [srv-2] [srv-pq], threshold 2
 	}
 	tests := []struct {
@@ -97,7 +162,8 @@ func TestReadSopsSecretKeylessRecipientChecks(t *testing.T) {
 			t.Parallel()
 			fleet := maps.Clone(files)
 			fleet["hosts/test-host/host.yml"] = sopsHostYAML(t, tt.recipients...)
-			resolved, err := resolveSops(t, `v: {{ readSopsSecret "`+tt.ref+`" }}`, fleet, true, false)
+			fleet[appTmpl] = `v: {{ readSopsSecret "` + tt.ref + `" }}`
+			resolved, err := resolveSopsFleet(t, appTmplBase, fleet, sopsKeyless, false)
 			if len(tt.want) == 0 {
 				require.NoError(t, err)
 				assert.Equal(t, "v: <sops-secret>", resolved.Files[0].Content)
@@ -118,18 +184,19 @@ func TestReadSopsSecretKeylessRecipientChecks(t *testing.T) {
 func TestTemplateDataAgeRecipients(t *testing.T) {
 	t.Parallel()
 	hostYAML := strings.Replace(sopsHostYAML(t, "srv-1", "srv-pq"), testsops.Recipient(t, "srv-1"), strings.ToUpper(testsops.Recipient(t, "srv-1")), 1)
-	resolved, err := resolveSops(t,
-		`{{ join "," .Host.AgeRecipients }}|{{ range .Fleet.Hosts }}{{ len .AgeRecipients }}{{ end }}`,
-		map[string]string{"hosts/test-host/host.yml": hostYAML}, true, false)
+	resolved, err := resolveSopsFleet(t, appTmplBase, map[string]string{
+		appTmpl:                    `{{ join "," .Host.AgeRecipients }}|{{ range .Fleet.Hosts }}{{ len .AgeRecipients }}{{ end }}`,
+		"hosts/test-host/host.yml": hostYAML,
+	}, sopsKeyless, false)
 	require.NoError(t, err)
 	assert.Equal(t, testsops.Recipient(t, "srv-1")+","+testsops.Recipient(t, "srv-pq")+"|2", resolved.Files[0].Content)
 }
 
 func TestReadSopsSecretKeylessRendersPlaceholder(t *testing.T) {
 	t.Parallel()
-	resolved, err := resolveSops(t,
-		`password: {{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`,
-		map[string]string{"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml")}, true, false)
+	resolved, err := resolveSopsFleet(t, appTmplBase, map[string]string{
+		appTmpl: `password: {{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`,
+	}, sopsKeyless, false)
 	require.NoError(t, err)
 	require.Len(t, resolved.Files, 1)
 	assert.Equal(t, "password: <sops-secret>", resolved.Files[0].Content)
@@ -156,7 +223,6 @@ func TestReadSopsSecretKeylessAcceptedRefs(t *testing.T) {
 		{name: "dotenv key", call: `readSopsSecret "sops://secrets/app.sops.env#/DB_PASSWORD"`, want: p},
 	}
 	files := map[string]string{
-		"secrets/db.sops.yaml":          testsops.CorpusText(t, "values.sops.yaml"),
 		"hosts/test-host/app.sops.yaml": testsops.CorpusText(t, "values.sops.yaml"),
 		"secrets/tls.sops.pem":          testsops.CorpusText(t, "tls.sops.pem"),
 		"secrets/app.sops.env":          testsops.CorpusText(t, "values.sops.env"),
@@ -164,7 +230,9 @@ func TestReadSopsSecretKeylessAcceptedRefs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			resolved, err := resolveSops(t, "v: {{ "+tt.call+" }}", files, true, false)
+			fleet := maps.Clone(files)
+			fleet[appTmpl] = "v: {{ " + tt.call + " }}"
+			resolved, err := resolveSopsFleet(t, appTmplBase, fleet, sopsKeyless, false)
 			require.NoError(t, err)
 			require.Len(t, resolved.Files, 1)
 			assert.Equal(t, "v: "+tt.want, resolved.Files[0].Content)
@@ -189,7 +257,6 @@ func TestReadSopsSecretKeylessRejectedRefs(t *testing.T) {
 		{name: "invalid type tag", ref: "sops://secrets/tampered.sops.yaml#/db/port", want: `"/db/port" has an invalid type tag`},
 	}
 	files := map[string]string{
-		"secrets/db.sops.yaml":       testsops.CorpusText(t, "values.sops.yaml"),
 		"secrets/db.yaml":            testsops.CorpusText(t, "values.sops.yaml"),
 		"secrets/plain.sops.yaml":    testsops.CorpusText(t, "plaintext.sops.yaml"),
 		"secrets/tampered.sops.yaml": tampered,
@@ -197,7 +264,9 @@ func TestReadSopsSecretKeylessRejectedRefs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := resolveSops(t, `v: {{ readSopsSecret "`+tt.ref+`" }}`, files, true, false)
+			fleet := maps.Clone(files)
+			fleet[appTmpl] = `v: {{ readSopsSecret "` + tt.ref + `" }}`
+			_, err := resolveSopsFleet(t, appTmplBase, fleet, sopsKeyless, false)
 			require.Error(t, err)
 			require.ErrorContains(t, err, tt.ref)
 			require.ErrorContains(t, err, tt.want)
@@ -206,38 +275,64 @@ func TestReadSopsSecretKeylessRejectedRefs(t *testing.T) {
 	}
 }
 
-// Without a SOPS reader (every Agent path until decryption ships, and an
-// Agent without a sops: block) a sops:// ref fails the resolve: the Agent
-// never deploys a placeholder as a value.
-func TestReadSopsSecretWithoutReaderFails(t *testing.T) {
+// Without a SOPS reader (an Agent without a sops: block) a sops:// ref
+// fails the resolve with the no-identity error: the Agent never deploys a
+// placeholder as a value, and a direct ref is never skipped like an
+// unconfigured op:// ref. Strict mode (bootstrap, validate's Agent-bundle
+// pass) fails it with the SOPS fix, even with the keyless reader passed;
+// Service Bundles cannot carry direct secrets: entries, so this seam is where
+// the Agent-bundle pass's direct-ref branch is covered. Each error names the
+// call (or direct entry) and its ref, and never quotes a value.
+func TestSopsRefFailsWithoutReaderAndInStrictMode(t *testing.T) {
 	t.Parallel()
-	ref := "sops://secrets/db.sops.yaml#/db/password"
-	resolved, err := resolveSops(t, `password: {{ readSopsSecret "`+ref+`" }}`,
-		map[string]string{"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml")}, false, false)
-	require.Error(t, err)
-	assert.Nil(t, resolved)
-	require.ErrorContains(t, err, ref)
-	require.ErrorContains(t, err, "no age identity configured; set sops.age_identity_path")
-	assert.NotContains(t, err.Error(), "<sops-secret")
-	testsops.AssertNoPlaintext(t, err)
-}
-
-// Strict mode (bootstrap, validate's Agent-bundle pass) fails on
-// readSopsSecret with the SOPS fix, even with the keyless reader passed.
-func TestReadSopsSecretStrictFails(t *testing.T) {
-	t.Parallel()
-	ref := "sops://secrets/db.sops.yaml#/db/password"
-	for _, keyless := range []bool{true, false} {
-		t.Run(fmt.Sprintf("keyless=%v", keyless), func(t *testing.T) {
-			t.Parallel()
-			_, err := resolveSops(t, `password: {{ readSopsSecret "`+ref+`" }}`,
-				map[string]string{"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml")}, keyless, true)
-			require.Error(t, err)
-			require.ErrorContains(t, err, fmt.Sprintf("readSopsSecret %q", ref))
-			require.ErrorContains(t, err, "deliver the value as a --secrets-dir file and point the Agent config at its path; "+
-				"credentials needed to fetch the Fleet can't be SOPS values")
-			testsops.AssertNoPlaintext(t, err)
-		})
+	const (
+		leaf     = "sops://secrets/db.sops.yaml#/db/password"
+		tree     = "sops://secrets/db.sops.yaml#/db"
+		noIdent  = ": no age identity configured; set sops.age_identity_path in the Agent config"
+		strictly = ": SOPS values can't be used in strict mode; " +
+			"deliver the value as a --secrets-dir file and point the Agent config at its path; " +
+			"credentials needed to fetch the Fleet can't be SOPS values"
+	)
+	kinds := []struct {
+		name, base string
+		files      map[string]string
+		call       string
+	}{
+		{
+			name: "secret", base: appTmplBase, call: fmt.Sprintf("readSopsSecret %q", leaf),
+			files: map[string]string{appTmpl: `password: {{ readSopsSecret "` + leaf + `" }}`},
+		},
+		{
+			name: "data", base: appTmplBase, call: fmt.Sprintf("readSopsData %q", tree),
+			files: map[string]string{appTmpl: `{{ range readSopsData "` + tree + `" }}{{ . }}{{ end }}`},
+		},
+		{name: "direct", base: secretsBase(leaf), call: "direct secrets " + leaf},
+	}
+	runs := []struct {
+		name   string
+		mode   sopsReaderMode
+		strict bool
+		want   string
+	}{
+		{name: "no-reader", mode: sopsNoReader, want: noIdent},
+		{name: "strict/keyless", mode: sopsKeyless, strict: true, want: strictly},
+		{name: "strict/no-reader", mode: sopsNoReader, strict: true, want: strictly},
+	}
+	for _, k := range kinds {
+		for _, run := range runs {
+			t.Run(k.name+"/"+run.name, func(t *testing.T) {
+				t.Parallel()
+				resolved, err := resolveSopsFleet(t, k.base, k.files, run.mode, run.strict)
+				require.Error(t, err)
+				assert.Nil(t, resolved)
+				require.ErrorContains(t, err, k.call+run.want)
+				if !run.strict {
+					require.ErrorIs(t, err, sops.ErrNoIdentity)
+				}
+				assert.NotContains(t, err.Error(), "<sops-secret")
+				testsops.AssertNoPlaintext(t, err)
+			})
+		}
 	}
 }
 

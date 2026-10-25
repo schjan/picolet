@@ -31,23 +31,61 @@ func TestLoadAllParsesAgeRecipients(t *testing.T) {
 	assert.Empty(t, cfg.Hosts["srv-2"].AgeRecipients, "age_recipients: is optional")
 }
 
-func TestLoadAllRejectsUnsupportedAgeRecipients(t *testing.T) {
+// TestLoadAllMalformedAgeRecipients covers bad entries and wrong YAML shapes
+// of age_recipients: in both modes. Strict loading fails naming the field.
+// The Agent (lenient host loading) does not reject a malformed
+// age_recipients: (spec #248, considered, not adopted): it warns through the
+// injected logger and ignores the list, so one bad entry on any Host never
+// fails every Agent's reconciliation; a wrong YAML shape is malformed like a
+// bad entry and does not fail the decode of host.yml either.
+func TestLoadAllMalformedAgeRecipients(t *testing.T) {
 	t.Parallel()
-	tests := []struct{ name, entry, want string }{
-		{name: "malformed", entry: "age1notakey", want: "is not an age recipient"},
-		{name: "SSH", entry: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl", want: "SSH recipients are not supported"},
-		{name: "plugin", entry: "age1yubikey1qwt50d05nh5vutpdzmlg5wn80xq5negm4uj9ghv0snvdd3yysf5yw3rhl3t", want: "plugin recipients are not supported"},
+	// entry is a bad second entry after a valid one; value is a whole
+	// age_recipients: value of the wrong shape.
+	tests := []struct {
+		name, entry, value string
+		wantPrefix         string   // follows "host srv-1: " in strict errors
+		want               []string // further fragments of the error
+	}{
+		{name: "malformed", entry: "age1notakey", wantPrefix: "age_recipients[1]: ", want: []string{"is not an age recipient"}},
+		{name: "SSH", entry: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl", wantPrefix: "age_recipients[1]: ", want: []string{"SSH recipients are not supported"}},
+		{name: "plugin", entry: "age1yubikey1qwt50d05nh5vutpdzmlg5wn80xq5negm4uj9ghv0snvdd3yysf5yw3rhl3t", wantPrefix: "age_recipients[1]: ", want: []string{"plugin recipients are not supported"}},
+		{name: "map", value: "\n  srv: age1x\n", wantPrefix: "age_recipients: must be a list of age recipients"},
+		{name: "string", value: " age1x\n", wantPrefix: "age_recipients: must be a list of age recipients"},
+		{name: "nested list", value: "\n  - [age1x]\n", wantPrefix: "age_recipients[0]: must be a string"},
+		{name: "map entry", value: "\n  - {key: age1x}\n", wantPrefix: "age_recipients[0]: must be a string"},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			fsys := topologyFleet(agentPorts, map[string]string{
-				"srv-1": "hostname: srv-1\nrole: node\nage_recipients:\n  - " + testsops.Recipient(t, "srv-1") + "\n  - " + tt.entry + "\n",
+	for _, mode := range []string{"strict", "lenient"} {
+		lenient := mode == "lenient"
+		for _, tt := range tests {
+			t.Run(mode+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+				value := tt.value
+				if tt.entry != "" {
+					value = "\n  - " + testsops.Recipient(t, "srv-1") + "\n  - " + tt.entry + "\n"
+				}
+				fsys := topologyFleet(agentPorts, map[string]string{
+					"srv-1": "hostname: srv-1\nrole: node\nage_recipients:" + value,
+					"srv-2": "hostname: srv-2\nrole: node\nuser: pi\nage_recipients: [" + testsops.Recipient(t, "srv-2") + "]\n",
+				})
+				if !lenient {
+					_, err := LoadAll(fsys)
+					require.ErrorContains(t, err, "host srv-1: "+tt.wantPrefix)
+					for _, frag := range tt.want {
+						require.ErrorContains(t, err, frag)
+					}
+					return
+				}
+				var logs bytes.Buffer
+				cfg, err := LoadAll(fsys, LenientHosts(), WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+				require.NoError(t, err)
+				assert.Empty(t, cfg.Hosts["srv-1"].AgeRecipients, "the malformed list is ignored")
+				assert.Len(t, cfg.Hosts["srv-2"].AgeRecipients, 1)
+				for _, frag := range append([]string{"level=WARN", "hosts/srv-1/host.yml", tt.wantPrefix}, tt.want...) {
+					assert.Contains(t, logs.String(), frag)
+				}
 			})
-			_, err := LoadAll(fsys)
-			require.ErrorContains(t, err, "host srv-1: age_recipients[1]: ")
-			require.ErrorContains(t, err, tt.want)
-		})
+		}
 	}
 }
 
@@ -62,77 +100,6 @@ func TestLoadAllLenientHostsKnowsAgeRecipients(t *testing.T) {
 	cfg, err := LoadAll(fsys, LenientHosts())
 	require.NoError(t, err)
 	assert.Len(t, cfg.Hosts["srv-1"].AgeRecipients, 1)
-}
-
-// The Agent (lenient host loading) does not reject a malformed
-// age_recipients: (spec #248, considered, not adopted): it warns through the
-// injected logger and ignores the list, so one bad entry on any Host never
-// fails every Agent's reconciliation. Strict loading still fails
-// (TestLoadAllRejectsUnsupportedAgeRecipients).
-func TestLoadAllLenientHostsIgnoresMalformedAgeRecipients(t *testing.T) {
-	t.Parallel()
-	fsys := topologyFleet(agentPorts, map[string]string{
-		"srv-1": "hostname: srv-1\nrole: node\nage_recipients:\n  - " + testsops.Recipient(t, "srv-1") + "\n  - age1notakey\n",
-		"srv-2": "hostname: srv-2\nrole: node\nuser: pi\nage_recipients: [" + testsops.Recipient(t, "srv-2") + "]\n",
-	})
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logs, nil))
-
-	cfg, err := LoadAll(fsys, LenientHosts(), WithLogger(logger))
-	require.NoError(t, err)
-	assert.Empty(t, cfg.Hosts["srv-1"].AgeRecipients, "the malformed list is ignored")
-	assert.Len(t, cfg.Hosts["srv-2"].AgeRecipients, 1)
-	assert.Contains(t, logs.String(), "level=WARN")
-	assert.Contains(t, logs.String(), "hosts/srv-1/host.yml")
-	assert.Contains(t, logs.String(), "age_recipients[1]")
-}
-
-// ageRecipientShapeCases are age_recipients: values that are not a list of
-// strings, with the message fragment strict loading names them by.
-var ageRecipientShapeCases = []struct{ name, value, want string }{
-	{name: "map", value: "\n  srv: age1x\n", want: "age_recipients: must be a list of age recipients"},
-	{name: "string", value: " age1x\n", want: "age_recipients: must be a list of age recipients"},
-	{name: "nested list", value: "\n  - [age1x]\n", want: "age_recipients[0]: must be a string"},
-	{name: "map entry", value: "\n  - {key: age1x}\n", want: "age_recipients[0]: must be a string"},
-}
-
-func TestLoadAllRejectsMalformedAgeRecipientsShape(t *testing.T) {
-	t.Parallel()
-	for _, tt := range ageRecipientShapeCases {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			fsys := topologyFleet(agentPorts, map[string]string{
-				"srv-1": "hostname: srv-1\nrole: node\nage_recipients:" + tt.value,
-			})
-			_, err := LoadAll(fsys)
-			require.ErrorContains(t, err, "host srv-1: "+tt.want)
-		})
-	}
-}
-
-// A wrong YAML shape is malformed like a bad entry: lenient host loading
-// warns and ignores the list instead of failing the decode of host.yml.
-func TestLoadAllLenientHostsIgnoresMalformedAgeRecipientsShape(t *testing.T) {
-	t.Parallel()
-	for _, tt := range ageRecipientShapeCases {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			fsys := topologyFleet(agentPorts, map[string]string{
-				"srv-1": "hostname: srv-1\nrole: node\nage_recipients:" + tt.value,
-				"srv-2": "hostname: srv-2\nrole: node\nuser: pi\nage_recipients: [" + testsops.Recipient(t, "srv-2") + "]\n",
-			})
-			var logs bytes.Buffer
-			logger := slog.New(slog.NewTextHandler(&logs, nil))
-
-			cfg, err := LoadAll(fsys, LenientHosts(), WithLogger(logger))
-			require.NoError(t, err)
-			assert.Empty(t, cfg.Hosts["srv-1"].AgeRecipients, "the malformed list is ignored")
-			assert.Len(t, cfg.Hosts["srv-2"].AgeRecipients, 1)
-			assert.Contains(t, logs.String(), "level=WARN")
-			assert.Contains(t, logs.String(), "hosts/srv-1/host.yml")
-			assert.Contains(t, logs.String(), tt.want)
-		})
-	}
 }
 
 // An empty age_recipients: (null) declares no recipients in both modes.

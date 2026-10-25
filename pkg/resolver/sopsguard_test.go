@@ -2,7 +2,6 @@ package resolver
 
 import (
 	"context"
-	"maps"
 	"slices"
 	"sync"
 	"testing"
@@ -11,7 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/internal/testsops"
-	"github.com/schjan/picolet/pkg/config"
 )
 
 const guardRef = "sops://secrets/db.sops.yaml#/db/password"
@@ -47,41 +45,6 @@ func (r *recordingSopsReader) asked(ref string) bool {
 	return slices.Contains(r.refs, ref)
 }
 
-// resolveGuard resolves test-host of a one-host Fleet with assignment base
-// body base and Fleet files extra (plus the SOPS corpus file guardRef names
-// and a host.yml declaring a recipient of it),
-// through the keyless reader (validate, resolve) or the recording reader
-// (the Agent's decrypting path).
-func resolveGuard(t *testing.T, base string, extra map[string]string, keyless bool) (*ResolvedHost, *recordingSopsReader, error) {
-	t.Helper()
-	files := map[string]string{
-		"secrets/db.sops.yaml":     testsops.CorpusText(t, "values.sops.yaml"),
-		"hosts/test-host/host.yml": sopsHostYAML(t, "srv-1"),
-	}
-	maps.Copy(files, extra)
-	fsys := pathsFleetFS(base, files)
-	cfg, err := config.LoadAll(fsys)
-	require.NoError(t, err)
-	rec := &recordingSopsReader{}
-	rc := Config{FS: fsys, Config: cfg, Sops: rec}
-	newResolver := New
-	if keyless {
-		newResolver = NewKeyless
-	}
-	r, err := newResolver(rc)
-	require.NoError(t, err)
-	resolved, err := r.ResolveHost(t.Context(), "test-host")
-	return resolved, rec, err
-}
-
-var guardPaths = []struct {
-	name    string
-	keyless bool
-}{
-	{name: "keyless", keyless: true},
-	{name: "decrypting", keyless: false},
-}
-
 // A SOPS value rendered into a Quadlet, a Raw Unit or a Hook definition is
 // readable beyond the Host's user: the render fails, naming the file and the
 // ref and pointing to Secret=, in both the keyless and the decrypting path,
@@ -90,11 +53,9 @@ func TestReadSopsSecretRejectedInUnitFiles(t *testing.T) {
 	t.Parallel()
 	call := `{{ readSopsSecret "` + guardRef + `" }}`
 	tests := []struct {
-		name  string
-		base  string
-		extra map[string]string
-		file  string
-		kind  string
+		name, base string
+		extra      map[string]string
+		file, kind string
 	}{
 		{
 			name:  "quadlet",
@@ -133,17 +94,18 @@ func TestReadSopsSecretRejectedInUnitFiles(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		for _, p := range guardPaths {
-			t.Run(tt.name+"/"+p.name, func(t *testing.T) {
+		for _, mode := range []sopsReaderMode{sopsKeyless, sopsRecording} {
+			t.Run(tt.name+"/"+mode.String(), func(t *testing.T) {
 				t.Parallel()
-				resolved, rec, err := resolveGuard(t, tt.base, tt.extra, p.keyless)
+				r, probe := sopsResolver(t, tt.base, tt.extra, mode, false)
+				resolved, err := r.ResolveHost(t.Context(), "test-host")
 				require.Error(t, err)
 				assert.Nil(t, resolved)
 				require.ErrorIs(t, err, ErrSopsInUnitFile)
 				require.ErrorContains(t, err, tt.file+`: readSopsSecret "`+guardRef+`": `+
 					"SOPS values can't be rendered into "+tt.kind)
 				require.ErrorContains(t, err, "use Secret= (or a secret mounted as a file) instead")
-				assert.False(t, rec.asked(guardRef), "the decrypting reader must not be asked for a guarded ref")
+				assert.False(t, probe.rec.asked(guardRef), "the decrypting reader must not be asked for a guarded ref")
 			})
 		}
 	}
@@ -162,13 +124,13 @@ func TestReadSopsSecretRendersOutsideUnitFiles(t *testing.T) {
 		"units/app.container.tmpl":      "[Container]\nImage=app\n",
 	}
 	base := "  paths: [manifests/, files/, units/]\n  secrets: [secrets/app.yml.tmpl]\n"
-	for _, p := range guardPaths {
-		t.Run(p.name, func(t *testing.T) {
+	for _, mode := range []sopsReaderMode{sopsKeyless, sopsRecording} {
+		t.Run(mode.String(), func(t *testing.T) {
 			t.Parallel()
-			resolved, _, err := resolveGuard(t, base, extra, p.keyless)
+			resolved, err := resolveSopsFleet(t, base, extra, mode, false)
 			require.NoError(t, err)
 			value := "decrypted"
-			if p.keyless {
+			if mode == sopsKeyless {
 				value = "<sops-secret>"
 			}
 			contents := make(map[string]string, len(resolved.Files))
@@ -194,20 +156,15 @@ func TestReadSopsSecretGuardPrecedesStrictAndMissingReader(t *testing.T) {
 	tests := []struct {
 		name   string
 		strict bool
-		new    func(Config) (*Resolver, error)
+		mode   sopsReaderMode
 	}{
-		{name: "no sops reader", new: New},
-		{name: "strict", strict: true, new: NewKeyless},
+		{name: "no sops reader", mode: sopsNoReader},
+		{name: "strict", strict: true, mode: sopsKeyless},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			fsys := pathsFleetFS(base, extra)
-			cfg, err := config.LoadAll(fsys)
-			require.NoError(t, err)
-			r, err := tt.new(Config{FS: fsys, Config: cfg, Strict: tt.strict})
-			require.NoError(t, err)
-			_, err = r.ResolveHost(t.Context(), "test-host")
+			_, err := resolveSopsFleet(t, base, extra, tt.mode, tt.strict)
 			require.ErrorIs(t, err, ErrSopsInUnitFile)
 			testsops.AssertNoPlaintext(t, err)
 		})

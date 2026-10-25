@@ -28,7 +28,7 @@ func TestFailedImagePullAtApplyIsRetriedByHealth(t *testing.T) {
 	writeTestFile(t, repoDir, "hosts/test-host/host.yml", "hostname: test-host\nrole: server\nfeatures: []\n")
 	writeTestFile(t, repoDir, "quadlets/images/redis.image", "[Image]\nImage=docker.io/library/redis:7\n")
 
-	sys, pod, fw := newBareMocks(t)
+	a, sys, _, fw := newMockedAgent(t, &agentcfg.Config{Hostname: "test-host", SecretsDir: t.TempDir()}, WithRepoPath(repoDir))
 	fw.EXPECT().MkdirAll(mock.Anything).Return(nil)
 	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(nil)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
@@ -37,8 +37,6 @@ func TestFailedImagePullAtApplyIsRetriedByHealth(t *testing.T) {
 		ActiveState: "failed", SubState: "failed", UnitFileState: "generated", ServiceType: "oneshot",
 	}, nil)
 
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "test-host", SecretsDir: t.TempDir()},
-		WithSystemd(sys), WithPodman(pod), WithFileWriter(fw), WithRepoPath(repoDir))
 	store := state.NewStore(filepath.Join(t.TempDir(), "state.json"))
 	require.NoError(t, store.Save(state.NewState()))
 

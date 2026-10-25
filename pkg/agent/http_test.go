@@ -1,23 +1,19 @@
 package agent
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/pkg/agentcfg"
-	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
 )
@@ -105,122 +101,52 @@ func TestHealthEndpoint_ReturnsUnavailableBeforeFirstTick(t *testing.T) {
 
 func TestHealthEndpoint_ReturnsOKAfterSuccessfulTick(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	bareDir, _ := initFleetRepo(t, networkFleet())
 
 	metrics.Register(nil)
 
-	sys, pod, fw := newBareMocks(t)
-	setupApplyMocks(sys, pod, fw)
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Hour,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(repoDir),
-		WithStatePath(statePath),
-	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- a.Run(ctx)
-	}()
-
-	srv := httptest.NewTestServer(t, a.newMux())
+	h := newLoopHarness(t, bareDir)
+	h.cfg.PollInterval = time.Hour
+	srv := httptest.NewTestServer(t, h.a.newMux())
 	client := srv.Client()
 
 	// Wait until agent becomes ready
-	require.Eventually(t, func() bool {
+	h.runUntil(t, func() bool {
 		resp, err := client.Get(srv.URL + "/health") //nolint:noctx // test helper
 		if err != nil {
 			return false
 		}
 		defer resp.Body.Close()
 		return resp.StatusCode == http.StatusOK
-	}, 10*time.Second, 50*time.Millisecond, "/health should return 200 after first tick")
-
-	cancel()
-	require.NoError(t, <-errCh)
+	}, "/health should return 200 after first tick")
 }
 
 //nolint:funlen // integration test: setup + two sub-tests for valid/invalid webhook
 func TestWebhookTriggersReconciliation(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	bareDir, _ := initFleetRepo(t, networkFleet())
 
 	metrics.Register(nil)
-
-	sys, pod, fw := newBareMocks(t)
-	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
-	sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
-		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
-	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
-	sys.EXPECT().StopUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
-	fw.EXPECT().Remove(mock.Anything).Return(nil).Maybe()
-
-	var mu sync.Mutex
-	written := make(map[string][]byte)
-	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).RunAndReturn(func(path string, content []byte) error {
-		mu.Lock()
-		defer mu.Unlock()
-		written[path] = content
-		return nil
-	}).Maybe()
 
 	secretFile := filepath.Join(t.TempDir(), "webhook-secret")
 	require.NoError(t, os.WriteFile(secretFile, []byte("test-secret"), 0o600))
 
-	cfg := &agentcfg.Config{
-		Hostname:          "test-host",
-		RepoURL:           bareDir,
-		RepoBranch:        "master",
-		PollInterval:      time.Hour, // only webhook-triggered reconciliation
-		ListenAddr:        "127.0.0.1:0",
-		SecretsDir:        t.TempDir(),
-		WebhookSecretPath: secretFile,
-	}
+	h := newLoopHarness(t, bareDir)
+	h.cfg.PollInterval = time.Hour // only webhook-triggered reconciliation
+	h.cfg.WebhookSecretPath = secretFile
 
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(repoDir),
-		WithStatePath(statePath),
-	)
+	ctx := t.Context()
+	stop := h.start(t)
+	defer stop()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- a.Run(ctx)
-	}()
-
-	srv := httptest.NewTestServer(t, a.newMux())
+	srv := httptest.NewTestServer(t, h.a.newMux())
 	client := srv.Client()
 
 	// Wait for initial tick to complete
 	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(written) > 0
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return len(h.written) > 0
 	}, 10*time.Second, 50*time.Millisecond, "initial tick should write files")
 
 	// Push a new commit that adds hello.container
@@ -245,7 +171,7 @@ Image=hello-world:latest
 	assert.Equal(t, http.StatusForbidden, badResp.StatusCode)
 
 	select {
-	case <-a.webhookCh:
+	case <-h.a.webhookCh:
 		t.Fatal("trigger should not have been called")
 	default:
 		// expected — handler returned 403, no trigger
@@ -263,14 +189,9 @@ Image=hello-world:latest
 	assert.Equal(t, http.StatusAccepted, goodResp.StatusCode)
 
 	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		_, ok := written["/etc/containers/systemd/picolet/hello.container"]
+		_, ok := h.file("/etc/containers/systemd/picolet/hello.container")
 		return ok
 	}, 10*time.Second, 50*time.Millisecond, "webhook should trigger reconciliation that writes hello.container")
-
-	cancel()
-	require.NoError(t, <-errCh)
 }
 
 func TestHealthEndpoint_Returns503AfterConsecutiveDBusFailures(t *testing.T) {

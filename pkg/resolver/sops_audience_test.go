@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/internal/testsops"
-	"github.com/schjan/picolet/pkg/config"
 )
 
 // A host resolve returns the SOPS files its refs reached, however they were
@@ -24,22 +23,14 @@ func TestResolveHostRecordsSopsFiles(t *testing.T) {
 {{- end }}
 c: {{ readSopsSecret (printf "sops://hosts/%s/c.sops.yaml#/db/user" .Host.Hostname) }}
 `
-	extra := map[string]string{
-		"secrets/app.yml.tmpl":           tmpl,
-		"hosts/test-host/host.yml":       sopsHostYAML(t, "srv-1"),
+	resolved, err := resolveSopsFleet(t, secretsBase(appTmpl, "sops://secrets/direct.sops.yaml#/tokens/0"), map[string]string{
+		appTmpl:                          tmpl,
 		"secrets/a.sops.yaml":            values,
 		"secrets/b.sops.yaml":            values,
 		"hosts/test-host/c.sops.yaml":    values,
 		"secrets/direct.sops.yaml":       values,
 		"secrets/unreferenced.sops.yaml": values,
-	}
-	fsys := pathsFleetFS("  secrets:\n    - secrets/app.yml.tmpl\n    - \"sops://secrets/direct.sops.yaml#/tokens/0\"\n", extra)
-	cfg, err := config.LoadAll(fsys)
-	require.NoError(t, err)
-	r, err := NewKeyless(Config{FS: fsys, Config: cfg})
-	require.NoError(t, err)
-
-	resolved, err := r.ResolveHost(t.Context(), "test-host")
+	}, sopsKeyless, false)
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{
@@ -52,9 +43,7 @@ c: {{ readSopsSecret (printf "sops://hosts/%s/c.sops.yaml#/db/user" .Host.Hostna
 
 func TestResolveHostWithoutSopsRefsRecordsNoFiles(t *testing.T) {
 	t.Parallel()
-	resolved, err := resolveSops(t, "plain: value\n", map[string]string{
-		"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml"),
-	}, true, false)
+	resolved, err := resolveSopsFleet(t, appTmplBase, map[string]string{appTmpl: "plain: value\n"}, sopsKeyless, false)
 	require.NoError(t, err)
 	assert.Empty(t, resolved.SopsFiles)
 }
@@ -65,7 +54,7 @@ func TestResolveHostRecordsSopsFilesPerResolve(t *testing.T) {
 	t.Parallel()
 	values := testsops.CorpusText(t, "values.sops.yaml")
 	extra := map[string]string{
-		"secrets/app.yml.tmpl": `v: {{ readSopsSecret (printf "sops://hosts/%s/app.sops.yaml#/db/user" .Host.Hostname) }}` + "\n",
+		appTmpl: `v: {{ readSopsSecret (printf "sops://hosts/%s/app.sops.yaml#/db/user" .Host.Hostname) }}` + "\n",
 	}
 	const n = 8
 	for i := range n {
@@ -73,12 +62,7 @@ func TestResolveHostRecordsSopsFilesPerResolve(t *testing.T) {
 		extra["hosts/"+host+"/host.yml"] = "hostname: " + host + "\nrole: node\nage_recipients:\n  - " + testsops.Recipient(t, "srv-1") + "\n"
 		extra["hosts/"+host+"/app.sops.yaml"] = values
 	}
-	fsys := pathsFleetFS("  secrets: [secrets/app.yml.tmpl]\n", extra)
-	delete(fsys, "hosts/test-host/host.yml")
-	cfg, err := config.LoadAll(fsys)
-	require.NoError(t, err)
-	r, err := NewKeyless(Config{FS: fsys, Config: cfg})
-	require.NoError(t, err)
+	r, _ := sopsResolver(t, appTmplBase, extra, sopsKeyless, false)
 
 	got := make(map[string][]string, n)
 	errs := make(map[string]error, n)
