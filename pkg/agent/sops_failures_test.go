@@ -11,13 +11,16 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/internal/testlog"
+	appliermocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/sops"
+	"github.com/schjan/picolet/pkg/state"
 )
 
 // The re-encrypted twin (same values, a new data key and new ciphertexts)
@@ -244,4 +247,64 @@ func TestAgentScrubsDecryptedValuesFromNoChangesValidation(t *testing.T) {
 			assert.NotContains(t, text, leak, "%s leaks a decrypted value", where)
 		}
 	}
+}
+
+// The apply's own log lines (the rollback notice, non-fatal apply errors)
+// carry the error text, so they are scrubbed with the resolve's reader too.
+func TestApplyScrubsLoggedErrors(t *testing.T) {
+	t.Parallel()
+	leak := errors.New("backend said: hunter2-test")
+	secretChange := &reconciler.Changeset{
+		Changes: []reconciler.Change{{DestPath: "secret:app_config", Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"}},
+		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+	}
+	tests := map[string]func(t *testing.T, a *Agent, sys *appliermocks.MockSystemdManager, pod *appliermocks.MockPodmanClient, reader *sops.Reader){
+		"apply failed, rolling back": func(t *testing.T, a *Agent, sys *appliermocks.MockSystemdManager, pod *appliermocks.MockPodmanClient, reader *sops.Reader) {
+			t.Helper()
+			pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(leak)
+			sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
+			_, err := a.applyWithRollback(t.Context(), "sha", secretChange, nil, nil, nil, "", "", reader)
+			require.ErrorIs(t, err, errRollbackPerformed)
+		},
+		"non-fatal apply error": func(t *testing.T, a *Agent, _ *appliermocks.MockSystemdManager, _ *appliermocks.MockPodmanClient, reader *sops.Reader) {
+			t.Helper()
+			st := state.NewState()
+			store := state.NewStore(filepath.Join(t.TempDir(), "state.json"))
+			_, err := a.finalizeApply("sha", st, store, secretChange, &applier.ApplyResult{Errors: []error{leak}}, nil, refSecretsCounts{}, nil, reader)
+			require.NoError(t, err)
+		},
+	}
+	for message, run := range tests {
+		t.Run(message, func(t *testing.T) {
+			t.Parallel()
+			reader := sops.NewReader(os.DirFS(sopsCorpusDir), mustIdentities(t, "srv-1"))
+			_, err := reader.ReadAll(t.Context(), []string{"sops://corpus/values.sops.yaml#/db/password"})
+			require.NoError(t, err)
+			sys, pod, fw := newBareMocks(t)
+			logger, logs := testlog.New()
+			a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw), WithLogger(logger))
+
+			run(t, a, sys, pod, reader)
+
+			assert.Contains(t, logs.String(), message)
+			assert.Contains(t, logs.String(), sops.Redacted)
+			assert.NotContains(t, logs.String(), "hunter2-test")
+		})
+	}
+}
+
+// A SOPS sync is a resolve that decrypted at least one file, so it is
+// counted even when the tick then fails (here: validation).
+func TestAgentCountsSopsSyncOnFailedTick(t *testing.T) {
+	t.Parallel()
+	files := sopsFleet(dbPasswordSecret, map[string]string{
+		"secrets/db.sops.yaml":   sopsCorpus(t, "values.sops.yaml"),
+		"manifests/app.yml.tmpl": "apiVersion: v1\nkind: Pod\nmetadata: [unclosed\n",
+	}, "manifests/app.yml.tmpl")
+	h := newSopsHarness(t, files, writeIdentityFile(t, "srv-1"))
+
+	require.ErrorContains(t, h.tick(t), "validation failed")
+	syncs, synced := sopsSyncs(h.a)
+	assert.Equal(t, uint64(1), syncs)
+	assert.True(t, synced)
 }

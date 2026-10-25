@@ -27,6 +27,7 @@ import (
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/rollback"
+	"github.com/schjan/picolet/pkg/sops"
 	"github.com/schjan/picolet/pkg/state"
 	"github.com/schjan/picolet/pkg/status"
 	"github.com/schjan/picolet/pkg/validator"
@@ -209,49 +210,60 @@ func ppReaderFromConfig(ctx context.Context, cfg *agentcfg.Config) (resolver.Sec
 	return reader, nil
 }
 
-// dryRunResolveWithConfig resolves the host using agent config (secrets, RepoSubDir, rootless-aware state).
-// With a sops block it decrypts sops:// refs like the Agent, so an unchanged
-// SOPS-backed file does not show as changed.
-func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath string) (*resolver.ResolvedHost, *state.Store, bool, error) {
-	cfg, err := agentcfg.Load(configPath)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	sopsIDs, _, err := cfg.LoadSopsIdentities()
-	if err != nil {
-		return nil, nil, false, fmt.Errorf("setting up sops: %w", err)
-	}
-
+// refProvidersFromConfig sets up the 1Password and Proton Pass readers the
+// Agent config cfg configures. It sets up no SOPS identities: only callers
+// that decrypt (the Agent, `dry-run --config`) add them.
+func refProvidersFromConfig(ctx context.Context, cfg *agentcfg.Config) (agent.SecretProviders, error) {
 	opReader, err := opReaderFromConfig(ctx, cfg)
 	if err != nil {
-		return nil, nil, false, err
+		return agent.SecretProviders{}, err
 	}
 	ppReader, err := ppReaderFromConfig(ctx, cfg)
 	if err != nil {
-		return nil, nil, false, err
+		return agent.SecretProviders{}, err
 	}
+	return agent.SecretProviders{Op: opReader, PP: ppReader}, nil
+}
 
-	resolved, err := agent.LoadAndResolveHost(ctx, agent.ResolveParams{
-		RepoPath:       filepath.Join(repoDir, cfg.RepoSubDir),
-		Hostname:       hostname,
-		SecretsDir:     cfg.SecretsDir,
-		SecretGuard:    cfg.RefuseCredential,
-		Rootless:       cfg.Rootless,
-		OpSecretReader: opReader,
-		PPSecretReader: ppReader,
-		SopsIdentities: sopsIDs,
-		HostDataDir:    cfg.EffectiveHostDataDir(),
-	})
+// resolveWithConfig resolves hostname from the Fleet below repoDir with
+// params built like the Agent's (agent.ResolveParamsFromConfig) and the
+// given providers. The returned scrub removes the resolve's decrypted SOPS
+// values from a later error.
+func resolveWithConfig(ctx context.Context, cfg *agentcfg.Config, repoDir, hostname string, providers agent.SecretProviders) (*resolver.ResolvedHost, func(error) error, error) {
+	params := agent.ResolveParamsFromConfig(cfg, repoDir, providers)
+	params.Hostname = hostname
+	return agent.LoadAndResolveHost(ctx, params)
+}
+
+// dryRunResolveWithConfig resolves the host using agent config (secrets, RepoSubDir, rootless-aware state).
+// With a sops block it decrypts sops:// refs like the Agent, so an unchanged
+// SOPS-backed file does not show as changed; scrub every later error with
+// the returned scrub.
+func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath string) (*resolver.ResolvedHost, *state.Store, bool, func(error) error, error) {
+	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, false, nil, err
+	}
+	sopsIDs, _, err := cfg.LoadSopsIdentities()
+	if err != nil {
+		return nil, nil, false, nil, fmt.Errorf("setting up sops: %w", err)
+	}
+	providers, err := refProvidersFromConfig(ctx, cfg)
+	if err != nil {
+		return nil, nil, false, nil, err
+	}
+	providers.Sops = sopsIDs
+	resolved, scrub, err := resolveWithConfig(ctx, cfg, repoDir, hostname, providers)
+	if err != nil {
+		return nil, nil, false, nil, err
 	}
 
 	store, err := stateStoreFromConfig(cfg)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, false, nil, err
 	}
 
-	return resolved, store, cfg.Rootless, nil
+	return resolved, store, cfg.Rootless, scrub, nil
 }
 
 // dryRunResolveBasic resolves the host without agent config (no secrets, default state path).
@@ -316,9 +328,11 @@ func dryRunChangeset(ctx context.Context, repoDir, hostname, configPath string) 
 		rootless bool
 		err      error
 	)
+	// Without an Agent config nothing is decrypted, so nothing to scrub.
+	scrub := func(err error) error { return err }
 
 	if configPath != "" {
-		resolved, store, rootless, err = dryRunResolveWithConfig(ctx, repoDir, hostname, configPath)
+		resolved, store, rootless, scrub, err = dryRunResolveWithConfig(ctx, repoDir, hostname, configPath)
 	} else {
 		resolved, store, err = dryRunResolveBasic(ctx, repoDir, hostname)
 	}
@@ -328,7 +342,7 @@ func dryRunChangeset(ctx context.Context, repoDir, hostname, configPath string) 
 	files := resolved.Files
 
 	if err := validator.ValidateFiles(files, validator.Target{Rootless: rootless, HostDataDir: resolved.HostDataDir}); err != nil {
-		return nil, fmt.Errorf("validation failed: %w", err)
+		return nil, scrub(fmt.Errorf("validation failed: %w", err))
 	}
 
 	st, err := store.Load()
@@ -528,6 +542,12 @@ func applyWithRollback(
 	return result, nil
 }
 
+// errApplyNoSops explains a sops:// ref failing `picolet apply`, whose
+// no-identity error would otherwise point at a sops block the config may
+// already have.
+var errApplyNoSops = errors.New("picolet apply does not decrypt sops:// refs, even with a sops block in the Agent config; " +
+	"let the Agent apply this Fleet (preview it with dry-run --config)")
+
 //nolint:cyclop,funlen // sequential apply steps; splitting reduces readability
 func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	cfg, err := agentcfg.Load(configPath)
@@ -540,25 +560,17 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	}
 	defer releaseLock()
 
-	opReader, err := opReaderFromConfig(ctx, cfg)
+	// apply deliberately does not decrypt (spec #248, "considered, not
+	// adopted"): it passes no SOPS identities, so a sops:// ref fails the
+	// resolve with the no-identity error, which errApplyNoSops explains.
+	providers, err := refProvidersFromConfig(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	ppReader, err := ppReaderFromConfig(ctx, cfg)
-	if err != nil {
-		return err
+	resolved, scrub, err := resolveWithConfig(ctx, cfg, repoDir, hostname, providers)
+	if errors.Is(err, sops.ErrNoIdentity) {
+		return fmt.Errorf("%w: %w", errApplyNoSops, err)
 	}
-
-	resolved, err := agent.LoadAndResolveHost(ctx, agent.ResolveParams{
-		RepoPath:       filepath.Join(repoDir, cfg.RepoSubDir),
-		Hostname:       hostname,
-		SecretsDir:     cfg.SecretsDir,
-		SecretGuard:    cfg.RefuseCredential,
-		Rootless:       cfg.Rootless,
-		OpSecretReader: opReader,
-		PPSecretReader: ppReader,
-		HostDataDir:    cfg.EffectiveHostDataDir(),
-	})
 	if err != nil {
 		return err
 	}
@@ -581,7 +593,7 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 
 	deps, err := validator.AnalyzeFiles(files, validator.Target{Rootless: cfg.Rootless, HostDataDir: resolved.HostDataDir})
 	if err != nil {
-		return fmt.Errorf("validation failed: %w", err)
+		return scrub(fmt.Errorf("validation failed: %w", err))
 	}
 
 	slog.Info("applying changes",
@@ -604,7 +616,7 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	result, err := applyWithRollback(ctx, changeset, systemd, podman, resolved.Hooks, deps,
 		resolved.DataDir, resolved.HostDataDir)
 	if err != nil {
-		return err
+		return scrub(err)
 	}
 
 	slog.Info("apply complete", "applied", result.Applied, "restarted", result.RestartedUnits,

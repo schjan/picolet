@@ -184,7 +184,7 @@ func TestApplyWithRollbackReturnsRetryableHookErrorsWithoutRollback(t *testing.T
 		Container: "app",
 		Signal:    "HUP",
 		OnFailure: config.HookOnFailureKeepRunning,
-	}}, nil, nil, "", "")
+	}}, nil, nil, "", "", nil)
 
 	require.ErrorIs(t, err, applier.ErrApplyIncomplete)
 	require.NotNil(t, result)
@@ -272,7 +272,7 @@ func TestRetryPendingHooksClearsListOnSuccess(t *testing.T) {
 	}
 	changeset := &reconciler.Changeset{Summary: map[reconciler.Action]int{}}
 
-	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, refSecretsCounts{})
+	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, refSecretsCounts{}, nil)
 	require.NoError(t, err)
 
 	loaded, err := store.Load()
@@ -428,7 +428,7 @@ func TestApplyWithRollbackReturnsIncompleteOnFailedUnitRestart(t *testing.T) {
 			ServiceName: "app.service",
 		}},
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
-	}, nil, nil, nil, "", "")
+	}, nil, nil, nil, "", "", nil)
 
 	// A failed unit restart yields ErrApplyIncomplete with a non-nil result;
 	// a rollback would instead return (nil, errRollbackPerformed).
@@ -463,7 +463,7 @@ func TestApplyWithRollbackRollsBackFailedBuild(t *testing.T) {
 			{DestPath: containerfile, Category: config.CategoryFile, Action: reconciler.ActionUpdate, NewContent: "FROM alpine:new\n", RelPath: "app/Containerfile"},
 		},
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1, reconciler.ActionNoop: 1},
-	}, nil, nil, map[string]status.UnitDependencies{"app.service": {Requires: []string{"app-build.service"}}}, "", "")
+	}, nil, nil, map[string]status.UnitDependencies{"app.service": {Requires: []string{"app-build.service"}}}, "", "", nil)
 
 	require.ErrorIs(t, err, errRollbackPerformed)
 	require.ErrorIs(t, err, assert.AnError)
@@ -490,7 +490,7 @@ func TestApplyWithRollbackCompletesWhenUnmanagedHookUnitRestartFails(t *testing.
 		Secrets: []string{"app_config"},
 		Unit:    "nginx.service",
 		Action:  config.HookActionRestart,
-	}}, nil, nil, "", "")
+	}}, nil, nil, "", "", nil)
 
 	// nginx.service is not a picolet-managed quadlet — it is absent from the
 	// changeset's ServiceNames, so health-enforce could never retry it. Its
@@ -618,7 +618,7 @@ func TestFinalizeApplyPrunesPendingUnitsForDeletedUnit(t *testing.T) {
 		Summary: map[reconciler.Action]int{reconciler.ActionDelete: 1},
 	}
 
-	_, err := a.finalizeApply("head-sha", st, store, changeset, &applier.ApplyResult{}, nil, refSecretsCounts{}, nil)
+	_, err := a.finalizeApply("head-sha", st, store, changeset, &applier.ApplyResult{}, nil, refSecretsCounts{}, nil, nil)
 	require.NoError(t, err)
 	assert.Empty(t, st.PendingUnits, "pending record for a unit removed from the fleet must be pruned")
 }
@@ -650,7 +650,7 @@ func TestRetryPendingHooksDropsStaleNamesAndKeepsFailures(t *testing.T) {
 	}
 	changeset := &reconciler.Changeset{Summary: map[reconciler.Action]int{}}
 
-	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, refSecretsCounts{})
+	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, refSecretsCounts{}, nil)
 	require.ErrorIs(t, err, applier.ErrApplyIncomplete)
 
 	loaded, err := store.Load()
@@ -967,7 +967,7 @@ Internal=true
 		Hostname:   "test-host",
 		SecretsDir: t.TempDir(),
 	}
-	resolved, err := LoadAndResolveHost(t.Context(), ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: cfg.Hostname, SecretsDir: cfg.SecretsDir})
+	resolved, _, err := LoadAndResolveHost(t.Context(), ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: cfg.Hostname, SecretsDir: cfg.SecretsDir})
 	require.NoError(t, err)
 	files := resolved.Files
 
@@ -1313,7 +1313,7 @@ Internal=true
 
 	// Resolve from the subdirectory path (simulates what Agent.loadAndResolve does with RepoSubDir).
 	fleetPath := filepath.Join(repoDir, subDir)
-	resolved, err := LoadAndResolveHost(t.Context(), ResolveParams{Logger: discardLogger(), RepoPath: fleetPath, Hostname: "test-host", SecretsDir: t.TempDir()})
+	resolved, _, err := LoadAndResolveHost(t.Context(), ResolveParams{Logger: discardLogger(), RepoPath: fleetPath, Hostname: "test-host", SecretsDir: t.TempDir()})
 	require.NoError(t, err)
 	files := resolved.Files
 	require.NotEmpty(t, files)
@@ -1473,7 +1473,7 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 	// Pre-seed state at the current SHA, with the secret already managed and
 	// one hook waiting for retry. The diff against this state must be empty;
 	// the noop gate must be bypassed because PendingHooks is non-empty.
-	resolved, err := LoadAndResolveHost(ctx, ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
+	resolved, _, err := LoadAndResolveHost(ctx, ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
 	require.NoError(t, err)
 	files := resolved.Files
 	store := state.NewStore(statePath)
@@ -1510,7 +1510,7 @@ func tickPendingUnitFixture(t *testing.T, poller *gitpoll.Poller, repoDir, state
 	initial, err := poller.Poll(ctx, "")
 	require.NoError(t, err)
 
-	resolved, err := LoadAndResolveHost(ctx, ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
+	resolved, _, err := LoadAndResolveHost(ctx, ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
 	require.NoError(t, err)
 	files := resolved.Files
 	store := state.NewStore(statePath)
@@ -1624,7 +1624,7 @@ func tickTimerJobFixture(t *testing.T, poller *gitpoll.Poller, repoDir, statePat
 	initial, err := poller.Poll(ctx, "")
 	require.NoError(t, err)
 
-	resolved, err := LoadAndResolveHost(ctx, ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
+	resolved, _, err := LoadAndResolveHost(ctx, ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
 	require.NoError(t, err)
 	files := resolved.Files
 	store := state.NewStore(statePath)
@@ -1770,7 +1770,7 @@ func TestTickDropsStalePendingHookNameOnRetry(t *testing.T) {
 	// Pre-seed state matching the current resolved files (so the diff is empty)
 	// AND a pending hook for a *different* secret that did not change in this
 	// tick. The pending entry must survive the tick.
-	resolved, err := LoadAndResolveHost(ctx, ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
+	resolved, _, err := LoadAndResolveHost(ctx, ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
 	require.NoError(t, err)
 	files := resolved.Files
 	store := state.NewStore(statePath)
@@ -1861,7 +1861,7 @@ func TestApplyWithRollbackRunsPendingHooksAlongsideChangeset(t *testing.T) {
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
 	}
 
-	result, err := a.applyWithRollback(t.Context(), "head-sha", changeset, hooks, []string{"stale-pending"}, nil, "", "")
+	result, err := a.applyWithRollback(t.Context(), "head-sha", changeset, hooks, []string{"stale-pending"}, nil, "", "", nil)
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"stale-pending"}, result.AttemptedHookNames,
 		"pending hook ran even though its trigger was not in the changeset")
