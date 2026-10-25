@@ -95,6 +95,9 @@ type Agent struct {
 	// sopsIDs are the age identities sops:// refs are decrypted with; nil
 	// when the config has no sops block. Set by setupSops in Run.
 	sopsIDs *sops.Identities
+	// getwd is the Agent's working directory for the self-restart guard
+	// (os.Getwd; tests fix it).
+	getwd func() (string, error)
 	// startup is what the run command's startup checks loaded (WithStartup);
 	// nil makes setupSops load the identities itself.
 	startup *agentcfg.Startup
@@ -265,6 +268,7 @@ func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 		webhookCh:   make(chan struct{}, 1),
 		statusStore: status.NewStore(),
 		logger:      slog.Default(),
+		getwd:       os.Getwd,
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -424,7 +428,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	for _, mf := range st.ManagedFiles {
 		managedByCategory[mf.Category.String()]++
 	}
-	setFilesManagedMetric(managedByCategory)
+	setFilesManaged(a.statusStore, managedByCategory)
 	metrics.SetAppliedSHA(st.AppliedSHA)
 	// Seed once from persisted state (not every tick — prevents backward jumps when
 	// noop timestamps are in-memory only and store.Load() returns the older persisted value).
@@ -858,7 +862,7 @@ func (a *Agent) reconcileResolved(ctx context.Context, headSHA string, st *state
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	if err := CheckSelfConfig(resolved, changeset, os.ReadFile); err != nil {
+	if err := CheckSelfConfig(resolved, changeset, os.ReadFile, a.getwd); err != nil {
 		err = scrubError(sopsReader, err)
 		a.logger.Warn("agent config check failed", "error", err)
 		a.recordEvent("failure", headSHA, fmt.Sprintf("agent config check failed: %v", err))
@@ -883,15 +887,11 @@ func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Stor
 	// deployed state. On apply failure (rollback) we keep the previous good
 	// map rather than advertising deps for a state we couldn't reach.
 	a.statusStore.SetDependencies(deps)
-	st.PendingHooks = a.enforceRetryBudget(mergePendingHooks(st.PendingHooks, applyResult), hooks)
 	a.logNonRetryableApplyErrors(applyResult, sopsReader)
 
 	a.markAppliedWithMetrics(st, headSHA)
 	a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
-	UpdateState(st, changeset)
-	// Reconcile pending-unit records: clear units that restarted cleanly, seed
-	// any that failed, then prune records for units removed from the fleet.
-	st.PendingUnits = prunePendingUnits(mergePendingUnits(st.PendingUnits, applyResult, headSHA, time.Now()), st.ServiceNames)
+	a.recordApply(st, changeset, applyResult, headSHA, hooks)
 
 	if err := store.Save(st); err != nil {
 		return nil, fmt.Errorf("saving state: %w", err)
@@ -962,11 +962,7 @@ func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHo
 // and the pending-hook and pending-unit records are saved so the retries survive
 // an agent restart.
 func (a *Agent) savePartialState(headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, hooks []config.Hook) {
-	UpdateState(st, changeset)
-	st.PendingHooks = a.enforceRetryBudget(mergePendingHooks(st.PendingHooks, applyResult), hooks)
-	// Prune against the just-rebuilt ServiceNames so a unit removed from the
-	// fleet drops its pending record (health-enforce cannot see removals).
-	st.PendingUnits = prunePendingUnits(mergePendingUnits(st.PendingUnits, applyResult, headSHA, time.Now()), st.ServiceNames)
+	a.recordApply(st, changeset, applyResult, headSHA, hooks)
 	// Record the SHA without advancing the last-successful timestamp: the apply
 	// is incomplete, so staleness alerts must keep firing until it converges.
 	a.markAppliedIncompleteWithMetrics(st, headSHA)
@@ -974,6 +970,18 @@ func (a *Agent) savePartialState(headSHA string, st *state.State, store *state.S
 		a.logger.Error("saving partial state after incomplete apply", "error", saveErr)
 	}
 	a.statusStore.SetDependencies(deps)
+}
+
+// recordApply records an apply of changeset (headSHA) in st: the Managed
+// Files (UpdateState), the pending hooks (within their retry budget) and the
+// pending units: units that restarted cleanly are cleared, failed ones
+// seeded, and the records pruned against the just-rebuilt ServiceNames so a
+// unit removed from the fleet drops its record (health-enforce cannot see
+// removals).
+func (a *Agent) recordApply(st *state.State, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, headSHA string, hooks []config.Hook) {
+	UpdateState(st, changeset)
+	st.PendingHooks = a.enforceRetryBudget(mergePendingHooks(st.PendingHooks, applyResult), hooks)
+	st.PendingUnits = prunePendingUnits(mergePendingUnits(st.PendingUnits, applyResult, headSHA, time.Now()), st.ServiceNames)
 }
 
 // mergePendingHooks computes the new PendingHooks map given the previous

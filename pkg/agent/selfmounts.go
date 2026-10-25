@@ -2,7 +2,6 @@ package agent
 
 import (
 	"fmt"
-	"os"
 	"path"
 	"slices"
 	"strings"
@@ -208,9 +207,9 @@ func checkLostSources(next *parser.UnitFile, unit string, changeset *reconciler.
 // manage), and then credentials are read where they are spelled. When the
 // changeset writes the unit (writesUnit), a relative credential path is
 // first resolved against the next start's working directory
-// (nextWorkingDir); otherwise both starts share the running Agent's, and it
-// is read where it is spelled.
-func selfConfigLocator(next, running *parser.UnitFile, writesUnit bool, changeset *reconciler.Changeset) agentcfg.Locate {
+// (nextWorkingDir, with getwd the running Agent's); otherwise both starts
+// share the running Agent's, and it is read where it is spelled.
+func selfConfigLocator(next, running *parser.UnitFile, writesUnit bool, changeset *reconciler.Changeset, getwd func() (string, error)) agentcfg.Locate {
 	if next == nil || running == nil {
 		return nil
 	}
@@ -224,7 +223,7 @@ func selfConfigLocator(next, running *parser.UnitFile, writesUnit bool, changese
 		resolveRelative: writesUnit,
 	}
 	if writesUnit {
-		l.dir, l.dirErr = nextWorkingDir(next, running, os.Getwd)
+		l.dir, l.dirErr = nextWorkingDir(next, running, getwd)
 	}
 	return l.locate
 }

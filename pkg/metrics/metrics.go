@@ -74,14 +74,6 @@ var (
 		[]string{"action", "category"},
 	)
 
-	FilesManagedTotal = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "picolet_files_managed_total",
-			Help: "Current number of managed files by category.",
-		},
-		[]string{"category"},
-	)
-
 	OrphansRemovedTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "picolet_orphans_removed_total",
@@ -191,7 +183,7 @@ func Collectors(store *status.Store) []prometheus.Collector {
 		appliedSHA,
 		GitPollTotal,
 		FilesAppliedTotal,
-		FilesManagedTotal,
+		NewFilesManagedCollector(store),
 		OrphansRemovedTotal,
 		MQTTConnected,
 		AgentPaused,

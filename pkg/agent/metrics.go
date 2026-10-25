@@ -3,8 +3,6 @@ package agent
 import (
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/health"
@@ -77,20 +75,17 @@ func RecordTimerJobRuns(store *status.Store, hr *health.CheckResult) {
 	store.PruneRuns(hr.Managed)
 }
 
-// setFilesManagedMetric overwrites FilesManagedTotal for every deployable category.
-// Because the label set is fixed, each call is a pure Set — no Reset() needed,
-// so a concurrent Prometheus scrape never sees zero or partial values.
-func setFilesManagedMetric(counts map[string]float64) {
-	setFilesManaged(metrics.FilesManagedTotal, counts)
-}
-
-// setFilesManaged sets one series per deployable category on g, so a test
-// can check it on its own gauge while parallel Agent tests write the global.
-func setFilesManaged(g *prometheus.GaugeVec, counts map[string]float64) {
+// setFilesManaged records picolet_files_managed_total's counts in store: one
+// per deployable category (0 when counts has none), and none for any other.
+// Each call replaces the whole set, so a concurrent scrape never sees a
+// partial one.
+func setFilesManaged(store *status.Store, counts map[string]float64) {
+	byCategory := make(map[string]float64, len(config.Deployable()))
 	for _, cat := range config.Deployable() {
 		category := cat.String()
-		g.WithLabelValues(category).Set(counts[category])
+		byCategory[category] = counts[category]
 	}
+	store.SetFilesManaged(byCategory)
 }
 
 // recordProviderRefCount publishes the per-provider managed-count gauge

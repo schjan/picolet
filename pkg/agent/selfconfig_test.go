@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -437,7 +436,7 @@ func TestAgentChecksSelfConfigCredentialsThroughSecretMounts(t *testing.T) {
 // commit with nextUnit and nextConfig: applied when wantError is empty,
 // otherwise refused before anything is written, with an error naming every
 // wantError fragment.
-func runMountChangeCase(t *testing.T, unit, config, nextUnit, nextConfig string, wantError []string) {
+func runMountChangeCase(t *testing.T, unit, config, nextUnit, nextConfig string, wantError []string, opts ...Option) {
 	t.Helper()
 	const (
 		quadlet    = "services/picolet-system/picolet-system.container"
@@ -445,7 +444,7 @@ func runMountChangeCase(t *testing.T, unit, config, nextUnit, nextConfig string,
 	)
 	bareDir, _ := initAgentBundleRepoWithUnit(t, unit, config)
 	quadletDir := t.TempDir()
-	h := startSelfConfigAgent(t, bareDir, WithQuadletDir(quadletDir))
+	h := startSelfConfigAgent(t, bareDir, append([]Option{WithQuadletDir(quadletDir)}, opts...)...)
 	// The running Agent's container was started from the unit on disk; the
 	// mocked file writer wrote nothing there.
 	unitPath := filepath.Join(quadletDir, "picolet-system.container")
@@ -487,11 +486,11 @@ func TestCheckSelfConfigUnresolvedMountedSecret(t *testing.T) {
 	noRead := func(string) ([]byte, error) { return nil, os.ErrNotExist }
 
 	neverManaged := reconciler.Diff(resolved.Files, state.NewState())
-	require.NoError(t, CheckSelfConfig(resolved, neverManaged, noRead))
+	require.NoError(t, CheckSelfConfig(resolved, neverManaged, noRead, os.Getwd))
 
 	st := state.NewState()
 	st.ManagedFiles["secret:picolet_system_config"] = state.ManagedFile{Hash: "h", Category: config.CategorySecret}
-	err := CheckSelfConfig(resolved, reconciler.Diff(resolved.Files, st), noRead)
+	err := CheckSelfConfig(resolved, reconciler.Diff(resolved.Files, st), noRead, os.Getwd)
 	require.ErrorContains(t, err, "refusing to remove the secret picolet_system_config")
 }
 
@@ -550,7 +549,7 @@ func (c selfConfigChange) check(t *testing.T) error {
 		}
 		return nil, os.ErrNotExist
 	}
-	return CheckSelfConfig(&resolver.ResolvedHost{Host: &config.HostConfig{Hostname: "test-host"}, Files: files}, reconciler.Diff(files, st), read)
+	return CheckSelfConfig(&resolver.ResolvedHost{Host: &config.HostConfig{Hostname: "test-host"}, Files: files}, reconciler.Diff(files, st), read, os.Getwd)
 }
 
 // assertRefusal checks a CheckSelfConfig result: nil when wantError is empty,
@@ -995,25 +994,29 @@ func TestAgentChecksRelativeSelfConfigCredentialsThroughNewUnitMounts(t *testing
 	t.Parallel()
 	seen := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(seen, "hook"), []byte("secret\n"), 0o600))
-	config := "hostname: test-host\nrepo_url: https://example.com/fleet.git\nwebhook_secret_path: " + relFromCwd(t, filepath.Join(seen, "hook")) + "\n"
+	// The first apply has no running unit on disk and reads the path as
+	// spelled; the next commit spells it relative to the running Agent's
+	// working directory, fixed at seen.
+	config := "hostname: test-host\nrepo_url: https://example.com/fleet.git\nwebhook_secret_path: " + filepath.Join(seen, "hook") + "\n"
+	relative := "hostname: test-host\nrepo_url: https://example.com/fleet.git\nwebhook_secret_path: hook\n"
+	inSeen := withGetwd(seen)
 	current := agentBundleUnit("Volume=/host/secrets:" + seen + ":ro\n")
 	t.Run("mount dropped", func(t *testing.T) {
 		t.Parallel()
-		runMountChangeCase(t, current, config, agentBundleUnit(""), config,
-			[]string{"webhook_secret_path", seen, "no longer mounts", "own commit"})
+		runMountChangeCase(t, current, config, agentBundleUnit(""), relative,
+			[]string{"webhook_secret_path", seen, "no longer mounts", "own commit"}, inSeen)
 	})
 	t.Run("WorkingDir added", func(t *testing.T) {
 		t.Parallel()
-		// Nest the new working directory deeper than the relative path
-		// climbs, so its ".." segments can't clamp at / and land back on
-		// the real file, whatever directory the test runs from.
-		elsewhere := t.TempDir()
-		for range strings.Count(relFromCwd(t, seen), "..") + 1 {
-			elsewhere = filepath.Join(elsewhere, "d")
-		}
-		runMountChangeCase(t, current, config, current+"WorkingDir="+elsewhere+"\n", config,
-			[]string{"webhook_secret_path", "not readable"})
+		runMountChangeCase(t, current, config, current+"WorkingDir="+t.TempDir()+"\n", relative,
+			[]string{"webhook_secret_path", "not readable"}, inSeen)
 	})
+}
+
+// withGetwd fixes the Agent's working directory, as the self-restart guard
+// sees it, at dir.
+func withGetwd(dir string) Option {
+	return func(a *Agent) { a.getwd = func() (string, error) { return dir, nil } }
 }
 
 // A relative credential path of a commit that writes the Agent's unit is
