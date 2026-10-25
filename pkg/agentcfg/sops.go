@@ -24,14 +24,20 @@ func (c *Config) LoadSopsIdentities() (ids *sops.Identities, groupOrWorldReadabl
 	if c.Sops == nil {
 		return nil, false, nil
 	}
-	path := c.Sops.AgeIdentityPath
-	data, mode, err := readWithMode(path)
+	cred := Credential{Setting: sopsIdentitySetting, Path: c.Sops.AgeIdentityPath}
+	return loadSopsIdentities(located{Credential: cred, at: cred.Path})
+}
+
+// loadSopsIdentities reads and parses the age identity file cred, at the
+// path the checks read it at.
+func loadSopsIdentities(cred located) (ids *sops.Identities, groupOrWorldReadable bool, err error) {
+	data, mode, err := readWithMode(cred.at)
 	if err != nil {
-		return nil, false, fmt.Errorf("credential %s (%s) is not readable: %w", sopsIdentitySetting, path, err)
+		return nil, false, fmt.Errorf("credential %s (%s) is not readable: %w", sopsIdentitySetting, cred.shown(), err)
 	}
 	ids, err = sops.ParseIdentities(data)
 	if err != nil {
-		return nil, false, fmt.Errorf("credential %s (%s): %w", sopsIdentitySetting, path, err)
+		return nil, false, fmt.Errorf("credential %s (%s): %w", sopsIdentitySetting, cred.shown(), err)
 	}
 	return ids, mode.Perm()&groupOrOtherReadable != 0, nil
 }

@@ -169,10 +169,19 @@ func dirHolds(dir string, info fs.FileInfo) (bool, error) {
 // another credential would send that one instead. It reads the filesystem,
 // so Load and CheckRenderedConfig run it and Parse does not.
 func (c *Config) checkCredentialFiles() error {
-	creds := c.Credentials()
+	creds, err := c.locate(nil)
+	if err != nil {
+		return err
+	}
+	return checkCredentialFiles(creds)
+}
+
+// checkCredentialFiles compares creds by spelling and, on disk, at the paths
+// the checks read them at.
+func checkCredentialFiles(creds []located) error {
 	for i, a := range creds {
 		for _, b := range creds[i+1:] {
-			same, err := a.overlaps(b)
+			same, err := overlaps(a, b)
 			if err != nil {
 				return err
 			}
@@ -184,14 +193,14 @@ func (c *Config) checkCredentialFiles() error {
 	return nil
 }
 
-// overlaps reports whether cred and other name the same file, or one names
-// a file under the other's directory: by spelling, so files not yet on disk
-// count, and by os.SameFile on what is there.
-func (cred Credential) overlaps(other Credential) (bool, error) {
-	if filepath.Clean(cred.Path) == filepath.Clean(other.Path) || cred.spellsUnder(other.Path) || other.spellsUnder(cred.Path) {
+// overlaps reports whether a and b name the same file, or one names a file
+// under the other's directory: by spelling, so files not yet on disk count,
+// and by os.SameFile on what is there where the checks read them.
+func overlaps(a, b located) (bool, error) {
+	if filepath.Clean(a.Path) == filepath.Clean(b.Path) || a.spellsUnder(b.Path) || b.spellsUnder(a.Path) {
 		return true, nil
 	}
-	for _, pair := range [][2]Credential{{cred, other}, {other, cred}} {
+	for _, pair := range [][2]Credential{{a.onDisk(), b.onDisk()}, {b.onDisk(), a.onDisk()}} {
 		file, holder := pair[0], pair[1]
 		info, err := os.Stat(file.Path)
 		if errors.Is(err, fs.ErrNotExist) {

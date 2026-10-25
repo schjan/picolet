@@ -844,7 +844,7 @@ func (a *Agent) reconcileResolved(ctx context.Context, headSHA string, st *state
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	if err := checkSelfConfig(resolved, changeset); err != nil {
+	if err := CheckSelfConfig(resolved, changeset, os.ReadFile); err != nil {
 		err = scrubError(sopsReader, err)
 		a.logger.Warn("agent config check failed", "error", err)
 		a.recordEvent("failure", headSHA, fmt.Sprintf("agent config check failed: %v", err))

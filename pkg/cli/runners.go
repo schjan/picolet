@@ -626,6 +626,9 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	if err != nil {
 		return scrub(fmt.Errorf("validation failed: %w", err))
 	}
+	if err := agent.CheckSelfConfig(resolved, changeset, os.ReadFile); err != nil {
+		return scrub(fmt.Errorf("agent config check failed: %w", err))
+	}
 
 	slog.Info("applying changes",
 		"create", changeset.Summary[reconciler.ActionCreate],

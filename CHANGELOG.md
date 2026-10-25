@@ -66,8 +66,9 @@ kept as is.
   bootstrap does: a provider template-function call (`readOpSecret`,
   `readProtonPassSecret`, `readSopsSecret`, `readSopsData`) or a direct provider
   `secrets:` ref in the Agent bundle fails CI; YAML-value refs such as
-  `onepassword.git_token_ref` pass
-  ([#253](https://github.com/schjan/picolet/issues/253)).
+  `onepassword.git_token_ref` pass. A bundle whose quadlet mounts a config
+  secret at `/etc/picolet/config.yml` that the bundle itself doesn't resolve
+  fails too ([#253](https://github.com/schjan/picolet/issues/253)).
 
 ### Added
 
@@ -165,8 +166,13 @@ kept as is.
   Files whose render used a SOPS value
   ([#250](https://github.com/schjan/picolet/issues/250)).
 - The self-restart guard refuses a Fleet-rendered Agent config the Agent could
-  not start with (strict parse, credential overlap, startup credential checks):
-  the reconciliation fails and the Agent keeps running on its current config
+  not start with (strict parse, credential overlap, startup credential checks,
+  through the mounts of a changed Agent quadlet, `PodmanArgs=` mounts
+  included) or a commit that leaves a Fleet-managed Agent config unreachable
+  (its secret removed while still mounted, the mount repointed at an
+  unresolved secret, or the mount dropped; a Host file bind-mounted there
+  opts out): the reconciliation fails and the Agent keeps running on its
+  current config. `picolet apply --config` runs the same check
   ([#252](https://github.com/schjan/picolet/issues/252)).
 - Agents warn about an unknown `host.yml` key instead of refusing the Fleet;
   `picolet validate` still fails on it.

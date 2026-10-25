@@ -42,3 +42,47 @@ func TestAgentConfigSecretFound(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "secret:cfg", file.DestPath)
 }
+
+// The config mount is found however Podman would read its target: cleaned,
+// and a relative target under /run/secrets; an env secret mounts nothing.
+func TestAgentConfigMountSpellings(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		spec string
+		want string // "": no config mount
+	}{
+		{spec: "cfg,target=/etc/picolet/config.yml", want: "cfg"},
+		{spec: "cfg,mode=0400,target=/etc/picolet//config.yml", want: "cfg"},
+		{spec: "cfg,target=/etc/picolet/./config.yml", want: "cfg"},
+		{spec: "cfg,type=mount,target=/etc/picolet/sub/../config.yml", want: "cfg"},
+		{spec: "cfg,type=env,target=/etc/picolet/config.yml"},
+		{spec: "source=cfg,target=/etc/picolet/config.yml", want: "cfg"},
+		{spec: "target=/etc/picolet/config.yml,source=cfg", want: "cfg"},
+		{spec: `"cfg,target=/etc/picolet/config.yml"`, want: "cfg"},
+		{spec: "other cfg,target=/etc/picolet/config.yml", want: "cfg"},
+		{spec: "cfg,target=config.yml"},
+		{spec: "cfg"},
+	}
+	for _, tt := range tests {
+		file := agentUnitFile(t, "[Container]\nImage=x\nSecret="+tt.spec+"\n")
+		name, ok := AgentConfigMount([]ResolvedFile{file}, "picolet.service")
+		assert.Equal(t, tt.want, name, tt.spec)
+		assert.Equal(t, tt.want != "", ok, tt.spec)
+	}
+}
+
+func TestParseSecretMount(t *testing.T) {
+	t.Parallel()
+	name, target, mounted := ParseSecretMount("tok")
+	assert.Equal(t, []any{"tok", "/run/secrets/tok", true}, []any{name, target, mounted})
+	name, target, mounted = ParseSecretMount("tok,target=sub/x")
+	assert.Equal(t, []any{"tok", "/run/secrets/sub/x", true}, []any{name, target, mounted})
+	name, _, mounted = ParseSecretMount("tok,type=env")
+	assert.Equal(t, []any{"tok", false}, []any{name, mounted})
+	name, target, mounted = ParseSecretMount("mode=0400,source=tok")
+	assert.Equal(t, []any{"tok", "/run/secrets/tok", true}, []any{name, target, mounted})
+	name, _, mounted = ParseSecretMount("type=env,source=tok")
+	assert.Equal(t, []any{"tok", false}, []any{name, mounted})
+	name, target, _ = ParseSecretMount("source=tok")
+	assert.Equal(t, []any{"source=tok", "/run/secrets/source=tok"}, []any{name, target}, "a value without a comma is the name")
+}

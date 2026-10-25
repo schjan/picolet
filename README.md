@@ -334,17 +334,46 @@ Push to git. Picolet detects the change, writes the updated Quadlet, and restart
 An upgrade that changes the Fleet schema (v0.2.0) needs a fixed rollout order; see [MIGRATION.md](MIGRATION.md).
 
 A commit that changes an Agent's own config (the secret its bundle mounts at
-`/etc/picolet/config.yml`) is checked before it is applied, with the checks the
-Agent runs at startup: the config must parse with the running Agent's strict
-loader (an unknown key fails), and every credential file it names must exist
-and be readable on the Host. If either fails, the reconciliation fails before
-anything is written and the Agent keeps its current config, so it is never
-left with a config it would refuse to restart with. Place a new credential
-file on the Host (`bootstrap machine`) before the commit that points the Agent
-at it. The check looks for credential files where the running Agent sees them
-(inside its container), so a commit that adds a `Volume=` to the Agent quadlet
-and points the config at a file under that new mount is refused: add the mount
-first, and point the config at it once the Agent runs with the mount.
+`/etc/picolet/config.yml`) or its quadlet is checked before it is applied, by
+the Agent and by `picolet apply --config`, with the checks the Agent runs at
+startup: the config must parse with the running Agent's strict loader (an
+unknown key fails), and every credential file it names must exist and be
+readable on the Host. Once the Fleet renders the Agent's config, a commit
+after which the Agent's next start would find no config is refused too: one
+that stops resolving the mounted config secret (renames or drops its file),
+repoints the mount at a secret the Fleet doesn't resolve, or drops the mount.
+To manage the config by hand instead, bind-mount a Host file at
+`/etc/picolet/config.yml` with `Volume=` (a Host directory over
+`/etc/picolet` works too; a named volume, `.volume` unit or tmpfs there is
+refused, since it holds no config). Any commit that stops resolving a
+secret (`Secret=`) or `.volume` unit the Agent's quadlet still mounts is
+refused as well, since Podman couldn't create the Agent's container: stop
+mounting it first, or in the same commit.
+If a check fails, the reconciliation fails before anything is written and the
+Agent keeps its current config, so it is never left with a config it would
+refuse to restart with. Place a new credential file on the Host (`bootstrap
+machine`) before the commit that points the Agent at it.
+
+The running Agent looks for credential files inside its container, and the
+check follows the new quadlet's `Volume=`, `Mount=`, `Tmpfs=` and `Secret=`
+mounts, and the `-v`/`--volume`, `--mount`, `--tmpfs` and `--secret` options
+its `PodmanArgs=` pass (a `--volumes-from` on the current or new quadlet
+mounts what the check can't follow, so every credential file is refused): a file under a mount whose source the running container also mounts at
+the same place is checked there (moving the mount's target in the same commit
+works), a file under no mount is checked where it is spelled, and a file the
+new quadlet stops mounting, hides under a tmpfs, or mounts from a source the
+running container doesn't have, or from a secret or `.volume` unit the same
+commit changes, is refused. A `Volume=`'s `subpath=` and other options that
+change what it shows (an overlay's `upperdir=`, `U`, `idmap`, …) count as part
+of its source; `ro`, `z`/`Z` and the like don't. So a
+commit that adds a mount and points the config at a file under it is refused:
+land the mount change in its own commit first, and point the config at it once
+the Agent runs with the mount. The check assumes the next start reads
+`/etc/picolet/config.yml` as the running Agent's user: a quadlet change that
+points the Agent at another config (`Environment=PICOLET_CONFIG=…`, an
+`Exec=` with `--config`) or runs it as another user (`User=`, `UserNS=`)
+isn't checked against that, so land such a change on its own and watch the
+Agent restart.
 
 ### 6. Monitoring
 
@@ -1387,7 +1416,7 @@ All files are validated before deployment: quadlet files via Podman's own `quadl
 
 Secrets always require non-empty content. Repo-backed YAML secrets (`.yml` / `.yaml`, including `.tmpl`) are also syntax-validated after template rendering. External placeholder secrets in repo-only validation mode are skipped for YAML syntax checks.
 
-`validate` also renders each Host's Agent bundle (`picolet` for a Host with `user:`, `picolet-system` for the rootful Host; Hosts without it assigned are skipped) the way `bootstrap` does: strictly, with no secret provider. A `readOpSecret`/`readProtonPassSecret` call in the bundle fails with the Host, the bundle, the ref and the fix, since `bootstrap` would fail on it too; put the ref in the Agent config as a YAML value (e.g. `onepassword.git_token_ref: op://…`) and let the Agent resolve it at runtime. A `readSopsSecret` or `readSopsData` call in the bundle fails the same way: deliver the value as a `--secrets-dir` file and point the Agent config at its path, since credentials needed to fetch the Fleet can't be SOPS values.
+`validate` also renders each Host's Agent bundle (`picolet` for a Host with `user:`, `picolet-system` for the rootful Host; Hosts without it assigned are skipped) the way `bootstrap` does: strictly, with no secret provider. A `readOpSecret`/`readProtonPassSecret` call in the bundle fails with the Host, the bundle, the ref and the fix, since `bootstrap` would fail on it too; put the ref in the Agent config as a YAML value (e.g. `onepassword.git_token_ref: op://…`) and let the Agent resolve it at runtime. A `readSopsSecret` or `readSopsData` call in the bundle fails the same way: deliver the value as a `--secrets-dir` file and point the Agent config at its path, since credentials needed to fetch the Fleet can't be SOPS values. A bundle whose quadlet mounts a `Secret=` at `/etc/picolet/config.yml` that the bundle itself doesn't resolve (a renamed or dropped config file) fails too: `bootstrap` reads the bundle alone, so a config secret delivered by an `assignments.yml` `secrets:` entry outside the bundle fails as well, and neither `bootstrap` nor the Agent's next start after a rename would find a config.
 
 `validate` checks every `readSopsSecret` ref without a key: the path is a clean Fleet-relative `*.sops.*` path, the file exists and is a SOPS file, and the pointer ends at a leaf. The file's values are checked the way the Agent's decrypt walks them, by the file's own encryption rules: a value the rules encrypt must be SOPS ciphertext with a valid type tag (an edit outside sops fails every ref into the file, as it fails the Agent), and a value they leave in plaintext (`""`, `null`, an `_unencrypted` key) passes and renders as itself. `validate` never fails a ref the Agent would decrypt; what needs the key (the MAC, the ciphertext) only the Agent checks. A `readSopsData` ref may end at a map or a list. A direct `sops://` entry in `secrets:` gets the same checks, except that it must end at a non-empty leaf. Every ref also checks the Host's Recipients:
 

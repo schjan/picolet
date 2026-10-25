@@ -589,24 +589,24 @@ func (r *Resolver) secretDestPath(srcPath string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return "secret:" + name, nil
+		return SecretDestPath(name), nil
 	}
 	if op.IsRef(srcPath) {
 		parsed, err := op.ParseOpRef(srcPath)
 		if err != nil {
 			return "", err
 		}
-		return "secret:" + parsed.PodmanSecretName(), nil
+		return SecretDestPath(parsed.PodmanSecretName()), nil
 	}
 	if pp.IsRef(srcPath) {
 		parsed, err := pp.ParseRef(srcPath)
 		if err != nil {
 			return "", err
 		}
-		return "secret:" + parsed.PodmanSecretName(), nil
+		return SecretDestPath(parsed.PodmanSecretName()), nil
 	}
 	filename := destFilename(srcPath)
-	return "secret:" + strings.TrimSuffix(filename, filepath.Ext(filename)), nil
+	return SecretDestPath(strings.TrimSuffix(filename, filepath.Ext(filename))), nil
 }
 
 // buildFiles renders or reads every ref, in resolution order. A provider ref
