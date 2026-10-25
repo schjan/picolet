@@ -33,13 +33,25 @@ import (
 	"github.com/schjan/picolet/pkg/version"
 )
 
-func runAgent(ctx context.Context, configPath string) error {
+// loadRunConfig loads the Agent config for the run command and runs the
+// startup checks. The same checks guard a Fleet-rendered Agent config before
+// it is applied (agentcfg.CheckRenderedConfig), so a commit cannot lock the
+// Agent out.
+func loadRunConfig(configPath string) (*agentcfg.Config, error) {
 	cfg, err := agentcfg.Load(configPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if cfg.RepoURL == "" {
-		return errors.New("repo_url is required for the run command")
+	if err := cfg.CheckStartup(); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", configPath, err)
+	}
+	return cfg, nil
+}
+
+func runAgent(ctx context.Context, configPath string) error {
+	cfg, err := loadRunConfig(configPath)
+	if err != nil {
+		return err
 	}
 
 	statusStore := status.NewStore()

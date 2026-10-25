@@ -763,6 +763,12 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
+	if err := checkSelfConfig(resolved, changeset); err != nil {
+		a.logger.Warn("agent config check failed", "error", err)
+		a.recordEvent("failure", headSHA, fmt.Sprintf("agent config check failed: %v", err))
+		return nil, fmt.Errorf("agent config check failed: %w", err)
+	}
+
 	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset, resolved.Hooks, pendingHookNames(st.PendingHooks), deps,
 		resolved.DataDir, resolved.HostDataDir)
 	recordHookMetrics(applyResult)

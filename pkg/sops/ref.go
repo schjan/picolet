@@ -88,6 +88,12 @@ func (p Pointer) String() string {
 // sopsConfigNames are SOPS's own config files, never SOPS paths.
 var sopsConfigNames = map[string]bool{".sops.yaml": true, ".sops.yml": true}
 
+// IsConfigPath reports whether p names one of SOPS's own config files
+// (`.sops.yaml`, `.sops.yml`), by base name.
+func IsConfigPath(p string) bool {
+	return sopsConfigNames[path.Base(p)]
+}
+
 // IsSOPSPath reports whether p names a SOPS file: its base name carries
 // `.sops.` somewhere before its final extension, followed by at least one
 // character (`db.sops.yaml`, `db.sops.prod.yaml`). The format is then chosen
@@ -95,11 +101,10 @@ var sopsConfigNames = map[string]bool{".sops.yaml": true, ".sops.yml": true}
 // binary. SOPS's config files `.sops.yaml` and `.sops.yml` are never SOPS
 // paths.
 func IsSOPSPath(p string) bool {
-	base := path.Base(p)
-	if sopsConfigNames[base] {
+	if IsConfigPath(p) {
 		return false
 	}
-	_, ext, ok := strings.Cut(base, ".sops.")
+	_, ext, ok := strings.Cut(path.Base(p), ".sops.")
 	return ok && ext != ""
 }
 
