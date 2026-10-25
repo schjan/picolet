@@ -2,12 +2,17 @@ package agentcfg
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/schjan/picolet/pkg/sops"
 )
 
 const sopsIdentitySetting = "sops.age_identity_path"
+
+// groupOrOtherReadable is the permission mask of the read bits for group and
+// others.
+const groupOrOtherReadable os.FileMode = 0o044
 
 // LoadSopsIdentities reads and parses the age identity file named by
 // sops.age_identity_path. It returns (nil, false, nil) when the config has
@@ -20,7 +25,7 @@ func (c *Config) LoadSopsIdentities() (ids *sops.Identities, groupOrWorldReadabl
 		return nil, false, nil
 	}
 	path := c.Sops.AgeIdentityPath
-	data, err := os.ReadFile(path)
+	data, mode, err := readWithMode(path)
 	if err != nil {
 		return nil, false, fmt.Errorf("credential %s (%s) is not readable: %w", sopsIdentitySetting, path, err)
 	}
@@ -28,9 +33,24 @@ func (c *Config) LoadSopsIdentities() (ids *sops.Identities, groupOrWorldReadabl
 	if err != nil {
 		return nil, false, fmt.Errorf("credential %s (%s): %w", sopsIdentitySetting, path, err)
 	}
-	info, err := os.Stat(path)
+	return ids, mode.Perm()&groupOrOtherReadable != 0, nil
+}
+
+// readWithMode reads the file at path and returns its content and the mode of
+// the file it read, from one open.
+func readWithMode(path string) ([]byte, os.FileMode, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, false, fmt.Errorf("credential %s (%s): %w", sopsIdentitySetting, path, err)
+		return nil, 0, err
 	}
-	return ids, info.Mode().Perm()&0o044 != 0, nil
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, 0, err
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, 0, err
+	}
+	return data, info.Mode(), nil
 }

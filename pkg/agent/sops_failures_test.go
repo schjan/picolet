@@ -16,6 +16,7 @@ import (
 	"github.com/schjan/picolet/internal/testlog"
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
+	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/sops"
 )
 
@@ -207,5 +208,40 @@ func TestAgentWarnsOnGroupReadableIdentityFile(t *testing.T) {
 		require.NoError(t, a.setupSops())
 		assert.Equal(t, tc.warn, logs.Has(slog.LevelWarn, "age identity file is readable by group or others; restrict it to the Agent (chmod 600)"), "mode %o", tc.mode)
 		assert.Equal(t, 1, a.sopsIDs.Len())
+	}
+}
+
+// A tick whose diff is empty still validates; a validation failure there
+// (a validator upgrade, a secret-refresh tick) reaches the dashboard event
+// and the logs scrubbed, like one on the changes path.
+func TestAgentScrubsDecryptedValuesFromNoChangesValidation(t *testing.T) {
+	t.Parallel()
+	files := sopsFleet(`{{ readSopsSecret "sops://secrets/db.sops.yaml#/tokens/0" }}`, map[string]string{
+		"secrets/db.sops.yaml":   sopsCorpus(t, "values.sops.yaml"),
+		"manifests/app.yml.tmpl": "apiVersion: v1\nkind: {{ readSopsSecret \"sops://secrets/db.sops.yaml#/db/password\" }}\nmetadata:\n  name: app\n",
+	}, "manifests/app.yml.tmpl")
+	h := newSopsHarness(t, files, writeIdentityFile(t, "srv-1"))
+	require.Error(t, h.tick(t), "the first tick clones the Fleet and fails validation")
+
+	// Record the rendered files as already managed, so the diff is empty.
+	resolved, _, err := h.a.loadAndResolve(t.Context())
+	require.NoError(t, err)
+	st, err := h.store.Load()
+	require.NoError(t, err)
+	UpdateState(st, reconciler.Diff(resolved.Files, st))
+	require.False(t, reconciler.Diff(resolved.Files, st).HasChanges())
+	before := len(eventsWithResult(h.a.statusStore.Snapshot(), "failure"))
+
+	_, err = h.a.ReconcileOnce(t.Context(), "no-changes-sha", st, h.store)
+	require.ErrorContains(t, err, "validation failed")
+	require.ErrorContains(t, err, sops.Redacted)
+
+	events := eventsWithResult(h.a.statusStore.Snapshot(), "failure")
+	require.Len(t, events, before+1)
+	texts := map[string]string{"error": err.Error(), "event": events[len(events)-1].Message, "logs": h.logs.String()}
+	for where, text := range texts {
+		for _, leak := range []string{"hunter2-test", "alpha-token"} {
+			assert.NotContains(t, text, leak, "%s leaks a decrypted value", where)
+		}
 	}
 }

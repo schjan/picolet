@@ -120,6 +120,7 @@ Template data root: `.Host` (hostname, role, features, machine, user, rootful, l
 - One custom error type: `*resolver.HostNotFoundError` (check with `errors.As`)
 - `errors.Join` for accumulating validation errors in `pkg/validator`
 - Result structs with `Errors []error` fields for non-fatal errors (health checks, apply)
+- A reconciliation error may embed a value decrypted from a `sops://` ref: every reconciliation error the Agent records as a dashboard event or returns from `ReconcileOnce` (and the validation errors it logs) passes through `scrubError` (`pkg/agent/sops.go`) with the one `sops.Reader` of that resolve first
 
 ### Testing Patterns
 

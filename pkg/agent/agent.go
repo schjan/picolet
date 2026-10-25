@@ -801,7 +801,7 @@ func (a *Agent) reconcileResolved(ctx context.Context, headSHA string, st *state
 		if len(st.PendingHooks) > 0 {
 			return a.retryPendingHooks(ctx, resolved, st, store, changeset, counts)
 		}
-		return a.reconcileNoChanges(headSHA, resolved, changeset, st, store, counts)
+		return a.reconcileNoChanges(headSHA, resolved, sopsReader, changeset, st, store, counts)
 	}
 
 	a.logger.Info("changes detected",
@@ -882,10 +882,12 @@ func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Stor
 // during refreshResolvedSnapshot are logged and recorded as status_error
 // without aborting the verify-OK signal, because nothing triggered the tick.
 // Here, something *did* trigger the tick (secret-provider refresh or git
-// change that rendered identically), so a bad render is actionable.
-func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHost, changeset *reconciler.Changeset, st *state.State, store *state.Store, counts refSecretsCounts) (*ReconcileResult, error) {
+// change that rendered identically), so a bad render is actionable. The
+// error is scrubbed with sopsReader before it reaches the event.
+func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHost, sopsReader *sops.Reader, changeset *reconciler.Changeset, st *state.State, store *state.Store, counts refSecretsCounts) (*ReconcileResult, error) {
 	deps, err := a.analyze(resolved)
 	if err != nil {
+		err = scrubError(sopsReader, err)
 		a.recordEvent("failure", headSHA, fmt.Sprintf("validation failed: %v", err))
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
