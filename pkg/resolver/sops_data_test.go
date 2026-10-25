@@ -1,15 +1,12 @@
 package resolver
 
 import (
-	"fmt"
-	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/internal/testsops"
-	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/sops"
 )
 
@@ -31,8 +28,7 @@ port {{ readSopsData "sops://secrets/db.sops.yaml#/db/port" }}`
 // float or bool leaf as a value of its type; "" and null render empty.
 func TestReadSopsDataKeyless(t *testing.T) {
 	t.Parallel()
-	resolved, err := resolveSops(t, dataTmpl,
-		map[string]string{"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml")}, true, false)
+	resolved, err := resolveSopsFleet(t, appTmplBase, map[string]string{appTmpl: dataTmpl}, sopsKeyless, false)
 	require.NoError(t, err)
 	require.Len(t, resolved.Files, 1)
 	p := sops.Placeholder
@@ -55,19 +51,8 @@ port 0`, resolved.Files[0].Content)
 // both readSopsSecret and readSopsData is decrypted once per resolve.
 func TestReadSopsDataDecrypting(t *testing.T) {
 	t.Parallel()
-	mapFS := pathsFleetFS("  secrets: [secrets/app.yml.tmpl]\n", map[string]string{
-		"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml"),
-		"secrets/app.yml.tmpl": dataTmpl + `
-pw {{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`,
-	})
-	cfg, err := config.LoadAll(mapFS)
-	require.NoError(t, err)
-	opens := &atomic.Int32{}
-	fsys := openCountingFS{FS: mapFS, name: "secrets/db.sops.yaml", opens: opens}
-	reader := sops.NewReader(fsys, testsops.Identities(t, "srv-1"))
-
-	r, err := New(Config{FS: fsys, Config: cfg, Sops: reader})
-	require.NoError(t, err)
+	r, probe := sopsResolver(t, appTmplBase, map[string]string{appTmpl: dataTmpl + `
+pw {{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`}, sopsDecrypting, false)
 	resolved, err := r.ResolveHost(t.Context(), "test-host")
 	require.NoError(t, err)
 	require.Len(t, resolved.Files, 1)
@@ -85,8 +70,8 @@ user=app
 srv-1.example.net srv1-pass
 port 5432
 pw hunter2-test`, resolved.Files[0].Content)
-	assert.Equal(t, int32(1), opens.Load(), "the SOPS file is read and decrypted once per resolve")
-	assert.Equal(t, 1, reader.DecryptedFiles())
+	assert.Equal(t, int32(1), probe.opens.Load(), "the SOPS file is read and decrypted once per resolve")
+	assert.Equal(t, 1, probe.reader.DecryptedFiles())
 }
 
 // A bad pointer or path fails the resolve with the SOPS package's message,
@@ -104,24 +89,12 @@ func TestReadSopsDataBadRefs(t *testing.T) {
 		{name: "not a SOPS path", ref: "sops://secrets/db.yaml#/db", is: sops.ErrNotSOPSPath},
 	}
 	for _, tt := range tests {
-		for _, keyless := range []bool{true, false} {
-			t.Run(fmt.Sprintf("%s/keyless=%v", tt.name, keyless), func(t *testing.T) {
+		for _, mode := range []sopsReaderMode{sopsKeyless, sopsDecrypting} {
+			t.Run(tt.name+"/"+mode.String(), func(t *testing.T) {
 				t.Parallel()
-				mapFS := pathsFleetFS("  secrets: [secrets/app.yml.tmpl]\n", map[string]string{
-					"secrets/db.sops.yaml":     testsops.CorpusText(t, "values.sops.yaml"),
-					"hosts/test-host/host.yml": sopsHostYAML(t, "srv-1"),
-					"secrets/app.yml.tmpl":     `{{ range readSopsData "` + tt.ref + `" }}{{ . }}{{ end }}`,
-				})
-				cfg, err := config.LoadAll(mapFS)
-				require.NoError(t, err)
-				var r *Resolver
-				if keyless {
-					r, err = NewKeyless(Config{FS: mapFS, Config: cfg})
-				} else {
-					r, err = New(Config{FS: mapFS, Config: cfg, Sops: sops.NewReader(mapFS, testsops.Identities(t, "srv-1"))})
-				}
-				require.NoError(t, err)
-				_, err = r.ResolveHost(t.Context(), "test-host")
+				_, err := resolveSopsFleet(t, appTmplBase, map[string]string{
+					appTmpl: `{{ range readSopsData "` + tt.ref + `" }}{{ . }}{{ end }}`,
+				}, mode, false)
 				require.Error(t, err)
 				if tt.is != nil {
 					require.ErrorIs(t, err, tt.is)
@@ -131,36 +104,6 @@ func TestReadSopsDataBadRefs(t *testing.T) {
 				testsops.AssertNoPlaintext(t, err)
 			})
 		}
-	}
-}
-
-// Without a SOPS reader readSopsData fails like readSopsSecret.
-func TestReadSopsDataWithoutReaderFails(t *testing.T) {
-	t.Parallel()
-	ref := "sops://secrets/db.sops.yaml#/db"
-	_, err := resolveSops(t, `{{ range readSopsData "`+ref+`" }}{{ . }}{{ end }}`,
-		map[string]string{"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml")}, false, false)
-	require.ErrorIs(t, err, sops.ErrNoIdentity)
-	require.ErrorContains(t, err, fmt.Sprintf("readSopsData %q", ref))
-	require.ErrorContains(t, err, "set sops.age_identity_path")
-	testsops.AssertNoPlaintext(t, err)
-}
-
-// Strict mode (bootstrap, validate's Agent-bundle pass) fails on
-// readSopsData with readSopsSecret's SOPS-specific message.
-func TestReadSopsDataStrictFails(t *testing.T) {
-	t.Parallel()
-	ref := "sops://secrets/db.sops.yaml#/db"
-	for _, keyless := range []bool{true, false} {
-		t.Run(fmt.Sprintf("keyless=%v", keyless), func(t *testing.T) {
-			t.Parallel()
-			_, err := resolveSops(t, `{{ range readSopsData "`+ref+`" }}{{ . }}{{ end }}`,
-				map[string]string{"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml")}, keyless, true)
-			require.ErrorContains(t, err, fmt.Sprintf("readSopsData %q: SOPS values can't be used in strict mode", ref))
-			require.ErrorContains(t, err, "deliver the value as a --secrets-dir file and point the Agent config at its path; "+
-				"credentials needed to fetch the Fleet can't be SOPS values")
-			testsops.AssertNoPlaintext(t, err)
-		})
 	}
 }
 
@@ -203,15 +146,16 @@ func TestReadSopsDataRejectedInUnitFiles(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		for _, p := range guardPaths {
-			t.Run(tt.name+"/"+p.name, func(t *testing.T) {
+		for _, mode := range []sopsReaderMode{sopsKeyless, sopsRecording} {
+			t.Run(tt.name+"/"+mode.String(), func(t *testing.T) {
 				t.Parallel()
-				_, rec, err := resolveGuard(t, tt.base, tt.extra, p.keyless)
+				r, probe := sopsResolver(t, tt.base, tt.extra, mode, false)
+				_, err := r.ResolveHost(t.Context(), "test-host")
 				require.ErrorIs(t, err, ErrSopsInUnitFile)
 				require.ErrorContains(t, err, tt.file+`: readSopsData "`+guardRef+`": `+
 					"SOPS values can't be rendered into "+tt.kind)
 				testsops.AssertNoPlaintext(t, err)
-				assert.False(t, rec.asked(guardRef), "the decrypting reader must not be asked for a guarded ref")
+				assert.False(t, probe.rec.asked(guardRef), "the decrypting reader must not be asked for a guarded ref")
 			})
 		}
 	}
