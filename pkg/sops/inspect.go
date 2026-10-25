@@ -233,9 +233,6 @@ type Node struct {
 	Type string `json:"type,omitempty"`
 }
 
-// IsLeaf reports whether the node is a leaf.
-func (n Node) IsLeaf() bool { return n.Kind == NodeLeaf }
-
 // Lookup resolves p in the file's data (the first document of a multi-document
 // file) and describes the node it ends at. A path that names no node is
 // ErrBadPointer; a file that is not a SOPS file is ErrNotSOPSFile.

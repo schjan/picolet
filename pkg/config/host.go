@@ -148,20 +148,31 @@ func (h *HostConfig) validateMachine() error {
 	return nil
 }
 
+// applyAgeRecipients fills AgeRecipients from age_recipients:, the one place
+// it is parsed. A malformed entry fails the load, except under lenient host
+// loading (the Agent), which warns and ignores the whole list: one bad entry
+// on any Host must not fail every Agent's reconciliation.
+func (h *HostConfig) applyAgeRecipients(path string, o loadOptions) error {
+	recipients, err := parseAgeRecipients(h.DeclaredAgeRecipients)
+	if err != nil {
+		if !o.lenientHosts {
+			return err
+		}
+		o.logger.Warn("ignoring malformed age_recipients: in host.yml", "path", path, "error", err)
+		return nil
+	}
+	h.AgeRecipients = recipients
+	return nil
+}
+
 // applyDefaults fills Machine, Bootstrap and ListenPort from the Hostname
-// and the Fleet, and AgeRecipients from age_recipients: (the one place it is
-// parsed, so a malformed entry fails here). A Host with no listen_port: whose Agent port key is missing
+// and the Fleet. A Host with no listen_port: whose Agent port key is missing
 // from the Fleet's ports is an error: the Fleet is the sole owner of the
 // Agent's port.
 func (h *HostConfig) applyDefaults(fleet *FleetConfig) error {
 	if h.Machine == "" {
 		h.Machine = h.Hostname
 	}
-	recipients, err := parseAgeRecipients(h.DeclaredAgeRecipients)
-	if err != nil {
-		return err
-	}
-	h.AgeRecipients = recipients
 	h.Bootstrap = h.DeclaredBootstrap
 	if h.Bootstrap == nil {
 		h.Bootstrap = fleet.Bootstrap.files(h.Role)

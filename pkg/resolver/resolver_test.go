@@ -1902,10 +1902,12 @@ features: {}
 	require.ErrorContains(t, err, "provider not configured in strict mode")
 }
 
-// A direct provider `secrets:` ref in strict mode names the ref and the fix.
+// A direct provider `secrets:` ref in strict mode keeps the wording it had
+// before sops:// (spec #248: "the current text stays for op:// / pass://")
+// and appends the fix the Agent-bundle pass gives.
 func TestResolveHostStrictDirectProviderSecretNamesRefAndFix(t *testing.T) {
 	t.Parallel()
-	for _, ref := range []string{"op://vault/item/field", "pass://share/item/field"} {
+	for ref, name := range map[string]string{"op://vault/item/field": "onepassword", "pass://share/item/field": "protonpass"} {
 		t.Run(ref, func(t *testing.T) {
 			t.Parallel()
 			fsys := fstest.MapFS{
@@ -1919,7 +1921,7 @@ func TestResolveHostStrictDirectProviderSecretNamesRefAndFix(t *testing.T) {
 			require.NoError(t, err)
 
 			_, err = r.ResolveHost(t.Context(), "node-1")
-			require.ErrorContains(t, err, "direct secrets "+ref+": provider not configured in strict mode; "+
+			require.ErrorContains(t, err, name+" provider not configured; cannot resolve direct secrets in strict mode: "+ref+"; "+
 				"use a YAML-value reference and let the agent resolve it at runtime")
 		})
 	}

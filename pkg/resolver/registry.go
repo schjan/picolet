@@ -136,7 +136,7 @@ func SopsProvider(reader SopsReader) ProviderTemplate {
 		IsRef:              sops.IsRef,
 		PlaceholderPending: "<sops-secret-pending>",
 		MissingReader: func(funcName, ref string) error {
-			return fmt.Errorf("%s %q: %w; set sops.age_identity_path in the Agent config", funcName, ref, sops.ErrNoIdentity)
+			return fmt.Errorf("%s %q: %w; %s", funcName, ref, sops.ErrNoIdentity, sops.NoIdentityHint)
 		},
 	}
 	if reader != nil {
@@ -217,6 +217,19 @@ func strictModeText(key ProviderKey) (reason, fix string) {
 func strictModeError(key ProviderKey, funcName, ref string) error {
 	reason, fix := strictModeText(key)
 	return fmt.Errorf("%s %q: %s; %s", funcName, ref, reason, fix)
+}
+
+// strictDirectError is the error direct secrets: refs of the provider key
+// fail with in strict mode. op:// and pass:// keep the wording they had
+// before sops:// (spec #248) with the fix appended; sops:// words it like
+// its template calls.
+func strictDirectError(key ProviderKey, refs []string) error {
+	reason, fix := strictModeText(key)
+	joined := strings.Join(refs, ", ")
+	if key == ProviderSops {
+		return fmt.Errorf("direct secrets %s: %s; %s", joined, reason, fix)
+	}
+	return fmt.Errorf("%s provider not configured; cannot resolve direct secrets in strict mode: %s; %s", key, joined, fix)
 }
 
 const placeholderSecret = "<secret>"

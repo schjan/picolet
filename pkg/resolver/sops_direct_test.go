@@ -3,8 +3,6 @@ package resolver
 import (
 	"fmt"
 	"maps"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -58,11 +56,7 @@ func resolveDirectSops(t *testing.T, secrets []string, files map[string]string, 
 	case sopsKeyless:
 		r, err = NewKeyless(rc)
 	case sopsDecrypting:
-		identity, readErr := os.ReadFile(filepath.Join("..", "..", "testdata", "sops", "identities", "srv-1.agekey"))
-		require.NoError(t, readErr)
-		ids, parseErr := sops.ParseIdentities(identity)
-		require.NoError(t, parseErr)
-		rc.Sops = sops.NewReader(fsys, ids)
+		rc.Sops = sops.NewReader(fsys, corpusIDs(t, "srv-1"))
 		r, err = New(rc)
 	case sopsNoReader:
 		r, err = New(rc)
@@ -235,8 +229,7 @@ func TestDirectSopsSecretStrictFails(t *testing.T) {
 		t.Run(mode.String(), func(t *testing.T) {
 			t.Parallel()
 			_, err := resolveDirectSops(t, []string{ref}, directSopsFiles(t), mode, true)
-			require.ErrorContains(t, err, ref)
-			require.ErrorContains(t, err, "SOPS values can't be used in strict mode; "+
+			require.ErrorContains(t, err, "direct secrets "+ref+": SOPS values can't be used in strict mode; "+
 				"deliver the value as a --secrets-dir file and point the Agent config at its path; "+
 				"credentials needed to fetch the Fleet can't be SOPS values")
 		})

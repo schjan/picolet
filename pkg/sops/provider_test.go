@@ -150,9 +150,9 @@ var decryptCases = []struct {
 	{file: "non-age.sops.yaml", ids: []string{"srv-1"}, pointers: yamlPointers},
 	// Rotation: a two-identity Host whose new key (srv-3) is in no file yet.
 	{file: "base-tamper.sops.yaml", ids: []string{"srv-3", "srv-1"}, pointers: yamlPointers},
-	// srv-2's stanza is labelled srv-3: labels are not authenticated, so the
-	// decrypt result decides.
-	{file: "tampered-recipient.sops.yaml", ids: []string{"srv-2"}, pointers: yamlPointers},
+	// srv-2's stanza is labelled srv-3; srv-1's is untouched and still opens.
+	// (With srv-2 or srv-3 it fails: see errorClassCases.)
+	{file: "tampered-recipient.sops.yaml", ids: []string{"srv-1"}, pointers: yamlPointers},
 }
 
 // TestReaderDecryptGolden snapshots the decrypted output of every corpus file
@@ -239,10 +239,16 @@ var errorClassCases = []struct {
 		ids: []string{"srv-1"}, want: sops.ErrEditedOutsideSOPS,
 	},
 	{
-		// The label names srv-3, but the stanza is srv-2's: the decrypt
-		// result decides.
+		// The label names srv-3, so the pre-check passes, but the stanza is
+		// srv-2's: the decrypt result decides.
 		name: "edited outside sops: relabelled stanza", ref: "sops://corpus/tampered-recipient.sops.yaml#/db/user",
 		ids: []string{"srv-3"}, want: sops.ErrEditedOutsideSOPS,
+	},
+	{
+		// The pre-check runs before decrypting: srv-2's stanza would open,
+		// but no label names srv-2, so it is not a recipient.
+		name: "not a recipient: stanza relabelled away", ref: "sops://corpus/tampered-recipient.sops.yaml#/db/user",
+		ids: []string{"srv-2"}, want: sops.ErrNotRecipient, contains: []string{corpusRecipientOf("srv-2")},
 	},
 	{
 		name: "bad pointer: no such key", ref: "sops://corpus/values.sops.yaml#/db/nope",

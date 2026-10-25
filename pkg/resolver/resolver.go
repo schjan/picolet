@@ -926,13 +926,11 @@ func (r *Resolver) resolveSopsDirectRefs(ctx context.Context, host *config.HostC
 		return nil
 	}
 	if r.strict {
-		reason, fix := strictModeText(ProviderSops)
-		return fmt.Errorf("direct secrets %s: %s; %s", strings.Join(refs, ", "), reason, fix)
+		return strictDirectError(ProviderSops, refs)
 	}
 	reader := r.directSopsReader(host)
 	if reader == nil {
-		return fmt.Errorf("direct secrets %s: %w; set sops.age_identity_path in the Agent config",
-			strings.Join(refs, ", "), sops.ErrNoIdentity)
+		return fmt.Errorf("direct secrets %s: %w; %s", strings.Join(refs, ", "), sops.ErrNoIdentity, sops.NoIdentityHint)
 	}
 	r.logger.Debug("batch-resolving secrets", "provider", ProviderSops, "count", len(refs))
 	results, err := reader(ctx, refs)
@@ -983,8 +981,7 @@ func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, re
 	}
 	if reader == nil {
 		if r.strict {
-			reason, fix := strictModeText(name)
-			return fmt.Errorf("direct secrets %s: %s; %s", strings.Join(refs, ", "), reason, fix)
+			return strictDirectError(name, refs)
 		}
 		r.logger.Warn("skipping secrets (provider not configured)", "provider", name, "count", len(refs))
 		return nil

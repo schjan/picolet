@@ -64,17 +64,6 @@ func unescapeSegment(seg string) (string, error) {
 	return segmentUnescaper.Replace(seg), nil
 }
 
-// Segments returns the unescaped segments; nil for the whole document.
-func (p Pointer) Segments() []string {
-	if len(p.segments) == 0 {
-		return nil
-	}
-	return append([]string(nil), p.segments...)
-}
-
-// IsRoot reports whether the pointer addresses the whole document.
-func (p Pointer) IsRoot() bool { return len(p.segments) == 0 }
-
 // String returns the pointer in RFC 6901 syntax.
 func (p Pointer) String() string {
 	var b strings.Builder

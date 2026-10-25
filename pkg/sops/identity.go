@@ -9,6 +9,10 @@ import (
 	"filippo.io/age"
 )
 
+// NoIdentityHint is the fix appended ("; " + NoIdentityHint) to an
+// ErrNoIdentity error for a sops:// ref read without identities.
+const NoIdentityHint = "set sops.age_identity_path in the Agent config"
+
 var (
 	// ErrNoIdentity is returned (wrapped) when a sops:// ref is read without
 	// any age identity configured, and by ParseIdentities for a file that

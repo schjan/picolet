@@ -235,9 +235,8 @@ func WithStatusStore(store *status.Store) Option {
 // load, resolver, validator, applier, health, rollback, git poller, orphan
 // scan) log through. A nil logger is ignored; the default is slog.Default().
 // Components the caller builds and injects (the Podman client, secret
-// readers such as Proton Pass) are outside this option: the Podman client
-// takes applier.WithPodmanLogger at construction, the Proton Pass reader logs
-// through slog.Default().
+// readers such as Proton Pass) are outside this option and log through
+// slog.Default().
 func WithLogger(l *slog.Logger) Option {
 	return func(a *Agent) {
 		if l != nil {

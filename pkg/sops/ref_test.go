@@ -29,7 +29,7 @@ func TestParsePointer(t *testing.T) {
 			t.Parallel()
 			p, err := sops.ParsePointer(in)
 			require.NoError(t, err)
-			assert.Equal(t, want, p.Segments())
+			assert.Equal(t, want, sops.PointerSegments(p))
 			assert.Equal(t, in, p.String(), "String round-trips")
 		})
 	}
@@ -84,7 +84,7 @@ func TestParseRef(t *testing.T) {
 	r, err := sops.ParseRef("sops://secrets/db.sops.yaml#/db/password")
 	require.NoError(t, err)
 	assert.Equal(t, "secrets/db.sops.yaml", r.Path)
-	assert.Equal(t, []string{"db", "password"}, r.Pointer.Segments())
+	assert.Equal(t, []string{"db", "password"}, sops.PointerSegments(r.Pointer))
 	assert.False(t, r.WholeFile())
 
 	whole, err := sops.ParseRef("sops://certs/tls.sops.pem")

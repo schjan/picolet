@@ -90,6 +90,19 @@ func notARecipient(s string) error {
 // String returns the canonical (lowercase Bech32) form.
 func (r Recipient) String() string { return r.canonical }
 
+// RecipientStrings returns the canonical forms of rs, in order; nil when rs
+// is empty.
+func RecipientStrings(rs []Recipient) []string {
+	if len(rs) == 0 {
+		return nil
+	}
+	out := make([]string, len(rs))
+	for i, r := range rs {
+		out[i] = r.canonical
+	}
+	return out
+}
+
 // Type returns the recipient's kind.
 func (r Recipient) Type() RecipientType { return r.typ }
 

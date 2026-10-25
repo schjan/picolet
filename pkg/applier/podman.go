@@ -31,34 +31,16 @@ const (
 //nolint:containedctx // Podman bindings require the connection context for every call
 type SocketPodmanClient struct {
 	connCtx context.Context
-	logger  *slog.Logger
-}
-
-// SocketPodmanOption configures a SocketPodmanClient.
-type SocketPodmanOption func(*SocketPodmanClient)
-
-// WithPodmanLogger sets the logger the client warns through. A nil logger is
-// ignored; the default is slog.Default().
-func WithPodmanLogger(l *slog.Logger) SocketPodmanOption {
-	return func(c *SocketPodmanClient) {
-		if l != nil {
-			c.logger = l
-		}
-	}
 }
 
 // NewSocketPodmanClient creates a PodmanClient connected to the Podman socket.
 // The returned client carries a connection context used by all binding calls.
-func NewSocketPodmanClient(ctx context.Context, socketPath string, opts ...SocketPodmanOption) (*SocketPodmanClient, error) {
+func NewSocketPodmanClient(ctx context.Context, socketPath string) (*SocketPodmanClient, error) {
 	connCtx, err := bindings.NewConnection(ctx, "unix:"+socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to podman at %s: %w", socketPath, err)
 	}
-	c := &SocketPodmanClient{connCtx: connCtx, logger: slog.Default()}
-	for _, opt := range opts {
-		opt(c)
-	}
-	return c, nil
+	return &SocketPodmanClient{connCtx: connCtx}, nil
 }
 
 //nolint:contextcheck // must use connCtx; see SocketPodmanClient doc
@@ -88,7 +70,7 @@ func (c *SocketPodmanClient) ListManagedSecrets(_ context.Context) ([]string, er
 	if err != nil {
 		// Older Podman versions may not support label filtering on secrets.
 		// Log and fall back to listing all secrets and filtering client-side.
-		c.logger.Warn("listing secrets with label filter failed, falling back to full list", "error", err)
+		slog.Warn("listing secrets with label filter failed, falling back to full list", "error", err)
 		list, err = secrets.List(c.connCtx, nil)
 		if err != nil {
 			return nil, fmt.Errorf("listing secrets: %w", err)

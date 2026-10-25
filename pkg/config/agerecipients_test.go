@@ -2,6 +2,8 @@ package config
 
 import (
 	"bufio"
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,4 +81,27 @@ func TestLoadAllLenientHostsKnowsAgeRecipients(t *testing.T) {
 	cfg, err := LoadAll(fsys, LenientHosts())
 	require.NoError(t, err)
 	assert.Len(t, cfg.Hosts["srv-1"].AgeRecipients, 1)
+}
+
+// The Agent (lenient host loading) does not reject a malformed
+// age_recipients: (spec #248, considered, not adopted): it warns through the
+// injected logger and ignores the list, so one bad entry on any Host never
+// fails every Agent's reconciliation. Strict loading still fails
+// (TestLoadAllRejectsUnsupportedAgeRecipients).
+func TestLoadAllLenientHostsIgnoresMalformedAgeRecipients(t *testing.T) {
+	t.Parallel()
+	fsys := topologyFleet(agentPorts, map[string]string{
+		"srv-1": "hostname: srv-1\nrole: node\nage_recipients:\n  - " + testRecipient(t, "srv-1") + "\n  - age1notakey\n",
+		"srv-2": "hostname: srv-2\nrole: node\nuser: pi\nage_recipients: [" + testRecipient(t, "srv-2") + "]\n",
+	})
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+
+	cfg, err := LoadAll(fsys, LenientHosts(), WithLogger(logger))
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Hosts["srv-1"].AgeRecipients, "the malformed list is ignored")
+	assert.Len(t, cfg.Hosts["srv-2"].AgeRecipients, 1)
+	assert.Contains(t, logs.String(), "level=WARN")
+	assert.Contains(t, logs.String(), "hosts/srv-1/host.yml")
+	assert.Contains(t, logs.String(), "age_recipients[1]")
 }
