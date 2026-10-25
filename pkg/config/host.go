@@ -63,8 +63,10 @@ type HostConfig struct {
 	// (X25519 or hybrid post-quantum), in file order; empty when the Host
 	// declares none. Set by LoadAll.
 	AgeRecipients []sops.Recipient `yaml:"-"`
-	// DeclaredAgeRecipients is age_recipients: as written.
-	DeclaredAgeRecipients []string `yaml:"age_recipients"`
+	// DeclaredAgeRecipients is age_recipients: as written, kept as a node so
+	// a wrong YAML shape reaches applyAgeRecipients (which lenient loading
+	// turns into a warning) instead of failing the decode of host.yml.
+	DeclaredAgeRecipients yaml.Node `yaml:"age_recipients"`
 
 	// RetiredPiType captures the pre-rename `pi_type:` key so Validate can
 	// reject it with a migration message instead of the generic unknown-field
@@ -148,12 +150,41 @@ func (h *HostConfig) validateMachine() error {
 	return nil
 }
 
+// ageRecipientEntries returns age_recipients: as its list of strings: nil
+// when absent or null, an error naming the key when it is not a list or an
+// entry is not a string (never quoting a value, which may be a pasted secret
+// key).
+func ageRecipientEntries(n *yaml.Node) ([]string, error) {
+	if n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
+	}
+	if n.IsZero() || (n.Kind == yaml.ScalarNode && n.ShortTag() == "!!null") {
+		return nil, nil
+	}
+	if n.Kind != yaml.SequenceNode {
+		return nil, errors.New("age_recipients: must be a list of age recipients")
+	}
+	entries := make([]string, 0, len(n.Content))
+	for i, item := range n.Content {
+		if item.Kind != yaml.ScalarNode {
+			return nil, fmt.Errorf("age_recipients[%d]: must be a string", i)
+		}
+		entries = append(entries, item.Value)
+	}
+	return entries, nil
+}
+
 // applyAgeRecipients fills AgeRecipients from age_recipients:, the one place
-// it is parsed. A malformed entry fails the load, except under lenient host
-// loading (the Agent), which warns and ignores the whole list: one bad entry
-// on any Host must not fail every Agent's reconciliation.
+// it is parsed. A malformed list (a wrong YAML shape or a bad entry) fails
+// the load, except under lenient host loading (the Agent), which warns and
+// ignores the whole list: one bad entry on any Host must not fail every
+// Agent's reconciliation.
 func (h *HostConfig) applyAgeRecipients(path string, o loadOptions) error {
-	recipients, err := parseAgeRecipients(h.DeclaredAgeRecipients)
+	entries, err := ageRecipientEntries(&h.DeclaredAgeRecipients)
+	var recipients []sops.Recipient
+	if err == nil {
+		recipients, err = parseAgeRecipients(entries)
+	}
 	if err != nil {
 		if !o.lenientHosts {
 			return err

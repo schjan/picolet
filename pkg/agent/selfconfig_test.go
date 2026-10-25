@@ -157,3 +157,66 @@ func runSelfConfigCase(t *testing.T, agentConfig string, wantError []string) {
 		assert.Contains(t, err.Error(), want)
 	}
 }
+
+// TestAgentRefusesMountSwitchToSelfConfigItCouldNotStartWith covers a commit
+// that only repoints the Agent quadlet's config mount at another secret the
+// Fleet already manages: the secret itself is unchanged, but the Agent's next
+// start reads it, so a config the Agent could not start with is refused.
+func TestAgentRefusesMountSwitchToSelfConfigItCouldNotStartWith(t *testing.T) {
+	t.Parallel()
+	const (
+		quadlet    = "services/picolet-system/picolet-system.container"
+		nextConfig = "services/picolet-system/secrets/picolet_system_config_next.yml"
+	)
+	bareDir, _ := initAgentBundleRepo(t, "hostname: test-host\nrepo_url: https://example.com/fleet.git\n")
+	pushToTestRepo(t, bareDir, map[string]string{
+		nextConfig: "hostname: test-host\nrepo_url: https://example.com/fleet.git\nno_such_key_ever: x\n",
+	})
+	repoDir := filepath.Join(t.TempDir(), "clone")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+
+	sys, pod, fw := newBareMocks(t)
+	written := setupApplyMocks(sys, pod, fw)
+	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
+	pod.EXPECT().SecretCreate(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	sys.EXPECT().StartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	cfg := &agentcfg.Config{
+		Hostname:     "test-host",
+		RepoURL:      bareDir,
+		RepoBranch:   "master",
+		PollInterval: time.Second,
+		ListenAddr:   "127.0.0.1:0",
+		SecretsDir:   t.TempDir(),
+	}
+	a := newTestAgent(t, cfg,
+		WithSystemd(sys),
+		WithPodman(pod),
+		WithFileWriter(fw),
+		WithRepoPath(repoDir),
+		WithStatePath(statePath),
+	)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, a.Run(ctx))
+	store := state.NewStore(statePath)
+	st, err := store.Load()
+	require.NoError(t, err)
+	require.NotEmpty(t, st.AppliedSHA, "the first commit applies: its mounted config is valid")
+	require.Contains(t, st.ManagedFiles, "secret:picolet_system_config_next", "the next config is already managed")
+
+	// Repoint only the mount; the managed secret stays unchanged (Noop).
+	writeTestFile(t, repoDir, quadlet, `[Container]
+Image=ghcr.io/schjan/picolet:latest
+Secret=picolet_system_config_next,target=/etc/picolet/config.yml
+`)
+	clear(written)
+	_, err = a.ReconcileOnce(t.Context(), "switch-sha", st, store)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no_such_key_ever")
+	assert.Empty(t, written, "nothing is written")
+	st2, err := store.Load()
+	require.NoError(t, err)
+	assert.Equal(t, st.AppliedSHA, st2.AppliedSHA)
+}
