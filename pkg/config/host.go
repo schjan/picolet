@@ -108,9 +108,6 @@ func (h *HostConfig) Validate() error {
 	if err := h.DeclaredBootstrap.validate(); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
-	if _, err := parseAgeRecipients(h.DeclaredAgeRecipients); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -152,7 +149,8 @@ func (h *HostConfig) validateMachine() error {
 }
 
 // applyDefaults fills Machine, Bootstrap and ListenPort from the Hostname
-// and the Fleet. A Host with no listen_port: whose Agent port key is missing
+// and the Fleet, and AgeRecipients from age_recipients: (the one place it is
+// parsed, so a malformed entry fails here). A Host with no listen_port: whose Agent port key is missing
 // from the Fleet's ports is an error: the Fleet is the sole owner of the
 // Agent's port.
 func (h *HostConfig) applyDefaults(fleet *FleetConfig) error {
