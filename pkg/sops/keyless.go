@@ -42,11 +42,22 @@ func NewKeylessReader(fsys fs.FS, host Host) *KeylessReader {
 // the shape of Reader.ReadAll. Each file is read and inspected at most once
 // per call.
 func (r *KeylessReader) ReadAll(ctx context.Context, refs []string) (map[string]string, error) {
+	return r.readAll(ctx, refs, false)
+}
+
+// ReadDirect is ReadAll for direct `secrets:` refs, which need a non-empty
+// value: an "" or null leaf (which SOPS leaves unencrypted, so it shows
+// without a key) fails with ErrEmptyValue.
+func (r *KeylessReader) ReadDirect(ctx context.Context, refs []string) (map[string]string, error) {
+	return r.readAll(ctx, refs, true)
+}
+
+func (r *KeylessReader) readAll(ctx context.Context, refs []string, direct bool) (map[string]string, error) {
 	values := make(map[string]string, len(refs))
 	files := map[string]inspected{}
 	var errs []error
 	for _, raw := range refs {
-		if err := r.check(ctx, raw, files); err != nil {
+		if err := r.check(ctx, raw, files, direct); err != nil {
 			errs = append(errs, err)
 			continue
 		}
@@ -60,7 +71,7 @@ type inspected struct {
 	err  error
 }
 
-func (r *KeylessReader) check(ctx context.Context, raw string, files map[string]inspected) error {
+func (r *KeylessReader) check(ctx context.Context, raw string, files map[string]inspected, direct bool) error {
 	ref, err := ParseRef(raw)
 	if err != nil {
 		return err
@@ -78,6 +89,9 @@ func (r *KeylessReader) check(ctx context.Context, raw string, files map[string]
 	}
 	if err := checkRef(res.file, ref); err != nil {
 		return fmt.Errorf("%s: %w", raw, err)
+	}
+	if direct && isEmptyLeaf(res.file, ref) {
+		return EmptyDirectValueError(raw)
 	}
 	if len(r.host.Recipients) == 0 {
 		return fmt.Errorf("Host %s references %s but declares no age_recipients; add its age public key to age_recipients: in its host.yml", r.host.Name, raw)
@@ -117,6 +131,22 @@ func checkRef(f *File, ref Ref) error {
 		return fmt.Errorf("%s: %q has an invalid type tag; restore the file from git, or re-create the value with `sops edit %s`", ref.Path, ptr, ref.Path)
 	}
 	return nil
+}
+
+// isEmptyLeaf reports whether ref (already checked by checkRef) names an ""
+// or null leaf of f.
+func isEmptyLeaf(f *File, ref Ref) bool {
+	if ref.WholeFile() {
+		return false
+	}
+	v, err := resolvePointer(f.tree, ref.Pointer)
+	return err == nil && (v == nil || v == "")
+}
+
+// EmptyDirectValueError is the ErrEmptyValue error of the direct `secrets:`
+// ref raw: its value is empty (an "" or null leaf).
+func EmptyDirectValueError(raw string) error {
+	return fmt.Errorf("%s: %w: a direct secrets: entry needs a non-empty value (the leaf is \"\" or null)", raw, ErrEmptyValue)
 }
 
 func (r *KeylessReader) inspect(path string) (*File, error) {

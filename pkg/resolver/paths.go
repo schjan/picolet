@@ -85,7 +85,7 @@ func isExplicitSOPSFile(fsys fs.FS, root string) bool {
 func rejectPlainSOPSSecrets(secrets []string) error {
 	var errs []error
 	for _, src := range secrets {
-		if !isProviderRef(src) && !strings.HasPrefix(src, sops.Scheme) && sops.IsSOPSPath(src) {
+		if !isProviderRef(src) && sops.IsSOPSPath(src) {
 			errs = append(errs, explicitSOPSError("secrets", src, src))
 		}
 	}

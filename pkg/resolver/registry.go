@@ -115,7 +115,7 @@ func SopsProvider(reader SecretRefReader) ProviderTemplate {
 		Key:                ProviderSops,
 		FuncName:           "readSopsSecret",
 		Reader:             reader,
-		IsRef:              func(ref string) bool { return strings.HasPrefix(ref, sops.Scheme) },
+		IsRef:              sops.IsRef,
 		PlaceholderPending: "<sops-secret-pending>",
 		MissingReader: func(ref string) error {
 			return fmt.Errorf("readSopsSecret %q: %w; set sops.age_identity_path in the Agent config", ref, sops.ErrNoIdentity)
@@ -128,7 +128,12 @@ func SopsProvider(reader SecretRefReader) ProviderTemplate {
 // ref without any key, against host's age_recipients: too, and renders
 // "<sops-secret>".
 func keylessSopsReader(fsys fs.FS, host *config.HostConfig) SecretRefReader {
-	return sops.NewKeylessReader(fsys, sops.Host{Name: host.Hostname, Recipients: host.AgeRecipients}).ReadAll
+	return keylessSopsReaderFor(fsys, host).ReadAll
+}
+
+// keylessSopsReaderFor is the keyless SOPS reader over fsys for host.
+func keylessSopsReaderFor(fsys fs.FS, host *config.HostConfig) *sops.KeylessReader {
+	return sops.NewKeylessReader(fsys, sops.Host{Name: host.Hostname, Recipients: host.AgeRecipients})
 }
 
 // checkSopsRefs wraps reader so that a ref whose file path is not a clean

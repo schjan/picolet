@@ -273,3 +273,34 @@ picolet_secret_sync_total{provider="sops"} 1
 		})
 	}
 }
+
+// A direct sops:// secrets: entry creates the Podman secret named after its
+// pointer (db_password) with the decrypted value, and counts toward
+// picolet_secrets_managed_count{provider="sops"}. The corpus' re-encrypted
+// twin (same values, new data key and ciphertexts) changes no secret and
+// restarts nothing.
+func TestAgentDeploysDirectSopsSecret(t *testing.T) {
+	t.Parallel()
+	files := sopsFleet("", map[string]string{"secrets/db.sops.yaml": sopsCorpus(t, "values.sops.yaml")})
+	delete(files, "secrets/db_password.tmpl")
+	files["assignments.yml"] = "base:\n  paths:\n    - quadlets/app.container\n" +
+		"  secrets:\n    - \"sops://secrets/db.sops.yaml#/db/password\"\n"
+	h := newSopsHarness(t, files, writeIdentityFile(t, "srv-1"))
+	require.NoError(t, h.tick(t))
+
+	assert.Equal(t, "hunter2-test", h.secret("db_password"))
+	assert.Equal(t, []string{"app.service"}, h.restarts)
+	require.NoError(t, testutil.CollectAndCompare(metrics.NewSecretProviderCollector(h.a.statusStore), strings.NewReader(`
+# HELP picolet_secrets_managed_count Number of direct provider-backed secret assignments currently managed, per provider.
+# TYPE picolet_secrets_managed_count gauge
+picolet_secrets_managed_count{provider="sops"} 1
+`), "picolet_secrets_managed_count"))
+
+	pushToTestRepo(t, h.bareDir, map[string]string{"secrets/db.sops.yaml": sopsCorpus(t, "values-reencrypted.sops.yaml")})
+	h.reset()
+	require.NoError(t, h.tick(t))
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	assert.Empty(t, h.secrets, "no secret rewritten")
+	assert.Empty(t, h.restarts, "nothing restarted")
+}

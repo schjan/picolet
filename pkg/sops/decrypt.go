@@ -29,6 +29,9 @@ var (
 	// ErrNotLeaf is returned (wrapped) when a string ref's pointer ends at a
 	// map or a list.
 	ErrNotLeaf = errors.New("not a leaf")
+	// ErrEmptyValue is returned (wrapped) when a direct secrets: ref names an
+	// "" or null leaf: a Podman secret needs a non-empty value.
+	ErrEmptyValue = errors.New("empty value")
 )
 
 // Reader decrypts sops:// refs from a Fleet FS with explicit age identities.
