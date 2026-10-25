@@ -53,7 +53,9 @@ kept as is.
 - An Agent config in which two credential settings name the same file fails to
   load (`… name the same credential file`), and `readSecretFile` and file
   `secrets:` refuse every Agent credential file: *Agent credentials cannot be
-  deployed* ([#251](https://github.com/schjan/picolet/issues/251)).
+  deployed*, in the Agent and in `picolet bootstrap` (the credentials of the
+  Agent config it renders, below `--secrets-dir`)
+  ([#251](https://github.com/schjan/picolet/issues/251)).
 - SOPS files (`<name>.sops.<ext>`) and SOPS's `.sops.yaml`/`.sops.yml` are
   skipped by `paths:` directory and Service Bundle walks, and an explicit
   `paths:` or plain `secrets:` entry naming a SOPS file is an error; a SOPS file

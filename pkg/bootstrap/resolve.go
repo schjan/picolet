@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/resolver"
 )
@@ -43,6 +44,12 @@ func openRepo(hostname, dir string) (*config.Repo, error) {
 
 // resolveBootstrapHost resolves cfg.Service for cfg.Hostname from repo,
 // which the caller opened and closes.
+//
+// A strict resolve reads --secrets-dir and renders twice: the first pass
+// reads no secret file (placeholders) and yields the Agent config the bundle
+// renders, the second reads the files, refusing that config's credentials
+// as the Agent does (agentcfg's Config.RefuseCredentialAt). An Agent config
+// the Fleet does not render names no credentials bootstrap can know.
 func resolveBootstrapHost(ctx context.Context, repo *config.Repo, cfg resolveConfig) (*resolver.ResolvedHost, error) {
 	if cfg.Hostname == "" {
 		return nil, errHostnameRequired
@@ -50,9 +57,41 @@ func resolveBootstrapHost(ctx context.Context, repo *config.Repo, cfg resolveCon
 	if cfg.Service == "" {
 		return nil, fmt.Errorf("service is required")
 	}
-
-	readSecret, closeSecrets := secretReader(cfg.SecretsDir, cfg.FileMode)
+	if cfg.FileMode == fileReaderPlaceholder {
+		return resolveWith(ctx, repo, cfg, placeholderSecret)
+	}
+	placeholders, err := resolveWith(ctx, repo, cfg, placeholderSecret)
+	if err != nil {
+		return nil, err
+	}
+	guard, err := credentialGuard(placeholders.Files, cfg)
+	if err != nil {
+		return nil, err
+	}
+	readSecret, closeSecrets := resolver.DirSecretReader(cfg.SecretsDir, guard)
 	defer closeSecrets()
+	return resolveWith(ctx, repo, cfg, readSecret)
+}
+
+// credentialGuard refuses the credentials of the Agent config rendered in
+// files (a pass with placeholder secrets), seen through cfg.SecretsDir; nil
+// when the Fleet renders no Agent config.
+func credentialGuard(files []resolver.ResolvedFile, cfg resolveConfig) (resolver.SecretGuard, error) {
+	file, err := resolver.AgentConfigSecret(files, cfg.Service+".service")
+	if errors.Is(err, resolver.ErrAgentConfigNotRendered) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	agentCfg, err := agentcfg.Parse([]byte(file.Content))
+	if err != nil {
+		return nil, fmt.Errorf("parsing rendered picolet config for its credentials: %w", err)
+	}
+	return agentCfg.RefuseCredentialAt(cfg.SecretsDir), nil
+}
+
+func resolveWith(ctx context.Context, repo *config.Repo, cfg resolveConfig, readSecret resolver.SecretReader) (*resolver.ResolvedHost, error) {
 	// bootstrap never decrypts; strict mode fails every sops:// call.
 	r, err := resolver.NewKeyless(resolver.Config{
 		FS:           repo.FS,
@@ -72,12 +111,6 @@ func resolveBootstrapHost(ctx context.Context, repo *config.Repo, cfg resolveCon
 	return resolved, nil
 }
 
-// secretReader returns the resolve pass's secret reader and the func that
-// releases it.
-func secretReader(secretsDir string, mode fileReaderMode) (resolver.SecretReader, func()) {
-	if mode == fileReaderPlaceholder {
-		return func(string) (string, error) { return "<secret>", nil }, func() {}
-	}
-	// No guard: bootstrap has no Agent config, so no Agent credentials to refuse.
-	return resolver.DirSecretReader(secretsDir, nil)
-}
+// placeholderSecret stands in for every secret file: a pass that must not
+// read --secrets-dir.
+func placeholderSecret(string) (string, error) { return "<secret>", nil }
