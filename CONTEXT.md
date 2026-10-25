@@ -66,7 +66,7 @@ _Avoid_: sync, deploy, apply (apply is one phase of a Reconciliation)
 A reload action (HTTP call, signal or unit restart) triggered when specific secrets, manifests or files change, so a service can pick up changes without a full restart.
 
 **Secret Reference**:
-A pointer (`op://…`, `pass://…`) in the Fleet to a value held by a secret provider; the value itself never enters git.
+A pointer (`op://…`, `pass://…`, `sops://…`) to a value held by a secret provider or encrypted in the Fleet; the plaintext value never enters git.
 _Avoid_: secret (when the reference, not the value, is meant)
 
 **Recipient**:
