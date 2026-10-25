@@ -2,11 +2,16 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,7 +85,11 @@ func TestAgentSopsDecryptFailures(t *testing.T) {
 			assert.Empty(t, h.secrets)
 			require.Len(t, h.failures, 1)
 			assert.Contains(t, h.failures[0], tc.wantText)
+			deployment := h.failures[0]
 			h.mu.Unlock()
+			assertNoFixturePlaintext(t, map[string]string{
+				"error": err.Error(), "dashboard event": events[0].Message, "deployment status": deployment,
+			})
 			st, err := h.store.Load()
 			require.NoError(t, err)
 			assert.Equal(t, 1, st.FailedCount)
@@ -307,4 +316,30 @@ func TestAgentCountsSopsSyncOnFailedTick(t *testing.T) {
 	syncs, synced := sopsSyncs(h.a)
 	assert.Equal(t, uint64(1), syncs)
 	assert.True(t, synced)
+}
+
+// fixturePlaintexts are the values of testdata/sops/plain/values.yaml long
+// enough to be recognisable in a message.
+var fixturePlaintexts = []string{
+	"hunter2-test", "alpha-token", "beta-token", "gamma-secret", "srv1-pass",
+	"slash-key", "tilde-key", "5432", "0.75", "visible",
+}
+
+// hashLike matches a hex run as long as a truncated hash (SOPS's MAC is a
+// 128-digit SHA-512).
+var hashLike = regexp.MustCompile(`[0-9A-Fa-f]{32,}`)
+
+// assertNoFixturePlaintext fails when a text (keyed by where it appeared)
+// carries a fixture plaintext, its SHA-256 or SHA-512, or any hash-like run.
+func assertNoFixturePlaintext(t *testing.T, texts map[string]string) {
+	t.Helper()
+	for where, text := range texts {
+		for _, p := range fixturePlaintexts {
+			sum256, sum512 := sha256.Sum256([]byte(p)), sha512.Sum512([]byte(p))
+			for _, leak := range []string{p, hex.EncodeToString(sum256[:]), hex.EncodeToString(sum512[:])} {
+				assert.NotContains(t, strings.ToLower(text), strings.ToLower(leak), "%s leaks a fixture plaintext or its hash", where)
+			}
+		}
+		assert.Empty(t, hashLike.FindAllString(text, -1), "%s carries a hash-like hex run", where)
+	}
 }

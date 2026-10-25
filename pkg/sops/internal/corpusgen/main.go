@@ -272,7 +272,9 @@ func editTypeTag(name string, in []byte, _ map[string]string) ([]byte, error) {
 }
 
 // editRecipientLabel relabels srv-2's stanza as srv-3. The label is not
-// authenticated: srv-1 still decrypts, srv-3 does not.
+// authenticated: srv-1 still decrypts, srv-3 passes the recipient pre-check
+// but its decrypt fails, and srv-2 is no longer named, so it is not a
+// recipient.
 func editRecipientLabel(name string, in []byte, rcp map[string]string) ([]byte, error) {
 	return replaceOnce(name, in, "recipient: "+rcp["srv-2"], "recipient: "+rcp["srv-3"])
 }

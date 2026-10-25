@@ -95,6 +95,9 @@ func TestApplyWithConfigDoesNotDecryptSops(t *testing.T) {
 	err := runApply(t.Context(), configPath, fleet, "test-host")
 	require.ErrorIs(t, err, sops.ErrNoIdentity)
 	require.ErrorContains(t, err, "picolet apply does not decrypt sops:// refs")
+	require.ErrorContains(t, err, "sops://", "the message still names the failing ref")
+	require.NotContains(t, err.Error(), "set sops.age_identity_path",
+		"apply must not point at a sops block that would not help it")
 }
 
 // `dry-run --config` decrypts, so a validation error that embeds a decrypted

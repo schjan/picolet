@@ -2,8 +2,6 @@ package resolver
 
 import (
 	"io/fs"
-	"os"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 
@@ -49,11 +47,7 @@ func TestReadSopsSecretDecryptsEachFileOncePerResolve(t *testing.T) {
 
 	opens := &atomic.Int32{}
 	fsys := openCountingFS{FS: mapFS, name: "secrets/db.sops.yaml", opens: opens}
-	identity, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sops", "identities", "srv-1.agekey"))
-	require.NoError(t, err)
-	ids, err := sops.ParseIdentities(identity)
-	require.NoError(t, err)
-	reader := sops.NewReader(fsys, ids)
+	reader := sops.NewReader(fsys, corpusIDs(t, "srv-1"))
 
 	r, err := New(Config{FS: fsys, Config: cfg, Sops: reader})
 	require.NoError(t, err)

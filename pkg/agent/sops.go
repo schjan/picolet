@@ -26,17 +26,9 @@ func (a *Agent) warnIdentityDrift(host *config.HostConfig, reader *sops.Reader) 
 	}
 	a.logger.Warn("the Agent's age identities match none of its Host's age_recipients",
 		"host", host.Hostname,
-		"age_recipients", recipientStrings(host.AgeRecipients),
-		"identity_recipients", recipientStrings(own),
+		"age_recipients", sops.RecipientStrings(host.AgeRecipients),
+		"identity_recipients", sops.RecipientStrings(own),
 		"fix", "add the identity's public key to age_recipients: in host.yml, or deliver the identity of a declared recipient")
-}
-
-func recipientStrings(rs []sops.Recipient) []string {
-	out := make([]string, len(rs))
-	for i, r := range rs {
-		out[i] = r.String()
-	}
-	return out
 }
 
 // setupSops loads the age identities named by the Agent config's sops block,

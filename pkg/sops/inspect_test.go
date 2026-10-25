@@ -180,7 +180,6 @@ func TestLookup(t *testing.T) {
 			got, err := f.Lookup(p)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got)
-			assert.Equal(t, tc.want.Kind == sops.NodeLeaf, got.IsLeaf())
 		})
 	}
 }

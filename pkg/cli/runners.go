@@ -542,11 +542,21 @@ func applyWithRollback(
 	return result, nil
 }
 
-// errApplyNoSops explains a sops:// ref failing `picolet apply`, whose
-// no-identity error would otherwise point at a sops block the config may
-// already have.
+// errApplyNoSops explains a sops:// ref failing `picolet apply`. It wraps
+// the resolve's no-identity error without that error's hint to set
+// sops.age_identity_path, which would not help apply.
 var errApplyNoSops = errors.New("picolet apply does not decrypt sops:// refs, even with a sops block in the Agent config; " +
 	"let the Agent apply this Fleet (preview it with dry-run --config)")
+
+// withoutSopsHint is an error whose text drops sops.NoIdentityHint; it
+// unwraps to the original, so errors.Is still finds sops.ErrNoIdentity.
+type withoutSopsHint struct{ err error }
+
+func (e withoutSopsHint) Error() string {
+	return strings.ReplaceAll(e.err.Error(), "; "+sops.NoIdentityHint, "")
+}
+
+func (e withoutSopsHint) Unwrap() error { return e.err }
 
 //nolint:cyclop,funlen // sequential apply steps; splitting reduces readability
 func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
@@ -569,7 +579,7 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	}
 	resolved, scrub, err := resolveWithConfig(ctx, cfg, repoDir, hostname, providers)
 	if errors.Is(err, sops.ErrNoIdentity) {
-		return fmt.Errorf("%w: %w", errApplyNoSops, err)
+		return fmt.Errorf("%w: %w", errApplyNoSops, withoutSopsHint{err})
 	}
 	if err != nil {
 		return err

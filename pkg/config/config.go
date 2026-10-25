@@ -141,16 +141,9 @@ func loadHosts(fsys fs.FS, fleet *FleetConfig, o loadOptions) (map[string]*HostC
 			continue
 		}
 		name := entry.Name()
-		hostPath := "hosts/" + name + "/host.yml"
-		host, err := loadHostYAML(fsys, hostPath, o)
+		host, err := loadHost(fsys, name, fleet, o)
 		if err != nil {
 			return nil, err
-		}
-		if err := host.Validate(); err != nil {
-			return nil, fmt.Errorf("host %s: %w", name, err)
-		}
-		if err := host.applyDefaults(fleet); err != nil {
-			return nil, fmt.Errorf("host %s: %w", name, err)
 		}
 		if host.Hostname != name {
 			o.logger.Warn("hostname in host.yml does not match directory name",
@@ -165,6 +158,25 @@ func loadHosts(fsys fs.FS, fleet *FleetConfig, o loadOptions) (map[string]*HostC
 		return nil, err
 	}
 	return hosts, nil
+}
+
+// loadHost loads, validates and defaults hosts/<name>/host.yml.
+func loadHost(fsys fs.FS, name string, fleet *FleetConfig, o loadOptions) (*HostConfig, error) {
+	hostPath := "hosts/" + name + "/host.yml"
+	host, err := loadHostYAML(fsys, hostPath, o)
+	if err != nil {
+		return nil, err
+	}
+	if err := host.Validate(); err != nil {
+		return nil, fmt.Errorf("host %s: %w", name, err)
+	}
+	if err := host.applyAgeRecipients(hostPath, o); err != nil {
+		return nil, fmt.Errorf("host %s: %w", name, err)
+	}
+	if err := host.applyDefaults(fleet); err != nil {
+		return nil, fmt.Errorf("host %s: %w", name, err)
+	}
+	return host, nil
 }
 
 // loadHostYAML parses one host.yml. With lenientHosts, a file that fails only

@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/schjan/picolet/pkg/config"
+	"github.com/schjan/picolet/pkg/sops"
 )
 
 // TemplateData is the root context passed to all templates as `.`.
@@ -88,12 +89,8 @@ func NewTemplateData(cfg *config.Config, hostname string) (*TemplateData, error)
 }
 
 func buildHostData(host *config.HostConfig) HostTemplateData {
-	var recipients []string
-	for _, r := range host.AgeRecipients {
-		recipients = append(recipients, r.String())
-	}
 	return HostTemplateData{
-		AgeRecipients:    recipients,
+		AgeRecipients:    sops.RecipientStrings(host.AgeRecipients),
 		Hostname:         host.Hostname,
 		ExternalHostname: host.ExternalHostname,
 		Role:             host.Role,

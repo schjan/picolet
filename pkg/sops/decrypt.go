@@ -125,7 +125,7 @@ func (r *Reader) openFile(ctx context.Context, raw string, files map[string]file
 		return Ref{}, nil, err
 	}
 	if r.ids.Len() == 0 {
-		return Ref{}, nil, fmt.Errorf("%s: %w: set sops.age_identity_path in the Agent config", raw, ErrNoIdentity)
+		return Ref{}, nil, fmt.Errorf("%s: %w; %s", raw, ErrNoIdentity, NoIdentityHint)
 	}
 	res, ok := files[ref.Path]
 	if !ok {
@@ -172,6 +172,11 @@ func decrypt(path string, data []byte, ids *Identities) (*plainFile, error) {
 	if !f.IsSOPS {
 		return nil, fmt.Errorf("%s: %w: %s", path, ErrNotSOPSFile, f.NotSOPSReason)
 	}
+	// The recipient pre-check names "not a recipient" exactly; past it, the
+	// decrypt result decides.
+	if err := checkRecipients(path, f, "this Host", ids.recipients); err != nil {
+		return nil, err
+	}
 	_, st := storeFor(path)
 	tree, err := st.LoadEncryptedFile(data)
 	if err != nil {
@@ -180,7 +185,7 @@ func decrypt(path string, data []byte, ids *Identities) (*plainFile, error) {
 	key, err := tree.Metadata.GetDataKeyWithKeyServices(
 		[]keyservice.KeyServiceClient{ageKeyService{ids: ids.ids}}, []string{"age"})
 	if err != nil {
-		return nil, dataKeyError(path, f, ids)
+		return nil, editedError(path, "its age stanza for this Host's recipient does not open with this Host's identity", "re-encrypt it with `sops updatekeys %s`")
 	}
 	cipher := aes.NewCipher()
 	computedMAC, err := tree.Decrypt(key, cipher)
@@ -194,17 +199,6 @@ func decrypt(path string, data []byte, ids *Identities) (*plainFile, error) {
 	return &plainFile{store: st, branches: tree.Branches}, nil
 }
 
-// dataKeyError names why the data key could not be recovered. The recipient
-// pre-check decides the class: a file whose labels don't name this Host in
-// enough key groups is "not a recipient"; one whose labels do, yet whose
-// stanzas don't open, was edited outside sops.
-func dataKeyError(path string, f *File, ids *Identities) error {
-	if err := checkRecipients(path, f, "this Host", ids.recipients); err != nil {
-		return err
-	}
-	return editedError(path, "its age stanza for this Host's recipient does not open with this Host's identity", "re-encrypt it with `sops updatekeys %s`")
-}
-
 // checkRecipients returns an ErrNotRecipient error for the file at path when
 // recipients (who's: "this Host" or "Host <name>") appear in fewer of f's key
 // groups than it needs. It compares the file's unauthenticated labels.
@@ -213,16 +207,12 @@ func checkRecipients(path string, f *File, who string, recipients []Recipient) e
 	if matched >= required {
 		return nil
 	}
-	labels := make([]string, 0, len(recipients))
-	for _, r := range recipients {
-		labels = append(labels, r.String())
-	}
 	reach := "the file is not encrypted to " + who
 	if matched > 0 {
 		reach = fmt.Sprintf("the file is encrypted to %s in %d of the %d key groups it needs", who, matched, required)
 	}
 	return fmt.Errorf("%s: %w: %s (%s's recipients: %s); add one of them to the file's .sops.yaml creation rule and run `sops updatekeys %s`",
-		path, ErrNotRecipient, reach, who, strings.Join(labels, ", "), path)
+		path, ErrNotRecipient, reach, who, strings.Join(RecipientStrings(recipients), ", "), path)
 }
 
 // editedError builds an ErrEditedOutsideSOPS error for path: what failed,
