@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,8 +12,6 @@ import (
 	appliermocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
-	"github.com/schjan/picolet/pkg/gitpoll"
-	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/state"
 	"github.com/schjan/picolet/pkg/status"
@@ -22,32 +19,15 @@ import (
 
 // newPruneTickAgent wires an agent against a minimal real git repo (via
 // networkFleet) and a noop-poised state, so tests can exercise the prune step
-// through the real tick() path. Returns the agent, poller, store and the
-// health checker ready for a.tick(...).
-func newPruneTickAgent(t *testing.T, cfg *agentcfg.Config, opts ...Option) (*Agent, *gitpoll.Poller, *state.Store, *health.Checker) {
+// through the real tick() path.
+func newPruneTickAgent(t *testing.T, opts ...Option) *loopHarness {
 	t.Helper()
 	metrics.Register(nil)
 	bareDir, _ := initFleetRepo(t, networkFleet())
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
-
-	cfg.RepoURL = bareDir
-	cfg.RepoBranch = "master"
-	sys, _, fw := newBareMocks(t)
-	opts = append(opts, WithSystemd(sys), WithFileWriter(fw), WithRepoPath(repoDir), WithStatePath(statePath))
-	a := newTestAgent(t, cfg, opts...)
-
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil, gitpoll.WithLogger(discardLogger()))
-	require.NoError(t, poller.Init(t.Context()))
-	initial, err := poller.Poll(t.Context(), "")
-	require.NoError(t, err)
-
-	store := state.NewStore(statePath)
-	st := state.NewState()
-	st.MarkApplied(initial.HeadSHA) // SHA unchanged => noop tick
-	require.NoError(t, store.Save(st))
-
-	return a, poller, store, health.New(sys, health.WithLogger(discardLogger()))
+	h := newLoopHarness(t, bareDir, opts...)
+	h.cfg.PruneInterval = time.Hour
+	h.seedState(t, false, nil) // SHA unchanged => noop tick
+	return h
 }
 
 // TestTickInvokesPruneOnNoopTick verifies the prune step actually runs through
@@ -58,20 +38,17 @@ func TestTickInvokesPruneOnNoopTick(t *testing.T) {
 	pod.EXPECT().ImagePrune(mock.Anything, true).
 		Return(applier.PruneResult{ImagesRemoved: 1, ReclaimedBytes: 10}, nil).Once()
 
-	cfg := &agentcfg.Config{Hostname: "test-host", PollInterval: time.Second, SecretsDir: t.TempDir(), PruneInterval: time.Hour}
-	a, poller, store, hc := newPruneTickAgent(t, cfg, WithPodman(pod))
+	h := newPruneTickAgent(t, WithPodman(pod))
 
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	require.NoError(t, a.tick(ctx, poller, store, hc))
-	prune := a.statusStore.Snapshot().Prune
+	require.NoError(t, h.tick(t))
+	prune := h.a.statusStore.Snapshot().Prune
 	assert.False(t, prune.LastRunAt.IsZero(), "prune should have run during the noop tick")
 	assert.Equal(t, 1, prune.ImagesRemoved)
 
 	// A subsequent tick must NOT re-run the seed block (ImagePrune is .Once()) and
 	// must not clobber the prune counts recorded above.
-	require.NoError(t, a.tick(ctx, poller, store, hc))
-	prune = a.statusStore.Snapshot().Prune
+	require.NoError(t, h.tick(t))
+	prune = h.a.statusStore.Snapshot().Prune
 	assert.Equal(t, 1, prune.ImagesRemoved, "later ticks must not drop the recorded prune counts")
 	assert.Equal(t, uint64(10), prune.ReclaimedBytes)
 }
@@ -83,13 +60,10 @@ func TestTickSkipsPruneWhenPaused(t *testing.T) {
 	// No ImagePrune expectation: the mock fails the test if prune runs.
 	pod := newMockPodmanForPruneTick(t)
 
-	cfg := &agentcfg.Config{Hostname: "test-host", PollInterval: time.Second, SecretsDir: t.TempDir(), PruneInterval: time.Hour}
-	a, poller, store, hc := newPruneTickAgent(t, cfg, WithPodman(pod))
-	a.paused.Store(true)
+	h := newPruneTickAgent(t, WithPodman(pod))
+	h.a.paused.Store(true)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	require.NoError(t, a.tick(ctx, poller, store, hc))
+	require.NoError(t, h.tick(t))
 }
 
 // TestTickSeedsPruneStatusFromState verifies the last-prune timestamp survives a
@@ -99,19 +73,17 @@ func TestTickSeedsPruneStatusFromState(t *testing.T) {
 	t.Parallel()
 	pod := newMockPodmanForPruneTick(t) // disabled prune => never called
 
-	cfg := &agentcfg.Config{Hostname: "test-host", PollInterval: time.Second, SecretsDir: t.TempDir(), PruneImages: new(false), PruneInterval: time.Hour}
-	a, poller, store, hc := newPruneTickAgent(t, cfg, WithPodman(pod))
+	h := newPruneTickAgent(t, WithPodman(pod))
+	h.cfg.PruneImages = new(false)
 
 	persisted := time.Now().Add(-3 * 24 * time.Hour).Truncate(time.Second)
-	st, err := store.Load()
+	st, err := h.store.Load()
 	require.NoError(t, err)
 	st.LastPrunedAt = persisted
-	require.NoError(t, store.Save(st))
+	require.NoError(t, h.store.Save(st))
 
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	require.NoError(t, a.tick(ctx, poller, store, hc))
-	got := a.statusStore.Snapshot().Prune.LastRunAt
+	require.NoError(t, h.tick(t))
+	got := h.a.statusStore.Snapshot().Prune.LastRunAt
 	assert.True(t, persisted.Equal(got), "status store should be seeded from persisted LastPrunedAt: want %s, got %s", persisted, got)
 }
 

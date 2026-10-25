@@ -7,9 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
@@ -20,12 +18,8 @@ import (
 	"github.com/schjan/picolet/internal/testsops"
 	agentmocks "github.com/schjan/picolet/mocks/agent"
 	"github.com/schjan/picolet/pkg/agentcfg"
-	"github.com/schjan/picolet/pkg/applier"
-	"github.com/schjan/picolet/pkg/gitpoll"
-	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/resolver"
-	"github.com/schjan/picolet/pkg/state"
 )
 
 // dbPasswordSecret is a secret template reading the corpus' db password.
@@ -61,21 +55,15 @@ func sopsFleet(secret string, extra map[string]string, paths ...string) map[stri
 }
 
 // sopsHarness drives the Agent loop (tick by tick) over an in-memory git
-// Fleet and records what reaches Podman, systemd, the deployment reporter and
-// the logs.
+// Fleet and records what reaches Podman, systemd (loopHarness), the
+// deployment reporter and the logs.
 type sopsHarness struct {
-	a       *Agent
-	bareDir string
-	poller  *gitpoll.Poller
-	store   *state.Store
-	health  *health.Checker
-	logs    *testlog.Recorder
+	*loopHarness
 
-	mu        sync.Mutex
-	secrets   map[string]string // Podman secrets created, by name
-	restarts  []string
-	failures  []string // texts of failed deployment statuses
-	successes int
+	bareDir   string
+	logs      *testlog.Recorder
+	failures  []string // texts of failed deployment statuses, guarded by mu
+	successes int      // guarded by mu
 }
 
 // newSopsHarness builds an Agent for test-host over files; identityPath is
@@ -84,47 +72,15 @@ type sopsHarness struct {
 func newSopsHarness(t *testing.T, files map[string]string, identityPath string) *sopsHarness {
 	t.Helper()
 	bareDir, _ := initFleetRepo(t, files)
-	h := &sopsHarness{bareDir: bareDir, secrets: map[string]string{}}
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
-
-	sys, pod, fw := newBareMocks(t)
-	sys.EXPECT().GetUnitStatus(mock.Anything, mock.Anything).
-		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
-	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
-	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, unit string) error {
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		h.restarts = append(h.restarts, unit)
-		return nil
-	}).Maybe()
-	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
-	pod.EXPECT().SecretCreate(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-		RunAndReturn(func(_ context.Context, name string, data []byte, _ bool) error {
-			h.mu.Lock()
-			defer h.mu.Unlock()
-			h.secrets[name] = string(data)
-			return nil
-		}).Maybe()
-	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(nil).Maybe()
-	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
-	fw.EXPECT().Remove(mock.Anything).Return(nil).Maybe()
-
-	cfg := &agentcfg.Config{Hostname: "test-host", RepoURL: h.bareDir, RepoBranch: "master", SecretsDir: t.TempDir()}
-	if identityPath != "" {
-		cfg.Sops = &agentcfg.SopsConfig{AgeIdentityPath: identityPath}
-	}
+	h := &sopsHarness{bareDir: bareDir}
 	logger, logs := testlog.New()
 	h.logs = logs
-	h.a = newTestAgent(t, cfg, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
-		WithRepoPath(repoDir), WithStatePath(statePath), WithDataDir(t.TempDir()),
-		WithDeploymentReporter(h.reporter(t)), WithLogger(logger))
+	h.loopHarness = newLoopHarness(t, bareDir, WithDataDir(t.TempDir()), WithDeploymentReporter(h.reporter(t)), WithLogger(logger))
+	if identityPath != "" {
+		h.cfg.Sops = &agentcfg.SopsConfig{AgeIdentityPath: identityPath}
+	}
 	require.NoError(t, h.a.setupSops())
-
-	h.store = state.NewStore(statePath)
-	h.poller = gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil, gitpoll.WithLogger(discardLogger()))
-	require.NoError(t, h.poller.Init(t.Context()))
-	h.health = health.New(sys, health.WithLogger(discardLogger()))
+	h.gitPoller(t)
 	return h
 }
 
@@ -149,27 +105,6 @@ func (h *sopsHarness) reporter(t *testing.T) *agentmocks.MockDeploymentReporter 
 	reporter.EXPECT().ReportFailure(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(recordFailure).Maybe()
 	reporter.EXPECT().ReportError(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(recordFailure).Maybe()
 	return reporter
-}
-
-func (h *sopsHarness) tick(t *testing.T) error {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	return h.a.tick(ctx, h.poller, h.store, h.health)
-}
-
-// reset forgets what the previous ticks did.
-func (h *sopsHarness) reset() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.secrets = map[string]string{}
-	h.restarts = nil
-}
-
-func (h *sopsHarness) secret(name string) string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.secrets[name]
 }
 
 // sopsSyncs returns the Agent's provider="sops" sync count and whether a

@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,10 +8,8 @@ import (
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
@@ -92,59 +89,28 @@ func TestAgentRefusesSelfConfigItCouldNotStartWith(t *testing.T) {
 func runSelfConfigCase(t *testing.T, agentConfig string, wantError []string) {
 	t.Helper()
 	bareDir, headSHA := initFleetRepo(t, agentBundleFiles(agentBundleUnit(""), "picolet_system_config.yml", agentConfig))
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	h := newLoopHarness(t, bareDir)
+	h.cfg.PollInterval = 200 * time.Millisecond
+	h.runUntil(t, func() bool {
+		st, err := h.store.Load()
+		return err == nil && (st.AppliedSHA != "" || st.FailedSHA != "")
+	})
 
-	sys, pod, fw := newBareMocks(t)
-	setupNoopMocks(sys, pod)
-	var written map[string][]byte
-	var createdSecrets []string
-	if len(wantError) == 0 {
-		// Only the applying case may write; the strict mocks fail the
-		// refusing cases on any write.
-		written = setupApplyMocks(sys, pod, fw)
-		pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
-		pod.EXPECT().SecretCreate(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-			RunAndReturn(func(_ context.Context, name string, _ []byte, _ bool) error {
-				createdSecrets = append(createdSecrets, name)
-				return nil
-			}).Maybe()
-		sys.EXPECT().StartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-	}
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: 200 * time.Millisecond,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(filepath.Join(t.TempDir(), "clone")),
-		WithStatePath(statePath),
-	)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-	defer cancel()
-	require.NoError(t, a.Run(ctx))
-
-	st, err := state.NewStore(statePath).Load()
+	st, err := h.store.Load()
 	require.NoError(t, err)
 	if len(wantError) == 0 {
 		assert.Equal(t, headSHA, st.AppliedSHA)
 		assert.Empty(t, st.FailedSHA)
-		assert.Contains(t, createdSecrets, "picolet_system_config")
-		assert.Contains(t, written, "/etc/containers/systemd/picolet/picolet-system.container")
+		assert.Contains(t, h.created, "picolet_system_config")
+		assert.Contains(t, h.written, "/etc/containers/systemd/picolet/picolet-system.container")
 		return
 	}
 	assert.Equal(t, headSHA, st.FailedSHA, "the reconciliation fails like any pre-apply failure")
 	assert.Empty(t, st.AppliedSHA)
 	assert.Empty(t, st.ManagedFiles, "nothing is written")
+	h.assertNothingWritten(t)
 
-	_, err = a.ReconcileOnce(t.Context(), headSHA, state.NewState(), state.NewStore(filepath.Join(t.TempDir(), "state.json")))
+	_, err = h.a.ReconcileOnce(t.Context(), headSHA, state.NewState(), state.NewStore(filepath.Join(t.TempDir(), "state.json")))
 	require.Error(t, err)
 	for _, want := range wantError {
 		assert.Contains(t, err.Error(), want)
@@ -165,53 +131,20 @@ func TestAgentRefusesMountSwitchToSelfConfigItCouldNotStartWith(t *testing.T) {
 	pushToTestRepo(t, bareDir, map[string]string{
 		nextConfig: "hostname: test-host\nrepo_url: https://example.com/fleet.git\nno_such_key_ever: x\n",
 	})
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
-
-	sys, pod, fw := newBareMocks(t)
-	written := setupApplyMocks(sys, pod, fw)
-	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
-	pod.EXPECT().SecretCreate(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
-	sys.EXPECT().StartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Second,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(repoDir),
-		WithStatePath(statePath),
-	)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-	defer cancel()
-	require.NoError(t, a.Run(ctx))
-	store := state.NewStore(statePath)
-	st, err := store.Load()
-	require.NoError(t, err)
-	require.NotEmpty(t, st.AppliedSHA, "the first commit applies: its mounted config is valid")
-	require.Contains(t, st.ManagedFiles, "secret:picolet_system_config_next", "the next config is already managed")
+	h := newLoopHarness(t, bareDir)
+	h.runUntilApplied(t)
+	require.Contains(t, h.st.ManagedFiles, "secret:picolet_system_config_next", "the next config is already managed")
 
 	// Repoint only the mount; the managed secret stays unchanged (Noop).
-	writeTestFile(t, repoDir, quadlet, `[Container]
+	writeTestFile(t, h.repoDir, quadlet, `[Container]
 Image=ghcr.io/schjan/picolet:latest
 Secret=picolet_system_config_next,target=/etc/picolet/config.yml
 `)
-	clear(written)
-	_, err = a.ReconcileOnce(t.Context(), "switch-sha", st, store)
+	h.reset()
+	_, err := h.a.ReconcileOnce(t.Context(), "switch-sha", h.st, h.store)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no_such_key_ever")
-	assert.Empty(t, written, "nothing is written")
-	st2, err := store.Load()
-	require.NoError(t, err)
-	assert.Equal(t, st.AppliedSHA, st2.AppliedSHA)
+	h.assertNothingWritten(t)
 }
 
 // TestAgentRefusesDroppingMountedSelfConfig covers a commit that renames the
@@ -226,14 +159,15 @@ func TestAgentRefusesDroppingMountedSelfConfig(t *testing.T) {
 		newConfig = "services/picolet-system/secrets/picolet_cfg.yml"
 	)
 	bareDir, _ := initFleetRepo(t, agentBundleFiles(agentBundleUnit(""), "picolet_system_config.yml", "hostname: test-host\nrepo_url: https://example.com/fleet.git\n"))
-	h := startSelfConfigAgent(t, bareDir)
+	h := newLoopHarness(t, bareDir)
+	h.runUntilApplied(t)
 	require.Contains(t, h.st.ManagedFiles, "secret:picolet_system_config", "the first commit renders the Agent config")
 
 	// Rename the config's file: the Fleet now resolves picolet_cfg, while
 	// the unit still mounts picolet_system_config.
 	require.NoError(t, os.Remove(filepath.Join(h.repoDir, oldConfig)))
 	writeTestFile(t, h.repoDir, newConfig, "hostname: test-host\nrepo_url: https://example.com/fleet.git\n")
-	h.clearWrites()
+	h.reset()
 	_, err := h.a.ReconcileOnce(t.Context(), "rename-sha", h.st, h.store)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "picolet_system_config")
@@ -242,84 +176,6 @@ func TestAgentRefusesDroppingMountedSelfConfig(t *testing.T) {
 	st, err := h.store.Load()
 	require.NoError(t, err)
 	assert.Contains(t, st.ManagedFiles, "secret:picolet_system_config")
-}
-
-// selfConfigHarness is an Agent whose Fleet's first commit has applied,
-// recording what the following reconciliations write.
-type selfConfigHarness struct {
-	a       *Agent
-	repoDir string
-	store   *state.Store
-	st      *state.State // after the first commit
-	written map[string][]byte
-	created []string // secrets
-	removed []string // secrets
-}
-
-// startSelfConfigAgent runs the Agent on the Fleet in bareDir until its first
-// commit applies; the harness holds that commit's writes until clearWrites.
-func startSelfConfigAgent(t *testing.T, bareDir string, opts ...Option) *selfConfigHarness {
-	t.Helper()
-	h := &selfConfigHarness{repoDir: filepath.Join(t.TempDir(), "clone")}
-	statePath := filepath.Join(t.TempDir(), "state.json")
-	sys, pod, fw := newBareMocks(t)
-	h.written = setupApplyMocks(sys, pod, fw)
-	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
-	pod.EXPECT().SecretCreate(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-		RunAndReturn(func(_ context.Context, name string, _ []byte, _ bool) error {
-			h.created = append(h.created, name)
-			return nil
-		}).Maybe()
-	pod.EXPECT().SecretRemove(mock.Anything, mock.Anything).
-		RunAndReturn(func(_ context.Context, name string) error {
-			h.removed = append(h.removed, name)
-			return nil
-		}).Maybe()
-	sys.EXPECT().StartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Second,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-	h.a = newTestAgent(t, cfg, append([]Option{
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(h.repoDir),
-		WithStatePath(statePath),
-	}, opts...)...)
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-	defer cancel()
-	require.NoError(t, h.a.Run(ctx))
-	h.store = state.NewStore(statePath)
-	var err error
-	h.st, err = h.store.Load()
-	require.NoError(t, err)
-	require.NotEmpty(t, h.st.AppliedSHA, "the first commit applies")
-	return h
-}
-
-// clearWrites forgets the writes recorded so far.
-func (h *selfConfigHarness) clearWrites() {
-	clear(h.written)
-	h.created, h.removed = nil, nil
-}
-
-// assertNothingWritten checks that no reconciliation since clearWrites wrote
-// a file or created or removed a secret, and that the applied SHA is still
-// the first commit's.
-func (h *selfConfigHarness) assertNothingWritten(t *testing.T) {
-	t.Helper()
-	assert.Empty(t, h.written, "nothing is written")
-	assert.Empty(t, h.created, "no secret is created")
-	assert.Empty(t, h.removed, "no secret is removed")
-	st, err := h.store.Load()
-	require.NoError(t, err)
-	assert.Equal(t, h.st.AppliedSHA, st.AppliedSHA)
 }
 
 // TestAgentChecksSelfConfigCredentialsThroughNewUnitMounts covers a commit
@@ -414,7 +270,8 @@ func runMountChangeCase(t *testing.T, unit, config, nextUnit, nextConfig string,
 	)
 	bareDir, _ := initFleetRepo(t, agentBundleFiles(unit, "picolet_system_config.yml", config))
 	quadletDir := t.TempDir()
-	h := startSelfConfigAgent(t, bareDir, append([]Option{WithQuadletDir(quadletDir)}, opts...)...)
+	h := newLoopHarness(t, bareDir, append([]Option{WithQuadletDir(quadletDir)}, opts...)...)
+	h.runUntilApplied(t)
 	// The running Agent's container was started from the unit on disk; the
 	// mocked file writer wrote nothing there.
 	unitPath := filepath.Join(quadletDir, "picolet-system.container")
@@ -423,7 +280,7 @@ func runMountChangeCase(t *testing.T, unit, config, nextUnit, nextConfig string,
 
 	writeTestFile(t, h.repoDir, quadlet, nextUnit)
 	writeTestFile(t, h.repoDir, configFile, nextConfig)
-	h.clearWrites()
+	h.reset()
 	_, err := h.a.ReconcileOnce(t.Context(), "next-sha", h.st, h.store)
 	if len(wantError) == 0 {
 		require.NoError(t, err)
@@ -888,13 +745,14 @@ func TestAgentRefusesRemovingMountedCredentialSecret(t *testing.T) {
 	bareDir, _ := initFleetRepo(t, agentBundleFiles(unit, "picolet_system_config.yml", *webhookConfig(hook)))
 	pushToTestRepo(t, bareDir, map[string]string{hookFile: "hook\n"})
 	quadletDir := t.TempDir()
-	h := startSelfConfigAgent(t, bareDir, WithQuadletDir(quadletDir))
+	h := newLoopHarness(t, bareDir, WithQuadletDir(quadletDir))
+	h.runUntilApplied(t)
 	require.Contains(t, h.st.ManagedFiles, "secret:hook_secret", "the first commit manages the credential secret")
 	unitPath := filepath.Join(quadletDir, "picolet-system.container")
 	require.NoError(t, os.WriteFile(unitPath, h.written[unitPath], 0o600))
 
 	require.NoError(t, os.Remove(filepath.Join(h.repoDir, hookFile)))
-	h.clearWrites()
+	h.reset()
 	_, err := h.a.ReconcileOnce(t.Context(), "drop-sha", h.st, h.store)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "hook_secret")

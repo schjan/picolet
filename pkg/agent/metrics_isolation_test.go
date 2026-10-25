@@ -1,22 +1,17 @@
 package agent
 
 import (
-	"context"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/go-git/go-git/v5"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/internal/testlog"
 	"github.com/schjan/picolet/pkg/agentcfg"
-	"github.com/schjan/picolet/pkg/gitpoll"
-	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
@@ -76,42 +71,19 @@ func TestAgentsRecordFailedSHAGaugeIndependently(t *testing.T) {
 // the repo's HEAD as failed failures times (recently).
 func tickWithFailedSHA(t *testing.T, failures int) (*Agent, *testlog.Recorder) {
 	t.Helper()
-	bareDir, _ := initFleetRepo(t, networkFleet())
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
-
-	sys, pod, fw := newBareMocks(t)
-	setupApplyMocks(sys, pod, fw)
-	cfg := &agentcfg.Config{
-		Hostname:   "test-host",
-		RepoURL:    bareDir,
-		RepoBranch: "master",
-		SecretsDir: t.TempDir(),
-	}
+	bareDir, headSHA := initFleetRepo(t, networkFleet())
 	logger, logs := testlog.New()
-	a := newTestAgent(t, cfg, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
-		WithRepoPath(repoDir), WithStatePath(statePath), WithLogger(logger))
+	h := newLoopHarness(t, bareDir, WithLogger(logger))
 
-	clone, err := git.PlainClone(filepath.Join(t.TempDir(), "peek"), false, &git.CloneOptions{URL: bareDir})
-	require.NoError(t, err)
-	head, err := clone.Head()
-	require.NoError(t, err)
-
-	store := state.NewStore(statePath)
 	st := state.NewState()
 	if failures > 0 {
-		st.FailedSHA = head.Hash().String()
+		st.FailedSHA = headSHA
 		st.FailedCount = failures
 		st.FailedAt = time.Now()
 	}
-	require.NoError(t, store.Save(st))
-
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil, gitpoll.WithLogger(discardLogger()))
-	require.NoError(t, poller.Init(ctx))
-	require.NoError(t, a.tick(ctx, poller, store, health.New(sys, health.WithLogger(discardLogger()))))
-	return a, logs
+	require.NoError(t, h.store.Save(st))
+	require.NoError(t, h.tick(t))
+	return h.a, logs
 }
 
 // The credential-expiry series lives in the Agent's store; an expired
