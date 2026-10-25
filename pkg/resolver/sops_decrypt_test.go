@@ -55,7 +55,7 @@ func TestReadSopsSecretDecryptsEachFileOncePerResolve(t *testing.T) {
 	require.NoError(t, err)
 	reader := sops.NewReader(fsys, ids)
 
-	r, err := New(Config{FS: fsys, Config: cfg, SopsSecretReader: reader.ReadAll})
+	r, err := New(Config{FS: fsys, Config: cfg, Sops: reader})
 	require.NoError(t, err)
 	resolved, err := r.ResolveHost(t.Context(), "test-host")
 	require.NoError(t, err)

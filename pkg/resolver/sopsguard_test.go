@@ -22,7 +22,7 @@ type recordingSopsReader struct {
 	refs []string
 }
 
-func (r *recordingSopsReader) read(_ context.Context, refs []string) (map[string]string, error) {
+func (r *recordingSopsReader) ReadAll(_ context.Context, refs []string) (map[string]string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make(map[string]string, len(refs))
@@ -31,6 +31,13 @@ func (r *recordingSopsReader) read(_ context.Context, refs []string) (map[string
 		out[ref] = "decrypted"
 	}
 	return out, nil
+}
+
+func (r *recordingSopsReader) ReadData(_ context.Context, ref string) (any, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refs = append(r.refs, ref)
+	return "decrypted", nil
 }
 
 func (r *recordingSopsReader) asked(ref string) bool {
@@ -55,7 +62,7 @@ func resolveGuard(t *testing.T, base string, extra map[string]string, keyless bo
 	cfg, err := config.LoadAll(fsys)
 	require.NoError(t, err)
 	rec := &recordingSopsReader{}
-	rc := Config{FS: fsys, Config: cfg, SopsSecretReader: rec.read}
+	rc := Config{FS: fsys, Config: cfg, Sops: rec}
 	newResolver := New
 	if keyless {
 		newResolver = NewKeyless
