@@ -506,6 +506,9 @@ type selfConfigChange struct {
 	// unchanged makes the state hold the Agent quadlet and config as the
 	// commit renders them, so the commit writes neither.
 	unchanged bool
+	// unchangedUnit makes the state hold the Agent quadlet as the commit
+	// renders it, so the commit writes only the config.
+	unchangedUnit bool
 }
 
 const selfConfigUnitPath = "/etc/containers/systemd/picolet/picolet-system.container"
@@ -529,6 +532,9 @@ func (c selfConfigChange) check(t *testing.T) error {
 	if c.unchanged {
 		agentFiles := files[:len(files)-len(c.files)]
 		reconciler.MergeChangeset(st, reconciler.Diff(agentFiles, state.NewState()))
+	}
+	if c.unchangedUnit {
+		reconciler.MergeChangeset(st, reconciler.Diff(files[:1], state.NewState()))
 	}
 	for _, dest := range c.managed {
 		category := config.CategorySecret
@@ -966,4 +972,94 @@ func TestAgentRefusesRemovingMountedCredentialSecret(t *testing.T) {
 	assert.Contains(t, err.Error(), "hook_secret")
 	assert.Contains(t, err.Error(), "still mounts")
 	h.assertNothingWritten(t)
+}
+
+// relFromCwd returns p relative to the test's working directory, which is
+// the running Agent's in these tests.
+func relFromCwd(t *testing.T, p string) string {
+	t.Helper()
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	rel, err := filepath.Rel(cwd, p)
+	require.NoError(t, err)
+	return rel
+}
+
+// TestAgentChecksRelativeSelfConfigCredentialsThroughNewUnitMounts: a
+// relative credential path is read by the next start against its working
+// directory, so a commit that drops the mount it lies under, or changes the
+// working directory it resolves against, is checked like an absolute path
+// rather than through the running container alone.
+func TestAgentChecksRelativeSelfConfigCredentialsThroughNewUnitMounts(t *testing.T) {
+	t.Parallel()
+	seen := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(seen, "hook"), []byte("secret\n"), 0o600))
+	config := "hostname: test-host\nrepo_url: https://example.com/fleet.git\nwebhook_secret_path: " + relFromCwd(t, filepath.Join(seen, "hook")) + "\n"
+	current := agentBundleUnit("Volume=/host/secrets:" + seen + ":ro\n")
+	t.Run("mount dropped", func(t *testing.T) {
+		t.Parallel()
+		runMountChangeCase(t, current, config, agentBundleUnit(""), config,
+			[]string{"webhook_secret_path", seen, "no longer mounts", "own commit"})
+	})
+	t.Run("WorkingDir added", func(t *testing.T) {
+		t.Parallel()
+		elsewhere := t.TempDir()
+		runMountChangeCase(t, current, config, current+"WorkingDir="+elsewhere+"\n", config,
+			[]string{"webhook_secret_path", "not readable"})
+	})
+}
+
+// A relative credential path of a commit that writes the Agent's unit is
+// resolved against the new unit's working directory (WorkingDir=, or a
+// PodmanArgs= -w/--workdir, which podman reads after it) and then checked
+// through the new unit's mounts. Without one, the next start keeps the
+// image's working directory, which is the running Agent's only when the
+// running unit sets none either; any other case, or a working directory
+// the guard cannot read, is refused.
+func TestCheckSelfConfigResolvesRelativeCredentialsAgainstWorkingDir(t *testing.T) {
+	t.Parallel()
+	seen := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(seen, "hook"), []byte("x"), 0o600))
+	mounted := "Volume=/host/secrets:" + seen + ":ro\n"
+	fromCwd := relFromCwd(t, filepath.Join(seen, "hook"))
+	absolute := []string{"webhook_secret_path", "relative", "absolute"}
+	tests := []struct {
+		name      string
+		running   string
+		next      string
+		config    string
+		sameUnit  bool     // the commit writes only the config
+		wantError []string // empty: passes
+	}{
+		{name: "no working directory on either unit", running: mounted, next: mounted, config: fromCwd},
+		{name: "WorkingDir= on the new unit", running: mounted, next: mounted + "WorkingDir=" + seen + "\n", config: "hook"},
+		{name: "same WorkingDir= on both units", running: mounted + "WorkingDir=" + seen + "\n", next: mounted + "WorkingDir=" + seen + "\n", config: "hook"},
+		{name: "PodmanArgs= --workdir", running: mounted, next: mounted + "PodmanArgs=--workdir " + seen + "\n", config: "hook"},
+		{name: "PodmanArgs= -w", running: mounted, next: mounted + "PodmanArgs=-w=" + seen + "\n", config: "hook"},
+		{
+			name: "PodmanArgs= --workdir overrides WorkingDir=", running: mounted,
+			next: mounted + "WorkingDir=/nowhere\nPodmanArgs=--workdir=" + seen + "\n", config: "hook",
+		},
+		{
+			name: "WorkingDir= under a dropped mount", running: mounted, next: "WorkingDir=" + seen + "\n", config: "hook",
+			wantError: []string{"webhook_secret_path", "no longer mounts", "own commit"},
+		},
+		{name: "WorkingDir= dropped", running: mounted + "WorkingDir=" + seen + "\n", next: mounted, config: "hook", wantError: absolute},
+		{name: "WorkingDir= with a specifier", running: mounted, next: mounted + "WorkingDir=%h/secrets\n", config: "hook", wantError: absolute},
+		{name: "relative WorkingDir=", running: mounted, next: mounted + "WorkingDir=secrets\n", config: "hook", wantError: absolute},
+		{
+			name: "unit unchanged keeps reading against the running working directory", running: mounted + "WorkingDir=%h\n",
+			next: mounted + "WorkingDir=%h\n", config: fromCwd, sameUnit: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			change := selfConfigChange{
+				running: agentBundleUnit(tt.running), next: agentBundleUnit(tt.next), config: webhookConfig(tt.config),
+				unchangedUnit: tt.sameUnit,
+			}
+			assertRefusal(t, change.check(t), tt.wantError)
+		})
+	}
 }

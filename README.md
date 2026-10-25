@@ -368,12 +368,29 @@ change what it shows (an overlay's `upperdir=`, `U`, `idmap`, …) count as part
 of its source; `ro`, `z`/`Z` and the like don't. So a
 commit that adds a mount and points the config at a file under it is refused:
 land the mount change in its own commit first, and point the config at it once
-the Agent runs with the mount. The check assumes the next start reads
-`/etc/picolet/config.yml` as the running Agent's user: a quadlet change that
-points the Agent at another config (`Environment=PICOLET_CONFIG=…`, an
-`Exec=` with `--config`) or runs it as another user (`User=`, `UserNS=`)
-isn't checked against that, so land such a change on its own and watch the
-Agent restart.
+the Agent runs with the mount. In a commit that changes the quadlet, a relative
+credential path is resolved against the new quadlet's `WorkingDir=` (or a
+`PodmanArgs=` `-w`/`--workdir`), or, when neither quadlet sets one, against the
+running Agent's working directory; a working directory the check can't know
+(dropped from the quadlet, relative, or with a specifier such as `%h`) refuses
+the commit, so use absolute credential paths.
+
+The check has limits; land such changes on their own and watch the Agent
+restart:
+
+- It assumes the next start reads `/etc/picolet/config.yml` as the running
+  Agent's user: a quadlet change that points the Agent at another config
+  (`Environment=PICOLET_CONFIG=…`, an `Exec=` with `--config`) or runs it as
+  another user (`User=`, `UserNS=`) isn't checked against that.
+- It assumes the running Agent's container was started from the quadlet on
+  disk. The Agent never restarts its own unit, so after an earlier quadlet
+  change without a restart the real mounts may differ.
+- `picolet apply --config` checks credential paths as the CLI process sees
+  them, so run it inside the Agent's container. Outside it (say on a user
+  Host's Machine, where `/etc/picolet/secrets` is really
+  `%h/.config/picolet/secrets`) the check can refuse or pass wrongly.
+- A commit that only changes the content of a Fleet-managed credential secret,
+  with the quadlet and the config unchanged, isn't checked.
 
 ### 6. Monitoring
 
@@ -1587,7 +1604,7 @@ Only `validate` reads it (strictly), so adopting it needs no Agent upgrade. A Re
 
 **Fetch credentials are never SOPS values.** The git token and the GitHub App credentials fetch the Fleet, so they can't live in it: the Agent has no checkout to decrypt from on first start, and a rotated token would strand every Agent that hasn't fetched the new commit yet. Keep them as Bootstrap credentials (a `--secrets-dir` file or a `bootstrap:` entry); a token stored next to the identity is protected just as well. `bootstrap` and `validate`'s Agent-bundle check fail on `sops://` in the Agent bundle with that advice, and a `sops://` `bootstrap:` entry fails to load.
 
-**The Agent's own credentials can't be deployed or cross-wired.** `readSecretFile` and file `secrets:` refuse every file the Agent config names as a credential (the identity, provider tokens, the Proton Pass session directory, the git token, the GitHub App key, the webhook secret, the MQTT password): *Agent credentials cannot be deployed*. `picolet bootstrap` (and so `bootstrap machine`) refuses the same files, those the Agent config it renders names, looked up below `--secrets-dir`, and always the `--secrets-dir` file `age-identity`, even when the Fleet does not render the Agent config; the rendered config's credential settings may not depend on a secret file. An Agent config in which two credential settings name the same file fails to load, so a Fleet commit can't send the identity to a server as a "token".
+**The Agent's own credentials can't be deployed or cross-wired.** `readSecretFile` and file `secrets:` refuse every file the Agent config names as a credential (the identity, provider tokens, the Proton Pass session directory, the git token, the GitHub App key, the webhook secret, the MQTT password): *Agent credentials cannot be deployed*. `picolet bootstrap` (and so `bootstrap machine`) refuses the same files, those the Agent config it renders names, looked up below `--secrets-dir`, and always the `--secrets-dir` files `age-identity`, `op-service-account-token` and `pp-pat` (where `bootstrap machine` places the provider token), even when the rendered Agent config doesn't name them or the Fleet does not render one; the rendered config's credential settings may not depend on a secret file. An Agent config in which two credential settings name the same file fails to load, so a Fleet commit can't send the identity to a server as a "token".
 
 #### Leaks and revocation
 

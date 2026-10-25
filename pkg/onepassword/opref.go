@@ -8,6 +8,11 @@ import (
 // Prefix is the URI scheme prefix for 1Password secret references.
 const Prefix = "op://"
 
+// TokenFileName is the service-account token's file name in a Host's
+// secrets directory: where `bootstrap machine` places the Machine's token,
+// and the token_path the reference Agent config reads.
+const TokenFileName = "op-service-account-token" //nolint:gosec // G101: a file name, not a credential
+
 // IsRef reports whether s is a valid 1Password secret reference (op://vault/item/field).
 func IsRef(s string) bool {
 	_, err := ParseOpRef(s)
