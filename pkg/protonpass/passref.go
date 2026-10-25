@@ -14,6 +14,11 @@ import (
 // Prefix is the URI scheme prefix for Proton Pass secret references.
 const Prefix = "pass://"
 
+// PATFileName is the personal access token's file name in a Host's secrets
+// directory: where `bootstrap machine` places the Machine's PAT, and the
+// pat_path the reference Agent config reads.
+const PATFileName = "pp-pat"
+
 // IsRef reports whether s is a syntactically valid Proton Pass reference
 // (pass://share/item/field).
 func IsRef(s string) bool {

@@ -9,6 +9,8 @@ import (
 
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/config"
+	"github.com/schjan/picolet/pkg/onepassword"
+	"github.com/schjan/picolet/pkg/protonpass"
 	"github.com/schjan/picolet/pkg/resolver"
 )
 
@@ -88,11 +90,21 @@ func resolveBootstrapHost(ctx context.Context, repo *config.Repo, cfg resolveCon
 // delivered as (README, sops.age_identity_path).
 const conventionalIdentity = "age-identity"
 
+// conventionalCredentials are the --secrets-dir files a bootstrap resolve
+// always refuses, by setting: the age identity and the provider tokens
+// `bootstrap machine` places there under fixed names (pkg/machine).
+var conventionalCredentials = []struct{ setting, name string }{
+	{"conventional onepassword.token_path", onepassword.TokenFileName},
+	{"conventional protonpass.pat_path", protonpass.PATFileName},
+	{"conventional sops.age_identity_path", conventionalIdentity},
+}
+
 // bootstrapCredentials lists the files a bootstrap resolve refuses to read:
 // the credentials of the Agent config rendered in files, seen through
 // cfg.SecretsDir (agentcfg's Config.CredentialsAt), and always the
-// conventional identity file below cfg.SecretsDir, which also covers an
-// Agent config the Fleet does not render (its credentials are unknown).
+// conventional credential files below cfg.SecretsDir, which also cover an
+// Agent config that names none of them or that the Fleet does not render
+// (its credentials are unknown).
 func bootstrapCredentials(files []resolver.ResolvedFile, cfg resolveConfig) ([]agentcfg.Credential, error) {
 	var creds []agentcfg.Credential
 	file, err := resolver.AgentConfigSecret(files, cfg.Service+".service")
@@ -108,10 +120,10 @@ func bootstrapCredentials(files []resolver.ResolvedFile, cfg resolveConfig) ([]a
 		creds = agentCfg.CredentialsAt(cfg.SecretsDir)
 	}
 	// Last, so a refusal names the config's own setting when it has one.
-	return append(creds, agentcfg.Credential{
-		Setting: "conventional sops.age_identity_path",
-		Path:    filepath.Join(cfg.SecretsDir, conventionalIdentity),
-	}), nil
+	for _, c := range conventionalCredentials {
+		creds = append(creds, agentcfg.Credential{Setting: c.setting, Path: filepath.Join(cfg.SecretsDir, c.name)})
+	}
+	return creds, nil
 }
 
 func resolveWith(ctx context.Context, repo *config.Repo, cfg resolveConfig, readSecret resolver.SecretReader) (*resolver.ResolvedHost, error) {

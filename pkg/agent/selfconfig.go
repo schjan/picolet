@@ -68,7 +68,7 @@ func CheckSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Chan
 	if !changeset.Writes(file.DestPath) && !writesUnit {
 		return nil
 	}
-	locate := selfConfigLocator(quadlet.ParsedUnit, running, changeset)
+	locate := selfConfigLocator(quadlet.ParsedUnit, running, writesUnit, changeset)
 	if err := agentcfg.CheckRenderedConfig([]byte(file.Content), locate); err != nil {
 		return fmt.Errorf("refusing the Agent config %s mounted by %s: the Agent could not start with it: %w", file.DestPath, unit, err)
 	}

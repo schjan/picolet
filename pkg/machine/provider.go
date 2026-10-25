@@ -42,9 +42,8 @@ type provider struct {
 }
 
 var (
-	//nolint:gosec // G101: names of a flag and a token file, not a credential
-	onePassword = &provider{name: "1Password", flag: "--onepassword-token-file", scheme: onepassword.Prefix, tokenName: "op-service-account-token"}
-	protonPass  = &provider{name: "Proton Pass", flag: "--protonpass-pat-file", scheme: protonpass.Prefix, tokenName: "pp-pat"}
+	onePassword = &provider{name: "1Password", flag: "--onepassword-token-file", scheme: onepassword.Prefix, tokenName: onepassword.TokenFileName}
+	protonPass  = &provider{name: "Proton Pass", flag: "--protonpass-pat-file", scheme: protonpass.Prefix, tokenName: protonpass.PATFileName}
 	providers   = []*provider{onePassword, protonPass}
 )
 

@@ -198,6 +198,37 @@ func TestBootstrapRefusesConventionalIdentityWithoutRenderedConfig(t *testing.T)
 	assert.NotContains(t, err.Error(), "AGE-SECRET-KEY-FIXTURE")
 }
 
+// bootstrap machine places the Machine's provider token in --secrets-dir as
+// op-service-account-token or pp-pat (the reference Agent config's
+// token_path/pat_path), so bootstrap refuses those files whether or not
+// the Agent config it renders names them, and when it renders none.
+func TestBootstrapRefusesConventionalProviderTokens(t *testing.T) {
+	t.Parallel()
+	secretsDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(secretsDir, "op-service-account-token"), []byte("OP-TOKEN-FIXTURE"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(secretsDir, "pp-pat"), []byte("PP-PAT-FIXTURE"), 0o600))
+	const config = "hostname: h\nrepo_url: https://example.com/fleet.git\n"
+	notRendered := map[string]string{
+		"services/picolet-system/picolet-system.container.tmpl": "[Container]\nImage={{ index .Images \"picolet\" }}\n",
+	}
+	for _, token := range []string{"op-service-account-token", "pp-pat"} {
+		for name, extra := range map[string]map[string]string{"config names none": nil, "config not rendered": notRendered} {
+			t.Run(token+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				files := map[string]string{"services/picolet-system/secrets/leak.tmpl": `{{ readSecretFile "` + token + `" }}`}
+				maps.Copy(files, extra)
+				_, err := prepare(t.Context(), RunConfig{
+					Service: "picolet-system", SystemdMode: SystemdSystem,
+					Hostname: "h", RepoDir: writeAgentFleet(t, config, files), SecretsDir: secretsDir, HealthAddr: "127.0.0.1:9418",
+				})
+				require.ErrorContains(t, err, "Agent credentials cannot be deployed")
+				assert.NotContains(t, err.Error(), "OP-TOKEN-FIXTURE")
+				assert.NotContains(t, err.Error(), "PP-PAT-FIXTURE")
+			})
+		}
+	}
+}
+
 // The guard comes from the Agent config rendered with placeholder secrets;
 // a config whose credential settings change once the real secret files are
 // read would deploy credentials the guard never saw, so bootstrap fails.

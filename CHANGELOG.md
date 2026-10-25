@@ -55,7 +55,7 @@ kept as is.
   `secrets:` refuse every Agent credential file: *Agent credentials cannot be
   deployed*, in the Agent and in `picolet bootstrap` (the credentials of the
   Agent config it renders, below `--secrets-dir`, and always
-  `--secrets-dir`'s `age-identity`)
+  `--secrets-dir`'s `age-identity`, `op-service-account-token` and `pp-pat`)
   ([#251](https://github.com/schjan/picolet/issues/251)).
 - SOPS files (`<name>.sops.<ext>`) and SOPS's `.sops.yaml`/`.sops.yml` are
   skipped by `paths:` directory and Service Bundle walks, and an explicit
@@ -168,7 +168,8 @@ kept as is.
 - The self-restart guard refuses a Fleet-rendered Agent config the Agent could
   not start with (strict parse, credential overlap, startup credential checks,
   through the mounts of a changed Agent quadlet, `PodmanArgs=` mounts
-  included) or a commit that leaves a Fleet-managed Agent config unreachable
+  included, a relative path resolved against its working directory or
+  refused) or a commit that leaves a Fleet-managed Agent config unreachable
   (its secret removed while still mounted, the mount repointed at an
   unresolved secret, or the mount dropped; a Host file bind-mounted there
   opts out): the reconciliation fails and the Agent keeps running on its

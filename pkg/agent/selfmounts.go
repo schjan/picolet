@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"path"
 	"slices"
 	"strings"
@@ -172,16 +173,62 @@ func checkLostSources(next *parser.UnitFile, unit string, changeset *reconciler.
 // the Agent's next start reads, with the mounts of the Agent's quadlet next
 // (resolved). The running Agent has the mounts of running, the unit on disk;
 // nil when there is none (the Agent runs from a unit the Fleet does not
-// manage), and then credentials are read where they are spelled.
-func selfConfigLocator(next, running *parser.UnitFile, changeset *reconciler.Changeset) agentcfg.Locate {
+// manage), and then credentials are read where they are spelled. When the
+// changeset writes the unit (writesUnit), a relative credential path is
+// first resolved against the next start's working directory
+// (resolveRelative); otherwise both starts share the running Agent's, and
+// it is read where it is spelled.
+func selfConfigLocator(next, running *parser.UnitFile, writesUnit bool, changeset *reconciler.Changeset) agentcfg.Locate {
 	if next == nil || running == nil {
 		return nil
 	}
 	locate := credentialLocator(unitMounts(next), unitMounts(running), sourceChanges(changeset))
 	if opaque := slices.Concat(opaqueMounts(next), opaqueMounts(running)); len(opaque) > 0 {
-		return refuseOpaque(opaque, locate)
+		locate = refuseOpaque(opaque, locate)
+	}
+	if writesUnit {
+		dir, err := nextWorkingDir(next, running, os.Getwd)
+		locate = resolveRelative(dir, err, locate)
 	}
 	return locate
+}
+
+// nextWorkingDir returns the working directory the Agent's next start, with
+// the unit next, resolves relative paths against: next's own (workingDir),
+// which must be an absolute path without specifiers; or, when next sets
+// none, the image's, which is the running Agent's (getwd) only when running
+// sets none either. An error says why it is unknown.
+func nextWorkingDir(next, running *parser.UnitFile, getwd func() (string, error)) (string, error) {
+	if dir, set := workingDir(next); set {
+		if !path.IsAbs(dir) || strings.Contains(dir, "%") {
+			return "", fmt.Errorf("the new Agent unit's working directory %q is not an absolute path the guard can read", dir)
+		}
+		return path.Clean(dir), nil
+	}
+	if dir, set := workingDir(running); set {
+		return "", fmt.Errorf("the new Agent unit sets no working directory, so its next start uses the image's, while the running Agent's unit sets %q", dir)
+	}
+	dir, err := getwd()
+	if err != nil {
+		return "", fmt.Errorf("the running Agent's working directory is unknown: %w", err)
+	}
+	return dir, nil
+}
+
+// resolveRelative wraps locate to resolve a relative credential path against
+// dir, the next start's working directory, before locating it; dirErr, when
+// dir is unknown, refuses every relative credential path.
+func resolveRelative(dir string, dirErr error, locate agentcfg.Locate) agentcfg.Locate {
+	return func(cred agentcfg.Credential) (string, error) {
+		if path.IsAbs(cred.Path) {
+			return locate(cred)
+		}
+		if dirErr != nil {
+			return "", fmt.Errorf("the path is relative and this commit changes the Agent unit, but %w; make the path absolute", dirErr)
+		}
+		cred.Path = path.Join(dir, cred.Path)
+		return locate(cred)
+	}
 }
 
 // refuseOpaque wraps locate to refuse every file credential: opaque lists

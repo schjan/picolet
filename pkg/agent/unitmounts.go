@@ -157,18 +157,24 @@ func parsePodmanMount(flag, value string) (mount, bool) {
 // podmanMountLongFlags are the podman run flags that mount something.
 var podmanMountLongFlags = []string{"volume", "mount", "tmpfs", "secret", "volumes-from"}
 
-// podmanValueShorthands are podman run's one-letter flags that take a value,
-// other than -v.
-const podmanValueShorthands = "acehlmpuw"
+// podmanValueShorthands are podman run's one-letter flags that take a value.
+const podmanValueShorthands = "acehlmpuvw"
 
 // podmanMountFlag reports the mount flag arg starts (its long name, "" for
 // none) and the value it carries: --flag=value, -vvalue or -v=value, also
 // after one-letter boolean flags (-dv). hasValue is false when the value is
 // the next argument.
 func podmanMountFlag(arg string) (flag, value string, hasValue bool) {
+	return podmanFlag(arg, podmanMountLongFlags, 'v', "volume")
+}
+
+// podmanFlag reports which of the podman run flags longs (long names) or
+// the one-letter flag short (long name shortName) arg starts ("" for none)
+// and the value it carries, as podmanMountFlag does.
+func podmanFlag(arg string, longs []string, short rune, shortName string) (flag, value string, hasValue bool) {
 	if long, ok := strings.CutPrefix(arg, "--"); ok {
 		name, value, hasValue := strings.Cut(long, "=")
-		if !slices.Contains(podmanMountLongFlags, name) {
+		if !slices.Contains(longs, name) {
 			return "", "", false
 		}
 		return name, value, hasValue
@@ -179,14 +185,39 @@ func podmanMountFlag(arg string) (flag, value string, hasValue bool) {
 	}
 	for i, c := range cluster {
 		switch {
-		case c == 'v':
+		case c == short:
 			value := strings.TrimPrefix(cluster[i+1:], "=")
-			return "volume", value, value != ""
+			return shortName, value, value != ""
 		case strings.ContainsRune(podmanValueShorthands, c):
 			return "", "", false
 		}
 	}
 	return "", "", false
+}
+
+// workingDir returns the working directory unit's container starts in, as
+// Quadlet passes it to podman run: WorkingDir= (--workdir), overridden by
+// the last -w/--workdir its PodmanArgs= pass after it; set is false when
+// the unit sets none and the image's applies.
+func workingDir(unit *parser.UnitFile) (dir string, set bool) {
+	dir, _ = unit.Lookup("Container", "WorkingDir")
+	set = dir != "" // Quadlet skips an empty WorkingDir=
+	args := unit.LookupAllArgs("Container", "PodmanArgs")
+	for i := 0; i < len(args); i++ {
+		flag, value, hasValue := podmanFlag(args[i], []string{"workdir"}, 'w', "workdir")
+		if flag == "" {
+			continue
+		}
+		if !hasValue {
+			if i+1 == len(args) {
+				break
+			}
+			i++
+			value = args[i]
+		}
+		dir, set = value, true
+	}
+	return dir, set
 }
 
 // literalVolumeName reads a .volume unit source as a volume name: podman run
