@@ -306,6 +306,7 @@ func TestIntegrationValidateExampleFleetSOPS(t *testing.T) {
 		assignments := string(fsys["assignments.yml"].Data)
 		require.Contains(t, assignments, `      - "sops://secrets/db.sops.yaml"`+"\n")
 		fsys["assignments.yml"] = data([]byte(strings.Replace(assignments, `      - "sops://secrets/db.sops.yaml"`+"\n", "", 1)))
+		delete(fsys, "services/web-app/files/db-pool.conf.tmpl") // its other reference
 		err := validateFleet(t, fsys)
 		require.EqualError(t, err, "`secrets/db.sops.yaml`: age recipient "+sopsRecipient(t, "srv-1")+
 			" (owner: Host web-1) may not read it: no Host references the file, so only Operators may read it; "+
