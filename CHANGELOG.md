@@ -160,7 +160,8 @@ kept as is.
   `failed_sha_gate_cleared` dashboard event), so a fix outside git, such as a
   credential file, takes effect without a new commit
   ([#249](https://github.com/schjan/picolet/issues/249)).
-- The dashboard no longer shows content hashes of secrets
+- The dashboard no longer shows content hashes of secrets, nor of Managed
+  Files whose render used a SOPS value
   ([#250](https://github.com/schjan/picolet/issues/250)).
 - The self-restart guard refuses a Fleet-rendered Agent config the Agent could
   not start with (strict parse, credential overlap, startup credential checks):

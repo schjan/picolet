@@ -1275,7 +1275,7 @@ func UpdateState(st *state.State, changeset *reconciler.Changeset) {
 		if change.Action == reconciler.ActionDelete {
 			continue
 		}
-		st.ManagedFiles[change.DestPath] = state.ManagedFile{Hash: change.NewHash, Category: change.Category}
+		st.ManagedFiles[change.DestPath] = change.ManagedFile()
 		if change.ServiceName != "" {
 			st.ServiceNames[change.DestPath] = change.ServiceName
 		}

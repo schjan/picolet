@@ -81,7 +81,7 @@ type Status struct {
 type UnitRow struct {
 	Path      string
 	Basename  string
-	HashShort string // empty for secrets (rowHash)
+	HashShort string // empty for secrets and SOPS values (rowHash)
 	Service   string
 	Status    Status
 	SubState  string
@@ -133,9 +133,10 @@ func shortHash(s string) string {
 // rowHash is the short hash a row shows. A secret's content hash is an
 // unsalted SHA-256 of the secret value, and the dashboard is unauthenticated:
 // eight hex characters of a short value can be brute-forced, so secrets show
-// none (#250). The state file keeps the full hash for the diff.
+// none (#250), nor does a file holding a SOPS value. The state file keeps the
+// full hash for the diff.
 func rowHash(mf state.ManagedFile) string {
-	if mf.Category == config.CategorySecret {
+	if mf.Category == config.CategorySecret || mf.SopsValues {
 		return ""
 	}
 	return shortHash(mf.Hash)

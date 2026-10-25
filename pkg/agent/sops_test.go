@@ -304,3 +304,27 @@ picolet_secrets_managed_count{provider="sops"} 1
 	assert.Empty(t, h.secrets, "no secret rewritten")
 	assert.Empty(t, h.restarts, "nothing restarted")
 }
+
+// A Managed File whose render used a SOPS value is recorded as such in the
+// state the dashboard reads, so the dashboard can hide its content hash (a
+// hash of the decrypted value); a file without SOPS values is not.
+func TestAgentRecordsSopsValuesInState(t *testing.T) {
+	t.Parallel()
+	files := sopsFleet(dbPasswordSecret, map[string]string{
+		"secrets/db.sops.yaml": sopsCorpus(t, "values.sops.yaml"),
+		"files/pin.tmpl":       `pin={{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`,
+		"files/plain.txt":      "plain",
+	}, "files/pin.tmpl", "files/plain.txt")
+	h := newSopsHarness(t, files, writeIdentityFile(t, "srv-1"))
+	require.NoError(t, h.tick(t))
+
+	st, err := h.store.Load()
+	require.NoError(t, err)
+	sopsValues := map[string]bool{}
+	for path, mf := range st.ManagedFiles {
+		sopsValues[filepath.Base(path)] = mf.SopsValues
+	}
+	assert.Equal(t, map[string]bool{
+		"pin": true, "plain.txt": false, "app.container": false, "secret:db_password": true,
+	}, sopsValues)
+}
