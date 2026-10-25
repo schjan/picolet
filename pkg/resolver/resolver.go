@@ -24,7 +24,6 @@ import (
 	"github.com/schjan/picolet/pkg/config"
 	op "github.com/schjan/picolet/pkg/onepassword"
 	pp "github.com/schjan/picolet/pkg/protonpass"
-	"github.com/schjan/picolet/pkg/sops"
 )
 
 // ResolvedFile represents a single rendered file with its destination path.
@@ -409,13 +408,7 @@ func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*expansio
 func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*expansion, error) {
 	expanded, bundleErr := expandServiceBundles(r.fsys, fileSet.Services)
 	fromPaths, pathsErr := expandPathEntries(r.fsys, fileSet.Paths)
-	errs := []error{bundleErr, pathsErr}
-	for _, src := range fileSet.Secrets {
-		if isPlainSOPSSecret(src) {
-			errs = append(errs, fmt.Errorf("secrets entry %q: %w", src, sopsOnlyError(src)))
-		}
-	}
-	if err := errors.Join(errs...); err != nil {
+	if err := errors.Join(bundleErr, pathsErr, rejectPlainSOPSSecrets(fileSet.Secrets)); err != nil {
 		return nil, err
 	}
 	expanded.append(fromPaths)
@@ -424,12 +417,6 @@ func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*expansion, e
 	}
 	expanded.Files = uniqueFileRefs(expanded.Files)
 	return expanded, nil
-}
-
-// isPlainSOPSSecret reports whether a `secrets:` entry that is no Secret
-// Reference names a SOPS file, which is reachable only through sops://.
-func isPlainSOPSSecret(src string) bool {
-	return !isProviderRef(src) && !strings.HasPrefix(src, sops.Scheme) && sops.IsSOPSPath(src)
 }
 
 // secretSources returns the source of every secret-category ref.
