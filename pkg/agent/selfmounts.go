@@ -19,45 +19,76 @@ import (
 // cannot check.
 const errMountChange = "land the mount change in its own commit first, and point the config at the mount once the Agent runs with it"
 
-// credentialLocator returns the agentcfg.Locate for a config the Agent's next
+// selfLocator locates the credentials of the Agent config the Agent's next
 // start reads with the mounts of next, checked by the Agent running in a
-// container with the mounts of current; changed reports a source the
-// changeset rewrites. A credential path under a mount of next is read
-// through a mount of current with the same source, at its target, when no
-// deeper mount of current shadows it there; one under no mount of next is
-// inside the image and read where it is spelled, unless current mounts it:
-// next drops that mount. A file credential the running container cannot
-// see as the next start will is refused; a directory credential
-// (protonpass.session_dir) need not exist, so it is read where it is
-// spelled instead.
-func credentialLocator(next, current []mount, changed func(mountSource) bool) agentcfg.Locate {
-	return func(cred agentcfg.Credential) (string, error) {
-		held, rel := mountsHolding(next, cred.Path)
-		if len(held) == 0 {
-			return inImage(cred, current)
+// container with the mounts of current (selfConfigLocator).
+type selfLocator struct {
+	next, current []mount
+	// changed reports a source the changeset rewrites.
+	changed func(mountSource) bool
+	// opaque lists mounts of the next or running unit the guard cannot read
+	// (unitMounts).
+	opaque []string
+	// resolveRelative resolves a relative credential path against dir, the
+	// next start's working directory; dirErr, when dir is unknown, refuses
+	// every relative credential path.
+	resolveRelative bool
+	dir             string
+	dirErr          error
+}
+
+// locate is the agentcfg.Locate of l: it resolves a relative path
+// (resolveRelative), refuses every file credential when a mount is opaque
+// (the guard cannot tell what the next start sees at any path), then
+// locates the path through the mounts (throughMounts).
+func (l selfLocator) locate(cred agentcfg.Credential) (string, error) {
+	if l.resolveRelative && !path.IsAbs(cred.Path) {
+		if l.dirErr != nil {
+			return "", fmt.Errorf("the path is relative and this commit changes the Agent unit, but %w; make the path absolute", l.dirErr)
 		}
-		m, err := single(held)
-		if err != nil {
-			return "", err
-		}
-		at, shadow := translate(m, rel, current)
-		switch {
-		case cred.Dir && at != "":
-			return at, nil
-		case cred.Dir:
-			return cred.Path, nil
-		case m.source.shared() && changed(m.source):
-			return "", fmt.Errorf("the new Agent unit mounts %s from %s, which this commit changes, so the running Agent's container shows its old content; %s",
-				m.target, m.source, errMountChange)
-		case at != "":
-			return at, nil
-		case shadow != nil:
-			return "", fmt.Errorf("the new Agent unit mounts %s from %s, which the running Agent's container shadows at %s with %s; %s",
-				m.target, m.source, shadow.target, shadow.source, errMountChange)
-		}
-		return "", fmt.Errorf("the new Agent unit mounts %s from %s, which the running Agent's container does not mount there; %s",
-			m.target, m.source, errMountChange)
+		cred.Path = path.Join(l.dir, cred.Path)
 	}
+	if len(l.opaque) > 0 && !cred.Dir {
+		return "", fmt.Errorf("the Agent unit passes %s in PodmanArgs=, which mounts what the guard cannot follow, so it cannot tell what the next start sees at %s; "+
+			"declare the Agent's mounts with Volume=, Mount=, Tmpfs= or Secret=", strings.Join(l.opaque, ", "), cred.Path)
+	}
+	return l.throughMounts(cred)
+}
+
+// throughMounts locates cred through the mounts. A credential path under a
+// mount of next is read through a mount of current with the same source, at
+// its target, when no deeper mount of current shadows it there; one under no
+// mount of next is inside the image and read where it is spelled, unless
+// current mounts it: next drops that mount. A file credential the running
+// container cannot see as the next start will is refused; a directory
+// credential (protonpass.session_dir) need not exist, so it is read where it
+// is spelled instead.
+func (l selfLocator) throughMounts(cred agentcfg.Credential) (string, error) {
+	held, rel := mountsHolding(l.next, cred.Path)
+	if len(held) == 0 {
+		return inImage(cred, l.current)
+	}
+	m, err := single(held)
+	if err != nil {
+		return "", err
+	}
+	at, shadow := translate(m, rel, l.current)
+	switch {
+	case cred.Dir && at != "":
+		return at, nil
+	case cred.Dir:
+		return cred.Path, nil
+	case m.source.shared() && l.changed(m.source):
+		return "", fmt.Errorf("the new Agent unit mounts %s from %s, which this commit changes, so the running Agent's container shows its old content; %s",
+			m.target, m.source, errMountChange)
+	case at != "":
+		return at, nil
+	case shadow != nil:
+		return "", fmt.Errorf("the new Agent unit mounts %s from %s, which the running Agent's container shadows at %s with %s; %s",
+			m.target, m.source, shadow.target, shadow.source, errMountChange)
+	}
+	return "", fmt.Errorf("the new Agent unit mounts %s from %s, which the running Agent's container does not mount there; %s",
+		m.target, m.source, errMountChange)
 }
 
 // single returns the one mount the next start shows at the deepest target
@@ -160,7 +191,8 @@ func checkLostSources(next *parser.UnitFile, unit string, changeset *reconciler.
 				"keep resolving the secret, or stop mounting it", name, unit, spec)
 		}
 	}
-	for _, m := range unitMounts(next) {
+	mounts, _ := unitMounts(next)
+	for _, m := range mounts {
 		if m.source.kind == sourceVolumeUnit && removesVolumeUnit(changeset, m.source.name) {
 			return fmt.Errorf("refusing to remove the volume unit %s: the Agent unit %s still mounts it at %s, so the Agent could not start; "+
 				"keep the volume unit, or stop mounting it", m.source.name, unit, m.target)
@@ -176,21 +208,25 @@ func checkLostSources(next *parser.UnitFile, unit string, changeset *reconciler.
 // manage), and then credentials are read where they are spelled. When the
 // changeset writes the unit (writesUnit), a relative credential path is
 // first resolved against the next start's working directory
-// (resolveRelative); otherwise both starts share the running Agent's, and
-// it is read where it is spelled.
+// (nextWorkingDir); otherwise both starts share the running Agent's, and it
+// is read where it is spelled.
 func selfConfigLocator(next, running *parser.UnitFile, writesUnit bool, changeset *reconciler.Changeset) agentcfg.Locate {
 	if next == nil || running == nil {
 		return nil
 	}
-	locate := credentialLocator(unitMounts(next), unitMounts(running), sourceChanges(changeset))
-	if opaque := slices.Concat(opaqueMounts(next), opaqueMounts(running)); len(opaque) > 0 {
-		locate = refuseOpaque(opaque, locate)
+	nextMounts, nextOpaque := unitMounts(next)
+	runningMounts, runningOpaque := unitMounts(running)
+	l := selfLocator{
+		next:            nextMounts,
+		current:         runningMounts,
+		changed:         sourceChanges(changeset),
+		opaque:          slices.Concat(nextOpaque, runningOpaque),
+		resolveRelative: writesUnit,
 	}
 	if writesUnit {
-		dir, err := nextWorkingDir(next, running, os.Getwd)
-		locate = resolveRelative(dir, err, locate)
+		l.dir, l.dirErr = nextWorkingDir(next, running, os.Getwd)
 	}
-	return locate
+	return l.locate
 }
 
 // nextWorkingDir returns the working directory the Agent's next start, with
@@ -213,33 +249,4 @@ func nextWorkingDir(next, running *parser.UnitFile, getwd func() (string, error)
 		return "", fmt.Errorf("the running Agent's working directory is unknown: %w", err)
 	}
 	return dir, nil
-}
-
-// resolveRelative wraps locate to resolve a relative credential path against
-// dir, the next start's working directory, before locating it; dirErr, when
-// dir is unknown, refuses every relative credential path.
-func resolveRelative(dir string, dirErr error, locate agentcfg.Locate) agentcfg.Locate {
-	return func(cred agentcfg.Credential) (string, error) {
-		if path.IsAbs(cred.Path) {
-			return locate(cred)
-		}
-		if dirErr != nil {
-			return "", fmt.Errorf("the path is relative and this commit changes the Agent unit, but %w; make the path absolute", dirErr)
-		}
-		cred.Path = path.Join(dir, cred.Path)
-		return locate(cred)
-	}
-}
-
-// refuseOpaque wraps locate to refuse every file credential: opaque lists
-// mounts of the next or running unit the guard cannot read (opaqueMounts),
-// so it cannot tell what the next start sees at any path.
-func refuseOpaque(opaque []string, locate agentcfg.Locate) agentcfg.Locate {
-	return func(cred agentcfg.Credential) (string, error) {
-		if cred.Dir {
-			return locate(cred)
-		}
-		return "", fmt.Errorf("the Agent unit passes %s in PodmanArgs=, which mounts what the guard cannot follow, so it cannot tell what the next start sees at %s; "+
-			"declare the Agent's mounts with Volume=, Mount=, Tmpfs= or Secret=", strings.Join(opaque, ", "), cred.Path)
-	}
 }

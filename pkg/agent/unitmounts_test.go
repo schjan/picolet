@@ -52,7 +52,8 @@ func TestUnitMounts(t *testing.T) {
 		}},
 	}
 	for _, tt := range tests {
-		assert.Equal(t, tt.want, unitMounts(parseContainerUnit(t, tt.line+"\n")), tt.line)
+		mounts, _ := unitMounts(parseContainerUnit(t, tt.line+"\n"))
+		assert.Equal(t, tt.want, mounts, tt.line)
 	}
 }
 
@@ -110,7 +111,8 @@ func TestUnitMountsReadsPodmanArgs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		unit := parseContainerUnit(t, tt.line+"\n")
-		assert.Equal(t, tt.want, unitMounts(unit), tt.line)
-		assert.Equal(t, tt.opaque, opaqueMounts(unit), tt.line)
+		mounts, opaque := unitMounts(unit)
+		assert.Equal(t, tt.want, mounts, tt.line)
+		assert.Equal(t, tt.opaque, opaque, tt.line)
 	}
 }

@@ -82,6 +82,10 @@ const (
 // Guard, when set, runs first on every call; its error fails the render
 // before any reader sees the ref (the SOPS unit-file guard).
 // MissingReader and Guard get the called function's name.
+//
+// The standard providers (OpProvider, PPProvider, SopsProvider) also carry
+// their scheme's static data, looked up through providerSchemes: the Podman
+// secret a direct secrets: ref deploys as, and strict mode's wording.
 type ProviderTemplate struct {
 	Key                ProviderKey
 	FuncName           string
@@ -94,7 +98,48 @@ type ProviderTemplate struct {
 	MissingReader      func(funcName, ref string) error
 	Strict             bool
 	Guard              func(funcName, ref string) error
+
+	// secretName is the Podman secret name a direct secrets: ref deploys as.
+	secretName func(ref string) (string, error)
+	// strictReason and strictFix word a strict-mode failure (strictText):
+	// why a call fails there and how the value must reach the Agent instead.
+	strictReason, strictFix string
+	// directLikeCalls words strict mode's direct-ref error like a template
+	// call's (sops://); op:// and pass:// keep the wording they had before
+	// sops:// (spec #248).
+	directLikeCalls bool
 }
+
+// providerSchemes is the provider table: the standard providers without
+// readers, one per ref scheme. isProviderRef, splitDirectRefs,
+// secretDestPath and the strict-mode errors look a scheme up here.
+func providerSchemes() []ProviderTemplate {
+	return []ProviderTemplate{OpProvider(nil), PPProvider(nil), SopsProvider(nil, "")}
+}
+
+// schemeOfRef returns the provider whose IsRef accepts ref.
+func schemeOfRef(ref string) (ProviderTemplate, bool) {
+	for _, p := range providerSchemes() {
+		if p.IsRef(ref) {
+			return p, true
+		}
+	}
+	return ProviderTemplate{}, false
+}
+
+// schemeOf returns the provider table's entry for key; a key without one
+// gets an entry with only the key (strict mode's default wording).
+func schemeOf(key ProviderKey) ProviderTemplate {
+	for _, p := range providerSchemes() {
+		if p.Key == key {
+			return p
+		}
+	}
+	return ProviderTemplate{Key: key}
+}
+
+// legacyStrictFix is op:// and pass://'s strict-mode fix.
+const legacyStrictFix = "use a YAML-value reference and let the agent resolve it at runtime"
 
 // OpProvider returns the standard 1Password provider template.
 // reader may be nil to disable the provider.
@@ -106,6 +151,14 @@ func OpProvider(reader SecretRefReader) ProviderTemplate {
 		IsRef:              op.IsRef,
 		PlaceholderEmpty:   "<op-secret>",
 		PlaceholderPending: "<op-secret-pending>",
+		secretName: func(ref string) (string, error) {
+			parsed, err := op.ParseOpRef(ref)
+			if err != nil {
+				return "", err
+			}
+			return parsed.PodmanSecretName(), nil
+		},
+		strictFix: legacyStrictFix,
 	}
 }
 
@@ -119,6 +172,14 @@ func PPProvider(reader SecretRefReader) ProviderTemplate {
 		IsRef:              pp.IsRef,
 		PlaceholderEmpty:   "<pp-secret>",
 		PlaceholderPending: "<pp-secret-pending>",
+		secretName: func(ref string) (string, error) {
+			parsed, err := pp.ParseRef(ref)
+			if err != nil {
+				return "", err
+			}
+			return parsed.PodmanSecretName(), nil
+		},
+		strictFix: legacyStrictFix,
 	}
 }
 
@@ -139,6 +200,17 @@ func SopsProvider(reader SopsReader, noIdentityHint string) ProviderTemplate {
 		MissingReader: func(funcName, ref string) error {
 			return sops.NoIdentityError(fmt.Sprintf("%s %q", funcName, ref), noIdentityHint)
 		},
+		secretName: func(ref string) (string, error) {
+			parsed, err := sops.ParseRef(ref)
+			if err != nil {
+				return "", err
+			}
+			return parsed.SecretName()
+		},
+		strictReason: "SOPS values can't be used in strict mode",
+		strictFix: "deliver the value as a --secrets-dir file and point the Agent config at its path; " +
+			"credentials needed to fetch the Fleet can't be SOPS values",
+		directLikeCalls: true,
 	}
 	if reader != nil {
 		p.Reader = checkSopsRefs(reader.ReadAll)
@@ -196,41 +268,38 @@ func checkSopsRefs(reader SecretRefReader) SecretRefReader {
 	}
 }
 
-// strictModeText is the one place strict mode (bootstrap, validate's
-// Agent-bundle pass) words a provider key's failure: why a call fails there
-// (reason) and how the value must reach the Agent instead (fix).
-func strictModeText(key ProviderKey) (reason, fix string) {
-	switch key {
-	case ProviderOnePassword, ProviderProtonPass:
-		return "provider not configured in strict mode",
-			"use a YAML-value reference and let the agent resolve it at runtime"
-	case ProviderSops:
-		return "SOPS values can't be used in strict mode",
-			"deliver the value as a --secrets-dir file and point the Agent config at its path; " +
-				"credentials needed to fetch the Fleet can't be SOPS values"
-	default:
-		return "provider not configured in strict mode", "this provider cannot be resolved in strict mode"
+// strictText is the one place strict mode (bootstrap, validate's
+// Agent-bundle pass) words p's failure: why a call fails there (reason) and
+// how the value must reach the Agent instead (fix).
+func (p ProviderTemplate) strictText() (reason, fix string) {
+	reason, fix = p.strictReason, p.strictFix
+	if reason == "" {
+		reason = "provider not configured in strict mode"
 	}
+	if fix == "" {
+		fix = "this provider cannot be resolved in strict mode"
+	}
+	return reason, fix
 }
 
-// strictModeError is the error a call of the provider key's function
-// funcName fails with in strict mode, where no provider value can be used.
-func strictModeError(key ProviderKey, funcName, ref string) error {
-	reason, fix := strictModeText(key)
+// strictModeError is the error a call of p's function funcName fails with
+// in strict mode, where no provider value can be used.
+func (p ProviderTemplate) strictModeError(funcName, ref string) error {
+	reason, fix := schemeOf(p.Key).strictText()
 	return fmt.Errorf("%s %q: %s; %s", funcName, ref, reason, fix)
 }
 
-// strictDirectError is the error direct secrets: refs of the provider key
-// fail with in strict mode. op:// and pass:// keep the wording they had
-// before sops:// (spec #248) with the fix appended; sops:// words it like
-// its template calls.
-func strictDirectError(key ProviderKey, refs []string) error {
-	reason, fix := strictModeText(key)
+// strictDirectError is the error p's direct secrets: refs fail with in
+// strict mode. op:// and pass:// keep the wording they had before sops://
+// (spec #248) with the fix appended; sops:// words it like its template
+// calls.
+func (p ProviderTemplate) strictDirectError(refs []string) error {
+	reason, fix := p.strictText()
 	joined := strings.Join(refs, ", ")
-	if key == ProviderSops {
+	if p.directLikeCalls {
 		return fmt.Errorf("direct secrets %s: %s; %s", joined, reason, fix)
 	}
-	return fmt.Errorf("%s provider not configured; cannot resolve direct secrets in strict mode: %s; %s", key, joined, fix)
+	return fmt.Errorf("%s provider not configured; cannot resolve direct secrets in strict mode: %s; %s", p.Key, joined, fix)
 }
 
 const placeholderSecret = "<secret>"
@@ -511,7 +580,7 @@ func (p ProviderTemplate) precheck(funcName, ref string) error {
 		}
 	}
 	if p.Strict {
-		return strictModeError(p.Key, funcName, ref)
+		return p.strictModeError(funcName, ref)
 	}
 	return nil
 }

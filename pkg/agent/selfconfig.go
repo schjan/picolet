@@ -107,7 +107,8 @@ func checkLostSelfConfig(next, running *parser.UnitFile, unit string, changeset 
 			"resolve %s in the Agent bundle, or keep mounting %s", unit, nextName, resolver.AgentConfigTarget, managed, nextName, managed)
 	}
 	const fix = "keep the Secret= mount, or bind-mount a Host file there with Volume= to manage the config by hand"
-	m, _, ok := mountHolding(unitMounts(next), resolver.AgentConfigTarget)
+	mounts, _ := unitMounts(next)
+	m, _, ok := mountHolding(mounts, resolver.AgentConfigTarget)
 	switch {
 	case ok && isHostPath(m.source):
 		return nil
