@@ -175,11 +175,20 @@ func TestCheckRecipients(t *testing.T) {
 	}
 }
 
-func TestCheckRecipientsBadRuleRecipient(t *testing.T) {
+func TestParseCreationRulesBadAge(t *testing.T) {
 	t.Parallel()
-	rule := matchOnly(t, "creation_rules:\n  - path_regex: ^secrets/\n    age: [1, 2]\n")
-	err := rule.CheckRecipients("secrets/db.sops.yaml", inspectSOPS(t, "values.sops.yaml"))
-	require.ErrorContains(t, err, "`.sops.yaml` rule `^secrets/`: age")
+	for name, age := range map[string]string{
+		"list of numbers": "[1, 2]",
+		"number":          "1",
+		"mapping":         "{a: b}",
+		"nested list":     "[[a]]",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := sops.ParseCreationRules([]byte("creation_rules:\n  - path_regex: ^secrets/\n    age: " + age + "\n"))
+			require.ErrorContains(t, err, "age: expected a string or a list of strings")
+		})
+	}
 }
 
 func TestReadCreationRules(t *testing.T) {

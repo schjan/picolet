@@ -116,14 +116,8 @@ repo_url: "https://github.com/example/fleet.git"
 	}
 }
 
-// validateFleet runs `picolet validate` on repoFS.
-func validateFleet(t *testing.T, repoFS fstest.MapFS) error {
-	t.Helper()
-	return validateFleetFS(t, repoFS)
-}
-
-// validateFleetFS runs `picolet validate` on the Fleet in repoFS.
-func validateFleetFS(t *testing.T, repoFS fs.FS) error {
+// validateFleet runs `picolet validate` on the Fleet in repoFS.
+func validateFleet(t *testing.T, repoFS fs.FS) error {
 	t.Helper()
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)

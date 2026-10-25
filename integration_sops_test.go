@@ -217,7 +217,7 @@ func TestIntegrationValidateSOPSSymlinkedRulesOnDisk(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = root.Close() })
 
-	err = validateFleetFS(t, root.FS())
+	err = validateFleet(t, root.FS())
 	require.ErrorContains(t, err, ".sops.yaml: is a symlink")
 	assert.NotContains(t, err.Error(), "recipients differ")
 }

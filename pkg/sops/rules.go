@@ -23,8 +23,29 @@ type CreationRules struct {
 
 type rawRule struct {
 	PathRegex string     `yaml:"path_regex"`
-	Age       any        `yaml:"age"` // string (comma-separated) or []string
+	Age       ageKeys    `yaml:"age"`
 	KeyGroups []rawGroup `yaml:"key_groups"`
+}
+
+// ageKeys is a rule's top-level age recipients, written as one
+// comma-separated string or a list of them; each entry is split as sops does.
+type ageKeys []string
+
+// UnmarshalYAML accepts a string or a list of strings, as sops does.
+func (a *ageKeys) UnmarshalYAML(node *yaml.Node) error {
+	entries := []*yaml.Node{node}
+	if node.Kind == yaml.SequenceNode {
+		entries = node.Content
+	}
+	var keys []string
+	for _, e := range entries {
+		if e.Kind != yaml.ScalarNode || e.ShortTag() != "!!str" {
+			return errors.New("age: expected a string or a list of strings")
+		}
+		keys = append(keys, splitRecipients(e.Value)...)
+	}
+	*a = keys
+	return nil
 }
 
 type rawGroup struct {
@@ -113,31 +134,15 @@ func (r *CreationRule) label() string {
 
 // ageGroups returns the rule's age recipient labels per key group: its
 // key_groups (merges flattened), or one group of its top-level age keys.
-func (r *CreationRule) ageGroups() ([][]string, error) {
+func (r *CreationRule) ageGroups() [][]string {
 	if len(r.raw.KeyGroups) > 0 {
 		groups := make([][]string, 0, len(r.raw.KeyGroups))
 		for _, g := range r.raw.KeyGroups {
 			groups = append(groups, groupLabels(g))
 		}
-		return groups, nil
+		return groups
 	}
-	var keys []string
-	switch v := r.raw.Age.(type) {
-	case nil:
-	case string:
-		keys = splitRecipients(v)
-	case []any:
-		for _, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("age: expected a string in the list, got %T", item)
-			}
-			keys = append(keys, splitRecipients(s)...)
-		}
-	default:
-		return nil, fmt.Errorf("age: expected a string or a list of strings, got %T", v)
-	}
-	return [][]string{labels(keys)}, nil
+	return [][]string{labels(r.raw.Age)}
 }
 
 func groupLabels(g rawGroup) []string {
@@ -201,10 +206,7 @@ func fileGroups(f *File) [][]string {
 // the Recipients in the file but not in the rule (+) and in the rule but not
 // in the file (−), and the `sops updatekeys` fix.
 func (r *CreationRule) CheckRecipients(path string, f *File) error {
-	want, err := r.ageGroups()
-	if err != nil {
-		return fmt.Errorf("`%s` rule %s: %w", CreationRulesFile, r.label(), err)
-	}
+	want := r.ageGroups()
 	got := fileGroups(f)
 	var parts []string
 	if len(got) != len(want) {
@@ -238,18 +240,26 @@ func (r *CreationRule) CheckRecipients(path string, f *File) error {
 // setDiff renders the labels only in got as "+x" (in got's order) and those
 // only in want as "−x" (in want's order); empty when the sets are equal.
 func setDiff(got, want []string) string {
+	type entry struct {
+		sign  string
+		label string
+	}
 	var out []string
-	seen := map[string]bool{}
+	seen := map[entry]bool{}
+	add := func(e entry) {
+		if !seen[e] {
+			seen[e] = true
+			out = append(out, e.sign+e.label)
+		}
+	}
 	for _, g := range got {
-		if !slices.Contains(want, g) && !seen["+"+g] {
-			seen["+"+g] = true
-			out = append(out, "+"+g)
+		if !slices.Contains(want, g) {
+			add(entry{"+", g})
 		}
 	}
 	for _, w := range want {
-		if !slices.Contains(got, w) && !seen["-"+w] {
-			seen["-"+w] = true
-			out = append(out, "−"+w)
+		if !slices.Contains(got, w) {
+			add(entry{"−", w})
 		}
 	}
 	return strings.Join(out, " ")
