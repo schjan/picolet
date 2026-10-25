@@ -28,9 +28,12 @@ protonpass:
   cli_path: /usr/bin/pass-cli
   pat_path: /s/pass.pat
   session_dir: /var/lib/pass/.session
+sops:
+  age_identity_path: /s/age-identity
 `))
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []Credential{
+		{Setting: "sops.age_identity_path", Path: "/s/age-identity"},
 		{Setting: "onepassword.token_path", Path: "/s/op.token"},
 		{Setting: "protonpass.pat_path", Path: "/s/pass.pat"},
 		{Setting: "protonpass.session_dir", Path: "/var/lib/pass/.session", Dir: true},

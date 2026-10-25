@@ -59,13 +59,13 @@ func TestRunResolveHeader(t *testing.T) {
 }
 
 // resolve is keyless: a readSopsSecret value prints as <sops-secret>, never
-// as its plaintext (the example Fleet's file is a copy of the SOPS corpus).
+// as its plaintext (the example Fleet encrypts TEST-ONLY values to srv-1).
 func TestRunResolveSopsKeyless(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
 	require.NoError(t, runResolve(t.Context(), &out, "../../testdata/example-fleet", "web-1"))
 	assert.Contains(t, out.String(), "password: <sops-secret>")
-	assert.NotContains(t, out.String(), "hunter2-test")
+	assert.NotContains(t, out.String(), "TEST-ONLY-web-app-password")
 }
 
 // A dry-run without an Agent config passes no SOPS reader: on a Fleet whose

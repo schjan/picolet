@@ -43,6 +43,9 @@ func (c *Config) Credentials() []Credential {
 	if c.MQTT != nil {
 		add("mqtt.password_path", c.MQTT.PasswordPath, false)
 	}
+	if c.Sops != nil {
+		add(sopsIdentitySetting, c.Sops.AgeIdentityPath, false)
+	}
 	return creds
 }
 

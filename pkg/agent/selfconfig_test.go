@@ -70,6 +70,11 @@ func TestAgentRefusesSelfConfigItCouldNotStartWith(t *testing.T) {
 			wantError: []string{"webhook_secret_path", missing},
 		},
 		{
+			name:      "missing age identity file",
+			config:    "hostname: test-host\nrepo_url: https://example.com/fleet.git\nsops:\n  age_identity_path: " + missing + "\n",
+			wantError: []string{"sops.age_identity_path", missing},
+		},
+		{
 			name:      "unknown key",
 			config:    "hostname: test-host\nrepo_url: https://example.com/fleet.git\nno_such_key_ever: x\n",
 			wantError: []string{"no_such_key_ever"},
