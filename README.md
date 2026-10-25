@@ -630,8 +630,9 @@ the generic domain `example.net`.
   in the Host's local secrets directory, or encrypted in a `*.sops.*` file in
   the Fleet ([`sops://`](#sops-setup)). A SOPS file still leaves some things
   public to every reader of the Fleet: key names and structure, the type and
-  length of every value, list lengths, comments metadata, and values left
-  unencrypted by its rules (`unencrypted_suffix`/`_regex`,
+  length of every value, list lengths, the `sops:` metadata block (each
+  Recipient's public key, the last-modified time, the SOPS version), and values
+  left unencrypted by its rules (`unencrypted_suffix`/`_regex`,
   `encrypted_suffix`/`_regex`, `mac_only_encrypted`). See
   [ADR 0003](docs/adr/0003-no-plaintext-secret-in-git.md) (proposed).
 - **One provider token per Machine.** By default every Agent on a Machine uses
@@ -1400,8 +1401,14 @@ A `*.sops.*` file is reachable only through a `sops://` ref: `paths:` directory 
 `validate` checks every `*.sops.*` file in the Fleet, whether or not a Host references it, without any key:
 
 - **Encrypted:** the file must carry SOPS metadata (`sops.version` and `sops.mac`) and be at most 1 MiB. A plaintext file under a SOPS name is an error: its values are in git, so rotate them and commit the file encrypted (rewriting history does not unpublish them).
-- **Creation rule:** when the Fleet-root `.sops.yaml` has a rule matching the file (first match wins, an empty `path_regex` matches every file, paths relative to the Fleet root), the file's age Recipients must equal the rule's, key group by key group, order ignored (`shamir_threshold`, encryption rules and non-age keys are ignored). A mismatch lists `+` (in the file, not the rule) and `−` (in the rule, not the file) and asks you to run `sops updatekeys <file>`. Only the root `.sops.yaml` is read; it must be a regular file, not a symlink. A file without a matching rule, or a Fleet without a root `.sops.yaml`, is not checked: the file's own Recipients decide who can read it. picolet never generates `.sops.yaml`.
-- **Audience (least privilege):** every age Recipient of the file must belong to an [Operator](#operatorsyml) or to a Host whose resolve reaches the file (through `readSopsSecret`, `readSopsData` or a direct `secrets:` ref). A file no Host references may be read by Operators only. The error names the file, the Recipient and its owner (a Host, or `unknown`) and both fixes: *planned retirement: drop it from the `.sops.yaml` rule and run `sops updatekeys <file>`; trust lost: drop it, run `sops rotate -i <file>` (new data key) and change every value. `updatekeys` revokes nothing* (see [Leaks and revocation](#leaks-and-revocation)). The pass needs every Host's resolve, so it is skipped with a warning when any Host failed to resolve.
+- **Creation rule:** when the Fleet-root `.sops.yaml` has a rule matching the file, the file's age Recipients must equal the rule's.
+  - Matching: first match wins, an empty `path_regex` matches every file, paths are relative to the Fleet root.
+  - Comparison: key group by key group, order ignored; `shamir_threshold`, encryption rules and non-age keys are ignored. A mismatch lists `+` (in the file, not the rule) and `−` (in the rule, not the file) and asks you to run `sops updatekeys <file>`.
+  - Only the root `.sops.yaml` is read; it must be a regular file, not a symlink. A file without a matching rule, or a Fleet without a root `.sops.yaml`, is not checked: the file's own Recipients decide who can read it. picolet never generates `.sops.yaml`.
+- **Audience (least privilege):** every age Recipient of the file must belong to an [Operator](#operatorsyml) or to a Host whose resolve reaches the file (through `readSopsSecret`, `readSopsData` or a direct `secrets:` ref).
+  - A file no Host references may be read by Operators only.
+  - The error names the file, the Recipient and its owner (a Host, or `unknown`) and both fixes: *planned retirement: drop it from the `.sops.yaml` rule and run `sops updatekeys <file>`; trust lost: drop it, run `sops rotate -i <file>` (new data key) and change every value. `updatekeys` revokes nothing* (see [Leaks and revocation](#leaks-and-revocation)).
+  - The pass needs every Host's resolve, so it is skipped with a warning when any Host failed to resolve.
 
 `validate` warns (without failing) when a Host or an Operator declares one of picolet's published TEST-ONLY recipients (the fixture keys under `testdata/sops`): their identities are public, so never encrypt a real secret to them.
 
@@ -1562,7 +1569,7 @@ Git keeps every commit, so a leak is fixed by **rotation, never by rewriting his
 
 #### Threat model
 
-- **Confidentiality, not authenticity.** Encrypting needs only public keys, so anyone with git write access can commit a valid SOPS file; the MAC is no guard against a malicious commit. A git writer can also commit a template that renders any value a Host can decrypt into a place the writer can read. Git write access stays the trust boundary, for desired state and now for secret values.
+- **Confidentiality, not authenticity.** Encrypting needs only public keys, so anyone with git write access can commit a valid SOPS file; the MAC is no guard against a malicious commit. A git writer can also commit a template that renders any value a Host can decrypt into a place the writer can read. Git write access is the trust boundary for both desired state and secret values.
 - **Recipient checks catch drift, not hostile edits.** `validate` compares the files' unauthenticated recipient labels with `host.yml` and `operators.yml`.
 - **CI stays keyless.** `validate` never decrypts, so a CI job never holds an identity; that is a security property, not a limitation.
 - **Public repositories.** Ciphertext in git is permanent and counts as safe against every reader, a public mirror included. For a public Fleet, use hybrid post-quantum (`age1pq1…`) recipients.
