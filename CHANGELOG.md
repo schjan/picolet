@@ -53,7 +53,10 @@ kept as is.
 - An Agent config in which two credential settings name the same file fails to
   load (`… name the same credential file`), and `readSecretFile` and file
   `secrets:` refuse every Agent credential file: *Agent credentials cannot be
-  deployed* ([#251](https://github.com/schjan/picolet/issues/251)).
+  deployed*, in the Agent and in `picolet bootstrap` (the credentials of the
+  Agent config it renders, below `--secrets-dir`, and always
+  `--secrets-dir`'s `age-identity`)
+  ([#251](https://github.com/schjan/picolet/issues/251)).
 - SOPS files (`<name>.sops.<ext>`) and SOPS's `.sops.yaml`/`.sops.yml` are
   skipped by `paths:` directory and Service Bundle walks, and an explicit
   `paths:` or plain `secrets:` entry naming a SOPS file is an error; a SOPS file
@@ -159,7 +162,8 @@ kept as is.
   `failed_sha_gate_cleared` dashboard event), so a fix outside git, such as a
   credential file, takes effect without a new commit
   ([#249](https://github.com/schjan/picolet/issues/249)).
-- The dashboard no longer shows content hashes of secrets
+- The dashboard no longer shows content hashes of secrets, nor of Managed
+  Files whose render used a SOPS value
   ([#250](https://github.com/schjan/picolet/issues/250)).
 - The self-restart guard refuses a Fleet-rendered Agent config the Agent could
   not start with (strict parse, credential overlap, startup credential checks,

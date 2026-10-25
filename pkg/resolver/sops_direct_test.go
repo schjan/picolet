@@ -176,9 +176,7 @@ func TestDirectSopsSecretErrors(t *testing.T) {
 				for _, want := range tt.want {
 					require.ErrorContains(t, err, want)
 				}
-				for _, plain := range []string{"hunter2-test", "visible", "5432", "alpha-token"} {
-					assert.NotContains(t, err.Error(), plain)
-				}
+				assertNoPlaintext(t, err)
 			})
 		}
 	}
@@ -205,6 +203,7 @@ func TestDirectSopsSecretKeylessRecipientChecks(t *testing.T) {
 			_, err := resolveDirectSops(t, []string{ref}, files, sopsKeyless, false)
 			require.ErrorContains(t, err, ref)
 			require.ErrorContains(t, err, tt.want)
+			assertNoPlaintext(t, err)
 		})
 	}
 }
@@ -219,6 +218,7 @@ func TestDirectSopsSecretWithoutReaderFails(t *testing.T) {
 	assert.Nil(t, resolved)
 	require.ErrorContains(t, err, ref)
 	require.ErrorContains(t, err, "no age identity configured; set sops.age_identity_path in the Agent config")
+	assertNoPlaintext(t, err)
 }
 
 // Strict mode (bootstrap, validate's Agent-bundle pass) fails a direct
@@ -235,6 +235,7 @@ func TestDirectSopsSecretStrictFails(t *testing.T) {
 			require.ErrorContains(t, err, "direct secrets "+ref+": SOPS values can't be used in strict mode; "+
 				"deliver the value as a --secrets-dir file and point the Agent config at its path; "+
 				"credentials needed to fetch the Fleet can't be SOPS values")
+			assertNoPlaintext(t, err)
 		})
 	}
 }

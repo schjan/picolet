@@ -454,3 +454,37 @@ func TestServeIndex_SecretRowHidesContentHash(t *testing.T) {
 		t.Errorf("container row lost its short hash; body=%s", body)
 	}
 }
+
+// A Managed File whose render used a SOPS value (any category) shows no
+// content hash: it is a hash of content holding the decrypted value.
+func TestServeIndex_SopsValuesRowHidesContentHash(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{Hostname: "pi-edge-01"}
+	store := newTestStore(t, state.State{
+		ManagedFiles: map[string]state.ManagedFile{
+			"/p/files/pin":     {Hash: "sha256:9105ecafe0001", Category: "file", SopsValues: true},
+			"/p/files/plain":   {Hash: "sha256:9a1ecafe0002", Category: "file"},
+			"/p/web.container": {Hash: "sha256:c0a7a1ae0003", Category: "container"},
+		},
+	})
+
+	h, err := dashboard.NewHandler(store, cfg, "0.0.0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "pin") {
+		t.Errorf("pin row missing; body=%s", body)
+	}
+	if strings.Contains(body, "9105ecaf") {
+		t.Errorf("body exposes the hash of a file holding a SOPS value; body=%s", body)
+	}
+	if !strings.Contains(body, "sha256: 9a1ecafe") {
+		t.Errorf("plain file row lost its short hash; body=%s", body)
+	}
+}

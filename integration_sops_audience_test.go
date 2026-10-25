@@ -123,6 +123,7 @@ func TestIntegrationValidateSOPSAudienceFails(t *testing.T) {
 			err := validateFleet(t, fsys)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.want)
+			assertNoPlaintext(t, err)
 		})
 	}
 }
@@ -142,6 +143,7 @@ func TestIntegrationValidateSOPSAudienceSkippedOnResolveFailure(t *testing.T) {
 	err := validateFleet(t, fsys, validator.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 	require.ErrorContains(t, err, "host broken-c: resolve")
 	assert.NotContains(t, err.Error(), "may not read it")
+	assertNoPlaintext(t, err)
 	assert.Contains(t, logs.String(), "skipping the SOPS audience pass")
 	assert.Contains(t, logs.String(), "broken-c")
 }

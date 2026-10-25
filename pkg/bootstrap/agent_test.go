@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -123,4 +124,92 @@ func TestHostBootstrapSeedsContainerInternalStateKeys(t *testing.T) {
 		"/etc/containers/systemd/picolet/picolet.container",
 		"secret:picolet_config",
 	}, keys)
+}
+
+// writeAgentFleet writes a one-Host Fleet (h, rootful Agent bundle
+// picolet-system) to a temp dir, plus extra files, and returns its dir.
+func writeAgentFleet(t *testing.T, agentConfig string, extra map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	files := map[string]string{
+		"fleet.yml":        "images: {picolet: \"picolet:test\"}\nports: {picolet_system_metrics: 9418}\n",
+		"assignments.yml":  "base: {}\nroles:\n  node:\n    services: [picolet-system]\nfeatures: {}\n",
+		"hosts/h/host.yml": "hostname: h\nrole: node\n",
+		"services/picolet-system/picolet-system.container.tmpl": "[Container]\nImage={{ index .Images \"picolet\" }}\n" +
+			"Secret=picolet_system_config,target=/etc/picolet/config.yml\n",
+		"services/picolet-system/secrets/picolet_system_config.yml.tmpl": agentConfig,
+	}
+	maps.Copy(files, extra)
+	for name, content := range files {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+		require.NoError(t, os.WriteFile(p, []byte(content), 0o600))
+	}
+	return dir
+}
+
+// bootstrap refuses to deploy a credential the Agent config it renders
+// names, as the Agent does: the Agent sees its secrets dir at secrets_dir,
+// the bootstrap at --secrets-dir, so a credential below secrets_dir is
+// refused at the same place below --secrets-dir. Other files there deploy.
+func TestBootstrapRefusesAgentCredential(t *testing.T) {
+	t.Parallel()
+	const agentConfig = "hostname: h\nrepo_url: https://example.com/fleet.git\n" +
+		"sops:\n  age_identity_path: /etc/picolet/secrets/age-identity\n"
+	secretsDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(secretsDir, "age-identity"), []byte("AGE-SECRET-KEY-FIXTURE"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(secretsDir, "api-key"), []byte("api"), 0o600))
+	run := func(secret string) error {
+		dir := writeAgentFleet(t, agentConfig, map[string]string{
+			"services/picolet-system/secrets/leak.tmpl": "{{ readSecretFile \"" + secret + "\" }}",
+		})
+		_, err := prepare(t.Context(), RunConfig{
+			Service: "picolet-system", SystemdMode: SystemdSystem,
+			Hostname: "h", RepoDir: dir, SecretsDir: secretsDir,
+		})
+		return err
+	}
+
+	err := run("age-identity")
+	require.ErrorContains(t, err, "Agent credential sops.age_identity_path")
+	require.ErrorContains(t, err, "Agent credentials cannot be deployed")
+	assert.NotContains(t, err.Error(), "AGE-SECRET-KEY-FIXTURE")
+
+	require.NoError(t, run("api-key"))
+}
+
+// Without a Fleet-rendered Agent config (the unit mounts none; the health
+// address comes from --health-addr), bootstrap cannot know the Agent's
+// credentials, yet it still refuses the conventional identity file
+// age-identity below --secrets-dir.
+func TestBootstrapRefusesConventionalIdentityWithoutRenderedConfig(t *testing.T) {
+	t.Parallel()
+	secretsDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(secretsDir, "age-identity"), []byte("AGE-SECRET-KEY-FIXTURE"), 0o600))
+	dir := writeAgentFleet(t, "unused: true\n", map[string]string{ //nolint:gosec // G101: Fleet file names and a template, not credentials
+		"services/picolet-system/picolet-system.container.tmpl": "[Container]\nImage={{ index .Images \"picolet\" }}\n",
+		"services/picolet-system/secrets/leak.tmpl":             `{{ readSecretFile "age-identity" }}`,
+	})
+	_, err := prepare(t.Context(), RunConfig{
+		Service: "picolet-system", SystemdMode: SystemdSystem,
+		Hostname: "h", RepoDir: dir, SecretsDir: secretsDir, HealthAddr: "127.0.0.1:9418",
+	})
+	require.ErrorContains(t, err, "Agent credentials cannot be deployed")
+	assert.NotContains(t, err.Error(), "AGE-SECRET-KEY-FIXTURE")
+}
+
+// The guard comes from the Agent config rendered with placeholder secrets;
+// a config whose credential settings change once the real secret files are
+// read would deploy credentials the guard never saw, so bootstrap fails.
+func TestBootstrapRefusesCredentialsThatDependOnSecretFiles(t *testing.T) {
+	t.Parallel()
+	const agentConfig = "hostname: h\nrepo_url: https://example.com/fleet.git\n" +
+		"git_token_path: {{ readSecretFile \"token-path\" }}\n"
+	secretsDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(secretsDir, "token-path"), []byte("/etc/picolet/secrets/git-token"), 0o600))
+	_, err := prepare(t.Context(), RunConfig{
+		Service: "picolet-system", SystemdMode: SystemdSystem,
+		Hostname: "h", RepoDir: writeAgentFleet(t, agentConfig, nil), SecretsDir: secretsDir,
+	})
+	require.ErrorContains(t, err, "credential settings must not depend on a secret file")
 }

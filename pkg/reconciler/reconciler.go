@@ -30,6 +30,12 @@ type Change struct {
 	NewHash     string // sha256 of NewContent
 	ServiceName string // "foo.service"; "" for non-quadlets/secrets
 	RelPath     string // relative to category dir; "" for non-manifest/file changes
+	SopsValues  bool   // NewContent holds a SOPS value (resolver.ResolvedFile.SopsValues)
+}
+
+// ManagedFile is the state record of a created, updated or unchanged file.
+func (c Change) ManagedFile() state.ManagedFile {
+	return state.ManagedFile{Hash: c.NewHash, Category: c.Category, SopsValues: c.SopsValues}
 }
 
 // Changeset is the complete set of changes to apply.
@@ -72,6 +78,24 @@ func (cs *Changeset) Managed(destPath string) bool {
 		}
 	}
 	return false
+}
+
+// RefreshNoops updates st's record of each unchanged file whose record
+// differs from what the changeset would write (its SopsValues flag: the
+// content is byte-identical but its render now reads, or no longer reads, a
+// SOPS value), and reports whether it changed any.
+func (cs *Changeset) RefreshNoops(st *state.State) bool {
+	refreshed := false
+	for _, change := range cs.Changes {
+		if change.Action != ActionNoop {
+			continue
+		}
+		if mf := change.ManagedFile(); st.ManagedFiles[change.DestPath] != mf {
+			st.ManagedFiles[change.DestPath] = mf
+			refreshed = true
+		}
+	}
+	return refreshed
 }
 
 // Diff computes the changeset between desired files and current state.
@@ -118,6 +142,7 @@ func classifyFile(f resolver.ResolvedFile, currentState *state.State) Change {
 		NewHash:     newHash,
 		ServiceName: f.ServiceName,
 		RelPath:     f.RelPath,
+		SopsValues:  f.SopsValues,
 	}
 
 	switch {
@@ -153,7 +178,7 @@ func MergeChangeset(st *state.State, changeset *Changeset) {
 			delete(st.ManagedFiles, change.DestPath)
 			delete(st.ServiceNames, change.DestPath)
 		case ActionCreate, ActionUpdate:
-			st.ManagedFiles[change.DestPath] = state.ManagedFile{Hash: change.NewHash, Category: change.Category}
+			st.ManagedFiles[change.DestPath] = change.ManagedFile()
 			if change.ServiceName != "" {
 				st.ServiceNames[change.DestPath] = change.ServiceName
 			} else {

@@ -135,10 +135,9 @@ func TestAgentScrubsDecryptedValuesFromErrors(t *testing.T) {
 			for i, e := range events {
 				texts["event "+strconv.Itoa(i)] = e.Message
 			}
+			assertNoFixtureLeak(t, texts)
 			for where, text := range texts {
-				for _, leak := range []string{"hunter2-test", "hunter2...", "alpha-token"} {
-					assert.NotContains(t, text, leak, "%s leaks a decrypted value", where)
-				}
+				assert.NotContains(t, text, "hunter2...", "%s leaks a truncated decrypted value", where)
 			}
 		})
 	}
@@ -250,16 +249,11 @@ func TestAgentScrubsDecryptedValuesFromNoChangesValidation(t *testing.T) {
 
 	events := eventsWithResult(h.a.statusStore.Snapshot(), "failure")
 	require.Len(t, events, before+1)
-	texts := map[string]string{"error": err.Error(), "event": events[len(events)-1].Message, "logs": h.logs.String()}
-	for where, text := range texts {
-		for _, leak := range []string{"hunter2-test", "alpha-token"} {
-			assert.NotContains(t, text, leak, "%s leaks a decrypted value", where)
-		}
-	}
+	assertNoFixtureLeak(t, map[string]string{"error": err.Error(), "event": events[len(events)-1].Message, "logs": h.logs.String()})
 }
 
-// The apply's own log lines (the rollback notice, non-fatal apply errors)
-// carry the error text, so they are scrubbed with the resolve's reader too.
+// The apply's own log lines (the rollback notice, a failed rollback,
+// non-fatal apply errors) carry the error text, so they are scrubbed with the resolve's reader too.
 func TestApplyScrubsLoggedErrors(t *testing.T) {
 	t.Parallel()
 	leak := errors.New("backend said: hunter2-test")
@@ -272,6 +266,13 @@ func TestApplyScrubsLoggedErrors(t *testing.T) {
 			t.Helper()
 			pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(leak)
 			sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
+			_, err := a.applyWithRollback(t.Context(), "sha", secretChange, nil, nil, nil, "", "", reader)
+			require.ErrorIs(t, err, errRollbackPerformed)
+		},
+		"rollback failed": func(t *testing.T, a *Agent, sys *appliermocks.MockSystemdManager, pod *appliermocks.MockPodmanClient, reader *sops.Reader) {
+			t.Helper()
+			pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(errors.New("create failed"))
+			sys.EXPECT().DaemonReload(mock.Anything).Return(leak)
 			_, err := a.applyWithRollback(t.Context(), "sha", secretChange, nil, nil, nil, "", "", reader)
 			require.ErrorIs(t, err, errRollbackPerformed)
 		},
@@ -297,7 +298,7 @@ func TestApplyScrubsLoggedErrors(t *testing.T) {
 
 			assert.Contains(t, logs.String(), message)
 			assert.Contains(t, logs.String(), sops.Redacted)
-			assert.NotContains(t, logs.String(), "hunter2-test")
+			assertNoFixturePlaintext(t, map[string]string{"logs": logs.String()})
 		})
 	}
 }
@@ -329,17 +330,36 @@ var fixturePlaintexts = []string{
 // 128-digit SHA-512).
 var hashLike = regexp.MustCompile(`[0-9A-Fa-f]{32,}`)
 
+// runNoise matches what a tick's texts carry of their own and a short
+// fixture plaintext ("5432") could turn up in by chance: temp paths (random
+// digits) and git SHAs.
+var runNoise = regexp.MustCompile(regexp.QuoteMeta(os.TempDir()) + `\S*|[0-9A-Fa-f]{32,}`)
+
 // assertNoFixturePlaintext fails when a text (keyed by where it appeared)
 // carries a fixture plaintext, its SHA-256 or SHA-512, or any hash-like run.
 func assertNoFixturePlaintext(t *testing.T, texts map[string]string) {
 	t.Helper()
+	assertNoFixtureLeak(t, texts)
 	for where, text := range texts {
+		assert.Empty(t, hashLike.FindAllString(text, -1), "%s carries a hash-like hex run", where)
+	}
+}
+
+// assertNoFixtureLeak is assertNoFixturePlaintext for texts that carry hex
+// runs and temp paths of their own (a tick's error, events, deployment
+// statuses and logs name the commit and the clone): no fixture plaintext
+// outside that run noise, and no fixture plaintext's SHA-256 or SHA-512.
+func assertNoFixtureLeak(t *testing.T, texts map[string]string) {
+	t.Helper()
+	for where, text := range texts {
+		text = strings.ToLower(text)
+		masked := runNoise.ReplaceAllString(text, "")
 		for _, p := range fixturePlaintexts {
+			assert.NotContains(t, masked, strings.ToLower(p), "%s leaks a fixture plaintext", where)
 			sum256, sum512 := sha256.Sum256([]byte(p)), sha512.Sum512([]byte(p))
-			for _, leak := range []string{p, hex.EncodeToString(sum256[:]), hex.EncodeToString(sum512[:])} {
-				assert.NotContains(t, strings.ToLower(text), strings.ToLower(leak), "%s leaks a fixture plaintext or its hash", where)
+			for _, sum := range []string{hex.EncodeToString(sum256[:]), hex.EncodeToString(sum512[:])} {
+				assert.NotContains(t, text, sum, "%s leaks a fixture plaintext's hash", where)
 			}
 		}
-		assert.Empty(t, hashLike.FindAllString(text, -1), "%s carries a hash-like hex run", where)
 	}
 }

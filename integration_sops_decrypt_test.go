@@ -3,7 +3,6 @@ package picolet_test
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/sebdah/goldie/v2"
@@ -18,8 +17,9 @@ import (
 // TestIntegrationResolveGoldenDecrypting is TestIntegrationResolveGolden the
 // Agent's way: each Host resolves with the decrypting reader and the
 // TEST-ONLY identity srv-1. It snapshots every file whose keyless render
-// carries a SOPS placeholder, so the goldens show the real (obviously fake,
-// TEST-ONLY) values and Podman secrets.
+// used a SOPS value (ResolvedFile.SopsValues: string placeholders and typed
+// ones alike), so the goldens show the real (obviously fake, TEST-ONLY)
+// values and Podman secrets.
 func TestIntegrationResolveGoldenDecrypting(t *testing.T) {
 	t.Parallel()
 	repoFS := os.DirFS(testdataDir)
@@ -40,7 +40,7 @@ func TestIntegrationResolveGoldenDecrypting(t *testing.T) {
 		require.NoError(t, err)
 		withSops := map[string]bool{}
 		for _, f := range placeholders.Files {
-			if strings.Contains(f.Content, sops.Placeholder) {
+			if f.SopsValues {
 				withSops[f.DestPath] = true
 			}
 		}

@@ -21,6 +21,10 @@ var ErrCorrupt = errors.New("state file corrupt")
 type ManagedFile struct {
 	Hash     string          `json:"hash"`
 	Category config.Category `json:"category"`
+	// SopsValues is true when the file's content holds a value read through
+	// a sops:// ref (resolver.ResolvedFile.SopsValues): Hash is then a hash
+	// of a decrypted value, which the dashboard does not show.
+	SopsValues bool `json:"sops_values,omitempty"`
 }
 
 // PendingUnit records a managed systemd unit whose last restart attempt failed.

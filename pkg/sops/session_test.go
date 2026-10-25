@@ -35,6 +35,7 @@ func TestReaderDecryptsEachFileOncePerReader(t *testing.T) {
 	for range 2 {
 		_, err = r.ReadAll(t.Context(), []string{"sops://corpus/tampered-mac.sops.yaml#/db/password"})
 		require.ErrorIs(t, err, sops.ErrEditedOutsideSOPS)
+		assertNoPlaintext(t, err)
 	}
 
 	assert.Equal(t, int32(1), fsys.opens["corpus/values.sops.yaml"].Load())
@@ -56,7 +57,7 @@ func TestReaderDecryptedFiles(t *testing.T) {
 		"sops://corpus/tls.sops.pem",
 		"sops://corpus/tampered-mac.sops.yaml#/db/password",
 	})
-	require.Error(t, err)
+	assertNoPlaintext(t, err)
 	assert.Equal(t, 2, r.DecryptedFiles())
 }
 

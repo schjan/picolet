@@ -9,9 +9,14 @@ import (
 	"filippo.io/age"
 )
 
-// NoIdentityHint is the fix appended ("; " + NoIdentityHint) to an
-// ErrNoIdentity error for a sops:// ref read without identities.
+// NoIdentityHint is the fix NoIdentityError names by default: the Agent's.
 const NoIdentityHint = "set sops.age_identity_path in the Agent config"
+
+// NoIdentityError is the ErrNoIdentity error of subject (the sops:// refs
+// read without identities), naming hint as the fix.
+func NoIdentityError(subject, hint string) error {
+	return fmt.Errorf("%s: %w; %s", subject, ErrNoIdentity, hint)
+}
 
 var (
 	// ErrNoIdentity is returned (wrapped) when a sops:// ref is read without

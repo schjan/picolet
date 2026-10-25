@@ -27,7 +27,6 @@ import (
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/rollback"
-	"github.com/schjan/picolet/pkg/sops"
 	"github.com/schjan/picolet/pkg/state"
 	"github.com/schjan/picolet/pkg/status"
 	"github.com/schjan/picolet/pkg/validator"
@@ -574,21 +573,11 @@ func applyWithRollback(
 	return result, nil
 }
 
-// errApplyNoSops explains a sops:// ref failing `picolet apply`. It wraps
-// the resolve's no-identity error without that error's hint to set
-// sops.age_identity_path, which would not help apply.
-var errApplyNoSops = errors.New("picolet apply does not decrypt sops:// refs, even with a sops block in the Agent config; " +
-	"let the Agent apply this Fleet (preview it with dry-run --config)")
-
-// withoutSopsHint is an error whose text drops sops.NoIdentityHint; it
-// unwraps to the original, so errors.Is still finds sops.ErrNoIdentity.
-type withoutSopsHint struct{ err error }
-
-func (e withoutSopsHint) Error() string {
-	return strings.ReplaceAll(e.err.Error(), "; "+sops.NoIdentityHint, "")
-}
-
-func (e withoutSopsHint) Unwrap() error { return e.err }
+// applyNoSopsHint is the fix a sops:// ref failing `picolet apply` names,
+// in place of the Agent's hint to set sops.age_identity_path, which would
+// not help apply.
+const applyNoSopsHint = "picolet apply does not decrypt sops:// refs, even with a sops block in the Agent config; " +
+	"let the Agent apply this Fleet (preview it with dry-run --config)"
 
 //nolint:cyclop,funlen // sequential apply steps; splitting reduces readability
 func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
@@ -604,15 +593,15 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 
 	// apply deliberately does not decrypt (spec #248, "considered, not
 	// adopted"): it passes no SOPS identities, so a sops:// ref fails the
-	// resolve with the no-identity error, which errApplyNoSops explains.
+	// resolve with the no-identity error, naming applyNoSopsHint as the fix.
 	providers, err := refProvidersFromConfig(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	resolved, scrub, err := resolveWithConfig(ctx, cfg, repoDir, hostname, providers)
-	if errors.Is(err, sops.ErrNoIdentity) {
-		return fmt.Errorf("%w: %w", errApplyNoSops, withoutSopsHint{err})
-	}
+	params := agent.ResolveParamsFromConfig(cfg, repoDir, providers)
+	params.Hostname = hostname
+	params.NoSopsIdentityHint = applyNoSopsHint
+	resolved, scrub, err := agent.LoadAndResolveHost(ctx, params)
 	if err != nil {
 		return err
 	}
