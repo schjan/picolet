@@ -111,15 +111,13 @@ type ProviderTemplate struct {
 }
 
 // providerSchemes is the provider table: the standard providers without
-// readers, one per ref scheme. isProviderRef, splitDirectRefs,
+// readers, one per ref scheme, built once. isProviderRef, splitDirectRefs,
 // secretDestPath and the strict-mode errors look a scheme up here.
-func providerSchemes() []ProviderTemplate {
-	return []ProviderTemplate{OpProvider(nil), PPProvider(nil), SopsProvider(nil, "")}
-}
+var providerSchemes = []ProviderTemplate{OpProvider(nil), PPProvider(nil), SopsProvider(nil, "")}
 
 // schemeOfRef returns the provider whose IsRef accepts ref.
 func schemeOfRef(ref string) (ProviderTemplate, bool) {
-	for _, p := range providerSchemes() {
+	for _, p := range providerSchemes {
 		if p.IsRef(ref) {
 			return p, true
 		}
@@ -130,7 +128,7 @@ func schemeOfRef(ref string) (ProviderTemplate, bool) {
 // schemeOf returns the provider table's entry for key; a key without one
 // gets an entry with only the key (strict mode's default wording).
 func schemeOf(key ProviderKey) ProviderTemplate {
-	for _, p := range providerSchemes() {
+	for _, p := range providerSchemes {
 		if p.Key == key {
 			return p
 		}
@@ -283,7 +281,9 @@ func (p ProviderTemplate) strictText() (reason, fix string) {
 }
 
 // strictModeError is the error a call of p's function funcName fails with
-// in strict mode, where no provider value can be used.
+// in strict mode, where no provider value can be used. The wording is the
+// table's for p.Key, as strict mode has always keyed it, so a template built
+// by hand under a standard key words it like the standard one.
 func (p ProviderTemplate) strictModeError(funcName, ref string) error {
 	reason, fix := schemeOf(p.Key).strictText()
 	return fmt.Errorf("%s %q: %s; %s", funcName, ref, reason, fix)
