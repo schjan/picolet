@@ -14,7 +14,13 @@ import (
 // sopsCorpusFile reads a file of the shared SOPS fixture corpus.
 func sopsCorpusFile(t *testing.T, name string) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sops", "corpus", name))
+	return sopsCorpusText(t, filepath.Join("corpus", name))
+}
+
+// sopsCorpusText reads a file of testdata/sops by its relative path.
+func sopsCorpusText(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sops", name))
 	require.NoError(t, err)
 	return string(data)
 }

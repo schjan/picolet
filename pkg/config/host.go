@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"go.yaml.in/yaml/v4"
+
+	"github.com/schjan/picolet/pkg/sops"
 )
 
 const maxPort = 65535
@@ -57,6 +59,13 @@ type HostConfig struct {
 	// DeclaredBootstrap is bootstrap: as written; nil when absent.
 	DeclaredBootstrap BootstrapFiles `yaml:"bootstrap"`
 
+	// AgeRecipients is age_recipients: parsed into canonical age recipients
+	// (X25519 or hybrid post-quantum), in file order; empty when the Host
+	// declares none. Set by LoadAll.
+	AgeRecipients []sops.Recipient `yaml:"-"`
+	// DeclaredAgeRecipients is age_recipients: as written.
+	DeclaredAgeRecipients []string `yaml:"age_recipients"`
+
 	// RetiredPiType captures the pre-rename `pi_type:` key so Validate can
 	// reject it with a migration message instead of the generic unknown-field
 	// error WithKnownFields() would produce. Reject-only — see keyPresent.
@@ -99,7 +108,25 @@ func (h *HostConfig) Validate() error {
 	if err := h.DeclaredBootstrap.validate(); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
+	if _, err := parseAgeRecipients(h.DeclaredAgeRecipients); err != nil {
+		return err
+	}
 	return nil
+}
+
+// parseAgeRecipients parses age_recipients: entries with the SOPS package's
+// parser; an error names the entry by its index (never by its value, which
+// may be a pasted secret key).
+func parseAgeRecipients(entries []string) ([]sops.Recipient, error) {
+	out := make([]sops.Recipient, 0, len(entries))
+	for i, entry := range entries {
+		r, err := sops.ParseRecipient(entry)
+		if err != nil {
+			return nil, fmt.Errorf("age_recipients[%d]: %w", i, err)
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }
 
 func (h *HostConfig) validateUser() error {
@@ -132,6 +159,11 @@ func (h *HostConfig) applyDefaults(fleet *FleetConfig) error {
 	if h.Machine == "" {
 		h.Machine = h.Hostname
 	}
+	recipients, err := parseAgeRecipients(h.DeclaredAgeRecipients)
+	if err != nil {
+		return err
+	}
+	h.AgeRecipients = recipients
 	h.Bootstrap = h.DeclaredBootstrap
 	if h.Bootstrap == nil {
 		h.Bootstrap = fleet.Bootstrap.files(h.Role)

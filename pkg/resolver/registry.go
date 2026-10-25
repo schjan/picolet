@@ -123,12 +123,12 @@ func SopsProvider(reader SecretRefReader) ProviderTemplate {
 	}
 }
 
-// KeylessSopsReader returns the keyless SOPS reader over fsys (the Fleet
-// root) that validate, resolve and bootstrap pass as Config.SopsSecretReader
-// (through NewKeyless): it checks each ref without any key and renders
+// keylessSopsReader returns the keyless SOPS reader over fsys (the Fleet
+// root) for host, the reader of NewKeyless's host resolves: it checks each
+// ref without any key, against host's age_recipients: too, and renders
 // "<sops-secret>".
-func KeylessSopsReader(fsys fs.FS) SecretRefReader {
-	return sops.NewKeylessReader(fsys).ReadAll
+func keylessSopsReader(fsys fs.FS, host *config.HostConfig) SecretRefReader {
+	return sops.NewKeylessReader(fsys, sops.Host{Name: host.Hostname, Recipients: host.AgeRecipients}).ReadAll
 }
 
 // checkSopsRefs wraps reader so that a ref whose file path is not a clean

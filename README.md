@@ -504,7 +504,7 @@ Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a co
 |------|---------|
 | `fleet.yml` | Image versions and ports (Renovate-managed) |
 | `assignments.yml` | Assigns files (`paths:`), Podman secrets (`secrets:`) and Service Bundles (`services:`) to hosts: `base`, then per role, then per feature |
-| `hosts/<name>/host.yml` | Per-host config: hostname, external hostname, role, features, machine, user, listen_port |
+| `hosts/<name>/host.yml` | Per-host config: hostname, external hostname, role, features, machine, user, listen_port, age_recipients (the Host's age public keys for `sops://` refs) |
 
 ### Machines, users and ports
 

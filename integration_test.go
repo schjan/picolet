@@ -133,9 +133,27 @@ func validateFleet(t *testing.T, repoFS fs.FS) error {
 // ref, on what it can tell is wrong without a key.
 func TestIntegrationValidateSopsRefs(t *testing.T) {
 	t.Parallel()
-	values := sopsCorpus(t, "values.sops.yaml")
-	tests := []struct{ name, ref, want string }{
+	values := sopsCorpus(t, "values.sops.yaml") // srv-1, srv-2, operator-1
+	tests := []struct {
+		name, ref, want string
+		recipients      []string // test-host's age_recipients:; nil means srv-1
+	}{
 		{name: "valid", ref: "sops://secrets/db.sops.yaml#/db/password"},
+		{name: "two-key rotation", ref: "sops://secrets/db.sops.yaml#/db/password", recipients: []string{"srv-3", "srv-2"}},
+		{name: "key groups: threshold reached", ref: "sops://secrets/groups.sops.yaml#/db/password", recipients: []string{"srv-2", "srv-pq"}},
+		{
+			name: "no age_recipients", ref: "sops://secrets/db.sops.yaml#/db/password", recipients: []string{},
+			want: "Host test-host references sops://secrets/db.sops.yaml#/db/password but declares no age_recipients",
+		},
+		{
+			name: "not a recipient", ref: "sops://secrets/db.sops.yaml#/db/password", recipients: []string{"srv-3"},
+			want: "secrets/db.sops.yaml: not a recipient: the file is not encrypted to Host test-host (Host test-host's recipients: " +
+				sopsRecipient(t, "srv-3") + "); add one of them to the file's .sops.yaml creation rule and run `sops updatekeys secrets/db.sops.yaml`",
+		},
+		{
+			name: "key groups: too few", ref: "sops://secrets/groups.sops.yaml#/db/password", recipients: []string{"srv-1"},
+			want: "the file is encrypted to Host test-host in 1 of the 2 key groups it needs",
+		},
 		{name: "missing file", ref: "sops://secrets/gone.sops.yaml#/db/password", want: "file does not exist"},
 		{name: "no sops infix", ref: "sops://secrets/db.yaml#/db/password", want: "not a SOPS path"},
 		{name: "dot-dot", ref: "sops://secrets/../secrets/db.sops.yaml#/db/password", want: "clean relative path"},
@@ -147,13 +165,19 @@ func TestIntegrationValidateSopsRefs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			recipients := tt.recipients
+			if recipients == nil {
+				recipients = []string{"srv-1"}
+			}
 			fleet := fstest.MapFS{
 				"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
 				"assignments.yml":          &fstest.MapFile{Data: []byte("base:\n  secrets: [secrets/app.yml.tmpl]\nroles: {}\nfeatures: {}\n")},
-				"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte("hostname: test-host\nrole: node\n")},
+				"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(sopsHostYML(t, recipients))},
 				"secrets/app.yml.tmpl":     &fstest.MapFile{Data: []byte(`password: {{ readSopsSecret "` + tt.ref + `" }}`)},
 				"secrets/db.sops.yaml":     &fstest.MapFile{Data: values},
 				"secrets/db.yaml":          &fstest.MapFile{Data: values},
+				// [srv-1 operator-1] [srv-2] [srv-pq], threshold 2
+				"secrets/groups.sops.yaml": &fstest.MapFile{Data: sopsCorpus(t, "key-groups.sops.yaml")},
 			}
 			if strings.Contains(tt.ref, "plain.sops.yaml") {
 				// Only here: the encrypted-file pass fails on it whether referenced or not.

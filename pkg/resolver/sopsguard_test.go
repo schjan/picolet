@@ -40,22 +40,27 @@ func (r *recordingSopsReader) asked(ref string) bool {
 }
 
 // resolveGuard resolves test-host of a one-host Fleet with assignment base
-// body base and Fleet files extra (plus the SOPS corpus file guardRef names),
+// body base and Fleet files extra (plus the SOPS corpus file guardRef names
+// and a host.yml declaring a recipient of it),
 // through the keyless reader (validate, resolve) or the recording reader
 // (the Agent's decrypting path).
 func resolveGuard(t *testing.T, base string, extra map[string]string, keyless bool) (*ResolvedHost, *recordingSopsReader, error) {
 	t.Helper()
-	files := map[string]string{"secrets/db.sops.yaml": sopsCorpusFile(t, "values.sops.yaml")}
+	files := map[string]string{
+		"secrets/db.sops.yaml":     sopsCorpusFile(t, "values.sops.yaml"),
+		"hosts/test-host/host.yml": sopsHostYAML(t, "srv-1"),
+	}
 	maps.Copy(files, extra)
 	fsys := pathsFleetFS(base, files)
 	cfg, err := config.LoadAll(fsys)
 	require.NoError(t, err)
 	rec := &recordingSopsReader{}
 	rc := Config{FS: fsys, Config: cfg, SopsSecretReader: rec.read}
+	newResolver := New
 	if keyless {
-		rc.SopsSecretReader = KeylessSopsReader(fsys)
+		newResolver = NewKeyless
 	}
-	r, err := New(rc)
+	r, err := newResolver(rc)
 	require.NoError(t, err)
 	resolved, err := r.ResolveHost(t.Context(), "test-host")
 	return resolved, rec, err
@@ -180,10 +185,11 @@ func TestReadSopsSecretGuardPrecedesStrictAndMissingReader(t *testing.T) {
 	base := "  paths: [units/app.container.tmpl]\n"
 	tests := []struct {
 		name   string
-		modify func(*Config)
+		strict bool
+		new    func(Config) (*Resolver, error)
 	}{
-		{name: "no sops reader", modify: func(rc *Config) { rc.SopsSecretReader = nil }},
-		{name: "strict", modify: func(rc *Config) { rc.Strict = true }},
+		{name: "no sops reader", new: New},
+		{name: "strict", strict: true, new: NewKeyless},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -191,9 +197,7 @@ func TestReadSopsSecretGuardPrecedesStrictAndMissingReader(t *testing.T) {
 			fsys := pathsFleetFS(base, extra)
 			cfg, err := config.LoadAll(fsys)
 			require.NoError(t, err)
-			rc := Config{FS: fsys, Config: cfg, SopsSecretReader: KeylessSopsReader(fsys)}
-			tt.modify(&rc)
-			r, err := New(rc)
+			r, err := tt.new(Config{FS: fsys, Config: cfg, Strict: tt.strict})
 			require.NoError(t, err)
 			_, err = r.ResolveHost(t.Context(), "test-host")
 			require.ErrorIs(t, err, ErrSopsInUnitFile)
