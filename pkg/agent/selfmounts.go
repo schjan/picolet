@@ -22,8 +22,11 @@ const (
 	// volume, or a tmpfs, ramfs or devpts mount.
 	sourceNone sourceKind = iota
 	// sourceVolume is a Volume= or Mount= bind or volume source: a host
-	// path or a volume name (or a .volume unit).
+	// path or a volume name.
 	sourceVolume
+	// sourceVolumeUnit is a Volume= or Mount= source naming a .volume unit
+	// (the Fleet may manage it).
+	sourceVolumeUnit
 	// sourceSecret is a Podman secret, by name.
 	sourceSecret
 	// sourceSpec is any other Mount= type (glob, image, …), named by its
@@ -33,11 +36,14 @@ const (
 
 // mountSource is what a mount mounts. Sources are compared as written, so the
 // same specifier (%h) in two units matches; two mounts with equal sources
-// show the same files (subpath is the volume's subdirectory).
+// show the same files. For a bind or volume source, subpath is the
+// subdirectory it mounts (cleaned, relative) and options the sorted options
+// that may change what it shows (contentOptions).
 type mountSource struct {
 	kind    sourceKind
 	name    string
 	subpath string
+	options string
 }
 
 // shared reports whether the source is one the running container can share.
@@ -51,12 +57,19 @@ func (s mountSource) String() string {
 		return "secret " + s.name
 	case sourceSpec:
 		return "Mount=" + s.name
-	case sourceVolume:
+	case sourceVolume, sourceVolumeUnit:
 	}
+	var details []string
 	if s.subpath != "" {
-		return s.name + " (subpath " + s.subpath + ")"
+		details = append(details, "subpath "+s.subpath)
 	}
-	return s.name
+	if s.options != "" {
+		details = append(details, "options "+s.options)
+	}
+	if len(details) == 0 {
+		return s.name
+	}
+	return s.name + " (" + strings.Join(details, ", ") + ")"
 }
 
 // mount is one mount of the Agent quadlet's container: what it mounts
@@ -66,19 +79,24 @@ type mount struct {
 	target string
 }
 
-// unitMounts lists the mounts unit's [Container] group declares: Volume=,
-// Mount= (every type), Tmpfs= and Secret= (type=mount, the default).
+// unitMounts lists the mounts unit's [Container] group declares, read as
+// Quadlet reads them: Volume= (source:target[:options]), Mount= (every
+// type), Tmpfs= and Secret= (type=mount, the default).
 func unitMounts(unit *parser.UnitFile) []mount {
 	var mounts []mount
 	for _, volume := range unit.LookupAll("Container", "Volume") {
-		parts := strings.Split(volume, ":")
+		parts := strings.SplitN(volume, ":", 3)
 		if len(parts) == 1 {
 			mounts = append(mounts, mount{target: path.Clean(parts[0])})
 			continue
 		}
-		mounts = append(mounts, mount{source: volumeSource(parts[0]), target: path.Clean(parts[1])})
+		source := volumeSource(parts[0])
+		if len(parts) == 3 && source.shared() {
+			source.subpath, source.options = volumeOptions(strings.Split(parts[2], ","), volumeNeutralOptions)
+		}
+		mounts = append(mounts, mount{source: source, target: path.Clean(parts[1])})
 	}
-	for _, spec := range unit.LookupAll("Container", "Mount") {
+	for _, spec := range unit.LookupAllArgs("Container", "Mount") {
 		if m, ok := parseMount(spec); ok {
 			mounts = append(mounts, m)
 		}
@@ -87,7 +105,7 @@ func unitMounts(unit *parser.UnitFile) []mount {
 		dir, _, _ := strings.Cut(tmpfs, ":")
 		mounts = append(mounts, mount{target: path.Clean(dir)})
 	}
-	for _, secret := range unit.LookupAll("Container", "Secret") {
+	for _, secret := range unit.LookupAllArgs("Container", "Secret") {
 		if name, target, ok := resolver.ParseSecretMount(secret); ok {
 			mounts = append(mounts, mount{source: mountSource{kind: sourceSecret, name: name}, target: target})
 		}
@@ -103,15 +121,49 @@ func volumeSource(source string) mountSource {
 		return mountSource{}
 	case strings.HasPrefix(source, "/"):
 		return mountSource{kind: sourceVolume, name: path.Clean(source)}
+	case strings.HasSuffix(source, ".volume"):
+		return mountSource{kind: sourceVolumeUnit, name: source}
 	default:
 		return mountSource{kind: sourceVolume, name: source}
 	}
 }
 
+// volumeNeutralOptions are the Volume= options that change only access,
+// labelling or propagation, never which files a mount shows or who may read
+// them.
+var volumeNeutralOptions = []string{
+	"ro", "rw", "z", "Z",
+	"exec", "noexec", "suid", "nosuid", "dev", "nodev",
+	"private", "rprivate", "shared", "rshared", "slave", "rslave", "unbindable", "runbindable",
+}
+
+// mountNeutralKeys are the Mount= keys that change only access, labelling or
+// propagation (see volumeNeutralOptions).
+var mountNeutralKeys = []string{"ro", "readonly", "rw", "relabel", "bind-propagation", "z", "Z"}
+
+// volumeOptions splits a bind or volume mount's options into its subpath
+// (subpath= or volume-subpath=, cleaned and relative to the source) and the
+// sorted rest, minus those whose key is in neutral.
+func volumeOptions(options, neutral []string) (subpath, rest string) {
+	var kept []string
+	for _, option := range options {
+		key, value, _ := strings.Cut(option, "=")
+		switch {
+		case option == "":
+		case key == "subpath" || key == "volume-subpath":
+			subpath = strings.TrimPrefix(path.Clean("/"+value), "/")
+		case !slices.Contains(neutral, key):
+			kept = append(kept, option)
+		}
+	}
+	slices.Sort(kept)
+	return subpath, strings.Join(kept, ",")
+}
+
 // parseMount parses a Mount= value (type=…,source=…,destination=…). A bind
-// or volume mount is named by its source and subpath, a tmpfs, ramfs or
-// devpts mount shares nothing, and any other type is named by its spec
-// without the destination. ok is false without a destination.
+// or volume mount is named by its source, subpath and options, a tmpfs,
+// ramfs or devpts mount shares nothing, and any other type is named by its
+// spec without the destination. ok is false without a destination.
 func parseMount(spec string) (mount, bool) {
 	fields := mountFields(spec)
 	if fields.target == "" {
@@ -121,7 +173,7 @@ func parseMount(spec string) (mount, bool) {
 	case "bind", "volume":
 		s := volumeSource(fields.source)
 		if s.shared() {
-			s.subpath = fields.subpath
+			s.subpath, s.options = volumeOptions(fields.options, mountNeutralKeys)
 		}
 		return mount{source: s, target: fields.target}, true
 	case "tmpfs", "ramfs", "devpts":
@@ -131,10 +183,11 @@ func parseMount(spec string) (mount, bool) {
 	}
 }
 
-// mountSpec is a Mount= value's fields; rest is the spec without the
-// destination.
+// mountSpec is a Mount= value's fields: rest is the spec without the
+// destination, options its fields other than type, source and destination.
 type mountSpec struct {
-	kind, source, subpath, target, rest string
+	kind, source, target, rest string
+	options                    []string
 }
 
 func mountFields(spec string) mountSpec {
@@ -147,11 +200,11 @@ func mountFields(spec string) mountSpec {
 			fields.kind = value
 		case "source", "src":
 			fields.source = value
-		case "subpath", "volume-subpath":
-			fields.subpath = value
 		case "destination", "dst", "target":
 			fields.target = path.Clean(value)
 			continue
+		default:
+			fields.options = append(fields.options, field)
 		}
 		rest = append(rest, field)
 	}
@@ -293,22 +346,65 @@ func translate(m mount, rel string, current []mount) (at string, shadow *mount) 
 
 // sourceChanges returns whether the changeset creates, updates or deletes a
 // source a credential's mount comes from: a Podman secret, or a .volume unit
-// a Volume= names.
+// a Volume= or Mount= names.
 func sourceChanges(changeset *reconciler.Changeset) func(mountSource) bool {
 	return func(source mountSource) bool {
-		switch {
-		case source.kind == sourceSecret:
+		switch source.kind {
+		case sourceSecret:
 			dest := resolver.SecretDestPath(source.name)
 			return changeset.Writes(dest) || changeset.Deletes(dest)
-		case source.kind == sourceVolume && strings.HasSuffix(source.name, ".volume"):
-			for _, change := range changeset.Changes {
-				if change.Category == config.CategoryVolume && change.Action != reconciler.ActionNoop && path.Base(change.DestPath) == source.name {
+		case sourceVolumeUnit:
+			for _, change := range volumeUnitChanges(changeset, source.name) {
+				if change.Action != reconciler.ActionNoop {
 					return true
 				}
 			}
+		case sourceNone, sourceVolume, sourceSpec:
 		}
 		return false
 	}
+}
+
+// volumeUnitChanges returns the changes to the .volume unit named name.
+func volumeUnitChanges(changeset *reconciler.Changeset, name string) []reconciler.Change {
+	var changes []reconciler.Change
+	for _, change := range changeset.Changes {
+		if change.Category == config.CategoryVolume && path.Base(change.DestPath) == name {
+			changes = append(changes, change)
+		}
+	}
+	return changes
+}
+
+// removesVolumeUnit reports whether the changeset deletes the .volume unit
+// named name and writes none in its place.
+func removesVolumeUnit(changeset *reconciler.Changeset, name string) bool {
+	changes := volumeUnitChanges(changeset, name)
+	return len(changes) > 0 && !slices.ContainsFunc(changes, func(c reconciler.Change) bool { return c.Action != reconciler.ActionDelete })
+}
+
+// checkLostSources refuses a changeset that removes a source the Agent's next
+// start, with the unit next, needs: a Fleet-managed Podman secret a Secret=
+// names (of either type), or a Fleet-managed .volume unit a Volume= or
+// Mount= names. Podman could not create the Agent's container without the
+// secret, nor Quadlet generate its service without the .volume unit, so the
+// Agent would not start again. It runs on every changeset, whether or not
+// it writes the Agent's config or unit.
+func checkLostSources(next *parser.UnitFile, unit string, changeset *reconciler.Changeset) error {
+	for _, spec := range next.LookupAllArgs("Container", "Secret") {
+		name, _, _ := resolver.ParseSecretMount(spec)
+		if name != "" && changeset.Deletes(resolver.SecretDestPath(name)) {
+			return fmt.Errorf("refusing to remove the secret %s: the Agent unit %s still mounts it (Secret=%s), so the Agent could not start; "+
+				"keep resolving the secret, or stop mounting it", name, unit, spec)
+		}
+	}
+	for _, m := range unitMounts(next) {
+		if m.source.kind == sourceVolumeUnit && removesVolumeUnit(changeset, m.source.name) {
+			return fmt.Errorf("refusing to remove the volume unit %s: the Agent unit %s still mounts it at %s, so the Agent could not start; "+
+				"keep the volume unit, or stop mounting it", m.source.name, unit, m.target)
+		}
+	}
+	return nil
 }
 
 // selfConfigLocator returns how to read the credentials of the Agent config

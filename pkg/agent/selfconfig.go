@@ -22,17 +22,24 @@ import (
 // Agent out at its next restart, when it can no longer fetch a fix. The
 // Agent runs it before every apply, and so does `picolet apply --config`.
 //
-// The config is the secret the Agent's quadlet mounts at the Agent config
-// path (resolver.AgentConfigSecret). While the running Agent reads a
+// Every changeset that removes a Fleet-managed secret or .volume unit the
+// Agent's next unit mounts is refused (checkLostSources). The config is the
+// secret the Agent's quadlet mounts at the Agent config path
+// (resolver.AgentConfigSecret). While the running Agent reads a
 // Fleet-managed config (the secret its unit on disk, read with readFile,
 // mounts there is a Managed File), a changeset after which the Agent's next
 // start would find no config is refused (checkLostSelfConfig). A Host whose
 // Agent config was never Fleet-managed has nothing to check. Otherwise the
-// check runs when the changeset writes the mounted secret or the Agent's
-// unit: a unit change can repoint the mount at another managed secret that
-// is itself unchanged, and the Agent's next start reads that one. The
-// credential files are looked up through the new unit's mounts
+// config check runs when the changeset writes the mounted secret or the
+// Agent's unit: a unit change can repoint the mount at another managed
+// secret that is itself unchanged, and the Agent's next start reads that
+// one. The credential files are looked up through the new unit's mounts
 // (selfConfigLocator).
+//
+// A changeset whose resolve renders no Agent quadlet (the Agent bundle
+// unassigned, or its container quadlet dropped) decommissions the Fleet's
+// Agent unit: the guard does not check it, and the apply deletes the unit
+// and the config secret it mounts.
 func CheckSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Changeset, readFile func(string) ([]byte, error)) error {
 	if resolved.Host == nil {
 		return nil
@@ -42,13 +49,13 @@ func CheckSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Chan
 	if quadlet == nil {
 		return nil
 	}
+	if err := checkLostSources(quadlet.ParsedUnit, unit, changeset); err != nil {
+		return err
+	}
 	writesUnit := changeset.Writes(quadlet.DestPath)
-	running := quadlet.ParsedUnit // the unit on disk, unless the changeset writes it
-	if writesUnit {
-		var err error
-		if running, err = runningUnit(unit, changeset, readFile); err != nil {
-			return err
-		}
+	running, err := runningAgentUnit(quadlet, writesUnit, changeset, readFile)
+	if err != nil {
+		return err
 	}
 	file, err := resolver.AgentConfigSecret(resolved.Files, unit)
 	if errors.Is(err, resolver.ErrAgentConfigNotRendered) {
@@ -80,19 +87,15 @@ func agentQuadlet(files []resolver.ResolvedFile, unit string) *resolver.Resolved
 // checkLostSelfConfig refuses a changeset after which the Agent's next start,
 // with the unit next, would find no config at the Agent config path while
 // the running Agent reads a Fleet-managed one: next mounts a secret the
-// Fleet does not resolve (a renamed, dropped or misspelled config secret),
-// or mounts nothing there. The running config is Fleet-managed when the
-// secret mounted there by running (the unit on disk; nil when there is
-// none) or by next is a Managed File. A Host file mounted there is a
-// hand-managed config and passes, as does any config that was never
-// Fleet-managed.
+// Fleet does not resolve (a misspelled or never-resolved config secret;
+// one the changeset removes is refused by checkLostSources), or mounts
+// nothing there. The running config is Fleet-managed when the secret
+// mounted there by running (the unit on disk; nil when there is none) is a
+// Managed File. A Host file mounted there is a hand-managed config and
+// passes, as does any config that was never Fleet-managed.
 func checkLostSelfConfig(next, running *parser.UnitFile, unit string, changeset *reconciler.Changeset) error {
 	managed, fleetManaged := managedConfigSecret(running, changeset)
 	nextName, mounted := resolver.AgentConfigMountOf(next)
-	if mounted && changeset.Managed(resolver.SecretDestPath(nextName)) {
-		return fmt.Errorf("refusing to remove the Agent config secret %s: %s still mounts it at %s, so the Agent could not start; "+
-			"keep resolving the secret, or change the mount in the same commit", nextName, unit, resolver.AgentConfigTarget)
-	}
 	if !fleetManaged {
 		return nil
 	}
@@ -120,6 +123,16 @@ func managedConfigSecret(unit *parser.UnitFile, changeset *reconciler.Changeset)
 		return "", false
 	}
 	return name, true
+}
+
+// runningAgentUnit returns the Agent's unit on disk: the resolved quadlet,
+// unless the changeset writes it (writesUnit), and then the file it replaces
+// (runningUnit).
+func runningAgentUnit(quadlet *resolver.ResolvedFile, writesUnit bool, changeset *reconciler.Changeset, readFile func(string) ([]byte, error)) (*parser.UnitFile, error) {
+	if !writesUnit {
+		return quadlet.ParsedUnit, nil
+	}
+	return runningUnit(quadlet.ServiceName, changeset, readFile)
 }
 
 // runningUnit reads and parses the Agent's container Quadlet file on disk:

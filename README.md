@@ -343,7 +343,10 @@ after which the Agent's next start would find no config is refused too: one
 that stops resolving the mounted config secret (renames or drops its file),
 repoints the mount at a secret the Fleet doesn't resolve, or drops the mount.
 To manage the config by hand instead, mount a Host file at
-`/etc/picolet/config.yml` with `Volume=`.
+`/etc/picolet/config.yml` with `Volume=`. Any commit that stops resolving a
+secret (`Secret=`) or `.volume` unit the Agent's quadlet still mounts is
+refused as well, since Podman couldn't create the Agent's container: stop
+mounting it first, or in the same commit.
 If a check fails, the reconciliation fails before anything is written and the
 Agent keeps its current config, so it is never left with a config it would
 refuse to restart with. Place a new credential file on the Host (`bootstrap
@@ -356,7 +359,9 @@ the same place is checked there (moving the mount's target in the same commit
 works), a file under no mount is checked where it is spelled, and a file the
 new quadlet stops mounting, hides under a tmpfs, or mounts from a source the
 running container doesn't have, or from a secret or `.volume` unit the same
-commit changes, is refused. So a
+commit changes, is refused. A `Volume=`'s `subpath=` and other options that
+change what it shows (an overlay's `upperdir=`, `U`, `idmap`, …) count as part
+of its source; `ro`, `z`/`Z` and the like don't. So a
 commit that adds a mount and points the config at a file under it is refused:
 land the mount change in its own commit first, and point the config at it once
 the Agent runs with the mount.

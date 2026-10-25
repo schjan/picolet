@@ -56,10 +56,11 @@ func AgentConfigMount(files []ResolvedFile, unitName string) (name string, ok bo
 }
 
 // AgentConfigMountOf returns the name of the secret unit's [Container] group
-// mounts at the Agent config path, however the target is spelled (see
-// ParseSecretMount); the last such Secret= wins.
+// mounts at the Agent config path, as Quadlet reads Secret= (quoted and
+// whitespace-separated values) and Podman parses it (ParseSecretMount, which
+// cleans the target); the last such Secret= wins.
 func AgentConfigMountOf(unit *parser.UnitFile) (name string, ok bool) {
-	for _, spec := range unit.LookupAll("Container", "Secret") {
+	for _, spec := range unit.LookupAllArgs("Container", "Secret") {
 		if n, target, mounted := ParseSecretMount(spec); mounted && target == AgentConfigTarget {
 			name, ok = n, true
 		}
@@ -67,24 +68,38 @@ func AgentConfigMountOf(unit *parser.UnitFile) (name string, ok bool) {
 	return name, ok
 }
 
-// ParseSecretMount parses a quadlet Secret= value (name[,type=…][,target=…])
-// as Podman mounts it: a mount secret (type=mount, the default) is mounted at
-// its target, by default /run/secrets/<name>, and a relative target is under
-// /run/secrets. target is cleaned; mounted is false for an env secret.
+// ParseSecretMount parses one quadlet Secret= value as Podman's --secret does:
+// name[,opt=…], or opts only with source=<name> among them (a value without
+// a comma is the name, whatever it holds). A mount secret (type=mount, the
+// default) is mounted at its target, by default /run/secrets/<name>, and a
+// relative target is under /run/secrets. target is cleaned; mounted is false
+// for an env secret, whose name is still returned. Values Podman rejects are
+// not reported.
 func ParseSecretMount(spec string) (name, target string, mounted bool) {
 	fields := strings.Split(spec, ",")
-	name = fields[0]
-	target = name
-	for _, field := range fields[1:] {
+	if len(fields) == 1 {
+		return spec, path.Join("/run/secrets", spec), true
+	}
+	if !strings.Contains(fields[0], "=") {
+		name, fields = fields[0], fields[1:]
+	}
+	mounted = true
+	for _, field := range fields {
 		key, value, _ := strings.Cut(field, "=")
 		switch key {
+		case "source":
+			name = value
 		case "type":
-			if value != "mount" {
-				return name, "", false
-			}
+			mounted = value == "mount"
 		case "target":
 			target = value
 		}
+	}
+	if !mounted {
+		return name, "", false
+	}
+	if target == "" {
+		target = name
 	}
 	if !path.IsAbs(target) {
 		target = path.Join("/run/secrets", target)

@@ -491,7 +491,7 @@ func TestCheckSelfConfigUnresolvedMountedSecret(t *testing.T) {
 	st := state.NewState()
 	st.ManagedFiles["secret:picolet_system_config"] = state.ManagedFile{Hash: "h", Category: config.CategorySecret}
 	err := CheckSelfConfig(resolved, reconciler.Diff(resolved.Files, st), noRead)
-	require.ErrorContains(t, err, "refusing to remove the Agent config secret picolet_system_config")
+	require.ErrorContains(t, err, "refusing to remove the secret picolet_system_config")
 }
 
 // selfConfigChange is a commit reconciled against a state that manages the
@@ -503,6 +503,9 @@ type selfConfigChange struct {
 	config  *string // the picolet_system_config content the commit renders; nil: not resolved
 	files   []resolver.ResolvedFile
 	managed []string // further dest paths the state manages
+	// unchanged makes the state hold the Agent quadlet and config as the
+	// commit renders them, so the commit writes neither.
+	unchanged bool
 }
 
 const selfConfigUnitPath = "/etc/containers/systemd/picolet/picolet-system.container"
@@ -523,6 +526,10 @@ func (c selfConfigChange) check(t *testing.T) error {
 	st.ManagedFiles[selfConfigUnitPath] = state.ManagedFile{Hash: "old", Category: config.CategoryContainer}
 	st.ServiceNames[selfConfigUnitPath] = "picolet-system.service"
 	st.ManagedFiles["secret:picolet_system_config"] = state.ManagedFile{Hash: "old", Category: config.CategorySecret}
+	if c.unchanged {
+		agentFiles := files[:len(files)-len(c.files)]
+		reconciler.MergeChangeset(st, reconciler.Diff(agentFiles, state.NewState()))
+	}
 	for _, dest := range c.managed {
 		category := config.CategorySecret
 		if filepath.Ext(dest) == ".volume" {
@@ -706,7 +713,7 @@ func TestCheckSelfConfigRefusesCredentialWhoseSourceChanges(t *testing.T) {
 		{
 			name:      "secret removed",
 			change:    selfConfigChange{running: secretUnit, next: secretUnit, managed: []string{"secret:hook_secret"}},
-			wantError: []string{"secret hook_secret", "own commit"},
+			wantError: []string{"secret hook_secret", "still mounts"},
 		},
 		{
 			name: "volume unit rewritten",
@@ -728,4 +735,152 @@ func TestCheckSelfConfigRefusesCredentialWhoseSourceChanges(t *testing.T) {
 			assertRefusal(t, tt.change.check(t), tt.wantError)
 		})
 	}
+}
+
+// A commit that removes a source the Agent quadlet mounts (a Podman secret,
+// of either type, or a .volume unit) is refused even when it writes neither
+// the Agent's config nor its quadlet: Podman could not create the Agent's
+// container at its next start. A source the next quadlet no longer mounts
+// may go.
+func TestCheckSelfConfigRefusesRemovingMountedSource(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
+	hook := filepath.Join(dir, "hook")
+	const volumePath = "/etc/containers/systemd/picolet/creds.volume"
+	tests := []struct {
+		name      string
+		running   string // extra mount lines of the Agent quadlet on disk
+		next      string // extra mount lines of the Agent quadlet the commit renders
+		managed   []string
+		wantError []string // empty: passes
+	}{
+		{
+			name: "credential secret", running: "Secret=hook_secret,target=" + hook + "\n", managed: []string{"secret:hook_secret"},
+			wantError: []string{"hook_secret", hook, "still mounts"},
+		},
+		{
+			name: "secret spelled with source=", running: "Secret=source=hook_secret,target=" + hook + "\n", managed: []string{"secret:hook_secret"},
+			wantError: []string{"secret hook_secret", "still mounts"},
+		},
+		{
+			name: "secret not a credential", running: "Secret=other,target=/run/other\n", managed: []string{"secret:other"},
+			wantError: []string{"other", "still mounts"},
+		},
+		{
+			name: "env secret", running: "Secret=token,type=env,target=TOKEN\n", managed: []string{"secret:token"},
+			wantError: []string{"token", "still mounts"},
+		},
+		{
+			name: "volume unit of a Volume=", running: "Volume=creds.volume:" + dir + "\n", managed: []string{volumePath},
+			wantError: []string{"creds.volume", "still mounts"},
+		},
+		{
+			name: "volume unit of a Mount=", running: "Mount=type=volume,source=creds.volume,destination=" + dir + "\n", managed: []string{volumePath},
+			wantError: []string{"creds.volume", "still mounts"},
+		},
+		{name: "secret not mounted", managed: []string{"secret:hook_secret"}},
+		{name: "secret mounted, not managed", running: "Secret=hook_secret,target=" + hook + "\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			unit := agentBundleUnit(tt.running)
+			err := selfConfigChange{
+				running: unit, next: unit, config: webhookConfig(hook), managed: tt.managed, unchanged: true,
+			}.check(t)
+			assertRefusal(t, err, tt.wantError)
+		})
+	}
+
+	t.Run("mount dropped in the same commit", func(t *testing.T) {
+		t.Parallel()
+		running := agentBundleUnit("Secret=other,target=/run/other\n")
+		err := selfConfigChange{
+			running: running, next: agentBundleUnit(""), config: webhookConfig(hook), managed: []string{"secret:other"},
+		}.check(t)
+		require.NoError(t, err)
+	})
+}
+
+// Volume= options that change what the mount shows (subpath=, an overlay's
+// upperdir=) are part of its source, like a Mount='s subpath: a credential
+// under a Volume= whose such options change is refused. Options that only
+// change access or labelling are not, and their order does not matter.
+func TestCheckSelfConfigComparesVolumeOptions(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
+	volume := func(options string) string { return "Volume=creds:" + dir + options + "\n" }
+	tests := []struct {
+		name      string
+		running   string
+		next      string
+		wantError []string // empty: passes
+	}{
+		{name: "subpath changed", running: volume(":subpath=/a"), next: volume(":subpath=/b"), wantError: []string{"subpath", "own commit"}},
+		{name: "subpath dropped", running: volume(":subpath=/a"), next: volume(""), wantError: []string{"own commit"}},
+		{name: "subpath added", running: volume(":ro"), next: volume(":ro,subpath=a"), wantError: []string{"own commit"}},
+		{
+			name: "overlay upperdir changed", running: volume(":O,upperdir=/u1,workdir=/w"), next: volume(":O,upperdir=/u2,workdir=/w"),
+			wantError: []string{"upperdir=/u2", "own commit"},
+		},
+		{name: "subpath spelled differently", running: volume(":subpath=/a/"), next: volume(":subpath=a")},
+		{name: "access and label options changed", running: volume(":ro,z"), next: volume(":Z")},
+		{name: "options reordered", running: volume(":U,ro,subpath=a"), next: volume(":subpath=a,ro,U")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := selfConfigChange{
+				running: agentBundleUnit(tt.running), next: agentBundleUnit(tt.next), config: webhookConfig(filepath.Join(dir, "hook")),
+			}.check(t)
+			assertRefusal(t, err, tt.wantError)
+		})
+	}
+}
+
+// The running Agent's config secret is found however Podman reads its
+// Secret= line: with a source= key, or quoted. A config the Agent could not
+// start with is refused there too.
+func TestCheckSelfConfigFindsConfigMountSpellings(t *testing.T) {
+	t.Parallel()
+	bad := new("hostname: test-host\nrepo_url: https://example.com/fleet.git\nno_such_key_ever: 1\n")
+	for _, line := range []string{
+		"Secret=source=picolet_system_config,target=/etc/picolet/config.yml",
+		"Secret=target=/etc/picolet/config.yml,source=picolet_system_config",
+		`Secret="picolet_system_config,target=/etc/picolet/config.yml"`,
+	} {
+		unit := "[Container]\nImage=x\n" + line + "\n"
+		err := selfConfigChange{running: unit, next: unit, config: bad}.check(t)
+		require.ErrorContains(t, err, "no_such_key_ever", line)
+	}
+}
+
+// TestAgentRefusesRemovingMountedCredentialSecret runs the Agent loop on a
+// Fleet whose Agent quadlet mounts a Fleet-managed secret as a credential: a
+// commit that only stops resolving that secret, leaving the config and the
+// quadlet as they are, is refused and removes nothing.
+func TestAgentRefusesRemovingMountedCredentialSecret(t *testing.T) {
+	t.Parallel()
+	const hookFile = "services/picolet-system/secrets/hook_secret"
+	hook := filepath.Join(t.TempDir(), "hook")
+	require.NoError(t, os.WriteFile(hook, []byte("x"), 0o600))
+	unit := agentBundleUnit("Secret=hook_secret,target=" + hook + "\n")
+	bareDir, _ := initAgentBundleRepoWithUnit(t, unit,
+		"hostname: test-host\nrepo_url: https://example.com/fleet.git\nwebhook_secret_path: "+hook+"\n")
+	pushToTestRepo(t, bareDir, map[string]string{hookFile: "hook\n"})
+	quadletDir := t.TempDir()
+	h := startSelfConfigAgent(t, bareDir, WithQuadletDir(quadletDir))
+	require.Contains(t, h.st.ManagedFiles, "secret:hook_secret", "the first commit manages the credential secret")
+	unitPath := filepath.Join(quadletDir, "picolet-system.container")
+	require.NoError(t, os.WriteFile(unitPath, h.written[unitPath], 0o600))
+
+	require.NoError(t, os.Remove(filepath.Join(h.repoDir, hookFile)))
+	h.clearWrites()
+	_, err := h.a.ReconcileOnce(t.Context(), "drop-sha", h.st, h.store)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hook_secret")
+	assert.Contains(t, err.Error(), "still mounts")
+	h.assertNothingWritten(t)
 }
