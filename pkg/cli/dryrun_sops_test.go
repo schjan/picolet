@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/schjan/picolet/pkg/agent"
 	"github.com/schjan/picolet/pkg/reconciler"
+	"github.com/schjan/picolet/pkg/sops"
 	"github.com/schjan/picolet/pkg/state"
 )
 
@@ -30,26 +32,37 @@ func readCorpus(t *testing.T, rel string) string {
 	return string(data)
 }
 
-// `dry-run --config` decrypts like the Agent: once the state records a
-// SOPS-backed file, the dry-run reports no change for it, even after the
-// file was re-encrypted with a new data key.
-func TestDryRunWithConfigDecryptsSops(t *testing.T) {
-	t.Parallel()
-	fleet := t.TempDir()
-	writeFiles(t, fleet, map[string]string{ //nolint:gosec // G101: test templates, no credentials
+// sopsConfigFleet writes a Fleet whose Host renders a readSopsSecret value
+// (plus extra files) and an Agent config that names the srv-1 identity. It
+// returns the Fleet dir, the config path and the data dir.
+func sopsConfigFleet(t *testing.T, extra map[string]string) (fleet, configPath, dataDir string) {
+	t.Helper()
+	fleet = t.TempDir()
+	files := map[string]string{ //nolint:gosec // G101: test templates, no credentials
 		"fleet.yml":                "images: {}\nports: {picolet_system_metrics: 9418}\n",
 		"assignments.yml":          "base:\n  secrets:\n    - secrets/db_password.tmpl\n",
 		"hosts/test-host/host.yml": "hostname: test-host\nrole: server\nfeatures: []\n",
 		"secrets/db_password.tmpl": `{{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`,
 		"secrets/db.sops.yaml":     readCorpus(t, "corpus/values.sops.yaml"),
-	})
+	}
+	maps.Copy(files, extra)
+	writeFiles(t, fleet, files)
 	dir := t.TempDir()
 	identity := filepath.Join(dir, "age-identity")
 	require.NoError(t, os.WriteFile(identity, []byte(readCorpus(t, "identities/srv-1.agekey")), 0o600))
-	dataDir := filepath.Join(dir, "data")
-	configPath := filepath.Join(dir, "config.yml")
+	dataDir = filepath.Join(dir, "data")
+	configPath = filepath.Join(dir, "config.yml")
 	require.NoError(t, os.WriteFile(configPath, []byte("hostname: test-host\nsecrets_dir: "+filepath.Join(dir, "secrets")+
 		"\ndata_dir: "+dataDir+"\nsops:\n  age_identity_path: "+identity+"\n"), 0o600))
+	return fleet, configPath, dataDir
+}
+
+// `dry-run --config` decrypts like the Agent: once the state records a
+// SOPS-backed file, the dry-run reports no change for it, even after the
+// file was re-encrypted with a new data key.
+func TestDryRunWithConfigDecryptsSops(t *testing.T) {
+	t.Parallel()
+	fleet, configPath, dataDir := sopsConfigFleet(t, nil)
 
 	changeset, err := dryRunChangeset(t.Context(), fleet, "test-host", configPath)
 	require.NoError(t, err)
@@ -69,4 +82,34 @@ func TestDryRunWithConfigDecryptsSops(t *testing.T) {
 	changeset, err = dryRunChangeset(t.Context(), fleet, "test-host", configPath)
 	require.NoError(t, err)
 	assert.False(t, changeset.HasChanges(), "a re-encrypted file with the same values is not a change")
+}
+
+// `apply --config` does not decrypt (spec #248: considered, not adopted),
+// even with a sops block: a sops:// ref fails with the no-identity error and
+// a message that says apply never decrypts, rather than only pointing at the
+// sops block the config already has.
+func TestApplyWithConfigDoesNotDecryptSops(t *testing.T) {
+	t.Parallel()
+	fleet, configPath, _ := sopsConfigFleet(t, nil)
+
+	err := runApply(t.Context(), configPath, fleet, "test-host")
+	require.ErrorIs(t, err, sops.ErrNoIdentity)
+	require.ErrorContains(t, err, "picolet apply does not decrypt sops:// refs")
+}
+
+// `dry-run --config` decrypts, so a validation error that embeds a decrypted
+// value (a manifest's YAML type error) reaches the terminal scrubbed.
+func TestDryRunWithConfigScrubsValidationErrors(t *testing.T) {
+	t.Parallel()
+	fleet, configPath, _ := sopsConfigFleet(t, map[string]string{
+		"assignments.yml":        "base:\n  paths:\n    - manifests/app.yml.tmpl\n  secrets:\n    - secrets/db_password.tmpl\n",
+		"manifests/app.yml.tmpl": "apiVersion: v1\nkind: Pod\nmetadata: {{ readSopsSecret \"sops://secrets/db.sops.yaml#/db/password\" }}\n",
+	})
+
+	_, err := dryRunChangeset(t.Context(), fleet, "test-host", configPath)
+	require.ErrorContains(t, err, "validation failed")
+	require.ErrorContains(t, err, sops.Redacted)
+	for _, leak := range []string{"hunter2-test", "hunter2..."} {
+		assert.NotContains(t, err.Error(), leak)
+	}
 }

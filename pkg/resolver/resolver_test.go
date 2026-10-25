@@ -1919,8 +1919,8 @@ func TestResolveHostStrictDirectProviderSecretNamesRefAndFix(t *testing.T) {
 			require.NoError(t, err)
 
 			_, err = r.ResolveHost(t.Context(), "node-1")
-			require.ErrorContains(t, err, ref)
-			require.ErrorContains(t, err, "use a YAML-value reference and let the agent resolve it at runtime")
+			require.ErrorContains(t, err, "direct secrets "+ref+": provider not configured in strict mode; "+
+				"use a YAML-value reference and let the agent resolve it at runtime")
 		})
 	}
 }

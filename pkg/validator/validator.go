@@ -100,15 +100,9 @@ func AnalyzeFiles(files []resolver.ResolvedFile, target Target, opts ...Option) 
 	return deps, errors.Join(errs...)
 }
 
-// ValidateHost resolves and validates files for a single host. The resolver
-// logs through its own resolver.Config.Logger.
-func ValidateHost(ctx context.Context, r *resolver.Resolver, hostname string, opts ...Option) error {
-	_, err := validateHost(ctx, r, hostname, opts)
-	return err
-}
-
-// validateHost is ValidateHost returning the Host's resolve too; it is nil
-// exactly when the resolve failed.
+// validateHost resolves and validates the files of one Host and returns its
+// resolve, which is nil exactly when the resolve failed. The resolver logs
+// through its own resolver.Config.Logger.
 func validateHost(ctx context.Context, r *resolver.Resolver, hostname string, opts []Option) (*resolver.ResolvedHost, error) {
 	log := newOptions(opts).logger
 	log.Info("validating host", "host", hostname)

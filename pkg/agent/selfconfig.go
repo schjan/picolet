@@ -10,10 +10,10 @@ import (
 	"github.com/schjan/picolet/pkg/resolver"
 )
 
-// checkSelfConfig refuses a changeset that would change the Agent's own
-// Fleet-rendered config to one the Agent could not start with: one its
-// strict loader rejects or one whose startup credential checks fail
-// (agentcfg.CheckRenderedConfig). A changed config does not restart the Agent, so
+// checkSelfConfig is the self-restart guard: it refuses a changeset that
+// would change the Agent's own Fleet-rendered config to one the Agent could
+// not start with: one its strict loader rejects or one whose startup
+// credential checks fail (agentcfg.CheckRenderedConfig). A changed config does not restart the Agent, so
 // applying it would only lock the Agent out at its next restart, when it can
 // no longer fetch a fix.
 //
