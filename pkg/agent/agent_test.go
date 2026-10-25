@@ -33,90 +33,48 @@ import (
 	"github.com/schjan/picolet/pkg/status"
 )
 
-// initTestRepo creates a git repo with picolet config files for a test host.
-func initTestRepo(t *testing.T) string {
+// initFleetRepo commits files (Fleet-relative path → content) to a new repo
+// and returns a bare clone of it, to use as RepoURL, and its HEAD SHA.
+func initFleetRepo(t *testing.T, files map[string]string) (bareDir, headSHA string) {
 	t.Helper()
-	bareDir := filepath.Join(t.TempDir(), "bare.git")
+	bareDir = filepath.Join(t.TempDir(), "bare.git")
 	workDir := filepath.Join(t.TempDir(), "work")
-
 	repo, err := git.PlainInit(workDir, false)
 	require.NoError(t, err)
-
-	// Create fleet.yml
-	writeTestFile(t, workDir, "fleet.yml", `images:
-  traefik: "traefik:v3"
-ports:
-  alloy_http: 12345
-  picolet_system_metrics: 9418
-`)
-
-	// Create assignments.yml
-	writeTestFile(t, workDir, "assignments.yml", `base:
-  paths:
-    - quadlets/networks/internal.network
-`)
-
-	// Create host config
-	writeTestFile(t, workDir, "hosts/test-host/host.yml", `hostname: test-host
-external_hostname: test-host.ts.net
-role: server
-features: []
-`)
-
-	// Create a network file (not a template)
-	writeTestFile(t, workDir, "quadlets/networks/internal.network", `[Network]
-Internal=true
-`)
-
+	for path, content := range files {
+		writeTestFile(t, workDir, path, content)
+	}
 	wt, err := repo.Worktree()
 	require.NoError(t, err)
 	_, err = wt.Add(".")
 	require.NoError(t, err)
-	_, err = wt.Commit("initial", &git.CommitOptions{
-		Author: &object.Signature{Name: "test", Email: "test@test.com"},
-	})
+	head, err := wt.Commit("initial", &git.CommitOptions{Author: &object.Signature{Name: "test", Email: "test@test.com"}})
 	require.NoError(t, err)
-
-	// Clone as bare
 	_, err = git.PlainClone(bareDir, true, &git.CloneOptions{URL: workDir})
 	require.NoError(t, err)
-	return bareDir
+	return bareDir, head.String()
 }
 
-// initTestRepoWithHook creates a bare git repo whose only service bundle
-// declares a signal hook bound to app.service. Returned path is the bare repo
-// repoHeadSHA returns the HEAD commit SHA of the repo at url.
-func repoHeadSHA(t *testing.T, url string) string {
-	t.Helper()
-	clone, err := git.PlainClone(filepath.Join(t.TempDir(), "peek"), false, &git.CloneOptions{URL: url})
-	require.NoError(t, err)
-	head, err := clone.Head()
-	require.NoError(t, err)
-	return head.Hash().String()
+// networkFleet is a Fleet whose test-host gets one network quadlet (not a
+// template).
+func networkFleet() map[string]string {
+	return map[string]string{
+		"fleet.yml":                          "images:\n  traefik: \"traefik:v3\"\nports:\n  alloy_http: 12345\n  picolet_system_metrics: 9418\n",
+		"assignments.yml":                    "base:\n  paths:\n    - quadlets/networks/internal.network\n",
+		"hosts/test-host/host.yml":           "hostname: test-host\nexternal_hostname: test-host.ts.net\nrole: server\nfeatures: []\n",
+		"quadlets/networks/internal.network": "[Network]\nInternal=true\n",
+	}
 }
 
-// to use as RepoURL.
-func initTestRepoWithHook(t *testing.T) string {
-	t.Helper()
-	bareDir := filepath.Join(t.TempDir(), "bare.git")
-	workDir := filepath.Join(t.TempDir(), "work")
-
-	repo, err := git.PlainInit(workDir, false)
-	require.NoError(t, err)
-
-	writeTestFile(t, workDir, "fleet.yml", `images: {}
-ports: {picolet_system_metrics: 9418}
-`)
-	writeTestFile(t, workDir, "assignments.yml", `base:
-  services:
-    - app
-`)
-	writeTestFile(t, workDir, "hosts/test-host/host.yml", `hostname: test-host
-role: server
-features: []
-`)
-	writeTestFile(t, workDir, "services/app/secrets/app_config.yml", "v: 1\n")
-	writeTestFile(t, workDir, "services/app/picolet.yml", `hooks:
+// hookFleet is a Fleet whose only service bundle declares a signal hook
+// bound to app.service.
+func hookFleet() map[string]string {
+	return map[string]string{
+		"fleet.yml":                           "images: {}\nports: {picolet_system_metrics: 9418}\n",
+		"assignments.yml":                     "base:\n  services:\n    - app\n",
+		"hosts/test-host/host.yml":            "hostname: test-host\nrole: server\nfeatures: []\n",
+		"services/app/secrets/app_config.yml": "v: 1\n",
+		"services/app/picolet.yml": `hooks:
   - name: app-sighup
     secrets: [app_config]
     unit: app.service
@@ -124,20 +82,8 @@ features: []
     container: app
     signal: HUP
     on_failure: keep_running
-`)
-
-	wt, err := repo.Worktree()
-	require.NoError(t, err)
-	_, err = wt.Add(".")
-	require.NoError(t, err)
-	_, err = wt.Commit("initial", &git.CommitOptions{
-		Author: &object.Signature{Name: "test", Email: "test@test.com"},
-	})
-	require.NoError(t, err)
-
-	_, err = git.PlainClone(bareDir, true, &git.CloneOptions{URL: workDir})
-	require.NoError(t, err)
-	return bareDir
+`,
+	}
 }
 
 func writeTestFile(t *testing.T, root, path, content string) {
@@ -718,7 +664,7 @@ func setupNoopMocks(sys *appliermocks.MockSystemdManager, pod *appliermocks.Mock
 
 func TestAgentFullCycle(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	stateDir := filepath.Join(t.TempDir(), "state")
 	statePath := filepath.Join(stateDir, "state.json")
@@ -766,7 +712,7 @@ func TestAgentFullCycle(t *testing.T) {
 
 func TestAgentDryRun(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
@@ -809,7 +755,7 @@ func TestAgentDryRun(t *testing.T) {
 
 func TestAgentRetriesFailedSHA(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
+	bareDir, headSHA := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	stateDir := t.TempDir()
 	statePath := filepath.Join(stateDir, "state.json")
@@ -837,7 +783,7 @@ func TestAgentRetriesFailedSHA(t *testing.T) {
 	// Pre-seed state with only 1 failure — below maxRetries, should retry
 	store := state.NewStore(statePath)
 	st := state.NewState()
-	st.FailedSHA = repoHeadSHA(t, bareDir)
+	st.FailedSHA = headSHA
 	st.FailedCount = 1 // only 1 failure, will retry
 	require.NoError(t, store.Save(st))
 
@@ -858,7 +804,7 @@ func TestAgentRetriesFailedSHA(t *testing.T) {
 
 func TestAgentDeletionCycle(t *testing.T) { //nolint:funlen // three-phase test: create cycle, disk mutation, deletion reconcile
 	t.Parallel()
-	bareDir := initTestRepo(t)
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
@@ -992,7 +938,7 @@ Internal=true
 
 func TestAgentRollbackOnApplyFailure(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
@@ -1045,7 +991,9 @@ func TestAgentRollbackOnApplyFailure(t *testing.T) {
 	assert.Empty(t, st.AppliedSHA, "applied SHA should not be set after failed apply")
 }
 
-func pushToTestRepo(t *testing.T, bareDir string, files map[string]string) {
+// pushToTestRepo commits files (Fleet-relative path → content) on top of
+// the bare repo's HEAD, pushes, and returns the new HEAD SHA.
+func pushToTestRepo(t *testing.T, bareDir string, files map[string]string) (headSHA string) {
 	t.Helper()
 	workDir := filepath.Join(t.TempDir(), "push-work")
 	repo, err := git.PlainClone(workDir, false, &git.CloneOptions{URL: bareDir})
@@ -1057,12 +1005,13 @@ func pushToTestRepo(t *testing.T, bareDir string, files map[string]string) {
 	require.NoError(t, err)
 	_, err = wt.Add(".")
 	require.NoError(t, err)
-	_, err = wt.Commit("update", &git.CommitOptions{
+	head, err := wt.Commit("update", &git.CommitOptions{
 		Author: &object.Signature{Name: "test", Email: "test@test.com", When: time.Now()},
 	})
 	require.NoError(t, err)
 	err = repo.Push(&git.PushOptions{})
 	require.NoError(t, err)
+	return head.String()
 }
 
 func TestScanOrphansAfterSchemaMigration(t *testing.T) {
@@ -1104,7 +1053,7 @@ func TestScanOrphansAfterSchemaMigration(t *testing.T) {
 
 func TestAgentPauseSkipsReconciliation(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
@@ -1156,7 +1105,7 @@ func TestAgentPauseSkipsReconciliation(t *testing.T) {
 //nolint:funlen // setup-heavy integration test: mocks + git repo + status capture
 func TestAgentMQTTStatusPublished(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
@@ -1225,7 +1174,7 @@ func TestAgentMQTTStatusPublished(t *testing.T) {
 
 func TestLastSuccessfulReconciliationSeededFromState(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
@@ -1379,7 +1328,7 @@ picolet_host_info{machine="test-host",role="server",user="root"} 1
 func TestTickDoesNotCreateDeploymentForUnchangedSHAOpRefresh(t *testing.T) {
 	t.Parallel()
 
-	bareDir := initTestRepo(t)
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
@@ -1438,7 +1387,7 @@ func TestTickDoesNotCreateDeploymentForUnchangedSHAOpRefresh(t *testing.T) {
 
 func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepoWithHook(t)
+	bareDir, _ := initFleetRepo(t, hookFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	metrics.Register(nil)
@@ -1535,7 +1484,7 @@ func tickPendingUnitFixture(t *testing.T, poller *gitpoll.Poller, repoDir, state
 // success — and does not advance failure tracking or the last-successful time.
 func TestTickReportsRetryPendingWhenUnitsPending(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	metrics.Register(nil)
@@ -1583,7 +1532,7 @@ func TestTickReportsRetryPendingWhenUnitsPending(t *testing.T) {
 // observes a previously-pending unit as healthy clears the pending record.
 func TestTickClearsPendingUnitWhenHealthy(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	metrics.Register(nil)
@@ -1679,7 +1628,7 @@ func timerJobStatuses(sys *appliermocks.MockSystemdManager, firstStart, firstEnd
 // and has not yet moved the finish timestamp.
 func TestTickRecordsTimerOneshotRuns(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	metrics.Register(nil)
@@ -1734,7 +1683,7 @@ func TestTickRecordsTimerOneshotRuns(t *testing.T) {
 // so mergePendingHooks drops it and stale entries don't accumulate.
 func TestTickDropsStalePendingHookNameOnRetry(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepoWithHook(t)
+	bareDir, _ := initFleetRepo(t, hookFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	metrics.Register(nil)
@@ -1790,7 +1739,7 @@ func TestTickDropsStalePendingHookNameOnRetry(t *testing.T) {
 
 func TestTickDoesNotIncrementFailedCountOnRetryableHookError(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepoWithHook(t)
+	bareDir, _ := initFleetRepo(t, hookFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	metrics.Register(nil)

@@ -31,16 +31,9 @@ func referenceAgentFleet(t *testing.T, hostYML string) map[string]string {
 	tmpl, err := os.ReadFile(filepath.Join("..", "..", "testdata", "example-fleet",
 		"services", "picolet-system", "secrets", "picolet_system_config.yml.tmpl"))
 	require.NoError(t, err)
-	return map[string]string{
-		"fleet.yml":                "images: {}\nports: {picolet_system_metrics: 9418}\n",
-		"assignments.yml":          "base:\n  services:\n    - picolet-system\n",
-		"hosts/test-host/host.yml": hostYML,
-		"services/picolet-system/picolet-system.container": `[Container]
-Image=ghcr.io/schjan/picolet:latest
-Secret=picolet_system_config,target=/etc/picolet/config.yml
-`,
-		"services/picolet-system/secrets/picolet_system_config.yml.tmpl": string(tmpl),
-	}
+	files := agentBundleFiles(agentBundleUnit(""), "picolet_system_config.yml.tmpl", string(tmpl))
+	files["hosts/test-host/host.yml"] = hostYML
+	return files
 }
 
 // TestAgentRefusesSopsAdoptionWithoutDeliveredIdentity runs the Agent loop
@@ -55,8 +48,7 @@ func TestAgentRefusesSopsAdoptionWithoutDeliveredIdentity(t *testing.T) {
 		t.Skipf("%s exists on this machine", referenceAgentConfigIdentity)
 	}
 	plainHost := "hostname: test-host\nrole: server\nfeatures: []\n"
-	bareDir := initFleetRepo(t, referenceAgentFleet(t, plainHost))
-	firstSHA := repoHeadSHA(t, bareDir)
+	bareDir, firstSHA := initFleetRepo(t, referenceAgentFleet(t, plainHost))
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	sys, pod, fw := newBareMocks(t)
 	setupApplyMocks(sys, pod, fw)
@@ -82,10 +74,9 @@ func TestAgentRefusesSopsAdoptionWithoutDeliveredIdentity(t *testing.T) {
 	require.Eventually(t, func() bool { _, ok := eventMessage(a.statusStore.Snapshot(), "success", firstSHA); return ok },
 		8*time.Second, 20*time.Millisecond, "the first commit applies")
 
-	pushToTestRepo(t, bareDir, map[string]string{
+	secondSHA := pushToTestRepo(t, bareDir, map[string]string{
 		"hosts/test-host/host.yml": plainHost + "age_recipients:\n  - " + srv1Recipient + "\n",
 	})
-	secondSHA := repoHeadSHA(t, bareDir)
 	require.Eventually(t, func() bool { _, ok := eventMessage(a.statusStore.Snapshot(), "failure", secondSHA); return ok },
 		8*time.Second, 20*time.Millisecond, "the commit adding age_recipients: fails")
 

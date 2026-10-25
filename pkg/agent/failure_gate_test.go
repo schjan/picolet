@@ -25,7 +25,7 @@ import (
 // HEAD SHA and the state path.
 func failingApplyAgent(t *testing.T, pollInterval time.Duration) (a *Agent, headSHA, statePath string) {
 	t.Helper()
-	bareDir := initTestRepo(t)
+	bareDir, headSHA := initFleetRepo(t, networkFleet())
 	statePath = filepath.Join(t.TempDir(), "state.json")
 
 	sys, pod, fw := newBareMocks(t)
@@ -46,7 +46,7 @@ func failingApplyAgent(t *testing.T, pollInterval time.Duration) (a *Agent, head
 	a = newTestAgent(t, cfg, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
 		WithRepoPath(filepath.Join(t.TempDir(), "clone")), WithStatePath(statePath))
 
-	return a, repoHeadSHA(t, bareDir), statePath
+	return a, headSHA, statePath
 }
 
 // runUntil runs the Agent until cond holds on its status store (or fails the

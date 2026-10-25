@@ -105,7 +105,7 @@ func TestHealthEndpoint_ReturnsUnavailableBeforeFirstTick(t *testing.T) {
 
 func TestHealthEndpoint_ReturnsOKAfterSuccessfulTick(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
@@ -159,7 +159,7 @@ func TestHealthEndpoint_ReturnsOKAfterSuccessfulTick(t *testing.T) {
 //nolint:funlen // integration test: setup + two sub-tests for valid/invalid webhook
 func TestWebhookTriggersReconciliation(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 

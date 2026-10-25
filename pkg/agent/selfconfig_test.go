@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/containers/podman/v5/pkg/systemd/parser"
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -21,13 +19,6 @@ import (
 	"github.com/schjan/picolet/pkg/state"
 )
 
-// initAgentBundleRepo creates a bare repo whose rootful test-host runs its
-// own Agent bundle (picolet-system) with the given rendered Agent config.
-func initAgentBundleRepo(t *testing.T, agentConfig string) (bareDir, headSHA string) {
-	t.Helper()
-	return initAgentBundleRepoWithUnit(t, agentBundleUnit(""), agentConfig)
-}
-
 // agentBundleUnit is the test Agent quadlet with the extra [Container] lines
 // mounts (Volume=/Secret= lines).
 func agentBundleUnit(mounts string) string {
@@ -37,32 +28,17 @@ Secret=picolet_system_config,target=/etc/picolet/config.yml
 ` + mounts
 }
 
-// initAgentBundleRepoWithUnit is initAgentBundleRepo with the Agent quadlet's
-// content.
-func initAgentBundleRepoWithUnit(t *testing.T, unit, agentConfig string) (bareDir, headSHA string) {
-	t.Helper()
-	bareDir = filepath.Join(t.TempDir(), "bare.git")
-	workDir := filepath.Join(t.TempDir(), "work")
-	repo, err := git.PlainInit(workDir, false)
-	require.NoError(t, err)
-
-	writeTestFile(t, workDir, "fleet.yml", "images: {}\nports: {picolet_system_metrics: 9418}\n")
-	writeTestFile(t, workDir, "assignments.yml", "base:\n  services:\n    - picolet-system\n")
-	writeTestFile(t, workDir, "hosts/test-host/host.yml", "hostname: test-host\nrole: server\nfeatures: []\n")
-	writeTestFile(t, workDir, "services/picolet-system/picolet-system.container", unit)
-	writeTestFile(t, workDir, "services/picolet-system/secrets/picolet_system_config.yml", agentConfig)
-
-	wt, err := repo.Worktree()
-	require.NoError(t, err)
-	_, err = wt.Add(".")
-	require.NoError(t, err)
-	head, err := wt.Commit("initial", &git.CommitOptions{
-		Author: &object.Signature{Name: "test", Email: "test@test.com"},
-	})
-	require.NoError(t, err)
-	_, err = git.PlainClone(bareDir, true, &git.CloneOptions{URL: workDir})
-	require.NoError(t, err)
-	return bareDir, head.String()
+// agentBundleFiles is a Fleet whose rootful test-host runs its own Agent
+// bundle (picolet-system) with the Agent quadlet unit and the bundle secret
+// configName (picolet_system_config.yml, or a .tmpl of it) holding body.
+func agentBundleFiles(unit, configName, body string) map[string]string {
+	return map[string]string{
+		"fleet.yml":                "images: {}\nports: {picolet_system_metrics: 9418}\n",
+		"assignments.yml":          "base:\n  services:\n    - picolet-system\n",
+		"hosts/test-host/host.yml": "hostname: test-host\nrole: server\nfeatures: []\n",
+		"services/picolet-system/picolet-system.container": unit,
+		"services/picolet-system/secrets/" + configName:    body,
+	}
 }
 
 // TestAgentRefusesSelfConfigItCouldNotStartWith runs the Agent loop on a
@@ -115,7 +91,7 @@ func TestAgentRefusesSelfConfigItCouldNotStartWith(t *testing.T) {
 // every wantError fragment.
 func runSelfConfigCase(t *testing.T, agentConfig string, wantError []string) {
 	t.Helper()
-	bareDir, headSHA := initAgentBundleRepo(t, agentConfig)
+	bareDir, headSHA := initFleetRepo(t, agentBundleFiles(agentBundleUnit(""), "picolet_system_config.yml", agentConfig))
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
 	sys, pod, fw := newBareMocks(t)
@@ -185,7 +161,7 @@ func TestAgentRefusesMountSwitchToSelfConfigItCouldNotStartWith(t *testing.T) {
 		quadlet    = "services/picolet-system/picolet-system.container"
 		nextConfig = "services/picolet-system/secrets/picolet_system_config_next.yml"
 	)
-	bareDir, _ := initAgentBundleRepo(t, "hostname: test-host\nrepo_url: https://example.com/fleet.git\n")
+	bareDir, _ := initFleetRepo(t, agentBundleFiles(agentBundleUnit(""), "picolet_system_config.yml", "hostname: test-host\nrepo_url: https://example.com/fleet.git\n"))
 	pushToTestRepo(t, bareDir, map[string]string{
 		nextConfig: "hostname: test-host\nrepo_url: https://example.com/fleet.git\nno_such_key_ever: x\n",
 	})
@@ -249,7 +225,7 @@ func TestAgentRefusesDroppingMountedSelfConfig(t *testing.T) {
 		oldConfig = "services/picolet-system/secrets/picolet_system_config.yml"
 		newConfig = "services/picolet-system/secrets/picolet_cfg.yml"
 	)
-	bareDir, _ := initAgentBundleRepo(t, "hostname: test-host\nrepo_url: https://example.com/fleet.git\n")
+	bareDir, _ := initFleetRepo(t, agentBundleFiles(agentBundleUnit(""), "picolet_system_config.yml", "hostname: test-host\nrepo_url: https://example.com/fleet.git\n"))
 	h := startSelfConfigAgent(t, bareDir)
 	require.Contains(t, h.st.ManagedFiles, "secret:picolet_system_config", "the first commit renders the Agent config")
 
@@ -436,7 +412,7 @@ func runMountChangeCase(t *testing.T, unit, config, nextUnit, nextConfig string,
 		quadlet    = "services/picolet-system/picolet-system.container"
 		configFile = "services/picolet-system/secrets/picolet_system_config.yml"
 	)
-	bareDir, _ := initAgentBundleRepoWithUnit(t, unit, config)
+	bareDir, _ := initFleetRepo(t, agentBundleFiles(unit, "picolet_system_config.yml", config))
 	quadletDir := t.TempDir()
 	h := startSelfConfigAgent(t, bareDir, append([]Option{WithQuadletDir(quadletDir)}, opts...)...)
 	// The running Agent's container was started from the unit on disk; the
@@ -909,7 +885,7 @@ func TestAgentRefusesRemovingMountedCredentialSecret(t *testing.T) {
 	hook := filepath.Join(t.TempDir(), "hook")
 	require.NoError(t, os.WriteFile(hook, []byte("x"), 0o600))
 	unit := agentBundleUnit("Secret=hook_secret,target=" + hook + "\n")
-	bareDir, _ := initAgentBundleRepoWithUnit(t, unit, *webhookConfig(hook))
+	bareDir, _ := initFleetRepo(t, agentBundleFiles(unit, "picolet_system_config.yml", *webhookConfig(hook)))
 	pushToTestRepo(t, bareDir, map[string]string{hookFile: "hook\n"})
 	quadletDir := t.TempDir()
 	h := startSelfConfigAgent(t, bareDir, WithQuadletDir(quadletDir))

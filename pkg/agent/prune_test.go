@@ -21,13 +21,13 @@ import (
 )
 
 // newPruneTickAgent wires an agent against a minimal real git repo (via
-// initTestRepo) and a noop-poised state, so tests can exercise the prune step
+// networkFleet) and a noop-poised state, so tests can exercise the prune step
 // through the real tick() path. Returns the agent, poller, store and the
 // health checker ready for a.tick(...).
 func newPruneTickAgent(t *testing.T, cfg *agentcfg.Config, opts ...Option) (*Agent, *gitpoll.Poller, *state.Store, *health.Checker) {
 	t.Helper()
 	metrics.Register(nil)
-	bareDir := initTestRepo(t)
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 

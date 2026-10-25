@@ -11,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -62,28 +60,6 @@ func sopsFleet(secret string, extra map[string]string, paths ...string) map[stri
 	return files
 }
 
-// initFleetRepo commits files to a fresh repo and returns a bare clone of
-// it to use as RepoURL.
-func initFleetRepo(t *testing.T, files map[string]string) string {
-	t.Helper()
-	bareDir := filepath.Join(t.TempDir(), "bare.git")
-	workDir := filepath.Join(t.TempDir(), "work")
-	repo, err := git.PlainInit(workDir, false)
-	require.NoError(t, err)
-	for path, content := range files {
-		writeTestFile(t, workDir, path, content)
-	}
-	wt, err := repo.Worktree()
-	require.NoError(t, err)
-	_, err = wt.Add(".")
-	require.NoError(t, err)
-	_, err = wt.Commit("initial", &git.CommitOptions{Author: &object.Signature{Name: "test", Email: "test@test.com"}})
-	require.NoError(t, err)
-	_, err = git.PlainClone(bareDir, true, &git.CloneOptions{URL: workDir})
-	require.NoError(t, err)
-	return bareDir
-}
-
 // sopsHarness drives the Agent loop (tick by tick) over an in-memory git
 // Fleet and records what reaches Podman, systemd, the deployment reporter and
 // the logs.
@@ -107,7 +83,8 @@ type sopsHarness struct {
 // Agent's startup loads the identities.
 func newSopsHarness(t *testing.T, files map[string]string, identityPath string) *sopsHarness {
 	t.Helper()
-	h := &sopsHarness{bareDir: initFleetRepo(t, files), secrets: map[string]string{}}
+	bareDir, _ := initFleetRepo(t, files)
+	h := &sopsHarness{bareDir: bareDir, secrets: map[string]string{}}
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 

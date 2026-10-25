@@ -76,7 +76,7 @@ func TestAgentsRecordFailedSHAGaugeIndependently(t *testing.T) {
 // the repo's HEAD as failed failures times (recently).
 func tickWithFailedSHA(t *testing.T, failures int) (*Agent, *testlog.Recorder) {
 	t.Helper()
-	bareDir := initTestRepo(t)
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	repoDir := filepath.Join(t.TempDir(), "clone")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 
