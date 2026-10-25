@@ -266,17 +266,17 @@ func dryRunResolveWithConfig(ctx context.Context, repoDir, hostname, configPath 
 	return resolved, store, cfg.Rootless, scrub, nil
 }
 
-// dryRunResolveBasic resolves the host without agent config (no secrets, default state path).
-// It passes no SOPS reader, so a sops:// ref fails the resolve with the
-// no-identity error rather than rendering a placeholder.
-func dryRunResolveBasic(ctx context.Context, repoDir, hostname string) (*resolver.ResolvedHost, *state.Store, error) {
+// dryRunResolveBasic resolves the host without agent config (no secrets,
+// the state at statePath). Like resolve it is keyless: a sops:// value
+// renders as "<sops-secret>" (dryRunResult.Unverified).
+func dryRunResolveBasic(ctx context.Context, repoDir, hostname, statePath string) (*resolver.ResolvedHost, *state.Store, error) {
 	repo, err := config.OpenRepo(repoDir)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer repo.Close()
 
-	r, err := resolver.New(resolver.Config{FS: repo.FS, Config: repo.Config})
+	r, err := resolver.NewKeyless(resolver.Config{FS: repo.FS, Config: repo.Config})
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating resolver: %w", err)
 	}
@@ -285,21 +285,32 @@ func dryRunResolveBasic(ctx context.Context, repoDir, hostname string) (*resolve
 		return nil, nil, err
 	}
 
-	return resolved, state.NewStore(agent.DefaultStatePath), nil
+	return resolved, state.NewStore(statePath), nil
 }
 
 func runDryRun(ctx context.Context, repoDir, hostname, configPath string) error {
-	changeset, err := dryRunChangeset(ctx, repoDir, hostname, configPath)
+	result, err := dryRunChangeset(ctx, repoDir, hostname, configPath, agent.DefaultStatePath)
 	if err != nil {
 		return err
 	}
+	logDryRun(slog.Default(), result)
+	return nil
+}
 
+// unverifiedSuffix marks a keyless dry-run's update of a file whose content
+// holds a SOPS value: it renders as "<sops-secret>", so the update may be
+// no change at all.
+const unverifiedSuffix = " (unverified: SOPS values not decrypted)"
+
+// logDryRun logs a dry-run's result: a summary, then one record per change.
+func logDryRun(logger *slog.Logger, result *dryRunResult) {
+	changeset := result.Changeset
 	if !changeset.HasChanges() {
-		slog.Info("no changes detected")
-		return nil
+		logger.Info("no changes detected")
+		return
 	}
 
-	slog.Info("dry-run changes",
+	logger.Info("dry-run changes",
 		"create", changeset.Summary[reconciler.ActionCreate],
 		"update", changeset.Summary[reconciler.ActionUpdate],
 		"delete", changeset.Summary[reconciler.ActionDelete],
@@ -309,19 +320,31 @@ func runDryRun(ctx context.Context, repoDir, hostname, configPath string) error 
 		if c.Action == reconciler.ActionNoop {
 			continue
 		}
-		slog.Info("change",
-			"action", c.Action,
+		action := string(c.Action)
+		if c.Action == reconciler.ActionUpdate && result.Unverified[c.DestPath] {
+			action += unverifiedSuffix
+		}
+		logger.Info("change",
+			"action", action,
 			"path", c.DestPath,
 			"category", c.Category,
 		)
 	}
+}
 
-	return nil
+// dryRunResult is a dry-run's changeset, plus, for a keyless dry-run (no
+// Agent config), the DestPaths whose content holds a SOPS value
+// (resolver.ResolvedFile.SopsValues): their diff is unverified.
+type dryRunResult struct {
+	Changeset  *reconciler.Changeset
+	Unverified map[string]bool
 }
 
 // dryRunChangeset resolves and validates the Host as a dry-run does and
-// diffs it against the state, without writing anything.
-func dryRunChangeset(ctx context.Context, repoDir, hostname, configPath string) (*reconciler.Changeset, error) {
+// diffs it against the state, without writing anything. With an Agent
+// config it decrypts like the Agent and reads the config's state; without
+// one it resolves keyless and reads the state at basicStatePath.
+func dryRunChangeset(ctx context.Context, repoDir, hostname, configPath, basicStatePath string) (*dryRunResult, error) {
 	var (
 		resolved *resolver.ResolvedHost
 		store    *state.Store
@@ -334,7 +357,7 @@ func dryRunChangeset(ctx context.Context, repoDir, hostname, configPath string) 
 	if configPath != "" {
 		resolved, store, rootless, scrub, err = dryRunResolveWithConfig(ctx, repoDir, hostname, configPath)
 	} else {
-		resolved, store, err = dryRunResolveBasic(ctx, repoDir, hostname)
+		resolved, store, err = dryRunResolveBasic(ctx, repoDir, hostname, basicStatePath)
 	}
 	if err != nil {
 		return nil, err
@@ -349,7 +372,16 @@ func dryRunChangeset(ctx context.Context, repoDir, hostname, configPath string) 
 	if err != nil {
 		return nil, fmt.Errorf("loading state: %w", err)
 	}
-	return reconciler.Diff(files, st), nil
+	result := &dryRunResult{Changeset: reconciler.Diff(files, st)}
+	if configPath == "" {
+		result.Unverified = map[string]bool{}
+		for _, f := range files {
+			if f.SopsValues {
+				result.Unverified[f.DestPath] = true
+			}
+		}
+	}
+	return result, nil
 }
 
 // runValidate validates every Host of the Fleet at repoDir. Config load,

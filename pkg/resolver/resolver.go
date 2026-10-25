@@ -45,6 +45,12 @@ type ResolvedFile struct {
 	// (e.g. "config/scrape.yml" for a manifest at manifests/config/scrape.yml).
 	// Only set for manifest- and file-category resolved files.
 	RelPath string
+	// SopsValues is true when Content holds a value read through a sops://
+	// ref: a readSopsSecret or readSopsData call during the file's render
+	// (also through renderTemplate) or a direct sops:// secrets: entry.
+	// Keyless, such a value is "<sops-secret>", so the content can't be
+	// compared with what the Agent applied.
+	SopsValues bool
 }
 
 // ResolvedHost is the complete desired state for a single host.
@@ -129,6 +135,9 @@ type Resolver struct {
 	// fresh on every per-resolve copy (forResolve), nil on the shared
 	// Resolver.
 	sopsFiles sopsFileSet
+	// sopsCalls counts this resolve's readSopsSecret/readSopsData calls
+	// (sopsGuard), so buildFiles can tell which files read a SOPS value.
+	sopsCalls int
 }
 
 // Rootless reports whether the resolver is configured for rootless mode.
@@ -278,6 +287,7 @@ func (r *Resolver) forResolve() *Resolver {
 	rr := *r
 	rr.rendering = nil
 	rr.sopsFiles = sopsFileSet{}
+	rr.sopsCalls = 0
 	return &rr
 }
 
@@ -601,6 +611,7 @@ func (r *Resolver) buildFiles(
 			f   *ResolvedFile
 			err error
 		)
+		callsBefore := r.sopsCalls
 		switch spec.Dest {
 		case config.DestQuadlet, config.DestSystemd:
 			f, err = r.resolveFile(registry, tmplData, ref.SrcPath, spec, r.unitDestPath(spec, ref.SrcPath))
@@ -619,6 +630,7 @@ func (r *Resolver) buildFiles(
 		if err != nil {
 			return nil, err
 		}
+		f.SopsValues = r.sopsCalls > callsBefore || sops.IsRef(ref.SrcPath)
 		files = append(files, *f)
 	}
 	return files, nil

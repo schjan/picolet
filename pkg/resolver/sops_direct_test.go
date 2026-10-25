@@ -255,3 +255,47 @@ func TestDirectSopsSecretLeafMatchesReadSopsSecret(t *testing.T) {
 	assert.True(t, strings.HasSuffix(got["secret:data"], "-----END TEST-ONLY KEY-----\n"), "a string leaf keeps its newline")
 	assert.Equal(t, got["secret:data"], got["secret:key"])
 }
+
+// ResolvedFile.SopsValues marks the files whose content holds a value read
+// through a sops:// ref: a readSopsSecret or readSopsData call during the
+// file's render (directly or through renderTemplate) or a direct sops://
+// secrets: entry. A keyless dry-run reports those as unverified.
+func TestResolvedFileSopsValues(t *testing.T) {
+	t.Parallel()
+	files := directSopsFiles(t)
+	maps.Copy(files, map[string]string{ //nolint:gosec // G101: test templates, no credentials
+		"secrets/string.tmpl":  `{{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`,
+		"secrets/data.tmpl":    `{{ range $k, $v := readSopsData "sops://secrets/db.sops.yaml#/hosts" }}{{ $k }}{{ end }}`,
+		"secrets/nested.tmpl":  `{{ renderTemplate "partials/pw.tmpl" . }}`,
+		"partials/pw.tmpl":     `{{ readSopsSecret "sops://secrets/db.sops.yaml#/db/user" }}`,
+		"secrets/plain.tmpl":   `{{ .Host.Hostname }}`,
+		"secrets/static.yml":   "static: true\n",
+		"secrets/partial.tmpl": `{{ renderTemplate "partials/plain.tmpl" . }}`,
+		"partials/plain.tmpl":  `plain`,
+	})
+	secrets := []string{
+		"sops://secrets/db.sops.yaml#/db/password", "secrets/string.tmpl", "secrets/data.tmpl",
+		"secrets/nested.tmpl", "secrets/plain.tmpl", "secrets/static.yml", "secrets/partial.tmpl",
+	}
+	want := map[string]bool{
+		"sops://secrets/db.sops.yaml#/db/password": true,
+		"secrets/string.tmpl":                      true,
+		"secrets/data.tmpl":                        true,
+		"secrets/nested.tmpl":                      true,
+		"secrets/plain.tmpl":                       false,
+		"secrets/static.yml":                       false,
+		"secrets/partial.tmpl":                     false,
+	}
+	for _, mode := range []sopsReaderMode{sopsKeyless, sopsDecrypting} {
+		t.Run(mode.String(), func(t *testing.T) {
+			t.Parallel()
+			resolved, err := resolveDirectSops(t, secrets, files, mode, false)
+			require.NoError(t, err)
+			got := map[string]bool{}
+			for _, f := range resolved.Files {
+				got[f.SrcPath] = f.SopsValues
+			}
+			assert.Equal(t, want, got)
+		})
+	}
+}

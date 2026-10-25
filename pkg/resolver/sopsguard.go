@@ -54,8 +54,10 @@ func (r *Resolver) withRender(g *unitRender, render func()) {
 
 // sopsGuard is the SOPS provider's Guard: it fails a readSopsSecret call
 // while a guarded file renders, before any reader sees the ref, so the
-// keyless and the decrypting path refuse it alike.
+// keyless and the decrypting path refuse it alike. It runs on every call,
+// so it also counts them (sopsCalls).
 func (r *Resolver) sopsGuard(funcName, ref string) error {
+	r.sopsCalls++
 	g := r.rendering
 	if g == nil {
 		return nil
