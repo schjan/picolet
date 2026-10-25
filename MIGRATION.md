@@ -28,6 +28,11 @@ a Fleet on v0.1.33 or older needs all of them.
 | `ports.picolet_metrics` / `ports.picolet_system_metrics` required (unless every Host sets `listen_port:`) | v0.2.0 | `fleet.yml` | the Fleet fails to load |
 | A rootless Host needs `user:`; a Host whose `hostname` is not a hostname label needs `machine:` | v0.2.0 | `hosts/<name>/host.yml` | without `user:`, no error, the Host counts as rootful; without `machine:`, the Fleet fails to load |
 | Two Hosts on one Machine with the same `user:` (two rootful Hosts included) or the same listen port are rejected; `machine:` defaults to the `hostname`, compared case-insensitively | v0.2.0 | `hosts/<name>/host.yml`, `fleet.yml` | the collision names both Hosts; the Fleet fails to load |
+| The Agent checks every credential file its config names at startup (`webhook_secret_path`, `protonpass.pat_path`, `mqtt.password_path` included) | v0.2.0 | Agent config | none: the upgraded Agent exits with `credential <setting> (<path>) is not readable`; see [Pre-upgrade check](#pre-upgrade-check-agent-credential-files) |
+| Two credential settings naming the same file are rejected | v0.2.0 | Agent config | none: the upgraded Agent exits with `<setting> (<path>) and <setting> (<path>) name the same credential file` |
+| `readSecretFile` and file `secrets:` refuse the Agent's own credential files | v0.2.0 | templates, `assignments.yml` | none: the Agent's reconciliation fails with `… Agent credentials cannot be deployed` |
+| SOPS files (`<name>.sops.<ext>`), `.sops.yaml` and `.sops.yml` are skipped by `paths:` and Service Bundle walks; an explicit entry naming a SOPS file is rejected | v0.2.0 | `paths:` entries, `secrets:`, Service Bundles | for an explicit entry: `SOPS file is reachable only through a sops:// ref`; a walked file is no longer deployed |
+| The Agent bundle is rendered strictly: provider template calls or direct provider `secrets:` refs in it fail | v0.2.0 | Agent bundle (`picolet`, `picolet-system`) | `host <name>: Agent bundle <service>: …` |
 
 `state.json` needs nothing: keep it. Its `managed_files[].category` values are
 unchanged rows of the new category table, so an Agent of this release loads the
@@ -39,6 +44,41 @@ removed in v0.2.0; see
 [Bootstrap](#bootstrap-bootstrap-create-and-the-shell-scripts) for their
 replacement.
 
+## Pre-upgrade check: Agent credential files
+
+A v0.2.0 Agent checks at startup that every credential file its config names
+exists and is readable, and that no two credential settings name the same
+file; older Agents opened only some of them (`webhook_secret_path`,
+`protonpass.pat_path` and `mqtt.password_path` were read only when used). An
+Agent that fails the check exits, so the Host stops reconciling right after
+step 1 restarts it onto v0.2.0. The self-restart guard can't catch this: it
+checks a changed Agent config, not a changed image.
+
+Before step 1, run on every Host, against its running Agent (the rootful Host
+as root with `picolet-system`, a Host with `user:` as that user with
+`picolet`):
+
+```bash
+podman exec picolet-system sh -c '
+  sed -nE "s/^[[:space:]]*(token_path|pat_path|git_token_path|github_private_key_path|webhook_secret_path|password_path|age_identity_path):[[:space:]]*\"?([^\"#[:space:]]+).*/\1 \2/p" \
+    /etc/picolet/config.yml |
+  while read -r key path; do [ -r "$path" ] || echo "missing: $key $path"; done
+  sed -nE "s/^[[:space:]]*(token_path|pat_path|session_dir|git_token_path|github_private_key_path|webhook_secret_path|password_path|age_identity_path):[[:space:]]*\"?([^\"#[:space:]]+).*/\2/p" \
+    /etc/picolet/config.yml | sort | uniq -d | sed "s/^/named twice: /"'
+```
+
+The two key lists are the credential settings of `Config.Credentials()`
+(by their last key) and differ on purpose: `protonpass.session_dir` is a
+directory, so the readability check (`-r`, for files) skips it, while the
+duplicate check includes it.
+
+It prints nothing when the Host is ready. For each `missing:` line, deliver the
+file (`picolet bootstrap machine --secrets-dir`, or a `bootstrap:` entry) or
+remove the setting from the Agent config template; for each `named twice:`
+line, give each setting its own file. A Host that was upgraded without the
+check recovers the same way: place the file, then restart its Agent
+(`systemctl restart picolet-system`, `systemctl --user restart picolet`).
+
 ## Rollout order
 
 Every Agent loads the whole Fleet, so one commit is read by old and new Agents
@@ -46,7 +86,9 @@ alike. Agents update themselves: an Agent applies the new `images.picolet` tag
 from `fleet.yml` to its own Quadlet and restarts onto it. An Agent that cannot
 load the Fleet applies nothing, its own image included.
 
-1. **Upgrade the image on all Hosts, schema unchanged.** In one commit, bump
+1. **Upgrade the image on all Hosts, schema unchanged.** Run the
+   [pre-upgrade check](#pre-upgrade-check-agent-credential-files) first. In one
+   commit, bump
    `images.picolet` in `fleet.yml` to `v0.2.0` and add both
    `ports.picolet_metrics` and `ports.picolet_system_metrics` if missing (plain
    `ports` entries, which older Agents accept; until step 3 adds `user:`, a v0.2.0
@@ -94,6 +136,26 @@ every `hostname` is a hostname label, and no two Hosts collide on a Machine
 (Machines default to the hostname and compare case-insensitively, so `node`
 and `NODE` are one Machine with two rootful Hosts). Flatten bundles (see
 [Service Bundles](#service-bundles-v020)) only after step 2.
+
+## SOPS rollout
+
+Adopting `sops://` ([README: Adopting SOPS](README.md#adopting-sops)) comes
+after the rollout above, and in this order:
+
+1. **Upgrade first.** Every Agent, and the CLI you run `picolet validate` with
+   (CI included), runs v0.2.0 before the Fleet adopts any of `age_recipients:`,
+   a SOPS file (`<name>.sops.<ext>`) or a `sops://` ref. An older Agent
+   deploys a SOPS file found by a walk as ciphertext (or fails on it with
+   "unknown extension" at a bundle root), and an older `validate` rejects the
+   new `host.yml` key.
+2. **Then per Host:** deliver its age identity as the Bootstrap credential
+   `age-identity` (`<secrets-dir>/<hostname>/age-identity` or a `bootstrap:`
+   entry), run `picolet bootstrap machine`, then push the Host's
+   `age_recipients:`. The reference Agent config emits its `sops:` block only
+   once `age_recipients:` is declared; if the identity file isn't on the Host
+   yet, the Agent refuses that config and keeps running on its old one.
+3. Add `operators.yml`, the Fleet-root `.sops.yaml` creation rules and the SOPS
+   files, and reference them.
 
 ## Key by key
 

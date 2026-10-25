@@ -634,7 +634,7 @@ the generic domain `example.net`.
   Recipient's public key, the last-modified time, the SOPS version), and values
   left unencrypted by its rules (`unencrypted_suffix`/`_regex`,
   `encrypted_suffix`/`_regex`, `mac_only_encrypted`). See
-  [ADR 0003](docs/adr/0003-no-plaintext-secret-in-git.md) (proposed).
+  [ADR 0003](docs/adr/0003-no-plaintext-secret-in-git.md).
 - **One provider token per Machine.** By default every Agent on a Machine uses
   the same provider token: one credential to provision and rotate per Machine.
   The stricter options are a token scoped to a single Host's vault or share, or
@@ -1484,6 +1484,8 @@ sops:
 The file holds one or more `AGE-SECRET-KEY-…` lines (two during a rotation). Deliver it like any other Bootstrap credential (the `--secrets-dir` file `age-identity`, or a `bootstrap:` entry). A missing, unreadable or unparsable file, or one holding no identity, stops the Agent at startup; a file readable by group or others logs a warning. The identity is an Agent credential: `readSecretFile` and `secrets:` refuse it, and the Agent refuses to apply a Fleet-rendered config of its own whose identity file is missing. Each file is decrypted at most once per reconciliation; a decrypt failure (not a recipient, edited outside sops) fails the reconciliation like any other error, and decrypted values are removed from error text before it reaches logs, dashboard events, MQTT or GitHub deployment statuses. A reconciliation that decrypted at least one SOPS file counts as a sync in `picolet_secret_sync_total{provider="sops"}` and `picolet_secret_last_sync_timestamp{provider="sops"}`. `picolet dry-run --config` decrypts the same way, so an unchanged SOPS-backed file shows no change. `picolet apply --config` does not decrypt: a Fleet with `sops://` refs fails it, even with a `sops:` block; let the Agent apply that Fleet.
 
 The reference Agent config templates (the `picolet` and `picolet-system` bundles in `deploy/fleet-repo`) emit this block only for a Host whose `host.yml` declares `age_recipients:`. So deliver `age-identity` and run `bootstrap machine` before you push `age_recipients:`; if the identity isn't there yet, the Agent refuses the new config, fails that reconciliation and keeps running on its old config. When none of the Agent's identities is among its Host's `age_recipients:` but every decrypt succeeds, the Agent logs a warning on each reconciliation that decrypts SOPS files, naming both sets of public keys. Nothing fails.
+
+Don't create `/etc/sops/audit.yaml` where picolet runs: the built-in `getsops` library reads it at process start in every command, so a malformed file panics picolet and a Postgres audit backend is contacted at startup and on every decrypt. The Agent image has no such file; only the CLI on a Machine or in CI is exposed.
 
 #### References and SOPS files
 

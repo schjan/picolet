@@ -4,6 +4,8 @@ status: accepted
 
 # One Host per Linux user; picolet bootstraps whole Machines
 
+> **Amended by [ADR 0003](0003-no-plaintext-secret-in-git.md):** a secret value may be committed to the Fleet inside a SOPS file encrypted to age Recipients (amends "nothing secret may ever be in git"), and each Host gets its own age identity, stricter than the default of one secret-provider token per Machine.
+
 picolet was built as one Agent per machine, keyed by `hostname`. Workloads that must not share a UID (e.g. a forge and the CI runner that executes foreign code) need separate Linux users, and Podman user namespaces, pods and sockets are per user — so each user needs its own Agent. We decided **not** to introduce a composite identity or a root daemon that deploys into user sessions. Instead a **Host** is simply "one Agent under one Linux user", an ordinary `hosts/<name>` entry, and a **Machine** is a box that runs several Hosts. `host.yml` declares `machine:` and `user:` (no `user:` = rootful); the name is a convention only (`<machine>`, `<machine>-system`, `<machine>-<user>`).
 
 Because every Agent holds a full clone, every Linux user on a Machine can read the whole Fleet. This is accepted: git write access is the trust boundary for *desired state*, Linux users are the boundary for *runtime blast radius*, and nothing secret may ever be in git. Sparse or per-user checkouts were rejected as complexity without a threat model.
