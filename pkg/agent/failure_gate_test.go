@@ -22,6 +22,7 @@ func failingApplyAgent(t *testing.T, pollInterval time.Duration) (h *loopHarness
 	bareDir, headSHA := initFleetRepo(t, networkFleet())
 	h = newLoopHarness(t, bareDir)
 	h.cfg.PollInterval = pollInterval
+	h.mocks = mocksNoop | mockFiles
 	h.writeErr = fmt.Errorf("simulated disk error")
 	return h, headSHA
 }

@@ -76,6 +76,7 @@ func newSopsHarness(t *testing.T, files map[string]string, identityPath string) 
 	logger, logs := testlog.New()
 	h.logs = logs
 	h.loopHarness = newLoopHarness(t, bareDir, WithDataDir(t.TempDir()), WithDeploymentReporter(h.reporter(t)), WithLogger(logger))
+	h.mocks = mockHealth | mockFiles | mockRestarts | mockSecrets
 	if identityPath != "" {
 		h.cfg.Sops = &agentcfg.SopsConfig{AgeIdentityPath: identityPath}
 	}

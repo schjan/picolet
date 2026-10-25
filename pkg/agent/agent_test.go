@@ -96,6 +96,14 @@ func newBareMocks(t *testing.T) (*appliermocks.MockSystemdManager, *appliermocks
 	return appliermocks.NewMockSystemdManager(t), appliermocks.NewMockPodmanClient(t), appliermocks.NewMockFileWriter(t)
 }
 
+// newMockedAgent is newTestAgent over fresh strict mocks of the system
+// boundaries, which it returns for the test's expectations.
+func newMockedAgent(t *testing.T, cfg *agentcfg.Config, opts ...Option) (*Agent, *appliermocks.MockSystemdManager, *appliermocks.MockPodmanClient, *appliermocks.MockFileWriter) {
+	t.Helper()
+	sys, pod, fw := newBareMocks(t)
+	return newTestAgent(t, cfg, append([]Option{WithSystemd(sys), WithPodman(pod), WithFileWriter(fw)}, opts...)...), sys, pod, fw
+}
+
 func newTestAgent(t *testing.T, cfg *agentcfg.Config, opts ...Option) *Agent {
 	t.Helper()
 	// The test logger goes first so a caller's WithLogger wins.
@@ -106,12 +114,11 @@ func newTestAgent(t *testing.T, cfg *agentcfg.Config, opts ...Option) *Agent {
 
 func TestApplyWithRollbackReturnsRetryableHookErrorsWithoutRollback(t *testing.T) {
 	t.Parallel()
-	sys, pod, fw := newBareMocks(t)
+	a, sys, pod, _ := newMockedAgent(t, &agentcfg.Config{Hostname: "host"})
 	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
 	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
 	pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(assert.AnError)
 
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 	result, err := a.applyWithRollback(t.Context(), "sha", &reconciler.Changeset{
 		Changes: []reconciler.Change{{
 			DestPath:   "secret:app_config",
@@ -161,13 +168,11 @@ features: []
     on_failure: keep_running
 `)
 
-	sys, pod, fw := newBareMocks(t)
+	cfg := &agentcfg.Config{Hostname: "test-host", SecretsDir: t.TempDir()}
+	a, sys, pod, _ := newMockedAgent(t, cfg, WithRepoPath(repoDir))
 	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("shared-secret-value\n"), false).Return(nil)
 	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
 	pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(assert.AnError)
-
-	cfg := &agentcfg.Config{Hostname: "test-host", SecretsDir: t.TempDir()}
-	a := newTestAgent(t, cfg, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw), WithRepoPath(repoDir))
 
 	st := state.NewState()
 	statePath := filepath.Join(t.TempDir(), "state.json")
@@ -191,11 +196,9 @@ features: []
 
 func TestRetryPendingHooksClearsListOnSuccess(t *testing.T) {
 	t.Parallel()
-	sys, pod, fw := newBareMocks(t)
+	a, sys, pod, _ := newMockedAgent(t, &agentcfg.Config{Hostname: "host"})
 	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
 	pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(nil)
-
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 
 	st := state.NewState()
 	st.PendingHooks = map[string]int{"app-sighup": 1}
@@ -356,13 +359,12 @@ func TestMergePendingUnitsClearsConvergedAndAddsFailures(t *testing.T) {
 
 func TestApplyWithRollbackReturnsIncompleteOnFailedUnitRestart(t *testing.T) {
 	t.Parallel()
-	sys, pod, fw := newBareMocks(t)
+	a, sys, _, fw := newMockedAgent(t, &agentcfg.Config{Hostname: "host"})
 	fw.EXPECT().MkdirAll(mock.Anything).Return(nil)
 	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(nil)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 	sys.EXPECT().RestartUnit(mock.Anything, "app.service").Return(assert.AnError)
 
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 	result, err := a.applyWithRollback(t.Context(), "sha", &reconciler.Changeset{
 		Changes: []reconciler.Change{{
 			DestPath:    "/etc/containers/systemd/app.container",
@@ -388,7 +390,7 @@ func TestApplyWithRollbackRollsBackFailedBuild(t *testing.T) {
 	t.Parallel()
 	containerfile := filepath.Join(t.TempDir(), "Containerfile")
 	require.NoError(t, os.WriteFile(containerfile, []byte("FROM alpine:old\n"), 0o600))
-	sys, pod, fw := newBareMocks(t)
+	a, sys, pod, fw := newMockedAgent(t, &agentcfg.Config{Hostname: "host"})
 	fw.EXPECT().MkdirAll(mock.Anything).Return(nil)
 	fw.EXPECT().WriteFile(containerfile, []byte("FROM alpine:new\n")).Return(nil).Once()
 	pod.EXPECT().ImageID(mock.Anything, "localhost/app").Return("old", nil).Twice()
@@ -396,7 +398,6 @@ func TestApplyWithRollbackRollsBackFailedBuild(t *testing.T) {
 	fw.EXPECT().WriteFile(containerfile, []byte("FROM alpine:old\n")).Return(nil).Once()
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 	result, err := a.applyWithRollback(t.Context(), "sha", &reconciler.Changeset{
 		Changes: []reconciler.Change{
 			{
@@ -416,11 +417,10 @@ func TestApplyWithRollbackRollsBackFailedBuild(t *testing.T) {
 
 func TestApplyWithRollbackCompletesWhenUnmanagedHookUnitRestartFails(t *testing.T) {
 	t.Parallel()
-	sys, pod, fw := newBareMocks(t)
+	a, sys, pod, _ := newMockedAgent(t, &agentcfg.Config{Hostname: "host"})
 	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
 	sys.EXPECT().RestartUnit(mock.Anything, "nginx.service").Return(assert.AnError)
 
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 	result, err := a.applyWithRollback(t.Context(), "sha", &reconciler.Changeset{
 		Changes: []reconciler.Change{{
 			DestPath:   "secret:app_config",
@@ -514,14 +514,12 @@ features: []
 `)
 	writeTestFile(t, repoDir, "quadlets/networks/internal.network", "[Network]\nInternal=true\n")
 
-	sys, pod, fw := newBareMocks(t)
+	cfg := &agentcfg.Config{Hostname: "test-host", SecretsDir: t.TempDir()}
+	a, sys, _, fw := newMockedAgent(t, cfg, WithRepoPath(repoDir))
 	fw.EXPECT().MkdirAll(mock.Anything).Return(nil)
 	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(nil)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(assert.AnError)
-
-	cfg := &agentcfg.Config{Hostname: "test-host", SecretsDir: t.TempDir()}
-	a := newTestAgent(t, cfg, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw), WithRepoPath(repoDir))
 
 	store := state.NewStore(filepath.Join(t.TempDir(), "state.json"))
 	st := state.NewState()
@@ -569,11 +567,9 @@ func TestFinalizeApplyPrunesPendingUnitsForDeletedUnit(t *testing.T) {
 
 func TestRetryPendingHooksDropsStaleNamesAndKeepsFailures(t *testing.T) {
 	t.Parallel()
-	sys, pod, fw := newBareMocks(t)
+	a, sys, pod, _ := newMockedAgent(t, &agentcfg.Config{Hostname: "host"})
 	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
 	pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(assert.AnError)
-
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 
 	st := state.NewState()
 	st.PendingHooks = map[string]int{"app-sighup": 1, "removed-hook": 3}
@@ -651,6 +647,7 @@ func TestAgentDryRun(t *testing.T) {
 
 	// Dry-run: health checks happen, but no writes/restarts.
 	h := newLoopHarness(t, bareDir, WithDryRun(true))
+	h.mocks = mocksNoop
 	h.run(t, 3*time.Second)
 	h.assertNothingApplied(t)
 }
@@ -766,6 +763,7 @@ func TestAgentRollbackOnApplyFailure(t *testing.T) {
 	metrics.Register(nil)
 
 	h := newLoopHarness(t, bareDir)
+	h.mocks = mocksNoop | mockFiles
 	// WriteFile always fails to trigger rollback
 	h.writeErr = fmt.Errorf("simulated disk error")
 	h.run(t, 5*time.Second)
@@ -813,16 +811,14 @@ func TestScanOrphansAfterSchemaMigration(t *testing.T) {
 
 	metrics.Register(nil)
 
-	sys, pod, fw := newBareMocks(t)
+	cfg := &agentcfg.Config{Hostname: "test-host", RepoURL: "https://example.com/repo.git"}
+	a, _, pod, _ := newMockedAgent(t, cfg, WithStatePath(statePath))
 	// Strict expectation (no .Maybe()): if scanOrphans skips the scan
 	// (e.g. guard on empty ManagedFiles), ListManagedSecrets is never called
 	// and mockery fails the test during cleanup.
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 	// System dirs don't exist in test env → file scans are no-ops, but
 	// DaemonReload won't be called (no files removed).
-
-	cfg := &agentcfg.Config{Hostname: "test-host", RepoURL: "https://example.com/repo.git"}
-	a := newTestAgent(t, cfg, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw), WithStatePath(statePath))
 
 	a.scanOrphans(context.Background(), store)
 }
@@ -839,6 +835,7 @@ func TestAgentPauseSkipsReconciliation(t *testing.T) {
 	mqttMock.EXPECT().Close(mock.Anything).Maybe()
 
 	h := newLoopHarness(t, bareDir, WithMQTT(mqttMock))
+	h.mocks = mocksNoop
 	// Health checks still run when paused; no writes expected.
 	h.a.paused.Store(true)
 	h.run(t, 3*time.Second)
@@ -1038,6 +1035,7 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 	metrics.Register(nil)
 
 	h := newLoopHarness(t, bareDir)
+	h.mocks = mocksNoop
 	h.pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(nil)
 
 	// Pre-seed state at the current SHA, with the secret already managed and
@@ -1088,6 +1086,7 @@ func TestTickReportsRetryPendingWhenUnitsPending(t *testing.T) {
 	metrics.Register(nil)
 
 	h := newLoopHarness(t, bareDir)
+	h.mocks = mockOrphanScan
 	// Unit stays failed; the persisted cooldown (LastAttemptAt now) suppresses
 	// a restart, so RestartUnit must not be called.
 	h.sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
@@ -1120,6 +1119,7 @@ func TestTickClearsPendingUnitWhenHealthy(t *testing.T) {
 	metrics.Register(nil)
 
 	h := newLoopHarness(t, bareDir)
+	h.mocks = mocksNoop
 	h.seedState(t, true, pendingUnitState(t))
 	require.NoError(t, h.tick(t))
 
@@ -1183,6 +1183,7 @@ func TestTickRecordsTimerOneshotRuns(t *testing.T) {
 	secondStart := firstStart.Add(time.Hour)
 
 	h := newLoopHarness(t, bareDir)
+	h.mocks = mockOrphanScan
 	jobRunning := timerJobStatuses(h.sys, firstStart, firstEnd, secondStart)
 	h.seedState(t, true, timerJobState)
 
@@ -1217,6 +1218,7 @@ func TestTickDropsStalePendingHookNameOnRetry(t *testing.T) {
 	metrics.Register(nil)
 
 	h := newLoopHarness(t, bareDir)
+	h.mocks = mocksNoop
 	// Pre-seed state matching the current resolved files (so the diff is empty)
 	// AND a pending hook for a *different* secret that did not change in this
 	// tick. The pending entry must survive the tick.
@@ -1240,6 +1242,7 @@ func TestTickDoesNotIncrementFailedCountOnRetryableHookError(t *testing.T) {
 	metrics.Register(nil)
 
 	h := newLoopHarness(t, bareDir)
+	h.mocks = mocksNoop
 	h.pod.EXPECT().SecretCreate(mock.Anything, "app_config", mock.Anything, false).Return(nil)
 	// Hook fails — keep_running default keeps the agent running but should land
 	// in PendingHooks rather than incrementing FailedCount.
@@ -1261,13 +1264,11 @@ func TestTickDoesNotIncrementFailedCountOnRetryableHookError(t *testing.T) {
 
 func TestApplyWithRollbackRunsPendingHooksAlongsideChangeset(t *testing.T) {
 	t.Parallel()
-	sys, pod, fw := newBareMocks(t)
+	a, sys, pod, _ := newMockedAgent(t, &agentcfg.Config{Hostname: "host"})
 	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
 	pod.EXPECT().SecretCreate(mock.Anything, "app_rules", []byte("new"), true).Return(nil)
 	pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(nil)
 	// NOTE: no DaemonReload expected — secret-only changesets do not set NeedsReload.
-
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 
 	hooks := []config.Hook{
 		{Name: "stale-pending", Secrets: []string{"app_config"}, Unit: "app.service", Action: config.HookActionSignal, Container: "app", Signal: "HUP", OnFailure: config.HookOnFailureKeepRunning},

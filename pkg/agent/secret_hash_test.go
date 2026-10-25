@@ -51,10 +51,6 @@ func TestSecretContentHashNotExposed(t *testing.T) {
 	t.Parallel()
 	repoDir := writeSecretOnlyFleet(t)
 
-	sys, pod, fw := newBareMocks(t)
-	pod.EXPECT().SecretCreate(mock.Anything, "app_password", []byte("hunter2"), false).Return(nil)
-	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
-
 	var published []mqtt.Status
 	mqttMock := agentmocks.NewMockMQTTClient(t)
 	mqttMock.EXPECT().PublishStatus(mock.Anything, mock.Anything).
@@ -64,8 +60,9 @@ func TestSecretContentHashNotExposed(t *testing.T) {
 		})
 
 	cfg := &agentcfg.Config{Hostname: "test-host", SecretsDir: t.TempDir()}
-	a := newTestAgent(t, cfg, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
-		WithRepoPath(repoDir), WithMQTT(mqttMock))
+	a, sys, pod, _ := newMockedAgent(t, cfg, WithRepoPath(repoDir), WithMQTT(mqttMock))
+	pod.EXPECT().SecretCreate(mock.Anything, "app_password", []byte("hunter2"), false).Return(nil)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
 
 	st := state.NewState()
 	store := state.NewStore(filepath.Join(t.TempDir(), "state.json"))

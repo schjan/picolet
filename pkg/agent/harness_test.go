@@ -54,55 +54,92 @@ func newApplyRecord() *applyRecord {
 	return &applyRecord{written: map[string][]byte{}, secrets: map[string]string{}}
 }
 
-// setupApplyMocks lets the mocks take every call an apply makes (health
-// checks, the orphan scan, file writes, secrets, daemon-reload, unit
-// restarts, stops and starts) and records what they see into r.
-func setupApplyMocks(r *applyRecord, sys *appliermocks.MockSystemdManager, pod *appliermocks.MockPodmanClient, fw *appliermocks.MockFileWriter) {
+// harnessMocks picks the groups of catch-all expectations setupApplyMocks
+// sets. The mocks are strict: a call that neither a picked group nor the
+// test expects fails the test, so a test picks only the groups its Agent may
+// call.
+type harnessMocks uint
+
+const (
+	mockOrphanScan    harnessMocks = 1 << iota // ListManagedSecrets: no managed secrets
+	mockHealth                                 // GetUnitStatus: every unit active and running
+	mockFiles                                  // WriteFile, MkdirAll, Remove and DaemonReload
+	mockStops                                  // StopUnit
+	mockRestarts                               // RestartUnit
+	mockStarts                                 // StartUnit
+	mockSecrets                                // SecretExists (none exists) and SecretCreate
+	mockSecretRemoves                          // SecretRemove
+
+	// mocksNoop takes the calls of a loop that applies nothing: the
+	// startup orphan scan and the health checks.
+	mocksNoop = mockOrphanScan | mockHealth
+	// mocksApply also takes an apply's file writes, stops and restarts.
+	mocksApply = mocksNoop | mockFiles | mockStops | mockRestarts
+)
+
+// setupApplyMocks sets the groups of catch-all expectations picked by groups
+// on the mocks, recording what they see into r.
+func setupApplyMocks(r *applyRecord, groups harnessMocks, sys *appliermocks.MockSystemdManager, pod *appliermocks.MockPodmanClient, fw *appliermocks.MockFileWriter) {
 	locked := func(f func()) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		f()
 	}
-	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
-	sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
-		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
-	sys.EXPECT().DaemonReload(mock.Anything).RunAndReturn(func(context.Context) error {
-		locked(func() { r.reloads++ })
-		return nil
-	}).Maybe()
-	sys.EXPECT().StopUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-	sys.EXPECT().StartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, unit string) error {
-		locked(func() { r.restarts = append(r.restarts, unit) })
-		return nil
-	}).Maybe()
-	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).RunAndReturn(func(path string, content []byte) error {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		if r.writeErr != nil {
-			return r.writeErr
-		}
-		r.written[path] = content
-		return nil
-	}).Maybe()
-	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
-	fw.EXPECT().Remove(mock.Anything).RunAndReturn(func(path string) error {
-		locked(func() { r.deleted = append(r.deleted, path) })
-		return nil
-	}).Maybe()
-	pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
-	pod.EXPECT().SecretCreate(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-		RunAndReturn(func(_ context.Context, name string, data []byte, _ bool) error {
-			locked(func() {
-				r.secrets[name] = string(data)
-				r.created = append(r.created, name)
-			})
+	if groups&mockOrphanScan != 0 {
+		pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
+	}
+	if groups&mockHealth != 0 {
+		sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
+			Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
+	}
+	if groups&mockFiles != 0 {
+		sys.EXPECT().DaemonReload(mock.Anything).RunAndReturn(func(context.Context) error {
+			locked(func() { r.reloads++ })
 			return nil
 		}).Maybe()
-	pod.EXPECT().SecretRemove(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, name string) error {
-		locked(func() { r.removed = append(r.removed, name) })
-		return nil
-	}).Maybe()
+		fw.EXPECT().WriteFile(mock.Anything, mock.Anything).RunAndReturn(func(path string, content []byte) (err error) {
+			locked(func() {
+				if err = r.writeErr; err == nil {
+					r.written[path] = content
+				}
+			})
+			return err
+		}).Maybe()
+		fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
+		fw.EXPECT().Remove(mock.Anything).RunAndReturn(func(path string) error {
+			locked(func() { r.deleted = append(r.deleted, path) })
+			return nil
+		}).Maybe()
+	}
+	if groups&mockStops != 0 {
+		sys.EXPECT().StopUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
+	}
+	if groups&mockRestarts != 0 {
+		sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, unit string) error {
+			locked(func() { r.restarts = append(r.restarts, unit) })
+			return nil
+		}).Maybe()
+	}
+	if groups&mockStarts != 0 {
+		sys.EXPECT().StartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
+	}
+	if groups&mockSecrets != 0 {
+		pod.EXPECT().SecretExists(mock.Anything, mock.Anything).Return(false, nil).Maybe()
+		pod.EXPECT().SecretCreate(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			RunAndReturn(func(_ context.Context, name string, data []byte, _ bool) error {
+				locked(func() {
+					r.secrets[name] = string(data)
+					r.created = append(r.created, name)
+				})
+				return nil
+			}).Maybe()
+	}
+	if groups&mockSecretRemoves != 0 {
+		pod.EXPECT().SecretRemove(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, name string) error {
+			locked(func() { r.removed = append(r.removed, name) })
+			return nil
+		}).Maybe()
+	}
 }
 
 // reset forgets what the Agent did so far.
@@ -156,15 +193,20 @@ func (r *applyRecord) assertNothingApplied(t *testing.T) {
 	assert.Zero(t, r.reloads, "systemd is not reloaded")
 }
 
-// loopHarness is an Agent for test-host over a Fleet repo, with mocked
-// system boundaries that record what it does (applyRecord). Expectations a
-// test sets on sys, pod or fw before the first run or tick take precedence
-// over the harness's, which are set then.
+// loopHarness is an Agent for test-host over a Fleet repo, with strict
+// mocked system boundaries that record what it does (applyRecord).
+//
+// The harness sets its catch-all expectations (the groups in mocks) only
+// when the first run, tick or seedState starts, after the test's own: a
+// mock answers a call with the first expectation that matches it, so a test
+// that expects a call on sys, pod or fw sets that expectation before then.
+// An expectation set later is shadowed by a matching catch-all.
 type loopHarness struct {
 	*applyRecord
 
 	a         *Agent
 	cfg       *agentcfg.Config // loopConfig; adjust before the first run or tick
+	mocks     harnessMocks     // mocksApply; adjust before the first run or tick
 	sys       *appliermocks.MockSystemdManager
 	pod       *appliermocks.MockPodmanClient
 	fw        *appliermocks.MockFileWriter
@@ -187,6 +229,7 @@ func newLoopHarness(t *testing.T, bareDir string, opts ...Option) *loopHarness {
 		cfg:         loopConfig(t, bareDir),
 		repoDir:     filepath.Join(t.TempDir(), "clone"),
 		statePath:   filepath.Join(t.TempDir(), "state.json"),
+		mocks:       mocksApply,
 	}
 	h.sys, h.pod, h.fw = newBareMocks(t)
 	h.store = state.NewStore(h.statePath)
@@ -197,9 +240,9 @@ func newLoopHarness(t *testing.T, bareDir string, opts ...Option) *loopHarness {
 	return h
 }
 
-// expect sets the harness's recording expectations, once.
+// expect sets the harness's catch-all expectations, once.
 func (h *loopHarness) expect() {
-	h.expectOnce.Do(func() { setupApplyMocks(h.applyRecord, h.sys, h.pod, h.fw) })
+	h.expectOnce.Do(func() { setupApplyMocks(h.applyRecord, h.mocks, h.sys, h.pod, h.fw) })
 }
 
 // run runs the Agent loop for d.

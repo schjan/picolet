@@ -282,9 +282,8 @@ func TestApplyScrubsLoggedErrors(t *testing.T) {
 			reader := sops.NewReader(os.DirFS(testsops.Dir), testsops.Identities(t, "srv-1"))
 			_, err := reader.ReadAll(t.Context(), []string{"sops://corpus/values.sops.yaml#/db/password"})
 			require.NoError(t, err)
-			sys, pod, fw := newBareMocks(t)
 			logger, logs := testlog.New()
-			a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw), WithLogger(logger))
+			a, sys, pod, _ := newMockedAgent(t, &agentcfg.Config{Hostname: "host"}, WithLogger(logger))
 
 			run(t, a, sys, pod, reader)
 

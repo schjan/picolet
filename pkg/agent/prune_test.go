@@ -25,6 +25,7 @@ func newPruneTickAgent(t *testing.T, opts ...Option) *loopHarness {
 	metrics.Register(nil)
 	bareDir, _ := initFleetRepo(t, networkFleet())
 	h := newLoopHarness(t, bareDir, opts...)
+	h.mocks = 0 // a noop tick over a state that manages no unit calls nothing
 	h.cfg.PruneInterval = time.Hour
 	h.seedState(t, false, nil) // SHA unchanged => noop tick
 	return h

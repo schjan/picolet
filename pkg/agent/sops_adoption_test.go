@@ -45,6 +45,7 @@ func TestAgentRefusesSopsAdoptionWithoutDeliveredIdentity(t *testing.T) {
 	bareDir, firstSHA := initFleetRepo(t, referenceAgentFleet(t, plainHost))
 	h := newLoopHarness(t, bareDir)
 	h.cfg.PollInterval = 100 * time.Millisecond
+	h.mocks = mocksApply | mockStarts | mockSecrets
 
 	stop := h.start(t)
 	require.Eventually(t, func() bool { _, ok := eventMessage(h.a.statusStore.Snapshot(), "success", firstSHA); return ok },
@@ -55,8 +56,7 @@ func TestAgentRefusesSopsAdoptionWithoutDeliveredIdentity(t *testing.T) {
 	})
 	require.Eventually(t, func() bool { _, ok := eventMessage(h.a.statusStore.Snapshot(), "failure", secondSHA); return ok },
 		8*time.Second, 20*time.Millisecond, "the commit adding age_recipients: fails")
-	// stop fails the test when the Agent stopped after the refused
-	// reconciliation.
+	// stop fails the test when the Agent's Run returned an error.
 	stop()
 
 	msg, _ := eventMessage(h.a.statusStore.Snapshot(), "failure", secondSHA)

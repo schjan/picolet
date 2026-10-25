@@ -38,6 +38,10 @@ func agentBundleFiles(unit, configName, body string) map[string]string {
 	}
 }
 
+// mocksSelfConfig takes the calls of applying an Agent bundle: an apply's,
+// plus its secret creates and unit starts.
+const mocksSelfConfig = mocksApply | mockStarts | mockSecrets
+
 // TestAgentRefusesSelfConfigItCouldNotStartWith runs the Agent loop on a
 // Fleet that renders the Agent's own config: a config naming a missing
 // credential file, or one this Agent cannot parse, fails the reconciliation
@@ -91,9 +95,15 @@ func runSelfConfigCase(t *testing.T, agentConfig string, wantError []string) {
 	bareDir, headSHA := initFleetRepo(t, agentBundleFiles(agentBundleUnit(""), "picolet_system_config.yml", agentConfig))
 	h := newLoopHarness(t, bareDir)
 	h.cfg.PollInterval = 200 * time.Millisecond
+	// Only the applying case may write; the strict mocks fail the refusing
+	// cases on any write, on every tick until the failed-SHA gate closes.
+	h.mocks = mocksNoop
+	if len(wantError) == 0 {
+		h.mocks = mocksSelfConfig
+	}
 	h.runUntil(t, func() bool {
 		st, err := h.store.Load()
-		return err == nil && (st.AppliedSHA != "" || st.FailedSHA != "")
+		return err == nil && (st.AppliedSHA != "" || st.FailedCount >= 3)
 	})
 
 	st, err := h.store.Load()
@@ -108,13 +118,13 @@ func runSelfConfigCase(t *testing.T, agentConfig string, wantError []string) {
 	assert.Equal(t, headSHA, st.FailedSHA, "the reconciliation fails like any pre-apply failure")
 	assert.Empty(t, st.AppliedSHA)
 	assert.Empty(t, st.ManagedFiles, "nothing is written")
-	h.assertNothingWritten(t)
 
 	_, err = h.a.ReconcileOnce(t.Context(), headSHA, state.NewState(), state.NewStore(filepath.Join(t.TempDir(), "state.json")))
 	require.Error(t, err)
 	for _, want := range wantError {
 		assert.Contains(t, err.Error(), want)
 	}
+	h.assertNothingWritten(t)
 }
 
 // TestAgentRefusesMountSwitchToSelfConfigItCouldNotStartWith covers a commit
@@ -132,6 +142,7 @@ func TestAgentRefusesMountSwitchToSelfConfigItCouldNotStartWith(t *testing.T) {
 		nextConfig: "hostname: test-host\nrepo_url: https://example.com/fleet.git\nno_such_key_ever: x\n",
 	})
 	h := newLoopHarness(t, bareDir)
+	h.mocks = mocksSelfConfig
 	h.runUntilApplied(t)
 	require.Contains(t, h.st.ManagedFiles, "secret:picolet_system_config_next", "the next config is already managed")
 
@@ -160,6 +171,7 @@ func TestAgentRefusesDroppingMountedSelfConfig(t *testing.T) {
 	)
 	bareDir, _ := initFleetRepo(t, agentBundleFiles(agentBundleUnit(""), "picolet_system_config.yml", "hostname: test-host\nrepo_url: https://example.com/fleet.git\n"))
 	h := newLoopHarness(t, bareDir)
+	h.mocks = mocksSelfConfig | mockSecretRemoves
 	h.runUntilApplied(t)
 	require.Contains(t, h.st.ManagedFiles, "secret:picolet_system_config", "the first commit renders the Agent config")
 
@@ -271,6 +283,7 @@ func runMountChangeCase(t *testing.T, unit, config, nextUnit, nextConfig string,
 	bareDir, _ := initFleetRepo(t, agentBundleFiles(unit, "picolet_system_config.yml", config))
 	quadletDir := t.TempDir()
 	h := newLoopHarness(t, bareDir, append([]Option{WithQuadletDir(quadletDir)}, opts...)...)
+	h.mocks = mocksSelfConfig | mockSecretRemoves
 	h.runUntilApplied(t)
 	// The running Agent's container was started from the unit on disk; the
 	// mocked file writer wrote nothing there.
@@ -746,6 +759,7 @@ func TestAgentRefusesRemovingMountedCredentialSecret(t *testing.T) {
 	pushToTestRepo(t, bareDir, map[string]string{hookFile: "hook\n"})
 	quadletDir := t.TempDir()
 	h := newLoopHarness(t, bareDir, WithQuadletDir(quadletDir))
+	h.mocks = mocksSelfConfig | mockSecretRemoves
 	h.runUntilApplied(t)
 	require.Contains(t, h.st.ManagedFiles, "secret:hook_secret", "the first commit manages the credential secret")
 	unitPath := filepath.Join(quadletDir, "picolet-system.container")
