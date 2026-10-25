@@ -9,9 +9,11 @@
 // `task sops:corpus`) instead of encrypting.
 //
 // The decrypting half (Reader) takes its identities only from
-// ParseIdentities: a picolet-owned keyservice unwraps age stanzas itself, so
-// SOPS's own fallbacks (SOPS_AGE_KEY*, keys.txt, ~/.ssh, commands, plugins)
-// and every non-age key backend are never consulted. Its errors fall into
+// ParseIdentities: a picolet-owned keyservice unwraps age stanzas with
+// upstream's age MasterKey, given those identities explicitly and never an
+// empty set, so the MasterKey's ambient-key fallback (SOPS_AGE_KEY*,
+// keys.txt, ~/.ssh, commands, plugins) is unreachable and every non-age key
+// backend is never consulted. Its errors fall into
 // fixed classes (ErrNoIdentity, ErrNotRecipient, ErrEditedOutsideSOPS,
 // ErrBadPointer, ErrNotLeaf, ErrNotSOPSPath, ErrNotSOPSFile,
 // ErrFileTooLarge) and never carry an upstream error string, a decrypted

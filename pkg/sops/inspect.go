@@ -76,7 +76,8 @@ type File struct {
 	// tree and metadata are the parsed file, kept so a reader decrypts (or
 	// walks keyless) what Inspect parsed instead of parsing it again. A tree
 	// decrypt replaces values in place: decrypt the tree of a File that is
-	// thrown away after, or a copy (cloneBranches).
+	// thrown away after, or a tree parsed anew from the file's bytes
+	// (keylessTree).
 	tree     gsops.TreeBranches
 	metadata gsops.Metadata
 	store    sopsStore // renders decrypted and plaintext leaves
@@ -204,35 +205,6 @@ func InspectFile(fsys fs.FS, path string) (*File, error) {
 // place.
 func (f *File) parsedTree() gsops.Tree {
 	return gsops.Tree{Branches: f.tree, Metadata: f.metadata}
-}
-
-// cloneBranches copies branches deep enough that a tree decrypt over the
-// copy, which replaces values and comment keys in place, leaves branches as
-// they are.
-func cloneBranches(branches gsops.TreeBranches) gsops.TreeBranches {
-	out := make(gsops.TreeBranches, len(branches))
-	for i, b := range branches {
-		out[i] = cloneNode(b).(gsops.TreeBranch) //nolint:forcetypeassert // cloneNode keeps the type
-	}
-	return out
-}
-
-func cloneNode(v any) any {
-	switch v := v.(type) {
-	case gsops.TreeBranch:
-		out := make(gsops.TreeBranch, len(v))
-		for i, item := range v {
-			out[i] = gsops.TreeItem{Key: item.Key, Value: cloneNode(item.Value)}
-		}
-		return out
-	case []any:
-		out := make([]any, len(v))
-		for i, e := range v {
-			out[i] = cloneNode(e)
-		}
-		return out
-	}
-	return v
 }
 
 func (f *File) fillMetadata(md gsops.Metadata) {
