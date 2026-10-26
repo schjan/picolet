@@ -69,17 +69,6 @@ func (cs *Changeset) Deletes(destPath string) bool {
 	return false
 }
 
-// Managed reports whether destPath is a Managed File before the changeset:
-// the changeset updates, deletes or keeps it.
-func (cs *Changeset) Managed(destPath string) bool {
-	for _, change := range cs.Changes {
-		if change.DestPath == destPath && change.Action != ActionCreate {
-			return true
-		}
-	}
-	return false
-}
-
 // RefreshNoops updates st's record of each unchanged file whose record
 // differs from what the changeset would write (its SopsValues flag: the
 // content is byte-identical but its render now reads, or no longer reads, a

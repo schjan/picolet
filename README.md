@@ -344,68 +344,69 @@ Such a commit, and one that changes the Agent's quadlet, is checked before it
 is applied, by the Agent and by `picolet apply --config`, with the checks the
 Agent runs at startup: the config must parse with the running Agent's strict
 loader (an unknown key fails), every credential path it names must be
-absolute, and every credential file must exist and be readable on the Host.
-Once the Fleet renders the Agent's config, a commit after which the Agent's
-next start would find no config is refused too: one that stops resolving the
-mounted config secret (renames or drops its file), repoints the mount at a
-secret the Fleet doesn't resolve, or drops the mount. To manage the config by
-hand instead, bind-mount a Host file at `/etc/picolet/config.yml` with
-`Volume=` (a Host directory over `/etc/picolet` works too; a named volume,
-`.volume` unit or tmpfs there is refused, since it holds no config). Any
-commit that stops resolving a secret (`Secret=` or `PodmanArgs=--secret`,
+absolute, and every credential file must exist and be readable in the running
+Agent's container. If a check fails, the reconciliation fails before anything
+is written and the Agent keeps its current config, so it is never left with a
+config it would refuse to restart with. Place a new credential file on the
+Host (`bootstrap machine`) before the commit that points the Agent at it.
+
+The running Agent can only check its next start if that start has its own
+mounts, so **the Agent quadlet's mount lines can't change through the
+Fleet**. A commit that changes any of these `[Container]` lines from the
+quadlet on disk is refused (compared as written, value by value): `Volume=`,
+`Mount=`, `Tmpfs=`, `Secret=`, `Mask=`, `Unmask=`, `VolatileTmp=`,
+`ReadOnly=`, `ReadOnlyTmpfs=`, `Rootfs=`, `WorkingDir=`, `User=`, `Group=`,
+`GroupAdd=`, `UserNS=`, `UIDMap=`, `GIDMap=`, `SubUIDMap=`, `SubGIDMap=`,
+`RemapUsers=`, `RemapUid=`, `RemapGid=`, `RemapUidSize=`, `AddCapability=`,
+`DropCapability=`, `AppArmor=`, `SecurityLabelDisable=`,
+`SecurityLabelFileType=`, `SecurityLabelLevel=`, `SecurityLabelNested=`,
+`SecurityLabelType=`, `PodmanArgs=`, `GlobalArgs=` and
+`ContainersConfModule=`. `Image=` and the other keys stay changeable, so the
+Agent still updates itself. To change the Agent's mounts (say, to move its
+credentials to a new mount):
+
+1. On the Host, edit the Agent's quadlet
+   (`/etc/containers/systemd/picolet/picolet-system.container` on the rootful
+   Host, `~/.config/containers/systemd/picolet/picolet.container` for a Host
+   with `user:`) to the new lines, and restart the Agent: `systemctl
+   daemon-reload && systemctl restart picolet-system` as root, or `systemctl
+   --user daemon-reload && systemctl --user restart picolet` as the Host's
+   user. The Agent leaves the hand edit alone while the Fleet's quadlet is
+   unchanged, and refuses a commit that would undo it.
+2. Commit the same lines to the Fleet; the Agent applies them as unchanged
+   mounts.
+3. Then commit the config change that points at files under the new mount.
+
+A commit that stops resolving a secret (`Secret=` or `PodmanArgs=--secret`,
 mounted or as an environment variable) or `.volume` unit the Agent's quadlet
 still uses is refused as well, since Podman couldn't create the Agent's
-container: stop using it first, or in the same commit.
-If a check fails, the reconciliation fails before anything is written and the
-Agent keeps its current config, so it is never left with a config it would
-refuse to restart with. Place a new credential file on the Host (`bootstrap
-machine`) before the commit that points the Agent at it.
+container. That includes the config secret itself (a renamed or dropped
+config file): drop the mount on the Host first, as above. To manage the
+config by hand, bind-mount a Host file at `/etc/picolet/config.yml` with
+`Volume=` the same way.
 
-The running Agent checks credential files inside its own container, so a
-commit may not change the Agent's mounts together with anything the Agent
-reads at start. When a commit changes the quadlet's `Volume=`, `Mount=`,
-`Tmpfs=`, `Secret=`, `Mask=`, `Unmask=`, `VolatileTmp=`, `PodmanArgs=` or
-`WorkingDir=` lines (compared as written), it is refused if it also changes the Agent's config or a
-Fleet-managed secret or `.volume` unit the quadlet mounts, and every
-credential file must lie under a mount the new quadlet keeps exactly as before
-(same target, same source and options as written; not a tmpfs) or under no
-mount at all. A `Mask=` hides every path under it, whatever is mounted deeper
-(Podman masks after it mounts): a mask added above a credential file refuses
-it, and a quadlet that masks `/etc/picolet/config.yml` or a directory above it
-is refused outright. A mount whose target starts with a systemd specifier (`%h`,
-`%t`) or is relative may hold any path, so a commit that adds, drops or
-repoints one refuses every credential file. So does a commit that adds,
-drops or changes a `PodmanArgs=` option that changes what the container shows
-at a path or who reads it (`--security-opt`, `-u`/`--user`, `--userns`,
-`--read-only`, `--image-volume`, `--rootfs` and the like): edit the quadlet on
-the Host by hand and restart the Agent first, then commit the same quadlet. With the mounts unchanged, a
-commit that changes the config or the quadlet is refused if it also changes
-the Fleet-managed secret or `.volume` unit a credential file is mounted from:
-the running container still shows the old content, while the Agent restarts
-onto the new one. Whether or not the mounts change, the check fails closed on
-what it can't compare: a `--volumes-from` on the current or new quadlet
-refuses every credential file, and so does a tmpfs or anonymous volume (a
-volume mount with a target and no source, however it is spelled) that
-may hold one (it holds what the running container wrote there, and a new
-container starts it empty). A specifier mount kept as it was from a Host path,
-like the reference quadlet's `Volume=%t/systemd:%t/systemd`, passes. To move
-the Agent's credentials to a new mount:
-
-1. Commit the quadlet change alone (add the mount, keep the config as it is)
-   and let the Agent apply it and restart with the new mounts.
-2. Then commit the config change that points at files under the new mount.
+With the mounts unchanged, the check still fails closed where a fresh start of
+the same quadlet may show a credential file otherwise than the running
+container: a `--volumes-from` refuses every credential file, and so does a
+tmpfs or anonymous volume (`Tmpfs=`, `VolatileTmp=`, a volume mount with a
+target and no source, however it is spelled) that may hold one, since
+Quadlet's container starts it empty; a mount at a relative or specifier
+target (`%h`, `%t`) may hold any path. A credential mounted from a
+Fleet-managed secret or `.volume` unit is refused when the same commit
+changes that source: the running container still shows the old content.
+Keep credentials on a Host path or in a secret, and change their source in
+its own commit.
 
 The check has limits; land such changes on their own and watch the Agent
 restart:
 
-- It assumes the next start reads `/etc/picolet/config.yml` as the running
-  Agent's user: a quadlet change that points the Agent at another config
-  (`Environment=PICOLET_CONFIG=…`, an `Exec=` with `--config`) or runs it as
-  another user (`User=`, `UserNS=`) isn't checked against that.
 - It assumes the running Agent's container was started from the quadlet on
   disk. The Agent restarts its own unit after every apply that writes the
-  quadlet or the config, but if that restart failed the real mounts may
-  differ.
+  quadlet or the config, but if that restart failed (or the quadlet was
+  edited without a restart) the real mounts may differ.
+- It assumes the next start reads `/etc/picolet/config.yml`: a quadlet change
+  that points the Agent at another config (`Environment=PICOLET_CONFIG=…`,
+  an `Exec=` with `--config`) isn't checked against that.
 - `picolet apply --config` checks credential paths as the CLI process sees
   them, so run it inside the Agent's container. Outside it (say on a user
   Host's Machine, where `/etc/picolet/secrets` is really
@@ -423,11 +424,6 @@ restart:
   as the running container shows it, the old content, even when the same
   commit rewrites that file and the config, and the Agent restarts onto the
   new content. Don't deliver Agent credentials as Fleet data files.
-- Only the mount lines above count as a mount change. A commit that changes
-  what the container shows at a credential path another way (`Image=`,
-  `Rootfs=`, `ReadOnly=`/`ReadOnlyTmpfs=`, `User=`/`Group=`/`UserNS=`,
-  `ContainersConfModule=`, `GlobalArgs=`) is checked as the running container
-  sees it.
 - The Agent's restart of its own unit is already under way while it saves
   its state. If the save fails,
   the next start finds the old record, rewrites the config and restarts

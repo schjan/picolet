@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -190,22 +191,21 @@ func TestAgentRefusesDroppingMountedSelfConfig(t *testing.T) {
 	assert.Contains(t, st.ManagedFiles, "secret:picolet_system_config")
 }
 
-// TestAgentChecksSelfConfigAgainstMountChanges runs the Agent loop over
-// commits that change the Agent quadlet's mounts, its config, or both: the
-// mounts change alone, while every credential stays under a mount the new
-// unit keeps as it was; a mount change that drops or repoints a credential's
-// mount, or comes with a config change, is refused before anything is
-// written. A config change with the mounts unchanged is checked as spelled.
-func TestAgentChecksSelfConfigAgainstMountChanges(t *testing.T) {
+// TestAgentFreezesMountLines runs the Agent loop over commits that change the
+// Agent quadlet or its config with the quadlet on disk: a commit that changes
+// a mount line is refused before anything is written, whatever else it
+// changes; one that changes only the image, or only the config, is checked
+// in the running container (credentials read as spelled) and applies.
+func TestAgentFreezesMountLines(t *testing.T) {
 	t.Parallel()
 	// seen is where the running container sees the Host's secrets dir
 	// (/host/secrets); it holds the webhook secret.
 	seen := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(seen, "hook"), []byte("secret\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(seen, "token"), []byte("token\n"), 0o600))
-	moved := filepath.Join(t.TempDir(), "not-mounted-here") // a target the running container lacks
 	current := agentBundleUnit("Volume=/host/secrets:" + seen + ":ro\n")
 	config := *webhookConfig(filepath.Join(seen, "hook"))
+	frozen := []string{"changes its Volume= lines", "can't change through the Fleet", "on the Host", "commit the same lines"}
 
 	tests := []struct {
 		name      string
@@ -213,46 +213,15 @@ func TestAgentChecksSelfConfigAgainstMountChanges(t *testing.T) {
 		config    string
 		wantError []string // empty: the commit applies
 	}{
+		{name: "mount dropped", unit: agentBundleUnit(""), config: config, wantError: frozen},
+		{name: "mount added with a config that uses it", unit: current + "Volume=/host/new:/srv/new:ro\n", config: *webhookConfig("/srv/new/hook"), wantError: frozen},
+		{name: "image changed", unit: strings.Replace(current, ":latest", ":v2", 1), config: config},
+		{name: "config changed", unit: current, config: config + "git_token_path: " + filepath.Join(seen, "token") + "\n"},
 		{
-			name:      "mount dropped",
-			unit:      agentBundleUnit(""),
-			config:    config,
-			wantError: []string{"webhook_secret_path", "not under a mount the new unit keeps", "own commit"},
-		},
-		{
-			name:      "mount repointed at another source",
-			unit:      agentBundleUnit("Volume=/host/other:" + seen + ":ro\n"),
-			config:    config,
-			wantError: []string{"webhook_secret_path", "own commit"},
-		},
-		{
-			name:      "new mount and config in one commit",
-			unit:      current + "Volume=/host/new:" + moved + ":ro\n",
-			config:    *webhookConfig(filepath.Join(moved, "hook")),
-			wantError: []string{"changes its mounts and also its config", "own commit"},
-		},
-		{
-			name:   "mount added, credentials kept",
-			unit:   current + "Volume=/host/data:/var/lib/picolet\n",
-			config: config,
-		},
-		{
-			name:   "config changed, mounts kept",
-			unit:   current,
-			config: config + "git_token_path: " + filepath.Join(seen, "token") + "\n",
-		},
-		{
-			name:      "config changed to a missing credential, mounts kept",
-			unit:      current,
-			config:    *webhookConfig(filepath.Join(seen, "absent")),
+			name: "config changed to a missing credential", unit: current, config: *webhookConfig(filepath.Join(seen, "absent")),
 			wantError: []string{"webhook_secret_path", filepath.Join(seen, "absent"), "not readable"},
 		},
-		{
-			name:      "config changed to a relative credential",
-			unit:      current,
-			config:    *webhookConfig("hook"),
-			wantError: []string{"webhook_secret_path", "relative", "absolute"},
-		},
+		{name: "config changed to a relative credential", unit: current, config: *webhookConfig("hook"), wantError: []string{"webhook_secret_path", "relative", "absolute"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -331,7 +300,7 @@ func TestCheckSelfConfigUnresolvedMountedSecret(t *testing.T) {
 // Agent quadlet (running, also on disk) and its config secret
 // picolet_system_config, for calling CheckSelfConfig directly.
 type selfConfigChange struct {
-	running string  // the Agent quadlet on disk
+	running string  // the Agent quadlet on disk (see noUnitOnDisk)
 	next    string  // the Agent quadlet the commit renders
 	config  *string // the picolet_system_config content the commit renders; nil: not resolved
 	files   []resolver.ResolvedFile
@@ -342,6 +311,9 @@ type selfConfigChange struct {
 	// unchangedConfig makes the state hold the config as the commit renders
 	// it, so the commit writes only the Agent quadlet.
 	unchangedConfig bool
+	// noUnitOnDisk leaves no Agent quadlet on disk: the running Agent was
+	// not started from a Fleet unit.
+	noUnitOnDisk bool
 }
 
 const selfConfigUnitPath = "/etc/containers/systemd/picolet/picolet-system.container"
@@ -377,7 +349,7 @@ func (c selfConfigChange) check(t *testing.T) error {
 		st.ManagedFiles[dest] = state.ManagedFile{Hash: "old", Category: category}
 	}
 	read := func(p string) ([]byte, error) {
-		if p == selfConfigUnitPath {
+		if p == selfConfigUnitPath && !c.noUnitOnDisk {
 			return []byte(c.running), nil
 		}
 		return nil, os.ErrNotExist
@@ -438,101 +410,12 @@ func mountLines(config *string) func(*selfConfigChange) {
 	}
 }
 
-// runningAgentBundle is the runChangeCases defaults for tables whose cases
-// change the default Agent quadlet on disk.
-func runningAgentBundle(c *selfConfigChange) { c.running = agentBundleUnit("") }
-
-// A commit that changes the Agent quadlet's config mount, or drops it, while
-// the running Agent reads a Fleet-managed config is refused when the Agent's
-// next start would find no config: the mount names a secret the Fleet does
-// not resolve (whether the old config file stays, is renamed or is dropped),
-// or the new quadlet mounts nothing at the config path, or only a volume,
-// tmpfs or other mount that is not a Host path. A Host file (or directory)
-// bind-mounted there is a hand-managed config and passes.
-func TestCheckSelfConfigRefusesLosingFleetManagedConfig(t *testing.T) {
-	t.Parallel()
-	valid := new("hostname: test-host\nrepo_url: https://example.com/fleet.git\n")
-	renamed := resolver.ResolvedFile{DestPath: "secret:picolet_cfg", Category: config.CategorySecret, Content: *valid}
-	runChangeCases(t, []changeCase{
-		{
-			name:      "repointed at an unresolved secret, old config kept",
-			change:    selfConfigChange{next: "[Container]\nImage=x\nSecret=picolet_typo,target=/etc/picolet/config.yml\n", config: valid},
-			wantError: []string{"picolet_typo", "picolet_system_config", "/etc/picolet/config.yml"},
-		},
-		{
-			name:      "repointed at an unresolved secret, old config renamed",
-			change:    selfConfigChange{next: "[Container]\nImage=x\nSecret=picolet_typo,target=/etc/picolet/config.yml\n", files: []resolver.ResolvedFile{renamed}},
-			wantError: []string{"picolet_typo", "picolet_system_config"},
-		},
-		{
-			name:      "repointed at an unresolved secret, old config dropped",
-			change:    selfConfigChange{next: "[Container]\nImage=x\nSecret=picolet_typo,target=/etc/picolet/config.yml\n"},
-			wantError: []string{"picolet_typo"},
-		},
-		{
-			name:      "mount line and config dropped",
-			change:    selfConfigChange{next: "[Container]\nImage=x\n"},
-			wantError: []string{"mounts nothing at /etc/picolet/config.yml", "picolet_system_config", "Volume="},
-		},
-		{
-			name:      "mount line dropped, config kept",
-			change:    selfConfigChange{next: "[Container]\nImage=x\n", config: valid},
-			wantError: []string{"mounts nothing at /etc/picolet/config.yml"},
-		},
-		{
-			name:      "tmpfs at the config directory",
-			change:    selfConfigChange{next: "[Container]\nImage=x\nTmpfs=/etc/picolet\n"},
-			wantError: []string{"mounts nothing at /etc/picolet/config.yml"},
-		},
-		{
-			name:   "Host file mounted at the config path",
-			change: selfConfigChange{next: "[Container]\nImage=x\nVolume=/srv/picolet/config.yml:/etc/picolet/config.yml:ro\n"},
-		},
-		{
-			name:      "repointed at another secret this commit creates",
-			change:    selfConfigChange{next: "[Container]\nImage=x\nSecret=picolet_cfg,target=/etc/picolet/config.yml\n", files: []resolver.ResolvedFile{renamed}},
-			wantError: []string{"its config secret:picolet_cfg", "own commit"},
-		},
-	}, runningAgentBundle)
-}
-
-// A hand-managed config is a Host file (or directory) bind-mounted at the
-// config path; a volume, .volume unit or glob mount there holds no config, so
-// it is refused while the running Agent reads a Fleet-managed one.
-func TestCheckSelfConfigHandManagedConfigIsHostPath(t *testing.T) {
-	t.Parallel()
-	runChangeCases(t, []changeCase{
-		{
-			name:   "Host file in the user's home mounted at the config path",
-			change: selfConfigChange{next: "[Container]\nImage=x\nVolume=%h/.config/picolet/config.yml:/etc/picolet/config.yml:ro\n"},
-		},
-		{
-			name:   "Host directory mounted over the config directory",
-			change: selfConfigChange{next: "[Container]\nImage=x\nMount=type=bind,src=/srv/picolet,dst=/etc/picolet\n"},
-		},
-		{
-			name:      "named volume over /etc",
-			change:    selfConfigChange{next: "[Container]\nImage=x\nVolume=scratch:/etc\n"},
-			wantError: []string{"scratch", "not a Host path", "picolet_system_config"},
-		},
-		{
-			name:      "volume unit at the config directory",
-			change:    selfConfigChange{next: "[Container]\nImage=x\nVolume=cfg.volume:/etc/picolet\n"},
-			wantError: []string{"cfg.volume", "not a Host path"},
-		},
-		{
-			name:      "glob mount at the config directory",
-			change:    selfConfigChange{next: "[Container]\nImage=x\nMount=type=glob,src=/srv/*,dst=/etc/picolet\n"},
-			wantError: []string{"not a Host path"},
-		},
-	}, runningAgentBundle)
-}
-
 // A commit that removes a source the Agent quadlet mounts (a Podman secret,
 // of either type, or a .volume unit) is refused even when it writes neither
 // the Agent's config nor its quadlet: Podman could not create the Agent's
 // container at its next start. A source the next quadlet no longer mounts
-// may go.
+// may go: the Host's operator drops the line on the Host first (the frozen
+// mount lines), then commits the quadlet without it and the source's removal.
 func TestCheckSelfConfigRefusesRemovingMountedSource(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -577,110 +460,18 @@ func TestCheckSelfConfigRefusesRemovingMountedSource(t *testing.T) {
 		mountLines(webhookConfig(hook))(c)
 	})
 
-	t.Run("mount dropped in the same commit", func(t *testing.T) {
+	t.Run("mount dropped on the Host, then in the commit", func(t *testing.T) {
 		t.Parallel()
-		running := agentBundleUnit("Secret=other,target=/run/other\n")
+		unit := agentBundleUnit("")
 		err := selfConfigChange{
-			running: running, next: agentBundleUnit(""), config: webhookConfig(hook), unchangedConfig: true, managed: []string{"secret:other"},
+			running: unit, next: unit, config: webhookConfig(hook), unchangedConfig: true, managed: []string{"secret:other"},
 		}.check(t)
 		require.NoError(t, err)
 	})
 }
 
-// A commit that changes only the Agent quadlet's mount layout passes when
-// every credential of the config lies under the same mounts (target and
-// source as written) in both units, or under none; any other mount change
-// around a credential is refused, as is a tmpfs kept there (it starts
-// empty), a --volumes-from on either unit (the guard cannot read what it
-// mounts) and a relative path.
-func TestCheckSelfConfigRequiresKeptMounts(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "hook"), []byte("x"), 0o600))
-	nested := webhookConfig(filepath.Join(dir, "sub", "hook"))
-	volume := "Volume=/srv/s:" + dir + "\n"
-	refused := []string{"webhook_secret_path", "not under a mount the new unit keeps", "own commit"}
-	runChangeCases(t, []changeCase{
-		{name: "unrelated mount added", change: selfConfigChange{running: volume, next: volume + "Volume=/srv/data:/var/lib/picolet\n"}},
-		{name: "image changed, mounts kept", change: selfConfigChange{running: volume, next: volume + "Pull=newer\n"}},
-		{name: "credential in the image", change: selfConfigChange{running: "", next: "Volume=/srv/data:/var/lib/picolet\n"}},
-		{name: "PodmanArgs= mount moved to Volume=", change: selfConfigChange{running: "PodmanArgs=--volume /srv/s:" + dir + "\n", next: volume}},
-		{name: "mount dropped", change: selfConfigChange{running: volume, next: ""}, wantError: refused},
-		{name: "mount added over the credential", change: selfConfigChange{running: "", next: volume}, wantError: refused},
-		{name: "mount repointed", change: selfConfigChange{running: volume, next: "Volume=/srv/other:" + dir + "\n"}, wantError: refused},
-		{name: "mount options changed", change: selfConfigChange{running: volume, next: "Volume=/srv/s:" + dir + ":ro\n"}, wantError: refused},
-		{name: "Tmpfs= over the mount", change: selfConfigChange{running: volume, next: volume + "Tmpfs=" + dir + "\n"}, wantError: refused},
-		{name: "Tmpfs= below the mount", change: selfConfigChange{running: volume, next: volume + "Tmpfs=" + dir + "/sub\n", config: nested}, wantError: refused},
-		{
-			name:      "nested mount dropped",
-			change:    selfConfigChange{running: volume + "Volume=/srv/b:" + dir + "/sub\n", next: volume, config: nested},
-			wantError: refused,
-		},
-		{
-			name:      "tmpfs kept",
-			change:    selfConfigChange{running: "Tmpfs=" + dir + "\n", next: "Tmpfs=" + dir + "\nVolume=/srv/data:/var/lib/picolet\n"},
-			wantError: []string{"webhook_secret_path", "tmpfs or anonymous volume", "starts empty"},
-		},
-		{
-			name:      "secret mount options changed",
-			change:    selfConfigChange{running: "Secret=hook,target=" + dir + "/hook\n", next: "Secret=hook,mode=0400,target=" + dir + "/hook\n"},
-			wantError: refused,
-		},
-		{
-			name:      "--volumes-from",
-			change:    selfConfigChange{running: volume + "PodmanArgs=--volumes-from other\n", next: volume},
-			wantError: []string{"--volumes-from other", "own commit"},
-		},
-		{
-			name:      "relative credential path",
-			change:    selfConfigChange{running: volume, next: volume + "WorkingDir=" + dir + "\n", config: webhookConfig("hook")},
-			wantError: []string{"webhook_secret_path", "relative", "absolute"},
-		},
-	}, func(c *selfConfigChange) {
-		c.unchangedConfig = true
-		mountLines(webhookConfig(filepath.Join(dir, "hook")))(c)
-	})
-}
-
-// A commit that changes the Agent quadlet's mount layout and also something
-// the Agent reads at start (its config, or a Fleet-managed secret or
-// .volume unit the new quadlet uses) is refused: the running container shows
-// their old content.
-func TestCheckSelfConfigRefusesMountChangeWithWhatTheAgentReads(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
-	secretUnit := "Secret=hook_secret,target=" + filepath.Join(dir, "hook") + "\n"
-	volumeUnit := "Volume=creds.volume:" + dir + "\n"
-	const volumePath = "/etc/containers/systemd/picolet/creds.volume"
-	newSecret := []resolver.ResolvedFile{{DestPath: "secret:hook_secret", Category: config.CategorySecret, Content: "new"}}
-	added := "Volume=/srv/data:/var/lib/picolet\n"
-	runChangeCases(t, []changeCase{
-		{
-			name:      "config",
-			change:    selfConfigChange{running: "", next: added},
-			wantError: []string{"changes its mounts and also its config secret:picolet_system_config", "own commit"},
-		},
-		{
-			name:      "mounted secret",
-			change:    selfConfigChange{running: secretUnit, next: secretUnit + added, unchangedConfig: true, managed: []string{"secret:hook_secret"}, files: newSecret},
-			wantError: []string{"the secret hook_secret", "own commit"},
-		},
-		{
-			name: "volume unit",
-			change: selfConfigChange{
-				running: volumeUnit, next: volumeUnit + added, unchangedConfig: true, managed: []string{volumePath},
-				files: []resolver.ResolvedFile{{DestPath: volumePath, Category: config.CategoryVolume, Content: "[Volume]\nDevice=/srv/other\n"}},
-			},
-			wantError: []string{"the volume unit creds.volume", "own commit"},
-		},
-	}, mountLines(webhookConfig(filepath.Join(dir, "hook"))))
-}
-
-// A commit that writes the Agent's config or quadlet with the mount layout
-// unchanged is refused when it also changes a Fleet-managed secret or
+// A commit that writes the Agent's config or quadlet (its mount lines
+// frozen) is refused when it also changes a Fleet-managed secret or
 // .volume unit a credential is mounted from: the guard reads the credential
 // as the running container shows it, the old content, while the restart
 // after the apply reads the new one. A changed source that holds no
@@ -727,73 +518,12 @@ func TestCheckSelfConfigRefusesChangedCredentialSource(t *testing.T) {
 	}, mountLines(webhookConfig(hook)))
 }
 
-// The guard fails closed on a mount it cannot read, whether or not the
-// commit changes the mount lines: a --volumes-from (on either unit) or a
-// tmpfs or anonymous volume that may hold a file credential refuses it, as
-// does a mount whose target is relative or starts with a systemd specifier
-// (%h, %t: the guard cannot tell which paths it holds) when the commit adds,
-// drops or repoints one, or when it starts empty or its source changes. Such
-// a mount kept as it was from a Host path (the reference quadlet's
-// %t/systemd) passes.
-func TestCheckSelfConfigFailsClosedOnMountsItCannotRead(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
-	hook := filepath.Join(dir, "hook")
-	volumesFrom := "PodmanArgs=--volumes-from=creds\n"
-	specifier := "Volume=/host/secrets:%h/x:ro\n"
-	runtimeDir := "Volume=%t/systemd:%t/systemd\n"
-	added := "Volume=/srv/data:/var/lib/picolet\n"
-	cannotPlace := []string{"webhook_secret_path", "%h/x", "cannot tell which paths it holds", "own commit"}
-	startsEmpty := []string{"webhook_secret_path", "starts empty"}
-	runChangeCases(t, []changeCase{
-		{
-			name:      "--volumes-from, mount lines unchanged",
-			change:    selfConfigChange{running: volumesFrom, next: volumesFrom},
-			wantError: []string{"webhook_secret_path", "--volumes-from creds", "own commit"},
-		},
-		{name: "Tmpfs=, mount lines unchanged", change: selfConfigChange{running: "Tmpfs=" + dir + "\n", next: "Tmpfs=" + dir + "\n"}, wantError: startsEmpty},
-		{name: "anonymous volume, mount lines unchanged", change: selfConfigChange{running: "Volume=" + dir + "\n", next: "Volume=" + dir + "\n"}, wantError: startsEmpty},
-		{
-			name:      "specifier target dropped",
-			change:    selfConfigChange{running: specifier, next: "", unchangedConfig: true},
-			wantError: cannotPlace,
-		},
-		{
-			name:      "specifier target added",
-			change:    selfConfigChange{running: "", next: specifier, unchangedConfig: true},
-			wantError: cannotPlace,
-		},
-		{
-			name:      "relative target added",
-			change:    selfConfigChange{running: "", next: "Volume=/host/secrets:x\n", unchangedConfig: true},
-			wantError: []string{"webhook_secret_path", "cannot tell which paths it holds", "own commit"},
-		},
-		{
-			name:      "specifier tmpfs, mount lines unchanged",
-			change:    selfConfigChange{running: "Tmpfs=%t/x\n", next: "Tmpfs=%t/x\n"},
-			wantError: startsEmpty,
-		},
-		{
-			name: "specifier secret target, secret changed",
-			change: selfConfigChange{
-				running: "Secret=hook_secret,target=%h/hook\n", next: "Secret=hook_secret,target=%h/hook\n",
-				managed: []string{"secret:hook_secret"},
-				files:   []resolver.ResolvedFile{{DestPath: "secret:hook_secret", Category: config.CategorySecret, Content: "new"}},
-			},
-			wantError: []string{"webhook_secret_path", "the secret hook_secret, which this commit changes"},
-		},
-		{name: "specifier Host path kept, config changed", change: selfConfigChange{running: runtimeDir, next: runtimeDir}},
-		{name: "specifier Host path kept, mount added", change: selfConfigChange{running: runtimeDir, next: runtimeDir + added, unchangedConfig: true}},
-	}, mountLines(webhookConfig(hook)))
-}
-
 // An anonymous volume shares nothing across starts, however it is spelled:
 // a Quadlet Volume= or podman -v/--volume with a target alone, or a Mount=
 // or --mount of type volume (or no type) without a source, whatever its
-// other options. A file credential it may hold is refused, whether or not
-// the commit changes the mount lines: the running container shows what it
-// wrote there, and the next start finds the volume empty. (Quadlet itself
+// other options. A file credential it may hold is refused: the running
+// container shows what it wrote there, and the next start finds the volume
+// empty. (Quadlet itself
 // refuses a sourceless Mount= volume; the guard refuses it all the same.)
 func TestCheckSelfConfigRefusesCredentialUnderAnonymousVolume(t *testing.T) {
 	t.Parallel()
@@ -820,14 +550,7 @@ func TestCheckSelfConfigRefusesCredentialUnderAnonymousVolume(t *testing.T) {
 	var cases []changeCase
 	for name, line := range spellings {
 		line += "\n"
-		cases = append(cases,
-			changeCase{name: name + ", mount lines unchanged", change: selfConfigChange{running: line, next: line}, wantError: startsEmpty},
-			changeCase{
-				name:      name + ", mount added",
-				change:    selfConfigChange{running: line, next: line + "Volume=/srv/data:/var/lib/picolet\n", unchangedConfig: true},
-				wantError: startsEmpty,
-			},
-		)
+		cases = append(cases, changeCase{name: name, change: selfConfigChange{running: line, next: line}, wantError: startsEmpty})
 	}
 	runChangeCases(t, cases, mountLines(webhookConfig(filepath.Join(dir, "hook"))))
 }
@@ -873,35 +596,6 @@ func TestCheckSelfConfigFindsConfigMountSpellings(t *testing.T) {
 	})
 }
 
-// TestAgentRefusesRemovingMountedCredentialSecret runs the Agent loop on a
-// Fleet whose Agent quadlet mounts a Fleet-managed secret as a credential: a
-// commit that only stops resolving that secret, leaving the config and the
-// quadlet as they are, is refused and removes nothing.
-func TestAgentRefusesRemovingMountedCredentialSecret(t *testing.T) {
-	t.Parallel()
-	const hookFile = "services/picolet-system/secrets/hook_secret"
-	hook := filepath.Join(t.TempDir(), "hook")
-	require.NoError(t, os.WriteFile(hook, []byte("x"), 0o600))
-	unit := agentBundleUnit("Secret=hook_secret,target=" + hook + "\n")
-	bareDir, _ := initFleetRepo(t, agentBundleFiles(unit, "picolet_system_config.yml", *webhookConfig(hook)))
-	pushToTestRepo(t, bareDir, map[string]string{hookFile: "hook\n"})
-	quadletDir := t.TempDir()
-	h := newLoopHarness(t, bareDir, WithQuadletDir(quadletDir))
-	h.mocks = mocksSelfConfig | mockSecretRemoves
-	h.runUntilApplied(t)
-	require.Contains(t, h.st.ManagedFiles, "secret:hook_secret", "the first commit manages the credential secret")
-	unitPath := filepath.Join(quadletDir, "picolet-system.container")
-	require.NoError(t, os.WriteFile(unitPath, h.written[unitPath], 0o600))
-
-	require.NoError(t, os.Remove(filepath.Join(h.repoDir, hookFile)))
-	h.reset()
-	_, err := h.a.ReconcileOnce(t.Context(), "drop-sha", h.st, h.store)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "hook_secret")
-	assert.Contains(t, err.Error(), "still mounts")
-	h.assertNothingWritten(t)
-}
-
 // TestAgentRefusesRemovingPodmanArgsSecret runs the Agent loop on a Fleet
 // whose Agent quadlet passes a Fleet-managed secret through PodmanArgs=
 // --secret, mounted or as an environment variable: a commit that only stops
@@ -940,93 +634,139 @@ func TestAgentRefusesRemovingPodmanArgsSecret(t *testing.T) {
 	}
 }
 
-// A commit that changes how the Agent's container shows a path other than
-// by its mount lines fails closed on the file credentials it may hide: a
-// PodmanArgs= option the guard cannot read (a --security-opt mask=, a user
-// or user namespace, a read-only root or tmpfs, image volumes) added,
-// dropped or changed refuses every file credential, and Mask=, Unmask= and
-// VolatileTmp= count as mounts (a masked path, a tmpfs at /tmp). Such an
-// option kept as it was (the reference quadlet's --security-opt
-// apparmor=unconfined), or a PodmanArgs= option that shows no path, passes.
-func TestCheckSelfConfigFailsClosedOnPathOptions(t *testing.T) {
+// The Agent unit's mount, identity and access lines are frozen through the
+// Fleet: a commit that writes the Agent quadlet with any of them changed from
+// the unit on disk is refused, whatever else it changes, and names the
+// Host-side procedure. Each row is a lockout an earlier guard modelled mount
+// by mount; the frozen lines refuse all of them. A commit that changes only
+// the image passes, as does one whose lines the Host's operator already put
+// on disk by hand; a hand edit the commit would undo is refused. Without a
+// unit on disk the lines are not compared.
+func TestCheckSelfConfigFreezesMountLines(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
 	hook := filepath.Join(dir, "hook")
 	volume := "Volume=/srv/s:" + dir + "\n"
-	apparmor := "PodmanArgs=--security-opt apparmor=unconfined\n"
-	cannotRead := []string{"webhook_secret_path", "PodmanArgs=", "cannot check"}
-	runChangeCases(t, []changeCase{
-		{
-			name:      "--security-opt=mask= added",
-			change:    selfConfigChange{running: volume, next: volume + "PodmanArgs=--security-opt=mask=" + hook + "\n"},
-			wantError: append([]string{"--security-opt mask=" + hook}, cannotRead...),
+	frozen := []string{"can't change through the Fleet", selfConfigUnitPath, "on the Host", "systemctl restart picolet-system.service", "commit the same lines"}
+	var cases []changeCase
+	for name, next := range map[string]string{
+		"mount dropped":                        "",
+		"mount repointed":                      "Volume=/srv/other:" + dir + "\n",
+		"mount options changed":                "Volume=/srv/s:" + dir + ":ro\n",
+		"PodmanArgs= mount moved to Volume=":   "PodmanArgs=--volume /srv/s:" + dir + "\n",
+		"unrelated mount added":                volume + "Volume=/srv/data:/var/lib/picolet\n",
+		"Tmpfs= added":                         volume + "Tmpfs=" + dir + "\n",
+		"VolatileTmp= added":                   volume + "VolatileTmp=true\n",
+		"anonymous volume added":               volume + "Volume=/var/lib/picolet\n",
+		"config mount switched":                "Secret=picolet_system_config_next,target=/etc/picolet/config.yml\n" + volume,
+		"secret mount options changed":         volume + "Secret=hook,mode=0400,target=/run/hook\n",
+		"Mask= over the config":                volume + "Mask=/etc/picolet\n",
+		"Unmask=ALL added":                     volume + "Unmask=ALL\n",
+		"--security-opt mask= over the config": volume + "PodmanArgs=--security-opt mask=/etc/picolet\n",
+		"specifier target added":               volume + "Volume=/host/secrets:%h/x:ro\n",
+		"relative target added":                volume + "Volume=/host/secrets:x\n",
+		"--volumes-from added":                 volume + "PodmanArgs=--volumes-from=creds\n",
+		"PodmanArgs= --user added":             volume + "PodmanArgs=-u 1000\n",
+		"PodmanArgs= --read-only added":        volume + "PodmanArgs=--read-only\n",
+		"User= added":                          volume + "User=1000\n",
+		"UserNS= added":                        volume + "UserNS=keep-id\n",
+		"ReadOnly= added":                      volume + "ReadOnly=true\n",
+		"WorkingDir= added":                    volume + "WorkingDir=/srv\n",
+		"GlobalArgs= added":                    volume + "GlobalArgs=--root=/srv/storage\n",
+		"DropCapability= added":                volume + "DropCapability=all\n",
+	} {
+		cases = append(cases, changeCase{name: name, change: selfConfigChange{running: volume, next: next, unchangedConfig: true}, wantError: frozen})
+	}
+	added := volume + "Volume=/srv/data:/var/lib/picolet\n"
+	cases = append(cases,
+		changeCase{name: "config changed too", change: selfConfigChange{running: volume, next: added}, wantError: frozen},
+		changeCase{name: "image changed", change: selfConfigChange{running: volume, next: volume + "Pull=newer\n", unchangedConfig: true}},
+		changeCase{name: "lines of different keys reordered", change: selfConfigChange{running: volume + "Tmpfs=/run/x\n", next: "Tmpfs=/run/x\n" + volume, unchangedConfig: true}},
+		changeCase{name: "lines edited on the Host first, then committed", change: selfConfigChange{running: added, next: added}},
+		changeCase{
+			name:      "lines edited on the Host, commit changes only the image",
+			change:    selfConfigChange{running: added, next: volume + "Pull=newer\n", unchangedConfig: true},
+			wantError: []string{"changes its Volume= lines", "can't change through the Fleet"},
 		},
-		{
-			name:      "--security-opt mask= added as two arguments",
-			change:    selfConfigChange{running: volume, next: volume + "PodmanArgs=--security-opt mask=" + hook + "\n"},
-			wantError: cannotRead,
-		},
-		{name: "-u added", change: selfConfigChange{running: volume, next: volume + "PodmanArgs=-u 1000\n"}, wantError: append([]string{"--user 1000"}, cannotRead...)},
-		{name: "--userns changed", change: selfConfigChange{running: volume + "PodmanArgs=--userns=keep-id\n", next: volume + "PodmanArgs=--userns=auto\n"}, wantError: cannotRead},
-		{name: "--read-only added", change: selfConfigChange{running: volume, next: volume + "PodmanArgs=--read-only\n"}, wantError: append([]string{"--read-only"}, cannotRead...)},
-		{name: "--image-volume added", change: selfConfigChange{running: volume, next: volume + "PodmanArgs=--image-volume tmpfs\n"}, wantError: cannotRead},
-		{name: "option kept, mount added", change: selfConfigChange{running: volume + apparmor, next: volume + apparmor + "Volume=/srv/data:/var/lib/picolet\n"}},
-		{name: "--network added", change: selfConfigChange{running: volume, next: volume + "PodmanArgs=--network=host\n"}},
-		{
-			name:      "Mask= added over the credential",
-			change:    selfConfigChange{running: volume, next: volume + "Mask=/proc/acpi:" + hook + "\n"},
-			wantError: []string{"webhook_secret_path", "not under a mount the new unit keeps", "own commit"},
-		},
-		{
-			name:      "Mask= added over the credential's mount",
-			change:    selfConfigChange{running: volume, next: volume + "Mask=" + filepath.Dir(dir) + "\n"},
-			wantError: []string{"webhook_secret_path", "not under a mount the new unit keeps", "own commit"},
-		},
-		{name: "Mask= added elsewhere", change: selfConfigChange{running: volume, next: volume + "Mask=/proc/acpi\n"}},
-		{
-			name:      "Unmask=ALL added",
-			change:    selfConfigChange{running: volume, next: volume + "Unmask=ALL\n"},
-			wantError: []string{"webhook_secret_path", "cannot tell which paths it holds"},
-		},
-		{
-			name:      "VolatileTmp= added",
-			change:    selfConfigChange{running: "", next: "VolatileTmp=true\n", config: webhookConfig("/tmp/picolet-hook")},
-			wantError: []string{"webhook_secret_path", "not under a mount the new unit keeps"},
-		},
-	}, func(c *selfConfigChange) {
-		c.unchangedConfig = true
-		mountLines(webhookConfig(hook))(c)
+		changeCase{name: "no unit on disk", change: selfConfigChange{next: added + "Tmpfs=/run/x\nUser=1000\n", noUnitOnDisk: true}},
+	)
+	runChangeCases(t, cases, mountLines(webhookConfig(hook)))
+
+	t.Run("user Host", func(t *testing.T) {
+		t.Parallel()
+		running, next := parser.NewUnitFile(), parser.NewUnitFile()
+		require.NoError(t, running.Parse(agentBundleUnit(volume)))
+		require.NoError(t, next.Parse(agentBundleUnit("")))
+		err := checkFrozenLines(running, next, "picolet.service", "/q/picolet.container", false)
+		require.ErrorContains(t, err, "systemctl --user restart picolet.service, as the Host's user")
 	})
 }
 
-// A Mask= hides every path under it, at any depth (Podman masks after it
-// mounts), so a commit whose Agent quadlet masks the config path or a
-// directory above it is refused, whatever mounts the config there and
-// whether or not the config names a credential.
-func TestCheckSelfConfigRefusesMaskedConfig(t *testing.T) {
+// A commit after which the Agent's next start would find no config, while
+// the running Agent reads a Fleet-managed one, is refused: the config secret
+// the frozen Secret= line keeps mounting stops being resolved (renamed or
+// dropped, whether or not the commit writes the quadlet), or the commit
+// repoints or drops that line. Without a unit on disk the running config is
+// unknown, so a quadlet that mounts a Host file there instead passes.
+func TestCheckSelfConfigRefusesLosingFleetManagedConfig(t *testing.T) {
 	t.Parallel()
 	valid := new("hostname: test-host\nrepo_url: https://example.com/fleet.git\n")
-	masked := []string{"Mask=", "/etc/picolet/config.yml", "could not start"}
+	renamed := []resolver.ResolvedFile{{DestPath: "secret:picolet_cfg", Category: config.CategorySecret, Content: *valid}}
+	unit := agentBundleUnit("")
+	lost := []string{"refusing to remove the secret picolet_system_config", "still mounts"}
+	hostFile := "[Container]\nImage=x\nVolume=/srv/picolet/config.yml:/etc/picolet/config.yml:ro\n"
 	runChangeCases(t, []changeCase{
-		{name: "config directory masked", change: selfConfigChange{next: "Mask=/etc/picolet\n", unchangedConfig: true}, wantError: masked},
-		{name: "config file masked", change: selfConfigChange{next: "Mask=/proc/acpi:/etc/picolet/config.yml\n"}, wantError: masked},
-		{name: "/etc masked", change: selfConfigChange{next: "Mask=/etc\n", unchangedConfig: true}, wantError: masked},
-		{name: "masked elsewhere", change: selfConfigChange{next: "Mask=/etc/picolet-other\n", unchangedConfig: true}},
-		{name: "config directory masked via PodmanArgs", change: selfConfigChange{next: "PodmanArgs=--security-opt mask=/etc/picolet\n", unchangedConfig: true}, wantError: masked},
-		{name: "config directory masked via PodmanArgs =", change: selfConfigChange{next: "PodmanArgs=--security-opt=mask=/proc/acpi:/etc/picolet\n", unchangedConfig: true}, wantError: masked},
-		{name: "specifier-led mask added", change: selfConfigChange{next: "Mask=%E/picolet\n", unchangedConfig: true}, wantError: []string{"Mask=%E/picolet", "cannot tell"}},
+		{name: "config renamed", change: selfConfigChange{running: unit, next: unit, files: renamed}, wantError: lost},
+		{name: "config dropped", change: selfConfigChange{running: unit, next: unit}, wantError: lost},
+		{name: "config dropped with an image change", change: selfConfigChange{running: unit, next: unit + "Pull=newer\n"}, wantError: lost},
 		{
-			name:      "Host file mounted at the config path under a mask",
-			change:    selfConfigChange{next: "[Container]\nImage=x\nVolume=/srv/picolet/config.yml:/etc/picolet/config.yml:ro\nMask=/etc/picolet\n", unchanged: true},
-			wantError: masked,
+			name:      "mount repointed at the renamed config",
+			change:    selfConfigChange{running: unit, next: "[Container]\nImage=x\nSecret=picolet_cfg,target=/etc/picolet/config.yml\n", files: renamed},
+			wantError: []string{"changes its Secret= lines", "can't change through the Fleet"},
 		},
+		{name: "mount dropped", change: selfConfigChange{running: unit, next: hostFile, config: valid}, wantError: []string{"changes its Volume=, Secret= lines"}},
+		{name: "Host file mounted there, no unit on disk", change: selfConfigChange{next: hostFile, noUnitOnDisk: true}},
+	}, nil)
+}
+
+// With the mount lines frozen, the guard reads each credential in the
+// running container, as spelled, and fails closed where a fresh start of the
+// same unit may show it otherwise: a --volumes-from (the guard cannot read
+// what it mounts), or a tmpfs (Tmpfs=, --tmpfs, VolatileTmp=, Mount=
+// type=tmpfs) at the deepest mount holding the credential or at a target the
+// guard cannot place (a specifier or relative target, which may hold any
+// path): Quadlet's --rm container starts it empty. A mount at a specifier
+// target from a Host path (the reference quadlet's %t/systemd) passes, as
+// does a tmpfs a deeper Host mount covers.
+func TestCheckSelfConfigFailsClosedWhereAFreshStartDiffers(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "hook"), []byte("x"), 0o600))
+	hook := filepath.Join(dir, "sub", "hook")
+	startsEmpty := []string{"webhook_secret_path", "starts empty"}
+	runtimeDir := "Volume=%t/systemd:%t/systemd\n"
+	runChangeCases(t, []changeCase{
+		{name: "--volumes-from", change: selfConfigChange{running: "PodmanArgs=--volumes-from=creds\n"}, wantError: []string{"webhook_secret_path", "--volumes-from creds"}},
+		{name: "Tmpfs=", change: selfConfigChange{running: "Tmpfs=" + dir + "\n"}, wantError: startsEmpty},
+		{name: "--tmpfs", change: selfConfigChange{running: "PodmanArgs=--tmpfs " + dir + "\n"}, wantError: startsEmpty},
+		{name: "Mount= type=tmpfs", change: selfConfigChange{running: "Mount=type=tmpfs,dst=" + dir + "\n"}, wantError: startsEmpty},
+		{
+			name:      "VolatileTmp=",
+			change:    selfConfigChange{running: "VolatileTmp=true\n", config: webhookConfig("/tmp/picolet-hook")},
+			wantError: startsEmpty,
+		},
+		{name: "specifier tmpfs", change: selfConfigChange{running: "Tmpfs=%t/x\n"}, wantError: startsEmpty},
+		{name: "relative tmpfs", change: selfConfigChange{running: "Tmpfs=x\n"}, wantError: startsEmpty},
+		{name: "tmpfs with an image change", change: selfConfigChange{running: "Tmpfs=" + dir + "\n", next: "Tmpfs=" + dir + "\nPull=newer\n", unchangedConfig: true}, wantError: startsEmpty},
+		{name: "tmpfs covered by a deeper Host mount", change: selfConfigChange{running: "Tmpfs=" + dir + "\nVolume=/srv/s:" + dir + "/sub\n"}},
+		{name: "specifier Host path", change: selfConfigChange{running: runtimeDir}},
+		{name: "relative credential path", change: selfConfigChange{config: webhookConfig("hook")}, wantError: []string{"webhook_secret_path", "relative", "absolute"}},
 	}, func(c *selfConfigChange) {
-		if !c.unchanged {
-			mountLines(valid)(c)
-			return
+		if c.next == "" {
+			c.next = c.running
 		}
-		c.running = agentBundleUnit("")
-		c.unchanged = false
+		mountLines(webhookConfig(hook))(c)
 	})
 }
