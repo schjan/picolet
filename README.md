@@ -370,8 +370,12 @@ Fleet-managed secret or `.volume` unit the quadlet mounts, and every
 credential file must lie under a mount the new quadlet keeps exactly as before
 (same target, same source and options as written; not a tmpfs) or under no
 mount at all. A `--volumes-from` on the current or new quadlet mounts what the
-check can't read, so it refuses every credential file. To move the Agent's
-credentials to a new mount:
+check can't read, so it refuses every credential file. With the mounts
+unchanged, a commit that changes the config or the quadlet is refused if it
+also changes the Fleet-managed secret or `.volume` unit a credential file is
+mounted from: the running container still shows the old content, while the
+Agent restarts onto the new one. To move the Agent's credentials to a new
+mount:
 
 1. Commit the quadlet change alone (add the mount, keep the config as it is)
    and let the Agent apply it and restart with the new mounts.
@@ -391,12 +395,18 @@ restart:
 - `picolet apply --config` checks credential paths as the CLI process sees
   them, so run it inside the Agent's container. Outside it (say on a user
   Host's Machine, where `/etc/picolet/secrets` is really
-  `%h/.config/picolet/secrets`) the check can refuse or pass wrongly. It does
-  not restart the Agent; the Agent restarts on its next apply of a config
-  change.
-- A commit that changes the content of a Fleet-managed secret or `.volume`
-  unit holding a credential, with the quadlet's mounts unchanged, isn't
-  checked against the new content.
+  `%h/.config/picolet/secrets`) the check can refuse or pass wrongly. It never
+  restarts the Agent, and it records the new config as applied, so the Agent
+  sees no change to apply: restart the Agent by hand (`systemctl restart` its
+  unit) to load a config `apply --config` wrote.
+- A commit that changes only the content of a Fleet-managed secret or
+  `.volume` unit holding a credential, with the quadlet and the config
+  unchanged, isn't checked against the new content (the Agent doesn't restart
+  for it, but reads it at its next start).
+- Only the mount lines above count as a mount change. A commit that changes
+  what the container shows at a credential path another way (`Image=`,
+  `Rootfs=`, `ReadOnly=`/`ReadOnlyTmpfs=`, `ContainersConfModule=`,
+  `GlobalArgs=`) is checked as the running container sees it.
 
 ### 6. Monitoring
 

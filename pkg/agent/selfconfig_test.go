@@ -642,8 +642,7 @@ func TestCheckSelfConfigRequiresKeptMounts(t *testing.T) {
 // A commit that changes the Agent quadlet's mount layout and also something
 // the Agent reads at start (its config, or a Fleet-managed secret or
 // .volume unit the new quadlet uses) is refused: the running container shows
-// their old content. With the mount layout unchanged, the config is checked
-// as spelled, even when a mounted secret changes too.
+// their old content.
 func TestCheckSelfConfigRefusesMountChangeWithWhatTheAgentReads(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -672,8 +671,55 @@ func TestCheckSelfConfigRefusesMountChangeWithWhatTheAgentReads(t *testing.T) {
 			},
 			wantError: []string{"the volume unit creds.volume", "own commit"},
 		},
-		{name: "config and mounted secret, mounts kept", change: selfConfigChange{running: secretUnit, next: secretUnit, managed: []string{"secret:hook_secret"}, files: newSecret}},
 	}, mountLines(webhookConfig(filepath.Join(dir, "hook"))))
+}
+
+// A commit that writes the Agent's config or quadlet with the mount layout
+// unchanged is refused when it also changes a Fleet-managed secret or
+// .volume unit a credential is mounted from: the guard reads the credential
+// as the running container shows it, the old content, while the restart
+// after the apply reads the new one. A changed source that holds no
+// credential passes.
+func TestCheckSelfConfigRefusesChangedCredentialSource(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
+	hook := filepath.Join(dir, "hook")
+	secretUnit := "Secret=hook_secret,target=" + hook + "\n"
+	volumeUnit := "Volume=creds.volume:" + dir + "\n"
+	const volumePath = "/etc/containers/systemd/picolet/creds.volume"
+	newSecret := func(name string) []resolver.ResolvedFile {
+		return []resolver.ResolvedFile{{DestPath: "secret:" + name, Category: config.CategorySecret, Content: "new"}}
+	}
+	newVolume := []resolver.ResolvedFile{{DestPath: volumePath, Category: config.CategoryVolume, Content: "[Volume]\nDevice=/srv/other\n"}}
+	ownCommit := []string{"webhook_secret_path", "own commit"}
+	runChangeCases(t, []changeCase{
+		{
+			name:      "config and the credential's secret",
+			change:    selfConfigChange{running: secretUnit, next: secretUnit, managed: []string{"secret:hook_secret"}, files: newSecret("hook_secret")},
+			wantError: append([]string{"the secret hook_secret, which this commit changes"}, ownCommit...),
+		},
+		{
+			name:      "config and the credential's volume unit",
+			change:    selfConfigChange{running: volumeUnit, next: volumeUnit, managed: []string{volumePath}, files: newVolume},
+			wantError: append([]string{"the volume unit creds.volume, which this commit changes"}, ownCommit...),
+		},
+		{
+			name: "quadlet and the credential's secret",
+			change: selfConfigChange{
+				running: secretUnit, next: secretUnit + "Pull=newer\n", unchangedConfig: true,
+				managed: []string{"secret:hook_secret"}, files: newSecret("hook_secret"),
+			},
+			wantError: append([]string{"the secret hook_secret, which this commit changes"}, ownCommit...),
+		},
+		{
+			name: "config and a secret holding no credential",
+			change: selfConfigChange{
+				running: "Secret=other,target=/run/other\n", next: "Secret=other,target=/run/other\n",
+				managed: []string{"secret:other"}, files: newSecret("other"),
+			},
+		},
+	}, mountLines(webhookConfig(hook)))
 }
 
 // The running Agent's config secret is found however Podman reads its

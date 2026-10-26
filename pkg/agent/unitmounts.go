@@ -35,6 +35,8 @@ type mount struct {
 	hostPath bool
 	// volumeUnit names the .volume unit a Volume= or Mount= mounts.
 	volumeUnit string
+	// secret names the Podman secret a Secret= or --secret mounts.
+	secret string
 }
 
 // unitMounts lists the mounts unit's [Container] group declares, read as
@@ -133,12 +135,12 @@ func parseTmpfs(tmpfs string) mount {
 // appendSecret appends the mount of a Secret= (or --secret) value; an env
 // secret mounts nothing. Its source is the spec without the target.
 func appendSecret(mounts []mount, spec string) []mount {
-	_, target, mounted := resolver.ParseSecretMount(spec)
+	name, target, mounted := resolver.ParseSecretMount(spec)
 	if !mounted {
 		return mounts
 	}
 	fields := slices.DeleteFunc(strings.Split(spec, ","), func(f string) bool { return strings.HasPrefix(f, "target=") })
-	return append(mounts, mount{source: "secret " + strings.Join(fields, ","), target: target})
+	return append(mounts, mount{source: "secret " + strings.Join(fields, ","), target: target, secret: name})
 }
 
 // isHostPath reports whether a bind or volume source is a Host path:

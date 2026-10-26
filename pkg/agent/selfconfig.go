@@ -74,14 +74,20 @@ func CheckSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Chan
 }
 
 // checkNextConfig checks file, the config the Agent's next start reads with
-// the unit next, against the running Agent's unit running: with an
-// unchanged mount layout (or no unit on disk, whose mounts are unknown) its
-// credentials are read where they are spelled, as at the Agent's startup;
-// a changed one must change alone (checkRelayoutAlone) and keep every
-// credential's mounts (keptMounts).
+// the unit next, against the running Agent's unit running: without a unit
+// on disk, whose mounts are unknown, its credentials are read where they are
+// spelled, as at the Agent's startup; with an unchanged mount layout too,
+// unless the changeset changes their source (unchangedSources); a changed
+// one must change alone (checkRelayoutAlone) and keep every credential's
+// mounts (keptMounts).
 func checkNextConfig(next, running *parser.UnitFile, file *resolver.ResolvedFile, unit string, changeset *reconciler.Changeset) error {
-	locate := absolutePath
-	if running != nil && !sameMountLayout(running, next) {
+	var locate agentcfg.Locate
+	switch {
+	case running == nil:
+		locate = absolutePath
+	case sameMountLayout(running, next):
+		locate = unchangedSources(next, changeset)
+	default:
 		if err := checkRelayoutAlone(next, file.DestPath, unit, changeset); err != nil {
 			return err
 		}
@@ -104,6 +110,39 @@ func absolutePath(cred agentcfg.Credential) (string, error) {
 		return "", errors.New("the path is relative; make it absolute")
 	}
 	return cred.Path, nil
+}
+
+// unchangedSources returns the agentcfg.Locate of a changeset that keeps the
+// Agent unit's mount layout: a credential path must be absolute, and the
+// changeset may not change the Fleet-managed secret or .volume unit next
+// mounts it from (the deepest mount holding it). The running container still
+// shows that source's old content, so the guard would check the old file
+// while the restart after the apply reads the new one.
+func unchangedSources(next *parser.UnitFile, changeset *reconciler.Changeset) agentcfg.Locate {
+	mounts, _ := unitMounts(next)
+	return func(cred agentcfg.Credential) (string, error) {
+		if _, err := absolutePath(cred); err != nil {
+			return "", err
+		}
+		for _, m := range mountsHolding(mounts, cred.Path) {
+			if what := changedSource(m, changeset); what != "" {
+				return "", fmt.Errorf("the Agent unit mounts it from %s, which this commit changes; change %s in its own commit, then the config", what, what)
+			}
+		}
+		return cred.Path, nil
+	}
+}
+
+// changedSource names the Fleet-managed secret or .volume unit m mounts when
+// the changeset writes it, and returns "" otherwise.
+func changedSource(m mount, changeset *reconciler.Changeset) string {
+	switch {
+	case m.secret != "" && changeset.Writes(resolver.SecretDestPath(m.secret)):
+		return "the secret " + m.secret
+	case m.volumeUnit != "" && writesVolumeUnit(changeset, m.volumeUnit):
+		return "the volume unit " + m.volumeUnit
+	}
+	return ""
 }
 
 // keptMounts returns the agentcfg.Locate of a changeset that changes the
@@ -154,13 +193,19 @@ func checkRelayoutAlone(next *parser.UnitFile, configDest, unit string, changese
 	}
 	mounts, _ := unitMounts(next)
 	for _, m := range mounts {
-		if m.volumeUnit != "" && slices.ContainsFunc(volumeUnitChanges(changeset, m.volumeUnit), func(c reconciler.Change) bool {
-			return c.Action != reconciler.ActionNoop
-		}) {
+		if m.volumeUnit != "" && writesVolumeUnit(changeset, m.volumeUnit) {
 			return refuse("the volume unit " + m.volumeUnit)
 		}
 	}
 	return nil
+}
+
+// writesVolumeUnit reports whether the changeset changes the .volume unit
+// named name.
+func writesVolumeUnit(changeset *reconciler.Changeset, name string) bool {
+	return slices.ContainsFunc(volumeUnitChanges(changeset, name), func(c reconciler.Change) bool {
+		return c.Action != reconciler.ActionNoop
+	})
 }
 
 // checkLostSources refuses a changeset that removes a source the Agent's next

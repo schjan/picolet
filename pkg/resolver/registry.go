@@ -282,9 +282,9 @@ func (p ProviderTemplate) strictText() (reason, fix string) {
 
 // refForError names ref in an error without the part a template most likely
 // builds from a secret value: a sops:// ref keeps its file, an op:// or
-// pass:// ref its vault and item, and "…" marks the dropped pointer or
-// field. Errors that may quote a ref built at render time use it, since only
-// SOPS values are scrubbed from errors.
+// pass:// ref its vault (share), and "…" marks the dropped pointer, or item
+// and field. Errors that may quote a ref built at render time use it, since
+// only SOPS values are scrubbed from errors.
 func refForError(ref string) string {
 	if file, _, found := strings.Cut(ref, "#"); found {
 		return file + "#…"
@@ -292,12 +292,45 @@ func refForError(ref string) string {
 	if sops.IsRef(ref) {
 		return ref // the whole file
 	}
-	if i := strings.LastIndex(ref, "/"); i > len("x://") && strings.Contains(ref[:i], "://") {
-		return ref[:i] + "/…"
+	scheme, rest, _ := strings.Cut(ref, "://")
+	if vault, _, found := strings.Cut(rest, "/"); found && vault != "" {
+		return scheme + "://" + vault + "/…"
 	}
-	scheme, _, _ := strings.Cut(ref, "://")
 	return scheme + "://…"
 }
+
+// redactRefs returns err with every op:// or pass:// ref of refs it quotes
+// replaced by refForError's form: a provider client's error quotes the refs
+// it failed to read, and a template may build one from a secret value. A
+// sops:// ref is kept, so a SOPS reader's error still names the pointer it
+// failed at. The result answers errors.Is like err but does not unwrap.
+func redactRefs(err error, refs []string) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	for _, ref := range refs {
+		if !sops.IsRef(ref) {
+			msg = strings.ReplaceAll(msg, ref, refForError(ref))
+		}
+	}
+	if msg == err.Error() {
+		return err
+	}
+	return redactedError{msg: msg, err: err}
+}
+
+// redactedError is an error whose text redactRefs rewrote. It deliberately
+// does not unwrap, so no caller reaches the original text.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e redactedError) Error() string { return e.msg }
+
+// Is reports whether the original error matches target.
+func (e redactedError) Is(target error) bool { return errors.Is(e.err, target) }
 
 // strictModeError is the error a call of p's function funcName fails with
 // in strict mode, where no provider value can be used. The wording is the
@@ -360,7 +393,7 @@ func (c *RefCache) Resolve(ctx context.Context) error {
 	c.log().Debug("batch-resolving template secrets", "count", len(unique))
 	results, err := c.reader(ctx, unique)
 	if err != nil {
-		return fmt.Errorf("resolving template secrets: %w", err)
+		return fmt.Errorf("resolving template secrets: %w", redactRefs(err, unique))
 	}
 	c.resolved = results
 	return nil
@@ -546,7 +579,7 @@ func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p Provi
 		cache.log().Debug("cache miss, resolving individually", "func", p.FuncName)
 		results, err := p.Reader(ctx, []string{ref})
 		if err != nil {
-			return "", err
+			return "", redactRefs(err, []string{ref})
 		}
 		val, ok := results[ref]
 		if !ok {

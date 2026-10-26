@@ -51,9 +51,9 @@ func TestIntegrationValidateAgentBundleStrict(t *testing.T) {
 		name, user, service, fn, ref, fix string
 		shown                             string // how the error names ref: no pointer or field
 	}{
-		{name: "rootful readOpSecret", service: "picolet-system", fn: "readOpSecret", ref: "op://vault/item/token", fix: fix, shown: "op://vault/item/…"},
-		{name: "rootful readProtonPassSecret", service: "picolet-system", fn: "readProtonPassSecret", ref: "pass://share/item/token", fix: fix, shown: "pass://share/item/…"},
-		{name: "user readOpSecret", user: "app", service: "picolet", fn: "readOpSecret", ref: "op://vault/item/token", fix: fix, shown: "op://vault/item/…"},
+		{name: "rootful readOpSecret", service: "picolet-system", fn: "readOpSecret", ref: "op://vault/item/token", fix: fix, shown: "op://vault/…"},
+		{name: "rootful readProtonPassSecret", service: "picolet-system", fn: "readProtonPassSecret", ref: "pass://share/item/token", fix: fix, shown: "pass://share/…"},
+		{name: "user readOpSecret", user: "app", service: "picolet", fn: "readOpSecret", ref: "op://vault/item/token", fix: fix, shown: "op://vault/…"},
 		{name: "rootful readSopsSecret", service: "picolet-system", fn: "readSopsSecret", ref: "sops://secrets/git.sops.yaml#/token", fix: sopsFix, shown: "sops://secrets/git.sops.yaml#…"},
 		{name: "rootful readSopsData", service: "picolet-system", fn: "readSopsData", ref: "sops://secrets/git.sops.yaml#/git", fix: sopsFix, shown: "sops://secrets/git.sops.yaml#…"},
 	}

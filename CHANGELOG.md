@@ -168,7 +168,8 @@ kept as is.
 - An Agent restarts its own unit after applying a commit that changes its
   Fleet-rendered config, so pushing `age_recipients:` (or any other Agent
   config change) takes effect without a manual restart; a dry run restarts
-  nothing ([#248](https://github.com/schjan/picolet/issues/248)).
+  nothing, and neither does `picolet apply --config` (restart the Agent by
+  hand after it) ([#248](https://github.com/schjan/picolet/issues/248)).
 - The self-restart guard refuses a Fleet-rendered Agent config the Agent could
   not start with (strict parse, credential overlap, startup credential checks,
   a relative credential path) or a commit that leaves a Fleet-managed Agent
@@ -177,7 +178,9 @@ kept as is.
   bind-mounted there opts out). A commit that changes the Agent quadlet's
   mount lines may not also change its config or a Fleet-managed source it
   mounts, and every credential must stay under a mount kept as written (or
-  under none): change the mounts in their own commit, then the config. The
+  under none): change the mounts in their own commit, then the config. With
+  the mounts unchanged, a commit that changes the config or quadlet may not
+  also change the secret or `.volume` unit a credential is mounted from. The
   reconciliation fails and the Agent keeps running on its current config.
   `picolet apply --config` runs the same check
   ([#252](https://github.com/schjan/picolet/issues/252)).

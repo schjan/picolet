@@ -354,6 +354,6 @@ func TestStrictModeFailsEvenWithReader(t *testing.T) {
 	tmpl, _, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{p}, "")
 	require.NoError(t, err)
 	err = tmpl.ExecuteTemplate(io.Discard, "s.tmpl", nil)
-	require.ErrorContains(t, err, `readOpSecret "op://vault/item/…": provider not configured in strict mode`)
+	require.ErrorContains(t, err, `readOpSecret "op://vault/…": provider not configured in strict mode`)
 	assert.False(t, called)
 }
