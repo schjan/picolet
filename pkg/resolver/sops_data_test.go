@@ -152,7 +152,7 @@ func TestReadSopsDataRejectedInUnitFiles(t *testing.T) {
 				r, probe := sopsResolver(t, tt.base, tt.extra, mode, false)
 				_, err := r.ResolveHost(t.Context(), "test-host")
 				require.ErrorIs(t, err, ErrSopsInUnitFile)
-				require.ErrorContains(t, err, tt.file+`: readSopsData "`+guardRef+`": `+
+				require.ErrorContains(t, err, tt.file+`: readSopsData "`+refForError(guardRef)+`": `+
 					"SOPS values can't be rendered into "+tt.kind)
 				testsops.AssertNoPlaintext(t, err)
 				assert.False(t, probe.rec.asked(guardRef), "the decrypting reader must not be asked for a guarded ref")

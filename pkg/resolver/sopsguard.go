@@ -63,5 +63,5 @@ func (r *Resolver) sopsGuard(funcName, ref string) error {
 		return nil
 	}
 	return fmt.Errorf("%s: %s %q: %w into %s (%s); use Secret= (or a secret mounted as a file) instead",
-		g.file, funcName, ref, ErrSopsInUnitFile, g.kind, g.reason)
+		g.file, funcName, refForError(ref), ErrSopsInUnitFile, g.kind, g.reason)
 }

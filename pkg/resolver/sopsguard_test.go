@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/internal/testsops"
+	"github.com/schjan/picolet/pkg/config"
 )
 
 const guardRef = "sops://secrets/db.sops.yaml#/db/password"
@@ -102,7 +103,7 @@ func TestReadSopsSecretRejectedInUnitFiles(t *testing.T) {
 				require.Error(t, err)
 				assert.Nil(t, resolved)
 				require.ErrorIs(t, err, ErrSopsInUnitFile)
-				require.ErrorContains(t, err, tt.file+`: readSopsSecret "`+guardRef+`": `+
+				require.ErrorContains(t, err, tt.file+`: readSopsSecret "`+refForError(guardRef)+`": `+
 					"SOPS values can't be rendered into "+tt.kind)
 				require.ErrorContains(t, err, "use Secret= (or a secret mounted as a file) instead")
 				assert.False(t, probe.rec.asked(guardRef), "the decrypting reader must not be asked for a guarded ref")
@@ -169,4 +170,26 @@ func TestReadSopsSecretGuardPrecedesStrictAndMissingReader(t *testing.T) {
 			testsops.AssertNoPlaintext(t, err)
 		})
 	}
+}
+
+// A guarded file may build its sops:// pointer from an op:// value; only SOPS
+// values are scrubbed, so the guard's error names the ref without its
+// pointer (refForError) and never shows the op:// value.
+func TestSopsGuardErrorKeepsDynamicRefOut(t *testing.T) {
+	t.Parallel()
+	mapFS := pathsFleetFS("  paths: [units/app.container.tmpl]\n", map[string]string{
+		"secrets/db.sops.yaml":     testsops.CorpusText(t, "values.sops.yaml"),
+		"hosts/test-host/host.yml": sopsHostYAML(t, "srv-1"),
+		"units/app.container.tmpl": "[Container]\nImage=app\nEnvironment=DB_PASSWORD=" +
+			`{{ readSopsSecret (printf "sops://secrets/db.sops.yaml#/%s" (readOpSecret "op://vault/item/user")) }}` + "\n",
+	})
+	cfg, err := config.LoadAll(mapFS)
+	require.NoError(t, err)
+	r, err := New(Config{FS: mapFS, Config: cfg, OpSecretReader: userReader, Sops: &recordingSopsReader{}})
+	require.NoError(t, err)
+
+	_, err = r.ResolveHost(t.Context(), "test-host")
+	require.ErrorIs(t, err, ErrSopsInUnitFile)
+	require.ErrorContains(t, err, `readSopsSecret "sops://secrets/db.sops.yaml#…"`)
+	assert.NotContains(t, err.Error(), secretItem)
 }
