@@ -1,8 +1,6 @@
 package sops_test
 
 import (
-	"encoding/json"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,70 +8,13 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/getsops/sops/v3/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/internal/testsops"
 	"github.com/schjan/picolet/pkg/sops"
 )
-
-// TestCreationRulesMatchSOPSCLI checks the rule matcher against the rule the
-// sops CLI chose for each file when the corpus was generated
-// (testdata/sops/creation-rules/expected.json, `task sops:corpus`).
-func TestCreationRulesMatchSOPSCLI(t *testing.T) {
-	t.Parallel()
-	data, err := os.ReadFile(filepath.Join(corpusDir, "creation-rules", "expected.json"))
-	require.NoError(t, err)
-	var golden struct {
-		Cases []struct {
-			Name     string         `json:"name"`
-			Rules    []string       `json:"rules"`
-			Expected map[string]int `json:"expected"`
-		} `json:"cases"`
-	}
-	require.NoError(t, json.Unmarshal(data, &golden))
-	require.NotEmpty(t, golden.Cases)
-
-	rcp := testsops.Recipient(t, "srv-1")
-	for _, c := range golden.Cases {
-		t.Run(c.Name, func(t *testing.T) {
-			t.Parallel()
-			var cfg strings.Builder
-			cfg.WriteString("creation_rules:\n")
-			for _, re := range c.Rules {
-				quoted, err := json.Marshal(re)
-				require.NoError(t, err)
-				fmt.Fprintf(&cfg, "  - path_regex: %s\n    age: %s\n", quoted, rcp)
-			}
-			rules, err := sops.ParseCreationRules([]byte(cfg.String()))
-			require.NoError(t, err)
-			for file, want := range c.Expected {
-				rule, ok, err := rules.Match(file)
-				require.NoError(t, err, file)
-				if want == -1 {
-					assert.False(t, ok, "%s: sops found no matching rule", file)
-					continue
-				}
-				if assert.True(t, ok, "%s: sops chose rule %d", file, want) {
-					assert.Equal(t, want, rule.Index, file)
-					assert.Equal(t, c.Rules[want], rule.PathRegex, file)
-				}
-			}
-		})
-	}
-}
-
-func TestCreationRulesMatchBadRegex(t *testing.T) {
-	t.Parallel()
-	rules, err := sops.ParseCreationRules([]byte("creation_rules:\n  - path_regex: ^ok/\n  - path_regex: \"(\"\n"))
-	require.NoError(t, err)
-	// As upstream: a rule after the match is never compiled.
-	_, ok, err := rules.Match("ok/db.sops.yaml")
-	require.NoError(t, err)
-	assert.True(t, ok)
-	_, _, err = rules.Match("other/db.sops.yaml")
-	require.ErrorContains(t, err, `creation rule 2: path_regex "("`)
-}
 
 // inspectSOPS inspects a corpus file that must be a SOPS file.
 func inspectSOPS(t *testing.T, name string) *sops.File {
@@ -83,14 +24,13 @@ func inspectSOPS(t *testing.T, name string) *sops.File {
 	return f
 }
 
-func matchOnly(t *testing.T, cfg string) *sops.CreationRule {
+// rulesOf reads cfg as the Fleet-root `.sops.yaml`.
+func rulesOf(t *testing.T, cfg string) *sops.CreationRules {
 	t.Helper()
-	rules, err := sops.ParseCreationRules([]byte(cfg))
+	rules, err := sops.ReadCreationRules(fstest.MapFS{".sops.yaml": {Data: []byte(cfg)}})
 	require.NoError(t, err)
-	rule, ok, err := rules.Match("secrets/db.sops.yaml")
-	require.NoError(t, err)
-	require.True(t, ok)
-	return rule
+	t.Cleanup(func() { _ = rules.Close() })
+	return rules
 }
 
 type checkRecipientsCase struct {
@@ -112,21 +52,21 @@ func checkRecipientsCases(t *testing.T) []checkRecipientsCase {
 			cfg:  "creation_rules:\n  - path_regex: ^secrets/\n    age: " + op + ", " + srv2 + "," + srv1 + "\n",
 		},
 		{
-			name: "equal, YAML list, upper case label",
+			name: "equal, YAML list",
 			file: "values.sops.yaml",
-			cfg:  "creation_rules:\n  - path_regex: ^secrets/\n    age:\n      - " + strings.ToUpper(srv1) + "\n      - " + srv2 + "\n      - " + op + "\n",
+			cfg:  "creation_rules:\n  - path_regex: ^secrets/\n    age:\n      - " + srv1 + "\n      - " + srv2 + "\n      - " + op + "\n",
 		},
 		{
 			name: "file has extra and lacks one",
 			file: "values.sops.yaml",
 			cfg:  "creation_rules:\n  - path_regex: ^secrets/\n    age: " + srv1 + "," + srv2 + "," + srv3 + "\n",
-			want: "recipients differ from `.sops.yaml` rule `^secrets/`: +" + op + " −" + srv3 + "; " + update,
+			want: "recipients differ from the `.sops.yaml` creation rule matching it: +" + op + " −" + srv3 + "; " + update,
 		},
 		{
 			name: "empty path_regex",
 			file: "values.sops.json",
 			cfg:  "creation_rules:\n  - age: " + srv1 + "\n",
-			want: "recipients differ from `.sops.yaml` rule 1 (empty path_regex): +" + srv2 + "; " + update,
+			want: "recipients differ from the `.sops.yaml` creation rule matching it: +" + srv2 + "; " + update,
 		},
 		{
 			name: "key groups, set per group",
@@ -145,18 +85,18 @@ func checkRecipientsCases(t *testing.T) []checkRecipientsCase {
 			file: "key-groups.sops.yaml",
 			cfg: "creation_rules:\n  - path_regex: ^secrets/\n    key_groups:\n" +
 				"      - age: [" + srv1 + "]\n      - age: [" + srv2 + ", " + op + "]\n      - age: [" + pq + "]\n",
-			want: "recipients differ from `.sops.yaml` rule `^secrets/`: key group 1: +" + op + "; key group 2: −" + op + "; " + update,
+			want: "recipients differ from the `.sops.yaml` creation rule matching it: key group 1: +" + op + "; key group 2: −" + op + "; " + update,
 		},
 		{
 			name: "key groups vs single group rule",
 			file: "key-groups.sops.yaml",
 			cfg:  "creation_rules:\n  - path_regex: ^secrets/\n    age: " + srv1 + "," + op + "\n",
-			want: "recipients differ from `.sops.yaml` rule `^secrets/`: file has 3 key groups, rule has 1; key group 2: +" + srv2 + "; key group 3: +" + pq + "; " + update,
+			want: "recipients differ from the `.sops.yaml` creation rule matching it: file has 3 key groups, rule has 1; key group 2: +" + srv2 + "; key group 3: +" + pq + "; " + update,
 		},
 		{
 			name: "non-age keys ignored",
 			file: "non-age.sops.yaml",
-			cfg:  "creation_rules:\n  - path_regex: ^secrets/\n    age: " + srv1 + "," + srv2 + "\n    pgp: 0000000000000000000000000000000000000000\n",
+			cfg:  "creation_rules:\n  - path_regex: ^secrets/\n    age: " + srv1 + "," + srv2 + "\n    pgp: \"0000000000000000000000000000000000000000\"\n",
 		},
 	}
 }
@@ -166,7 +106,7 @@ func TestCheckRecipients(t *testing.T) {
 	for _, tt := range checkRecipientsCases(t) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := matchOnly(t, tt.cfg).CheckRecipients("secrets/db.sops.yaml", inspectSOPS(t, tt.file))
+			err := rulesOf(t, tt.cfg).Check("secrets/db.sops.yaml", inspectSOPS(t, tt.file))
 			if tt.want == "" {
 				require.NoError(t, err)
 				return
@@ -176,20 +116,75 @@ func TestCheckRecipients(t *testing.T) {
 	}
 }
 
-func TestParseCreationRulesBadAge(t *testing.T) {
+// A file no rule matches, or a .sops.yaml without creation_rules, is not
+// checked.
+func TestCheckUnchecked(t *testing.T) {
 	t.Parallel()
-	for name, age := range map[string]string{
-		"list of numbers": "[1, 2]",
-		"number":          "1",
-		"mapping":         "{a: b}",
-		"nested list":     "[[a]]",
+	for name, cfg := range map[string]string{
+		"no matching rule":  "creation_rules:\n  - path_regex: ^other/\n    age: " + testsops.Recipient(t, "srv-3") + "\n",
+		"no creation_rules": "destination_rules: []\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			_, err := sops.ParseCreationRules([]byte("creation_rules:\n  - path_regex: ^secrets/\n    age: " + age + "\n"))
-			require.ErrorContains(t, err, "age: expected a string or a list of strings")
+			require.NoError(t, rulesOf(t, cfg).Check("secrets/db.sops.yaml", inspectSOPS(t, "values.sops.yaml")))
 		})
 	}
+}
+
+func TestCheckInvalidRule(t *testing.T) {
+	t.Parallel()
+	srv1 := testsops.Recipient(t, "srv-1")
+	for name, tt := range map[string]struct{ cfg, want string }{
+		"bad path_regex": {
+			cfg:  "creation_rules:\n  - path_regex: \"(\"\n    age: " + srv1 + "\n",
+			want: "can not compile regexp",
+		},
+		"malformed recipient": {
+			cfg:  "creation_rules:\n  - path_regex: ^secrets/\n    age: age1nope\n",
+			want: "failed to parse input as Bech32-encoded age public key",
+		},
+		"upper case recipient, as sops rejects it": {
+			cfg:  "creation_rules:\n  - age: " + strings.ToUpper(srv1) + "\n",
+			want: "unknown recipient type",
+		},
+		"age not strings": {
+			cfg:  "creation_rules:\n  - path_regex: ^secrets/\n    age: [1, 2]\n",
+			want: "invalid age key configuration",
+		},
+		"two encryption rules": {
+			cfg:  "creation_rules:\n  - age: " + srv1 + "\n    encrypted_regex: x\n    unencrypted_regex: y\n",
+			want: "cannot use more than one of",
+		},
+		"malformed YAML": {
+			cfg:  "creation_rules: {",
+			want: "Could not unmarshal config file",
+		},
+		"age identity is never echoed": {
+			cfg:  "creation_rules:\n  - age: " + zeroIdentity + "\n",
+			want: "an age identity (secret key) is not an age recipient; use its public key",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			err := rulesOf(t, tt.cfg).Check("secrets/db.sops.yaml", inspectSOPS(t, "values.sops.yaml"))
+			require.ErrorIs(t, err, sops.ErrInvalidCreationRule)
+			require.ErrorContains(t, err, "`.sops.yaml` rule for `secrets/db.sops.yaml` is invalid: ")
+			require.ErrorContains(t, err, tt.want)
+			assert.NotContains(t, strings.ToUpper(err.Error()), zeroIdentity)
+		})
+	}
+}
+
+// TestNoMatchingRuleText pins the upstream error text Check reads as "no
+// rule matches": a SOPS upgrade that changes it must fail here, not turn
+// every unmatched file into an invalid-rule error.
+func TestNoMatchingRuleText(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	conf := filepath.Join(dir, ".sops.yaml")
+	require.NoError(t, os.WriteFile(conf, []byte("creation_rules:\n  - path_regex: ^other/\n"), 0o600))
+	_, err := config.LoadCreationRuleForFile(conf, filepath.Join(dir, "secrets", "db.sops.yaml"), nil)
+	require.EqualError(t, err, sops.NoMatchingRule)
 }
 
 func TestReadCreationRules(t *testing.T) {
@@ -199,17 +194,22 @@ func TestReadCreationRules(t *testing.T) {
 		t.Parallel()
 		rules, err := sops.ReadCreationRules(fstest.MapFS{})
 		require.NoError(t, err)
-		_, ok, err := rules.Match("secrets/db.sops.yaml")
-		require.NoError(t, err)
-		assert.False(t, ok)
+		assert.Empty(t, sops.RulesDir(rules))
+		require.NoError(t, rules.Check("secrets/db.sops.yaml", inspectSOPS(t, "values.sops.yaml")))
+		require.NoError(t, rules.Close())
 	})
-	t.Run("regular file", func(t *testing.T) {
+	t.Run("regular file, private copy removed on Close", func(t *testing.T) {
 		t.Parallel()
 		rules, err := sops.ReadCreationRules(fstest.MapFS{".sops.yaml": {Data: body}})
 		require.NoError(t, err)
-		_, ok, err := rules.Match("secrets/db.sops.yaml")
+		dir := sops.RulesDir(rules)
+		info, err := os.Stat(dir)
 		require.NoError(t, err)
-		assert.True(t, ok)
+		assert.Equal(t, fs.FileMode(0o700), info.Mode().Perm())
+		err = rules.Check("secrets/db.sops.yaml", inspectSOPS(t, "values.sops.yaml"))
+		require.ErrorContains(t, err, "recipients differ")
+		require.NoError(t, rules.Close())
+		assert.NoDirExists(t, dir)
 	})
 	t.Run("symlink is never followed", func(t *testing.T) {
 		t.Parallel()
@@ -240,11 +240,6 @@ func TestReadCreationRules(t *testing.T) {
 		t.Parallel()
 		_, err := sops.ReadCreationRules(openOnlyFS{fstest.MapFS{".sops.yaml": {Data: body}}})
 		require.ErrorContains(t, err, ".sops.yaml: cannot tell whether it is a symlink")
-	})
-	t.Run("malformed", func(t *testing.T) {
-		t.Parallel()
-		_, err := sops.ReadCreationRules(fstest.MapFS{".sops.yaml": {Data: []byte("creation_rules: {")}})
-		require.ErrorContains(t, err, ".sops.yaml:")
 	})
 }
 

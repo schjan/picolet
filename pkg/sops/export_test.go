@@ -8,3 +8,10 @@ func PointerSegments(p Pointer) []string {
 	}
 	return p.segments
 }
+
+// NoMatchingRule is upstream's no-matching-rule error text, which
+// CreationRules.Check detects.
+const NoMatchingRule = noMatchingRule
+
+// RulesDir exposes the private copy's directory.
+func RulesDir(c *CreationRules) string { return c.dir }

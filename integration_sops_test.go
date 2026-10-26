@@ -121,7 +121,7 @@ func creationRuleCases(t *testing.T) []creationRuleCase {
 				".sops.yaml":           sopsRules("  - path_regex: ^secrets/\n    age: " + srv1 + "," + srv2 + "," + srv3 + "\n"),
 				"secrets/db.sops.yaml": data(values),
 			},
-			want: []string{"`secrets/db.sops.yaml` recipients differ from `.sops.yaml` rule `^secrets/`: +" + op + " −" + srv3 + "; run `sops updatekeys secrets/db.sops.yaml`"},
+			want: []string{"`secrets/db.sops.yaml` recipients differ from the `.sops.yaml` creation rule matching it: +" + op + " −" + srv3 + "; run `sops updatekeys secrets/db.sops.yaml`"},
 		},
 		{
 			name: "first matching rule wins",
@@ -131,7 +131,7 @@ func creationRuleCases(t *testing.T) []creationRuleCase {
 				"secrets/db.sops.yaml":  data(values),
 				"secrets/app.sops.yaml": data(values),
 			},
-			want: []string{"`secrets/db.sops.yaml` recipients differ from `.sops.yaml` rule `^secrets/db\\.`: +" + srv2 + " +" + op},
+			want: []string{"`secrets/db.sops.yaml` recipients differ from the `.sops.yaml` creation rule matching it: +" + srv2 + " +" + op},
 		},
 	}
 }
@@ -151,7 +151,7 @@ func keyGroupRuleCases(t *testing.T) []creationRuleCase {
 					"      - age: [" + srv1 + "]\n      - age: [" + srv2 + ", " + op + "]\n      - age: [" + pq + "]\n"),
 				"hosts/test-host/app.sops.yaml": data(keyGroups),
 			},
-			want: []string{"`hosts/test-host/app.sops.yaml` recipients differ from `.sops.yaml` rule 1 (empty path_regex): key group 1: +" + op + "; key group 2: −" + op},
+			want: []string{"`hosts/test-host/app.sops.yaml` recipients differ from the `.sops.yaml` creation rule matching it: key group 1: +" + op + "; key group 2: −" + op},
 		},
 		{
 			name: "key groups equal",
@@ -160,6 +160,15 @@ func keyGroupRuleCases(t *testing.T) []creationRuleCase {
 					"      - age: [" + op + ", " + srv1 + "]\n      - age: [" + srv2 + "]\n      - age: [" + pq + "]\n"),
 				"hosts/test-host/app.sops.yaml": data(keyGroups),
 			},
+		},
+		{
+			name: "invalid rule reported once",
+			files: map[string]*fstest.MapFile{
+				".sops.yaml":            sopsRules("  - path_regex: \"(\"\n    age: " + srv1 + "\n"),
+				"secrets/app.sops.yaml": data(values),
+				"secrets/db.sops.yaml":  data(values),
+			},
+			want: []string{"`.sops.yaml` rule for `secrets/app.sops.yaml` is invalid: can not compile regexp"},
 		},
 		{
 			name: "symlinked .sops.yaml",
@@ -187,6 +196,7 @@ func TestIntegrationValidateSOPSCreationRules(t *testing.T) {
 			for _, w := range tt.want {
 				require.ErrorContains(t, err, w)
 			}
+			assert.Equal(t, len(tt.want), strings.Count(err.Error(), "\n")+1, "one error per want")
 			testsops.AssertNoPlaintext(t, err)
 		})
 	}
@@ -255,7 +265,7 @@ func TestIntegrationValidateExampleFleetSOPS(t *testing.T) {
 			require.Contains(t, rules[i:], ",\n      "+op)
 			fsys[".sops.yaml"] = data([]byte(rules[:i] + strings.Replace(rules[i:], ",\n      "+op, "", 1)))
 			err := validateFleet(t, fsys)
-			require.EqualError(t, err, "`"+tt.path+"` recipients differ from `.sops.yaml` rule `"+tt.regex+"`: +"+op+
+			require.EqualError(t, err, "`"+tt.path+"` recipients differ from the `.sops.yaml` creation rule matching it: +"+op+
 				"; run `sops updatekeys "+tt.path+"`")
 		})
 	}
