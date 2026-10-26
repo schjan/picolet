@@ -321,15 +321,15 @@ func dynamicRefError(funcName, ref string, err error) error {
 	if err == nil {
 		return nil
 	}
-	msg := fmt.Sprintf("%s %q: ", funcName, refForError(ref))
-	for _, class := range sopsErrorClasses {
-		if errors.Is(err, class) {
-			msg += class.Error() + "; "
-			break
-		}
+	var class string
+	if i := slices.IndexFunc(sopsErrorClasses, func(c error) bool { return errors.Is(err, c) }); i >= 0 {
+		class = sopsErrorClasses[i].Error() + "; "
 	}
-	msg += "the reader's error is withheld, since the ref was built at render time and may hold a secret value"
-	return redactedError{msg: msg, err: err}
+	return redactedError{
+		msg: fmt.Sprintf("%s %q: %sthe reader's error is withheld, since the ref was built at render time and may hold a secret value",
+			funcName, refForError(ref), class),
+		err: err,
+	}
 }
 
 // sopsErrorClasses are the SOPS readers' fixed error classes, whose own text

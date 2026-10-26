@@ -66,10 +66,8 @@ func CheckSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Chan
 	if err != nil {
 		return err
 	}
-	if writesUnit {
-		if err := checkMaskedConfig(next, running, unit); err != nil {
-			return err
-		}
+	if err := checkMaskedConfig(next, running, unit); err != nil {
+		return err
 	}
 	file, err := resolver.AgentConfigSecret(resolved.Files, unit)
 	if errors.Is(err, resolver.ErrAgentConfigNotRendered) {
@@ -359,8 +357,12 @@ func agentQuadlet(files []resolver.ResolvedFile, unit string) *resolver.Resolved
 // a directory above it hides whatever config is mounted there, Fleet-managed
 // or not. A mask whose target the guard cannot place (placedTarget: a
 // specifier such as %E may expand to /etc) is refused unless the running
-// unit (nil when there is none on disk) already has it.
+// unit (nil when there is none on disk) already has it. A changeset that
+// does not write the unit (running is next itself) is not checked.
 func checkMaskedConfig(next, running *parser.UnitFile, unit string) error {
+	if running == next {
+		return nil
+	}
 	nextMounts, _ := unitMounts(next)
 	var runningMounts []mount
 	if running != nil {
