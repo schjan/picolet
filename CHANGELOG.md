@@ -186,7 +186,9 @@ kept as is.
   change through the Fleet: edit them on the Host, `daemon-reload` and
   restart the Agent, then commit the same lines; `Image=` stays changeable.
   A second Fleet unit for the Agent's service (another quadlet with its
-  `ServiceName=`, a raw unit of its name, an `Alias=`) is refused. A
+  `ServiceName=`, a raw unit of its name, an `Alias=`) is refused, and so is
+  a commit that makes the Agent's quadlet generate another service while
+  the Agent bundle stays assigned. A
   credential that a fresh start may not find as the running container shows
   it (under a tmpfs, anonymous volume, image mount or `--volumes-from`, in
   the image when `Image=` changes, or mounted from a secret the same commit

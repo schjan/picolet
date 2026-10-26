@@ -91,22 +91,42 @@ func TestAgentRestartsItselfToLoadChangedConfig(t *testing.T) {
 }
 
 // A commit that leaves the Agent's config secret and unit alone does not
-// restart the Agent, nor does a dry run of one that changes the config.
+// restart the Agent, nor does a dry run of one that changes the config. The
+// config is the secret mounted where the Agent reads it, also by PodmanArgs=
+// --secret or at the path PICOLET_CONFIG names.
 func TestAgentRestartsItselfOnlyForAppliedConfigChange(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name        string
+		unit        string // the Agent quadlet; empty: agentBundleUnit("")
 		files       map[string]string
 		dryRun      bool
 		wantRestart bool
 	}{
 		{name: "config changed", files: map[string]string{selfConfigFile: "hostname: test-host\nrepo_url: https://example.com/other.git\n"}, wantRestart: true},
 		{name: "other secret changed", files: map[string]string{"services/picolet-system/secrets/other": "x\n"}},
+		{
+			name:        "config mounted by PodmanArgs= changed",
+			unit:        "[Container]\nImage=ghcr.io/schjan/picolet:latest\nPodmanArgs=--secret picolet_system_config,target=/etc/picolet/config.yml\n",
+			files:       map[string]string{selfConfigFile: "hostname: test-host\nrepo_url: https://example.com/other.git\n"},
+			wantRestart: true,
+		},
+		{
+			name: "config at PICOLET_CONFIG changed",
+			unit: "[Container]\nImage=ghcr.io/schjan/picolet:latest\nEnvironment=PICOLET_CONFIG=/etc/picolet/agent.yml\n" +
+				"Secret=picolet_system_config,target=/etc/picolet/agent.yml\n",
+			files:       map[string]string{selfConfigFile: "hostname: test-host\nrepo_url: https://example.com/other.git\n"},
+			wantRestart: true,
+		},
 		{name: "config changed, dry run", files: map[string]string{selfConfigFile: "hostname: test-host\nrepo_url: https://example.com/other.git\n"}, dryRun: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			bareDir, _ := initFleetRepo(t, agentBundleFiles(agentBundleUnit(""), "picolet_system_config.yml",
+			unit := tc.unit
+			if unit == "" {
+				unit = agentBundleUnit("")
+			}
+			bareDir, _ := initFleetRepo(t, agentBundleFiles(unit, "picolet_system_config.yml",
 				"hostname: test-host\nrepo_url: https://example.com/fleet.git\n"))
 			logger, logs := testlog.New()
 			h := newLoopHarness(t, bareDir, WithDryRun(tc.dryRun), WithLogger(logger))

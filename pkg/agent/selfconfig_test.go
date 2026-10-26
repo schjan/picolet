@@ -20,7 +20,7 @@ import (
 )
 
 // agentBundleUnit is the test Agent quadlet with the extra [Container] lines
-// mounts (Volume=/Secret= lines).
+// mounts appended.
 func agentBundleUnit(mounts string) string {
 	return `[Container]
 Image=ghcr.io/schjan/picolet:latest
@@ -344,6 +344,13 @@ type selfConfigChange struct {
 	// unchangedConfig makes the state hold the config as the commit renders
 	// it, so the commit writes only the Agent quadlet.
 	unchangedConfig bool
+	// unchangedUnit makes the state hold the Agent quadlet as the commit
+	// renders it, so the commit does not write it.
+	unchangedUnit bool
+	// notInState leaves the Agent quadlet out of the state (a reset
+	// state.json, or a hand-placed quadlet the Fleet takes over), while it is
+	// on disk.
+	notInState bool
 	// noUnitOnDisk leaves no Agent quadlet on disk: the running Agent was
 	// not started from a Fleet unit.
 	noUnitOnDisk bool
@@ -363,10 +370,26 @@ func (c selfConfigChange) check(t *testing.T) error {
 		files = append(files, resolver.ResolvedFile{DestPath: "secret:picolet_system_config", Category: config.CategorySecret, Content: *c.config})
 	}
 	files = append(files, c.files...)
+	read := func(p string) ([]byte, error) {
+		if p == selfConfigUnitPath && !c.noUnitOnDisk {
+			return []byte(c.running), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	return CheckSelfConfig(&resolver.ResolvedHost{Host: &config.HostConfig{Hostname: "test-host"}, Files: files}, reconciler.Diff(files, c.state(files)), read)
+}
+
+// state is the state c's commit, rendering files, is reconciled against.
+func (c selfConfigChange) state(files []resolver.ResolvedFile) *state.State {
 	st := state.NewState()
-	st.ManagedFiles[selfConfigUnitPath] = state.ManagedFile{Hash: "old", Category: config.CategoryContainer}
-	st.ServiceNames[selfConfigUnitPath] = "picolet-system.service"
+	if !c.notInState {
+		st.ManagedFiles[selfConfigUnitPath] = state.ManagedFile{Hash: "old", Category: config.CategoryContainer}
+		st.ServiceNames[selfConfigUnitPath] = "picolet-system.service"
+	}
 	st.ManagedFiles["secret:picolet_system_config"] = state.ManagedFile{Hash: "old", Category: config.CategorySecret}
+	if c.unchangedUnit {
+		reconciler.MergeChangeset(st, reconciler.Diff(files[:1], state.NewState()))
+	}
 	if c.unchanged {
 		agentFiles := files[:len(files)-len(c.files)]
 		reconciler.MergeChangeset(st, reconciler.Diff(agentFiles, state.NewState()))
@@ -381,13 +404,7 @@ func (c selfConfigChange) check(t *testing.T) error {
 		}
 		st.ManagedFiles[dest] = state.ManagedFile{Hash: "old", Category: category}
 	}
-	read := func(p string) ([]byte, error) {
-		if p == selfConfigUnitPath && !c.noUnitOnDisk {
-			return []byte(c.running), nil
-		}
-		return nil, os.ErrNotExist
-	}
-	return CheckSelfConfig(&resolver.ResolvedHost{Host: &config.HostConfig{Hostname: "test-host"}, Files: files}, reconciler.Diff(files, st), read)
+	return st
 }
 
 // assertRefusal checks a CheckSelfConfig result: nil when wantError is empty,
@@ -607,7 +624,9 @@ func TestAgentRefusesConfigUnderAnonymousVolume(t *testing.T) {
 // The running Agent's config secret is found however Podman reads its
 // Secret= line: with a source= key, or quoted; and the new unit's config
 // mount however its target is spelled: Podman mounts
-// /etc/picolet//config.yml at the Agent config path too. A config the Agent
+// /etc/picolet//config.yml at the Agent config path too. It is the secret
+// mounted where the Agent reads its config (PICOLET_CONFIG, else the
+// default path), by Secret= or PodmanArgs= --secret. A config the Agent
 // could not start with is refused there too.
 func TestCheckSelfConfigFindsConfigMountSpellings(t *testing.T) {
 	t.Parallel()
@@ -619,6 +638,15 @@ func TestCheckSelfConfigFindsConfigMountSpellings(t *testing.T) {
 	} {
 		unit := "[Container]\nImage=x\n" + line + "\n"
 		cases = append(cases, changeCase{name: line, change: selfConfigChange{running: unit, next: unit}, wantError: []string{"no_such_key_ever"}})
+	}
+	for _, lines := range []string{
+		"Environment=PICOLET_CONFIG=/etc/picolet/agent.yml\nSecret=picolet_system_config,target=/etc/picolet/agent.yml",
+		"Environment=PICOLET_CONFIG=/etc/picolet/agent.yml\nSecret=other,target=/etc/picolet/config.yml\nSecret=picolet_system_config,target=/etc/picolet/agent.yml",
+		"PodmanArgs=--secret picolet_system_config,target=/etc/picolet/config.yml",
+		"PodmanArgs=--secret=source=picolet_system_config,target=/etc/picolet/config.yml",
+	} {
+		unit := "[Container]\nImage=x\n" + lines + "\n"
+		cases = append(cases, changeCase{name: lines, change: selfConfigChange{running: unit, next: unit}, wantError: []string{"no_such_key_ever"}})
 	}
 	for _, target := range []string{"/etc/picolet//config.yml", "/etc/picolet/./config.yml", "/etc/picolet/sub/../config.yml"} {
 		unit := "[Container]\nImage=x\nSecret=picolet_system_config,target=" + target + "\n"
@@ -708,6 +736,8 @@ func TestCheckSelfConfigFreezesMountLines(t *testing.T) {
 		"WorkingDir= added":                    volume + "WorkingDir=/srv\n",
 		"GlobalArgs= added":                    volume + "GlobalArgs=--root=/srv/storage\n",
 		"DropCapability= added":                volume + "DropCapability=all\n",
+		"AddDevice= over the config":           volume + "AddDevice=/dev/null:/etc/picolet/config.yml\n",
+		"Annotation= keep_original_groups":     volume + "Annotation=run.oci.keep_original_groups=1\n",
 	} {
 		cases = append(cases, changeCase{name: name, change: selfConfigChange{running: volume, next: next, unchangedConfig: true}, wantError: frozen})
 	}
@@ -723,6 +753,7 @@ func TestCheckSelfConfigFreezesMountLines(t *testing.T) {
 			wantError: []string{"changes its Volume= lines", "can't change through the Fleet"},
 		},
 		changeCase{name: "no unit on disk", change: selfConfigChange{next: added + "Tmpfs=/run/x\nUser=1000\n", noUnitOnDisk: true}},
+		changeCase{name: "unit on disk the state does not record", change: selfConfigChange{running: volume, next: volume + "Tmpfs=" + dir + "\n", notInState: true}, wantError: frozen},
 	)
 	runChangeCases(t, cases, mountLines(webhookConfig(hook)))
 }
@@ -990,4 +1021,106 @@ func TestReadmeListsFrozenKeys(t *testing.T) {
 	for _, key := range append(slices.Clone(frozenKeys), changeableServiceKeys...) {
 		assert.True(t, strings.Contains(string(readme), "`"+key+"=`"), "README.md lists %s=", key) //nolint:testifylint // not the whole README in the failure
 	}
+}
+
+// Between the Host-side edit of the Agent's quadlet and the commit of the
+// same lines, the unit on disk differs from the Fleet's render, and a commit
+// that does not write the unit leaves it so: the next start uses the file on
+// disk, so the guard reads it, not the render. Removing a secret only the
+// hand-edited unit mounts is refused, and so is a config whose credential
+// lies under the hand-edited unit's tmpfs; one under its Host mount passes.
+func TestCheckSelfConfigReadsHandEditedUnit(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
+	runChangeCases(t, []changeCase{
+		{
+			name:      "secret only the unit on disk mounts removed",
+			change:    selfConfigChange{running: "Secret=newcred,target=/run/newcred\n", unchangedConfig: true, managed: []string{"secret:newcred"}},
+			wantError: []string{"refusing to remove the secret newcred", "still mounts"},
+		},
+		{
+			name:      "config under the unit on disk's tmpfs",
+			change:    selfConfigChange{running: "Tmpfs=" + dir + "\n"},
+			wantError: []string{"webhook_secret_path", "starts empty"},
+		},
+		{name: "config under the unit on disk's Host mount", change: selfConfigChange{running: "Volume=/srv/s:" + dir + "\n"}},
+	}, func(c *selfConfigChange) {
+		c.unchangedUnit = true
+		mountLines(webhookConfig(filepath.Join(dir, "hook")))(c)
+	})
+}
+
+// A commit that keeps the file the Agent's service runs from but makes it
+// generate another service (ServiceName=), or renames it while the Agent
+// bundle stays assigned, would leave the Agent to run on as a unit the guard
+// never checked, so it is refused, not taken for decommissioning. Removing
+// the Agent bundle (its unit and config deleted) decommissions it and
+// passes.
+func TestCheckSelfConfigRefusesMovingAgentServiceAway(t *testing.T) {
+	t.Parallel()
+	const renamedPath = "/etc/containers/systemd/picolet/agent.container"
+	garbage := resolver.ResolvedFile{DestPath: "secret:picolet_system_config", Category: config.CategorySecret, Content: "garbage: ["}
+	away := []string{"refusing", selfConfigUnitPath, "picolet-system.service", "never checked"}
+	for _, tc := range []struct {
+		name      string
+		files     func(t *testing.T) []resolver.ResolvedFile
+		services  []string
+		wantError []string
+	}{
+		{
+			name: "ServiceName= set to another service",
+			files: func(t *testing.T) []resolver.ResolvedFile {
+				t.Helper()
+				return []resolver.ResolvedFile{quadletFile(t, selfConfigUnitPath, config.CategoryContainer, "[Container]\nImage=x\nServiceName=agent\n"), garbage}
+			},
+			services: []string{"picolet-system"}, wantError: away,
+		},
+		{
+			name: "ServiceName= set to another service, bundle unassigned",
+			files: func(t *testing.T) []resolver.ResolvedFile {
+				t.Helper()
+				return []resolver.ResolvedFile{quadletFile(t, selfConfigUnitPath, config.CategoryContainer, "[Container]\nImage=x\nServiceName=agent\n")}
+			},
+			wantError: away,
+		},
+		{
+			name: "quadlet renamed, bundle assigned",
+			files: func(t *testing.T) []resolver.ResolvedFile {
+				t.Helper()
+				return []resolver.ResolvedFile{quadletFile(t, renamedPath, config.CategoryContainer, "[Container]\nImage=x\n"), garbage}
+			},
+			services: []string{"picolet-system"}, wantError: away,
+		},
+		{name: "Agent bundle unassigned", files: func(*testing.T) []resolver.ResolvedFile { return nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			files := tc.files(t)
+			st := state.NewState()
+			st.ManagedFiles[selfConfigUnitPath] = state.ManagedFile{Hash: "old", Category: config.CategoryContainer}
+			st.ServiceNames[selfConfigUnitPath] = "picolet-system.service"
+			st.ManagedFiles["secret:picolet_system_config"] = state.ManagedFile{Hash: "old", Category: config.CategorySecret}
+			read := func(p string) ([]byte, error) {
+				if p == selfConfigUnitPath {
+					return []byte(agentBundleUnit("Volume=/srv/s:/srv/creds\n")), nil
+				}
+				return nil, os.ErrNotExist
+			}
+			resolved := &resolver.ResolvedHost{Host: &config.HostConfig{Hostname: "test-host"}, Files: files, Services: tc.services}
+			assertRefusal(t, CheckSelfConfig(resolved, reconciler.Diff(files, st), read), tc.wantError)
+		})
+	}
+}
+
+// TestAgentRefusesMovingAgentServiceAway runs the Agent loop: a commit that
+// gives the Agent's quadlet another ServiceName=, dropping its mounts and
+// breaking its config, is refused with nothing written.
+func TestAgentRefusesMovingAgentServiceAway(t *testing.T) {
+	t.Parallel()
+	files := agentBundleFiles(agentBundleUnit("Volume=/srv/s:/srv/creds\n"), "picolet_system_config.yml", "hostname: test-host\nrepo_url: https://example.com/fleet.git\n")
+	runAgentCommit(t, files, map[string]string{
+		"services/picolet-system/picolet-system.container":          "[Container]\nImage=ghcr.io/schjan/picolet:latest\nServiceName=agent\n",
+		"services/picolet-system/secrets/picolet_system_config.yml": "no_such_key_ever: x\n",
+	}, []string{"picolet-system.service", "agent.service", "never checked"})
 }

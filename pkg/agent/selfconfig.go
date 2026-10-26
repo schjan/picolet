@@ -24,25 +24,28 @@ import (
 //
 //   - The Agent's quadlet must be the only Fleet unit that is the Agent's
 //     service (checkOneAgentService): the guard checks no other.
+//   - The unit the Agent's next start uses (agentUnits.next) is the Fleet's
+//     render when the changeset writes the Agent's quadlet, else the unit on
+//     disk, which may hold a Host-side edit the Fleet has not committed yet.
 //   - Every changeset that removes a Fleet-managed secret or .volume unit the
-//     Agent's next unit uses is refused (checkLostSources). With a unit on
-//     disk, whose config mount the next unit keeps (checkFrozenLines), this
-//     also refuses losing a Fleet-managed config.
+//     next unit uses is refused (checkLostSources). With a unit on disk,
+//     whose config mount the next unit keeps (checkFrozenLines), this also
+//     refuses losing a Fleet-managed config.
 //   - A changeset that writes the Agent's unit may not change its frozen
 //     lines (frozenKeys, PICOLET_CONFIG, [Service]) from the unit on disk
 //     (checkFrozenLines): the Agent's mounts, identity and access change on
 //     the Host, then through the Fleet.
-//   - A changeset that writes the config (the secret the next unit mounts at
-//     the Agent config path, resolver.AgentConfigSecret) or the Agent's unit
+//   - A changeset that writes the config (agentConfigFile: the secret the
+//     next unit mounts where the Agent reads its config) or the Agent's unit
 //     must leave a config that passes agentcfg.CheckRenderedConfig, with
 //     every credential path absolute (absolutePath). With a unit on disk,
 //     whose mounts the next start keeps, each credential is read where it is
 //     spelled, unless a fresh start may show it otherwise than the running
 //     container (sameView).
 //
-// A changeset whose resolve renders no Agent quadlet (the Agent bundle
-// unassigned, or its container quadlet dropped) decommissions the Fleet's
-// Agent unit: the guard does not check it.
+// A changeset whose resolve renders no Agent quadlet decommissions the
+// Fleet's Agent unit, and the guard does not check it, unless it keeps the
+// Agent's unit on disk in another shape (checkAgentServiceKept).
 func CheckSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Changeset, readFile func(string) ([]byte, error)) error {
 	if resolved.Host == nil {
 		return nil
@@ -50,33 +53,65 @@ func CheckSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Chan
 	unit := config.AgentService(resolved.Host) + ".service"
 	quadlet := agentQuadlet(resolved.Files, unit)
 	if quadlet == nil {
-		return nil
+		return checkAgentServiceKept(resolved, unit, changeset)
 	}
 	if err := checkOneAgentService(resolved.Files, quadlet, unit); err != nil {
 		return err
 	}
-	next := quadlet.ParsedUnit
-	if err := checkLostSources(next, unit, changeset); err != nil {
-		return err
-	}
-	writesUnit := changeset.Writes(quadlet.DestPath)
-	running, err := runningAgentUnit(quadlet, writesUnit, resolved.Host.Rootful(), changeset, readFile)
+	units, err := agentUnitsOf(quadlet, changeset, readFile)
 	if err != nil {
 		return err
 	}
-	file, err := resolver.AgentConfigSecret(resolved.Files, unit)
-	if errors.Is(err, resolver.ErrAgentConfigNotRendered) {
-		// The next unit mounts no Fleet-resolved secret at the config path:
-		// the Fleet renders no config to check.
+	if err := checkNextUnit(units, unit, resolved.Host.Rootful(), changeset); err != nil {
+		return err
+	}
+	file := agentConfigFile(resolved.Files, units.next)
+	if file == nil || !units.writes && !changeset.Writes(file.DestPath) {
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("finding the Agent config mounted by %s: %w", unit, err)
+	return checkNextConfig(units, file, unit, changeset)
+}
+
+// checkNextUnit runs the checks of the Agent's next unit: its sources
+// (checkLostSources), and, when the changeset writes it over a unit on disk,
+// its frozen lines (checkFrozenLines).
+func checkNextUnit(units agentUnits, unit string, rootful bool, changeset *reconciler.Changeset) error {
+	if err := checkLostSources(units.next, unit, changeset); err != nil {
+		return err
 	}
-	if !writesUnit && !changeset.Writes(file.DestPath) {
+	if !units.writes || units.running == nil {
 		return nil
 	}
-	return checkNextConfig(next, running, file, unit, changeset)
+	return checkFrozenLines(units.running, units.next, unit, units.diskPath, rootful)
+}
+
+// checkAgentServiceKept refuses, when no resolved quadlet generates unit (the
+// Agent's service), a changeset after which the Agent would run on from a
+// unit the guard never checked: one that updates the container quadlet the
+// state records as generating unit (its new content generates another
+// service: ServiceName=, or a rename), or deletes it while the Agent bundle
+// stays assigned (the bundle renders the Agent's container under another
+// name). A changeset that drops the Agent bundle decommissions the Fleet's
+// Agent unit.
+func checkAgentServiceKept(resolved *resolver.ResolvedHost, unit string, changeset *reconciler.Changeset) error {
+	bundle := config.AgentService(resolved.Host)
+	assigned := slices.Contains(resolved.Services, bundle)
+	for _, change := range changeset.Changes {
+		if change.Category != config.CategoryContainer || change.OldServiceName != unit {
+			continue
+		}
+		switch {
+		case change.Action == reconciler.ActionUpdate:
+			return fmt.Errorf("refusing %s: the Agent's service %s runs from it, and this commit makes it generate %s instead, "+
+				"so the Agent would run on from a unit the self-restart guard never checked: keep the Agent's quadlet generating %s, "+
+				"or unassign the Agent bundle %s to stop managing the Agent", change.DestPath, unit, change.ServiceName, unit, bundle)
+		case change.Action == reconciler.ActionDelete && assigned:
+			return fmt.Errorf("refusing to remove %s: the Agent's service %s runs from it, and the Agent bundle %s stays assigned "+
+				"with no quadlet generating that service, so the Agent would run on from a unit the self-restart guard never checked: "+
+				"keep the Agent's quadlet generating %s, or unassign the bundle to stop managing the Agent", change.DestPath, unit, bundle, unit)
+		}
+	}
+	return nil
 }
 
 // checkOneAgentService refuses every resolved file but quadlet, the Agent's,
@@ -126,15 +161,18 @@ func installAliases(file *resolver.ResolvedFile) []string {
 }
 
 // checkNextConfig checks file, the config the Agent's next start reads with
-// the unit next: without a unit on disk (running nil), whose mounts are
-// unknown, its credentials are read where they are spelled, as at the
-// Agent's startup; with one, whose frozen mounts the next start keeps, in
-// the running container too, where a fresh start would show them alike
-// (sameView).
-func checkNextConfig(next, running *parser.UnitFile, file *resolver.ResolvedFile, unit string, changeset *reconciler.Changeset) error {
+// units.next: when the changeset writes the Agent's unit and there is none on
+// disk, whose mounts are unknown, its credentials are read where they are
+// spelled, as at the Agent's startup; otherwise, with the mounts the next
+// start keeps, in the running container too, where a fresh start would show
+// them alike (sameView).
+func checkNextConfig(units agentUnits, file *resolver.ResolvedFile, unit string, changeset *reconciler.Changeset) error {
 	locate := absolutePath
-	if running != nil {
-		locate = sameView(running, next, changeset)
+	switch {
+	case units.running != nil:
+		locate = sameView(units.running, units.next, changeset)
+	case !units.writes:
+		locate = sameView(units.next, units.next, changeset)
 	}
 	if err := agentcfg.CheckRenderedConfig([]byte(file.Content), locate); err != nil {
 		return fmt.Errorf("refusing the Agent config %s mounted by %s: the Agent could not start with it: %w", file.DestPath, unit, err)
@@ -142,19 +180,53 @@ func checkNextConfig(next, running *parser.UnitFile, file *resolver.ResolvedFile
 	return nil
 }
 
-// runningAgentUnit returns the Agent's unit on disk: the resolved quadlet,
-// unless the changeset writes it (writesUnit), and then the file on disk the
-// state records as the Agent's service (runningUnit; nil when there is
-// none), whose frozen lines the quadlet must keep (checkFrozenLines).
-func runningAgentUnit(quadlet *resolver.ResolvedFile, writesUnit, rootful bool, changeset *reconciler.Changeset, readFile func(string) ([]byte, error)) (*parser.UnitFile, error) {
-	if !writesUnit {
-		return quadlet.ParsedUnit, nil
+// agentUnits are the Agent units a changeset is checked against.
+type agentUnits struct {
+	// running is the unit on disk the running container was started from
+	// (runningUnit), at diskPath; nil when there is none.
+	running  *parser.UnitFile
+	diskPath string
+	// next is the unit the Agent's next start uses: the Fleet's render when
+	// the changeset writes the Agent's quadlet (writes), else the unit on
+	// disk (else the render), which the apply leaves as it is, also with a
+	// Host-side edit the Fleet has not committed yet.
+	next   *parser.UnitFile
+	writes bool
+}
+
+// agentUnitsOf returns the agentUnits of the Agent's resolved quadlet.
+func agentUnitsOf(quadlet *resolver.ResolvedFile, changeset *reconciler.Changeset, readFile func(string) ([]byte, error)) (agentUnits, error) {
+	running, diskPath, err := runningUnit(quadlet, changeset, readFile)
+	if err != nil {
+		return agentUnits{}, err
 	}
-	running, diskPath, err := runningUnit(quadlet.ServiceName, changeset, readFile)
-	if err != nil || running == nil {
-		return running, err
+	units := agentUnits{running: running, diskPath: diskPath, next: quadlet.ParsedUnit, writes: changeset.Writes(quadlet.DestPath)}
+	if !units.writes && running != nil {
+		units.next = running
 	}
-	return running, checkFrozenLines(running, quadlet.ParsedUnit, quadlet.ServiceName, diskPath, rootful)
+	return units, nil
+}
+
+// agentConfigFile returns the resolved secret the unit next mounts where the
+// Agent reads its config (configPath), by Secret= or PodmanArgs= --secret
+// (the last one there); nil when no Fleet-resolved secret is mounted there:
+// a Host path, a volume, an unresolved secret or a path the guard cannot
+// tell is a config the Fleet does not render.
+func agentConfigFile(files []resolver.ResolvedFile, next *parser.UnitFile) *resolver.ResolvedFile {
+	target := path.Clean(configPath(next))
+	mounts, _ := unitMounts(next)
+	var name string
+	for _, m := range mounts {
+		if m.secret != "" && m.target == target {
+			name = m.secret
+		}
+	}
+	for i := range files {
+		if name != "" && files[i].Category == config.CategorySecret && files[i].DestPath == resolver.SecretDestPath(name) {
+			return &files[i]
+		}
+	}
+	return nil
 }
 
 // frozenKeys are the Agent unit's [Container] keys the Fleet may not change
@@ -164,10 +236,13 @@ func runningAgentUnit(quadlet *resolver.ResolvedFile, writesUnit, rootful bool, 
 // SELinux labels), what the Agent runs and where it finds its config (Exec=,
 // Entrypoint=, environment files and the Host's environment), or what podman
 // adds to any of them (PodmanArgs=, GlobalArgs=, ContainersConfModule=).
-// Image= is not frozen: the Agent updates itself.
+// AddDevice= places a device at any container path, and Annotation= sets
+// OCI runtime options such as crun's run.oci.keep_original_groups (the
+// GroupAdd=keep-groups of crun). Image= is not frozen: the Agent updates
+// itself.
 var frozenKeys = []string{
 	"Volume", "Mount", "Tmpfs", "Secret", "Mask", "Unmask", "VolatileTmp",
-	"ReadOnly", "ReadOnlyTmpfs", "Rootfs", "WorkingDir",
+	"ReadOnly", "ReadOnlyTmpfs", "Rootfs", "WorkingDir", "AddDevice", "Annotation",
 	"User", "Group", "GroupAdd", "UserNS", "UIDMap", "GIDMap", "SubUIDMap", "SubGIDMap",
 	"RemapUsers", "RemapUid", "RemapGid", "RemapUidSize",
 	"AddCapability", "DropCapability", "AppArmor",
@@ -391,45 +466,71 @@ func agentQuadlet(files []resolver.ResolvedFile, unit string) *resolver.Resolved
 }
 
 // runningUnit reads and parses the Agent's container Quadlet file on disk:
-// the file the state records as generating unit (Change.OldServiceName),
-// which the changeset updates (whatever service its new content names) or
-// deletes (a rename creates a new file and deletes the old one), and returns
-// it with its path. It returns nil when there is none.
-func runningUnit(unit string, changeset *reconciler.Changeset, readFile func(string) ([]byte, error)) (*parser.UnitFile, string, error) {
-	for _, change := range changeset.Changes {
-		if change.OldServiceName != unit || change.Category != config.CategoryContainer || change.Action == reconciler.ActionCreate {
-			continue
-		}
-		data, readErr := readFile(change.DestPath)
+// the file the state records as generating the Agent's service
+// (Change.OldServiceName), which the changeset leaves, updates (whatever
+// service its new content names) or deletes (a rename creates a new file and
+// deletes the old one), else the file at quadlet's path when the state does
+// not record it (a reset state, or a hand-placed quadlet the Fleet takes
+// over), and returns it with its path. It returns nil when there is none.
+func runningUnit(quadlet *resolver.ResolvedFile, changeset *reconciler.Changeset, readFile func(string) ([]byte, error)) (*parser.UnitFile, string, error) {
+	for _, diskPath := range runningUnitPaths(quadlet, changeset) {
+		data, readErr := readFile(diskPath)
 		if errors.Is(readErr, fs.ErrNotExist) {
 			continue
 		}
 		if readErr != nil {
-			return nil, "", fmt.Errorf("reading the running Agent's unit %s: %w", change.DestPath, readErr)
+			return nil, "", fmt.Errorf("reading the running Agent's unit %s: %w", diskPath, readErr)
 		}
 		running := parser.NewUnitFile()
-		running.Filename = path.Base(change.DestPath)
+		running.Filename = path.Base(diskPath)
 		if err := running.Parse(string(data)); err != nil {
-			return nil, "", fmt.Errorf("parsing the running Agent's unit %s: %w", change.DestPath, err)
+			return nil, "", fmt.Errorf("parsing the running Agent's unit %s: %w", diskPath, err)
 		}
-		return running, change.DestPath, nil
+		return running, diskPath, nil
 	}
 	return nil, "", nil
 }
 
+// runningUnitPaths returns the paths runningUnit tries, in order: the
+// container quadlets the state records as generating quadlet's service, then
+// quadlet's own path when the state does not record it.
+func runningUnitPaths(quadlet *resolver.ResolvedFile, changeset *reconciler.Changeset) []string {
+	var recorded []string
+	var created []string
+	for _, change := range changeset.Changes {
+		switch {
+		case change.Category != config.CategoryContainer:
+		case change.Action != reconciler.ActionCreate && change.OldServiceName == quadlet.ServiceName:
+			recorded = append(recorded, change.DestPath)
+		case change.Action == reconciler.ActionCreate && change.DestPath == quadlet.DestPath:
+			created = append(created, change.DestPath)
+		}
+	}
+	return append(recorded, created...)
+}
+
 // selfConfigRestart returns the Applier option that restarts the Agent's
 // unit after an apply that writes the Agent's Fleet-rendered config (the
-// secret its next unit mounts at the Agent config path): the running Agent
-// never reloads its config, and Podman copies the secret into the container
-// only when it creates it. CheckSelfConfig has already checked that config,
-// so the restart cannot lock the Agent out. It returns none otherwise.
-func selfConfigRestart(resolved *resolver.ResolvedHost, changeset *reconciler.Changeset) []applier.Option {
+// secret its next unit mounts where it reads its config, agentConfigFile):
+// the running Agent never reloads its config, and Podman copies the secret
+// into the container only when it creates it. CheckSelfConfig has already
+// checked that config, so the restart cannot lock the Agent out. It returns
+// none otherwise.
+func selfConfigRestart(resolved *resolver.ResolvedHost, changeset *reconciler.Changeset, readFile func(string) ([]byte, error)) []applier.Option {
 	if resolved.Host == nil {
 		return nil
 	}
 	unit := config.AgentService(resolved.Host) + ".service"
-	file, err := resolver.AgentConfigSecret(resolved.Files, unit)
-	if err != nil || !changeset.Writes(file.DestPath) {
+	quadlet := agentQuadlet(resolved.Files, unit)
+	if quadlet == nil {
+		return nil
+	}
+	units, err := agentUnitsOf(quadlet, changeset, readFile)
+	if err != nil {
+		return nil // CheckSelfConfig read the same unit and passed
+	}
+	file := agentConfigFile(resolved.Files, units.next)
+	if file == nil || !changeset.Writes(file.DestPath) {
 		return nil
 	}
 	return []applier.Option{applier.WithSelfConfig(unit, reconciler.SecretNameFromPath(file.DestPath))}

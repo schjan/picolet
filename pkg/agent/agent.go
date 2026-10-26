@@ -869,7 +869,7 @@ func (a *Agent) reconcileResolved(ctx context.Context, headSHA string, st *state
 	}
 
 	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset, resolved.Hooks, pendingHookNames(st.PendingHooks), deps,
-		resolved.DataDir, resolved.HostDataDir, sopsReader, selfConfigRestart(resolved, changeset)...)
+		resolved.DataDir, resolved.HostDataDir, sopsReader, selfConfigRestart(resolved, changeset, os.ReadFile)...)
 	recordHookMetrics(applyResult)
 	if errors.Is(err, applier.ErrApplyIncomplete) {
 		a.savePartialState(headSHA, st, store, changeset, applyResult, deps, resolved.Hooks)

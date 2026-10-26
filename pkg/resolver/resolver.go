@@ -67,6 +67,9 @@ type ResolvedHost struct {
 	// direct secrets: entries. validate's audience pass unions them over
 	// every Host.
 	SopsFiles []string
+	// Services are the Service Bundles this resolve expanded (the Host's
+	// assigned ones, or those requested), sorted.
+	Services []string
 }
 
 // Config holds configuration for creating a Resolver.
@@ -358,6 +361,7 @@ func (r *Resolver) resolveHostFileSetOnCopy(ctx context.Context, hostname string
 		DataDir:     r.dataDir,
 		HostDataDir: r.hostDataDir,
 		SopsFiles:   r.sopsFiles.sorted(),
+		Services:    config.SortedUnique(fileSet.Services),
 	}, nil
 }
 

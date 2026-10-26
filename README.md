@@ -333,7 +333,9 @@ Push to git. Picolet detects the change, writes the updated Quadlet, and restart
 
 An upgrade that changes the Fleet schema (v0.2.0) needs a fixed rollout order; see [MIGRATION.md](MIGRATION.md).
 
-A commit that changes an Agent's own config (the secret its bundle mounts at
+A commit that changes an Agent's own config (the secret its bundle mounts,
+with `Secret=` or `PodmanArgs=--secret`, where the Agent reads its config:
+the path an `Environment=PICOLET_CONFIG=` line sets, else
 `/etc/picolet/config.yml`) makes the Agent restart its own unit once the
 commit is applied, since Podman copies a secret into a container only when it
 creates it: pushing `age_recipients:`, or any other change the Fleet renders
@@ -355,7 +357,8 @@ mounts, so **the Agent quadlet's mount lines can't change through the
 Fleet**. A commit that changes any of these `[Container]` lines from the
 quadlet on disk is refused (compared as written, value by value): `Volume=`,
 `Mount=`, `Tmpfs=`, `Secret=`, `Mask=`, `Unmask=`, `VolatileTmp=`,
-`ReadOnly=`, `ReadOnlyTmpfs=`, `Rootfs=`, `WorkingDir=`, `User=`, `Group=`,
+`ReadOnly=`, `ReadOnlyTmpfs=`, `Rootfs=`, `WorkingDir=`, `AddDevice=`,
+`Annotation=`, `User=`, `Group=`,
 `GroupAdd=`, `UserNS=`, `UIDMap=`, `GIDMap=`, `SubUIDMap=`, `SubGIDMap=`,
 `RemapUsers=`, `RemapUid=`, `RemapGid=`, `RemapUidSize=`, `AddCapability=`,
 `DropCapability=`, `AppArmor=`, `SecurityLabelDisable=`,
@@ -377,7 +380,8 @@ line (say, to move the Agent's credentials to a new mount):
    daemon-reload && systemctl restart picolet-system` as root, or `systemctl
    --user daemon-reload && systemctl --user restart picolet` as the Host's
    user. The Agent leaves the hand edit alone while the Fleet's quadlet is
-   unchanged, and refuses a commit that would undo it.
+   unchanged, checks the commits in between against the edited file, and
+   refuses a commit that would undo it.
 2. Commit the same lines to the Fleet; the Agent applies them as unchanged
    mounts.
 3. Then commit the config change that points at files under the new mount.
@@ -393,7 +397,9 @@ must also be the only Fleet unit for the Agent's service: a commit that adds
 another quadlet with the Agent's `ServiceName=`, a raw unit of that name
 (`picolet-system.service`), or a unit whose `[Install] Alias=` names it is
 refused, since systemd would start the Agent from a unit the check never
-read.
+read. So is a commit that makes the Agent's quadlet generate another service
+(another `ServiceName=`, or the file renamed) while the Agent bundle stays
+assigned; unassigning the bundle stops managing the Agent and isn't checked.
 
 With the mounts unchanged, the check still fails closed where a fresh start of
 the same quadlet may show a credential file otherwise than the running
@@ -417,9 +423,24 @@ restart:
   quadlet or the config, but if that restart failed (or the quadlet was
   edited without a restart) the real mounts may differ.
 - Without the Agent's quadlet on disk (an Agent started by hand, or a Fleet
-  that starts managing it), the frozen lines aren't compared: the commit's
+  that starts managing it at a path where no quadlet lies; a hand-placed
+  quadlet at the Fleet's path counts as the one on disk, with or without a
+  state record), the frozen lines aren't compared: the commit's
   quadlet may mount other paths, another config secret or none, and the
   credentials are read as the config spells them.
+- Only a Fleet-resolved secret mounted where the Agent reads its config is
+  checked as the config. A config bind-mounted from a Host path, a volume or
+  a delivered data file, or read from a path set otherwise than by a
+  `PICOLET_CONFIG` `Environment=` line (`Exec=` `--config`, the image's
+  `ENV` or `CMD`, `PICOLET_CONFIG` passed from the Host's environment), isn't
+  checked.
+- Changeable lines can still break the next start: `Image=` (a new image may
+  set another `PICOLET_CONFIG`, `CMD` or default `USER`, which decides who
+  reads a Host-path credential), and `Environment=` variables the Agent
+  reads besides `PICOLET_CONFIG` (`XDG_RUNTIME_DIR` for the user systemd
+  connection, `PATH`, `HOME` and `XDG_*` for `pass-cli`). A credential under
+  no mount is refused only when `Image=` changes, so one the running
+  container wrote into its own writable layer, which a restart drops, passes.
 - The content of a file a frozen line names (an `EnvironmentFile=`, a
   `ContainersConfModule=`, a `containers.conf` the Fleet delivers) isn't
   compared, nor an image rebuilt or pulled anew under an unchanged `Image=`
