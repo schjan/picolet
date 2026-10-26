@@ -190,21 +190,22 @@ func TestAgentRefusesDroppingMountedSelfConfig(t *testing.T) {
 	assert.Contains(t, st.ManagedFiles, "secret:picolet_system_config")
 }
 
-// TestAgentChecksSelfConfigCredentialsThroughNewUnitMounts covers a commit
-// that changes the Agent quadlet's mounts: each credential file of the
-// config the Agent's next start reads is looked up through the new unit's
-// mounts. A file under a mount whose source the running container also
-// mounts is checked where the running container sees it; a file the new
-// unit no longer mounts, or mounts from a source the running container
-// cannot see, is refused before anything is written.
-func TestAgentChecksSelfConfigCredentialsThroughNewUnitMounts(t *testing.T) {
+// TestAgentChecksSelfConfigAgainstMountChanges runs the Agent loop over
+// commits that change the Agent quadlet's mounts, its config, or both: the
+// mounts change alone, while every credential stays under a mount the new
+// unit keeps as it was; a mount change that drops or repoints a credential's
+// mount, or comes with a config change, is refused before anything is
+// written. A config change with the mounts unchanged is checked as spelled.
+func TestAgentChecksSelfConfigAgainstMountChanges(t *testing.T) {
 	t.Parallel()
 	// seen is where the running container sees the Host's secrets dir
 	// (/host/secrets); it holds the webhook secret.
 	seen := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(seen, "hook"), []byte("secret\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(seen, "token"), []byte("token\n"), 0o600))
 	moved := filepath.Join(t.TempDir(), "not-mounted-here") // a target the running container lacks
 	current := agentBundleUnit("Volume=/host/secrets:" + seen + ":ro\n")
+	config := *webhookConfig(filepath.Join(seen, "hook"))
 
 	tests := []struct {
 		name      string
@@ -215,58 +216,50 @@ func TestAgentChecksSelfConfigCredentialsThroughNewUnitMounts(t *testing.T) {
 		{
 			name:      "mount dropped",
 			unit:      agentBundleUnit(""),
-			config:    *webhookConfig(filepath.Join(seen, "hook")),
-			wantError: []string{"webhook_secret_path", seen, "no longer mounts", "own commit"},
+			config:    config,
+			wantError: []string{"webhook_secret_path", "not under a mount the new unit keeps", "own commit"},
 		},
 		{
 			name:      "mount repointed at another source",
 			unit:      agentBundleUnit("Volume=/host/other:" + seen + ":ro\n"),
-			config:    *webhookConfig(filepath.Join(seen, "hook")),
-			wantError: []string{"webhook_secret_path", "/host/other", "own commit"},
+			config:    config,
+			wantError: []string{"webhook_secret_path", "own commit"},
 		},
 		{
 			name:      "new mount and config in one commit",
 			unit:      current + "Volume=/host/new:" + moved + ":ro\n",
 			config:    *webhookConfig(filepath.Join(moved, "hook")),
-			wantError: []string{"webhook_secret_path", "/host/new", "own commit"},
+			wantError: []string{"changes its mounts and also its config", "own commit"},
 		},
 		{
-			name:      "same source at a new target, file missing",
-			unit:      agentBundleUnit("Volume=/host/secrets/:" + moved + ":ro\n"),
-			config:    *webhookConfig(filepath.Join(moved, "absent")),
+			name:   "mount added, credentials kept",
+			unit:   current + "Volume=/host/data:/var/lib/picolet\n",
+			config: config,
+		},
+		{
+			name:   "config changed, mounts kept",
+			unit:   current,
+			config: config + "git_token_path: " + filepath.Join(seen, "token") + "\n",
+		},
+		{
+			name:      "config changed to a missing credential, mounts kept",
+			unit:      current,
+			config:    *webhookConfig(filepath.Join(seen, "absent")),
 			wantError: []string{"webhook_secret_path", filepath.Join(seen, "absent"), "not readable"},
 		},
 		{
-			name:   "same source at a new target",
-			unit:   agentBundleUnit("Volume=/host/secrets/:" + moved + ":ro\n"),
-			config: *webhookConfig(filepath.Join(moved, "hook")),
-		},
-		{
-			name:   "mount kept",
-			unit:   current + "Volume=/host/data:/var/lib/picolet\n",
-			config: *webhookConfig(filepath.Join(seen, "hook")),
+			name:      "config changed to a relative credential",
+			unit:      current,
+			config:    *webhookConfig("hook"),
+			wantError: []string{"webhook_secret_path", "relative", "absolute"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			runMountChangeCase(t, current, *webhookConfig(filepath.Join(seen, "hook")), tt.unit, tt.config, tt.wantError)
+			runMountChangeCase(t, current, config, tt.unit, tt.config, tt.wantError)
 		})
 	}
-}
-
-// TestAgentChecksSelfConfigCredentialsThroughSecretMounts: a credential the
-// Agent quadlet mounts as a Podman secret follows the secret, like a Volume=.
-func TestAgentChecksSelfConfigCredentialsThroughSecretMounts(t *testing.T) {
-	t.Parallel()
-	seen := filepath.Join(t.TempDir(), "hook")
-	require.NoError(t, os.WriteFile(seen, []byte("secret\n"), 0o600))
-	moved := filepath.Join(t.TempDir(), "hook")
-	current := agentBundleUnit("Secret=hook_secret,target=" + seen + "\n")
-	runMountChangeCase(t, current, *webhookConfig(seen),
-		agentBundleUnit("Secret=hook_secret,mode=0400,target="+moved+"\n"), *webhookConfig(moved), nil)
-	runMountChangeCase(t, current, *webhookConfig(seen),
-		agentBundleUnit("Secret=other_secret,target="+moved+"\n"), *webhookConfig(moved), []string{"secret other_secret", "own commit"})
 }
 
 // runMountChangeCase applies a first commit with the Agent quadlet unit and
@@ -274,7 +267,7 @@ func TestAgentChecksSelfConfigCredentialsThroughSecretMounts(t *testing.T) {
 // commit with nextUnit and nextConfig: applied when wantError is empty,
 // otherwise refused before anything is written, with an error naming every
 // wantError fragment.
-func runMountChangeCase(t *testing.T, unit, config, nextUnit, nextConfig string, wantError []string, opts ...Option) {
+func runMountChangeCase(t *testing.T, unit, config, nextUnit, nextConfig string, wantError []string) {
 	t.Helper()
 	const (
 		quadlet    = "services/picolet-system/picolet-system.container"
@@ -282,7 +275,7 @@ func runMountChangeCase(t *testing.T, unit, config, nextUnit, nextConfig string,
 	)
 	bareDir, _ := initFleetRepo(t, agentBundleFiles(unit, "picolet_system_config.yml", config))
 	quadletDir := t.TempDir()
-	h := newLoopHarness(t, bareDir, append([]Option{WithQuadletDir(quadletDir)}, opts...)...)
+	h := newLoopHarness(t, bareDir, WithQuadletDir(quadletDir))
 	h.mocks = mocksSelfConfig | mockSecretRemoves
 	h.runUntilApplied(t)
 	// The running Agent's container was started from the unit on disk; the
@@ -326,11 +319,11 @@ func TestCheckSelfConfigUnresolvedMountedSecret(t *testing.T) {
 	noRead := func(string) ([]byte, error) { return nil, os.ErrNotExist }
 
 	neverManaged := reconciler.Diff(resolved.Files, state.NewState())
-	require.NoError(t, CheckSelfConfig(resolved, neverManaged, noRead, os.Getwd))
+	require.NoError(t, CheckSelfConfig(resolved, neverManaged, noRead))
 
 	st := state.NewState()
 	st.ManagedFiles["secret:picolet_system_config"] = state.ManagedFile{Hash: "h", Category: config.CategorySecret}
-	err := CheckSelfConfig(resolved, reconciler.Diff(resolved.Files, st), noRead, os.Getwd)
+	err := CheckSelfConfig(resolved, reconciler.Diff(resolved.Files, st), noRead)
 	require.ErrorContains(t, err, "refusing to remove the secret picolet_system_config")
 }
 
@@ -346,9 +339,9 @@ type selfConfigChange struct {
 	// unchanged makes the state hold the Agent quadlet and config as the
 	// commit renders them, so the commit writes neither.
 	unchanged bool
-	// unchangedUnit makes the state hold the Agent quadlet as the commit
-	// renders it, so the commit writes only the config.
-	unchangedUnit bool
+	// unchangedConfig makes the state hold the config as the commit renders
+	// it, so the commit writes only the Agent quadlet.
+	unchangedConfig bool
 }
 
 const selfConfigUnitPath = "/etc/containers/systemd/picolet/picolet-system.container"
@@ -373,8 +366,8 @@ func (c selfConfigChange) check(t *testing.T) error {
 		agentFiles := files[:len(files)-len(c.files)]
 		reconciler.MergeChangeset(st, reconciler.Diff(agentFiles, state.NewState()))
 	}
-	if c.unchangedUnit {
-		reconciler.MergeChangeset(st, reconciler.Diff(files[:1], state.NewState()))
+	if c.unchangedConfig && c.config != nil {
+		reconciler.MergeChangeset(st, reconciler.Diff(files[1:2], state.NewState()))
 	}
 	for _, dest := range c.managed {
 		category := config.CategorySecret
@@ -389,7 +382,7 @@ func (c selfConfigChange) check(t *testing.T) error {
 		}
 		return nil, os.ErrNotExist
 	}
-	return CheckSelfConfig(&resolver.ResolvedHost{Host: &config.HostConfig{Hostname: "test-host"}, Files: files}, reconciler.Diff(files, st), read, os.Getwd)
+	return CheckSelfConfig(&resolver.ResolvedHost{Host: &config.HostConfig{Hostname: "test-host"}, Files: files}, reconciler.Diff(files, st), read)
 }
 
 // assertRefusal checks a CheckSelfConfig result: nil when wantError is empty,
@@ -496,8 +489,9 @@ func TestCheckSelfConfigRefusesLosingFleetManagedConfig(t *testing.T) {
 			change: selfConfigChange{next: "[Container]\nImage=x\nVolume=/srv/picolet/config.yml:/etc/picolet/config.yml:ro\n"},
 		},
 		{
-			name:   "repointed at another resolved secret",
-			change: selfConfigChange{next: "[Container]\nImage=x\nSecret=picolet_cfg,target=/etc/picolet/config.yml\n", files: []resolver.ResolvedFile{renamed}},
+			name:      "repointed at another secret this commit creates",
+			change:    selfConfigChange{next: "[Container]\nImage=x\nSecret=picolet_cfg,target=/etc/picolet/config.yml\n", files: []resolver.ResolvedFile{renamed}},
+			wantError: []string{"its config secret:picolet_cfg", "own commit"},
 		},
 	}, runningAgentBundle)
 }
@@ -532,110 +526,6 @@ func TestCheckSelfConfigHandManagedConfigIsHostPath(t *testing.T) {
 			wantError: []string{"not a Host path"},
 		},
 	}, runningAgentBundle)
-}
-
-// Mounts that shadow a credential's directory, and mounts of a type the
-// guard cannot compare beyond their spelling, are mounts too: a credential
-// under one the running container does not have the same way is refused.
-func TestCheckSelfConfigRefusesShadowedCredentials(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "hook"), []byte("x"), 0o600))
-	nested := webhookConfig(filepath.Join(dir, "sub", "hook"))
-	volume := "Volume=/srv/s:" + dir + "\n"
-	glob := "Mount=type=glob,src=/srv/s/*,dst=" + dir + "\n"
-	runChangeCases(t, []changeCase{
-		{name: "Tmpfs= over the mount", change: selfConfigChange{running: volume, next: volume + "Tmpfs=" + dir + "\n"}, wantError: []string{dir, "mounts both"}},
-		{
-			name: "Mount=type=tmpfs over the mount", change: selfConfigChange{running: volume, next: volume + "Mount=type=tmpfs,destination=" + dir + "\n"},
-			wantError: []string{dir, "mounts both"},
-		},
-		{name: "Tmpfs= below the mount", change: selfConfigChange{running: volume, next: volume + "Tmpfs=" + dir + "/sub\n", config: nested}, wantError: []string{"own commit"}},
-		{
-			name: "glob mount repointed", change: selfConfigChange{running: glob, next: "Mount=type=glob,src=/srv/other/*,dst=" + dir + "\n"},
-			wantError: []string{"/srv/other/*", "own commit"},
-		},
-		{name: "glob mount dropped", change: selfConfigChange{running: glob, next: ""}, wantError: []string{"/srv/s/*", "no longer mounts"}},
-		{name: "glob mount kept", change: selfConfigChange{running: glob, next: glob}},
-		{
-			name: "nested mount dropped", change: selfConfigChange{running: volume + "Volume=/srv/b:" + dir + "/sub\n", next: volume, config: nested},
-			wantError: []string{"/srv/b", "own commit"},
-		},
-		{name: "nested mount kept", change: selfConfigChange{running: volume + "Volume=/srv/b:" + dir + "/sub\n", next: volume + "Volume=/srv/b:" + dir + "/sub\n", config: nested}},
-		{
-			name: "volume subpath changed", change: selfConfigChange{
-				running: "Mount=type=volume,source=creds,subpath=a,destination=" + dir + "\n",
-				next:    "Mount=type=volume,source=creds,subpath=b,destination=" + dir + "\n",
-			},
-			wantError: []string{"own commit"},
-		},
-	}, mountLines(webhookConfig(filepath.Join(dir, "hook"))))
-}
-
-// Mounts passed through PodmanArgs= are followed like Volume= ones: a
-// credential whose PodmanArgs= mount the commit drops (or swaps for another
-// option) is refused, as is one under a mount a PodmanArgs= option adds. A
-// --volumes-from on either unit mounts what the guard cannot read, so every
-// file credential is refused.
-func TestCheckSelfConfigFollowsPodmanArgsMounts(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
-	args := "PodmanArgs=--volume /srv/s:" + dir + "\n"
-	from := "PodmanArgs=--volumes-from other\n"
-	runChangeCases(t, []changeCase{
-		{name: "PodmanArgs= mount dropped", change: selfConfigChange{running: args, next: ""}, wantError: []string{"/srv/s", "no longer mounts", "own commit"}},
-		{
-			name: "PodmanArgs= mount swapped for another option", change: selfConfigChange{running: args, next: "PodmanArgs=--security-opt apparmor=unconfined\n"},
-			wantError: []string{"/srv/s", "no longer mounts"},
-		},
-		{name: "PodmanArgs= mount added", change: selfConfigChange{running: "", next: args}, wantError: []string{"/srv/s", "own commit"}},
-		{name: "PodmanArgs= mount kept", change: selfConfigChange{running: args, next: args}},
-		{name: "PodmanArgs= mount moved to Volume=", change: selfConfigChange{running: args, next: "Volume=/srv/s:" + dir + "\n"}},
-		{name: "--volumes-from on both units", change: selfConfigChange{running: from, next: from}, wantError: []string{"--volumes-from other", "PodmanArgs="}},
-		{name: "--volumes-from dropped", change: selfConfigChange{running: from, next: ""}, wantError: []string{"--volumes-from other"}},
-	}, mountLines(webhookConfig(filepath.Join(dir, "hook"))))
-}
-
-// A credential whose mount source the same commit changes (the secret or the
-// .volume unit it comes from) is refused: the running container shows its
-// old content, which says nothing about the new one.
-func TestCheckSelfConfigRefusesCredentialWhoseSourceChanges(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
-	secretUnit := agentBundleUnit("Secret=hook_secret,target=" + filepath.Join(dir, "hook") + "\n")
-	volumeUnit := agentBundleUnit("Volume=creds.volume:" + dir + "\n")
-	const volumePath = "/etc/containers/systemd/picolet/creds.volume"
-	runChangeCases(t, []changeCase{
-		{
-			name: "secret rewritten",
-			change: selfConfigChange{
-				running: secretUnit, next: secretUnit, managed: []string{"secret:hook_secret"},
-				files: []resolver.ResolvedFile{{DestPath: "secret:hook_secret", Category: config.CategorySecret, Content: "new"}},
-			},
-			wantError: []string{"secret hook_secret", "own commit"},
-		},
-		{
-			name:      "secret removed",
-			change:    selfConfigChange{running: secretUnit, next: secretUnit, managed: []string{"secret:hook_secret"}},
-			wantError: []string{"secret hook_secret", "still mounts"},
-		},
-		{
-			name: "volume unit rewritten",
-			change: selfConfigChange{
-				running: volumeUnit, next: volumeUnit, managed: []string{volumePath},
-				files: []resolver.ResolvedFile{{DestPath: volumePath, Category: config.CategoryVolume, Content: "[Volume]\nDevice=/srv/other\n"}},
-			},
-			wantError: []string{"creds.volume", "own commit"},
-		},
-		{
-			name:   "secret not managed",
-			change: selfConfigChange{running: secretUnit, next: secretUnit},
-		},
-	}, func(c *selfConfigChange) { c.config = webhookConfig(filepath.Join(dir, "hook")) })
 }
 
 // A commit that removes a source the Agent quadlet mounts (a Podman secret,
@@ -676,6 +566,10 @@ func TestCheckSelfConfigRefusesRemovingMountedSource(t *testing.T) {
 			name: "volume unit of a Mount=", change: selfConfigChange{running: "Mount=type=volume,source=creds.volume,destination=" + dir + "\n", managed: []string{volumePath}},
 			wantError: []string{"creds.volume", "still mounts"},
 		},
+		{
+			name: "volume unit of a Mount= without type=", change: selfConfigChange{running: "Mount=source=creds.volume,destination=" + dir + "\n", managed: []string{volumePath}},
+			wantError: []string{"creds.volume", "still mounts"},
+		},
 		{name: "secret not mounted", change: selfConfigChange{managed: []string{"secret:hook_secret"}}},
 		{name: "secret mounted, not managed", change: selfConfigChange{running: "Secret=hook_secret,target=" + hook + "\n"}},
 	}, func(c *selfConfigChange) {
@@ -687,34 +581,211 @@ func TestCheckSelfConfigRefusesRemovingMountedSource(t *testing.T) {
 		t.Parallel()
 		running := agentBundleUnit("Secret=other,target=/run/other\n")
 		err := selfConfigChange{
-			running: running, next: agentBundleUnit(""), config: webhookConfig(hook), managed: []string{"secret:other"},
+			running: running, next: agentBundleUnit(""), config: webhookConfig(hook), unchangedConfig: true, managed: []string{"secret:other"},
 		}.check(t)
 		require.NoError(t, err)
 	})
 }
 
-// Volume= options that change what the mount shows (subpath=, an overlay's
-// upperdir=) are part of its source, like a Mount='s subpath: a credential
-// under a Volume= whose such options change is refused. Options that only
-// change access or labelling are not, and their order does not matter.
-func TestCheckSelfConfigComparesVolumeOptions(t *testing.T) {
+// A commit that changes only the Agent quadlet's mount layout passes when
+// every credential of the config lies under the same mounts (target and
+// source as written) in both units, or under none; any other mount change
+// around a credential is refused, as is a tmpfs kept there (it starts
+// empty), a --volumes-from on either unit (the guard cannot read what it
+// mounts) and a relative path.
+func TestCheckSelfConfigRequiresKeptMounts(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "hook"), []byte("x"), 0o600))
+	nested := webhookConfig(filepath.Join(dir, "sub", "hook"))
+	volume := "Volume=/srv/s:" + dir + "\n"
+	refused := []string{"webhook_secret_path", "not under a mount the new unit keeps", "own commit"}
+	runChangeCases(t, []changeCase{
+		{name: "unrelated mount added", change: selfConfigChange{running: volume, next: volume + "Volume=/srv/data:/var/lib/picolet\n"}},
+		{name: "image changed, mounts kept", change: selfConfigChange{running: volume, next: volume + "Pull=newer\n"}},
+		{name: "credential in the image", change: selfConfigChange{running: "", next: "Volume=/srv/data:/var/lib/picolet\n"}},
+		{name: "PodmanArgs= mount moved to Volume=", change: selfConfigChange{running: "PodmanArgs=--volume /srv/s:" + dir + "\n", next: volume}},
+		{name: "mount dropped", change: selfConfigChange{running: volume, next: ""}, wantError: refused},
+		{name: "mount added over the credential", change: selfConfigChange{running: "", next: volume}, wantError: refused},
+		{name: "mount repointed", change: selfConfigChange{running: volume, next: "Volume=/srv/other:" + dir + "\n"}, wantError: refused},
+		{name: "mount options changed", change: selfConfigChange{running: volume, next: "Volume=/srv/s:" + dir + ":ro\n"}, wantError: refused},
+		{name: "Tmpfs= over the mount", change: selfConfigChange{running: volume, next: volume + "Tmpfs=" + dir + "\n"}, wantError: refused},
+		{name: "Tmpfs= below the mount", change: selfConfigChange{running: volume, next: volume + "Tmpfs=" + dir + "/sub\n", config: nested}, wantError: refused},
+		{
+			name:      "nested mount dropped",
+			change:    selfConfigChange{running: volume + "Volume=/srv/b:" + dir + "/sub\n", next: volume, config: nested},
+			wantError: refused,
+		},
+		{
+			name:      "tmpfs kept",
+			change:    selfConfigChange{running: "Tmpfs=" + dir + "\n", next: "Tmpfs=" + dir + "\nVolume=/srv/data:/var/lib/picolet\n"},
+			wantError: []string{"webhook_secret_path", "tmpfs or anonymous volume", "starts empty"},
+		},
+		{
+			name:      "secret mount options changed",
+			change:    selfConfigChange{running: "Secret=hook,target=" + dir + "/hook\n", next: "Secret=hook,mode=0400,target=" + dir + "/hook\n"},
+			wantError: refused,
+		},
+		{
+			name:      "--volumes-from",
+			change:    selfConfigChange{running: volume + "PodmanArgs=--volumes-from other\n", next: volume},
+			wantError: []string{"--volumes-from other", "own commit"},
+		},
+		{
+			name:      "relative credential path",
+			change:    selfConfigChange{running: volume, next: volume + "WorkingDir=" + dir + "\n", config: webhookConfig("hook")},
+			wantError: []string{"webhook_secret_path", "relative", "absolute"},
+		},
+	}, func(c *selfConfigChange) {
+		c.unchangedConfig = true
+		mountLines(webhookConfig(filepath.Join(dir, "hook")))(c)
+	})
+}
+
+// A commit that changes the Agent quadlet's mount layout and also something
+// the Agent reads at start (its config, or a Fleet-managed secret or
+// .volume unit the new quadlet uses) is refused: the running container shows
+// their old content.
+func TestCheckSelfConfigRefusesMountChangeWithWhatTheAgentReads(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
-	volume := func(options string) string { return "Volume=creds:" + dir + options + "\n" }
+	secretUnit := "Secret=hook_secret,target=" + filepath.Join(dir, "hook") + "\n"
+	volumeUnit := "Volume=creds.volume:" + dir + "\n"
+	const volumePath = "/etc/containers/systemd/picolet/creds.volume"
+	newSecret := []resolver.ResolvedFile{{DestPath: "secret:hook_secret", Category: config.CategorySecret, Content: "new"}}
+	added := "Volume=/srv/data:/var/lib/picolet\n"
 	runChangeCases(t, []changeCase{
-		{name: "subpath changed", change: selfConfigChange{running: volume(":subpath=/a"), next: volume(":subpath=/b")}, wantError: []string{"subpath", "own commit"}},
-		{name: "subpath dropped", change: selfConfigChange{running: volume(":subpath=/a"), next: volume("")}, wantError: []string{"own commit"}},
-		{name: "subpath added", change: selfConfigChange{running: volume(":ro"), next: volume(":ro,subpath=a")}, wantError: []string{"own commit"}},
 		{
-			name:      "overlay upperdir changed",
-			change:    selfConfigChange{running: volume(":O,upperdir=/u1,workdir=/w"), next: volume(":O,upperdir=/u2,workdir=/w")},
-			wantError: []string{"upperdir=/u2", "own commit"},
+			name:      "config",
+			change:    selfConfigChange{running: "", next: added},
+			wantError: []string{"changes its mounts and also its config secret:picolet_system_config", "own commit"},
 		},
-		{name: "subpath spelled differently", change: selfConfigChange{running: volume(":subpath=/a/"), next: volume(":subpath=a")}},
-		{name: "access and label options changed", change: selfConfigChange{running: volume(":ro,z"), next: volume(":Z")}},
-		{name: "options reordered", change: selfConfigChange{running: volume(":U,ro,subpath=a"), next: volume(":subpath=a,ro,U")}},
+		{
+			name:      "mounted secret",
+			change:    selfConfigChange{running: secretUnit, next: secretUnit + added, unchangedConfig: true, managed: []string{"secret:hook_secret"}, files: newSecret},
+			wantError: []string{"the secret hook_secret", "own commit"},
+		},
+		{
+			name: "volume unit",
+			change: selfConfigChange{
+				running: volumeUnit, next: volumeUnit + added, unchangedConfig: true, managed: []string{volumePath},
+				files: []resolver.ResolvedFile{{DestPath: volumePath, Category: config.CategoryVolume, Content: "[Volume]\nDevice=/srv/other\n"}},
+			},
+			wantError: []string{"the volume unit creds.volume", "own commit"},
+		},
 	}, mountLines(webhookConfig(filepath.Join(dir, "hook"))))
+}
+
+// A commit that writes the Agent's config or quadlet with the mount layout
+// unchanged is refused when it also changes a Fleet-managed secret or
+// .volume unit a credential is mounted from: the guard reads the credential
+// as the running container shows it, the old content, while the restart
+// after the apply reads the new one. A changed source that holds no
+// credential passes.
+func TestCheckSelfConfigRefusesChangedCredentialSource(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
+	hook := filepath.Join(dir, "hook")
+	secretUnit := "Secret=hook_secret,target=" + hook + "\n"
+	volumeUnit := "Volume=creds.volume:" + dir + "\n"
+	const volumePath = "/etc/containers/systemd/picolet/creds.volume"
+	newSecret := func(name string) []resolver.ResolvedFile {
+		return []resolver.ResolvedFile{{DestPath: "secret:" + name, Category: config.CategorySecret, Content: "new"}}
+	}
+	newVolume := []resolver.ResolvedFile{{DestPath: volumePath, Category: config.CategoryVolume, Content: "[Volume]\nDevice=/srv/other\n"}}
+	ownCommit := []string{"webhook_secret_path", "own commit"}
+	runChangeCases(t, []changeCase{
+		{
+			name:      "config and the credential's secret",
+			change:    selfConfigChange{running: secretUnit, next: secretUnit, managed: []string{"secret:hook_secret"}, files: newSecret("hook_secret")},
+			wantError: append([]string{"the secret hook_secret, which this commit changes"}, ownCommit...),
+		},
+		{
+			name:      "config and the credential's volume unit",
+			change:    selfConfigChange{running: volumeUnit, next: volumeUnit, managed: []string{volumePath}, files: newVolume},
+			wantError: append([]string{"the volume unit creds.volume, which this commit changes"}, ownCommit...),
+		},
+		{
+			name: "quadlet and the credential's secret",
+			change: selfConfigChange{
+				running: secretUnit, next: secretUnit + "Pull=newer\n", unchangedConfig: true,
+				managed: []string{"secret:hook_secret"}, files: newSecret("hook_secret"),
+			},
+			wantError: append([]string{"the secret hook_secret, which this commit changes"}, ownCommit...),
+		},
+		{
+			name: "config and a secret holding no credential",
+			change: selfConfigChange{
+				running: "Secret=other,target=/run/other\n", next: "Secret=other,target=/run/other\n",
+				managed: []string{"secret:other"}, files: newSecret("other"),
+			},
+		},
+	}, mountLines(webhookConfig(hook)))
+}
+
+// The guard fails closed on a mount it cannot read, whether or not the
+// commit changes the mount lines: a --volumes-from (on either unit) or a
+// tmpfs or anonymous volume that may hold a file credential refuses it, as
+// does a mount whose target is relative or starts with a systemd specifier
+// (%h, %t: the guard cannot tell which paths it holds) when the commit adds,
+// drops or repoints one, or when it starts empty or its source changes. Such
+// a mount kept as it was from a Host path (the reference quadlet's
+// %t/systemd) passes.
+func TestCheckSelfConfigFailsClosedOnMountsItCannotRead(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
+	hook := filepath.Join(dir, "hook")
+	volumesFrom := "PodmanArgs=--volumes-from=creds\n"
+	specifier := "Volume=/host/secrets:%h/x:ro\n"
+	runtimeDir := "Volume=%t/systemd:%t/systemd\n"
+	added := "Volume=/srv/data:/var/lib/picolet\n"
+	cannotPlace := []string{"webhook_secret_path", "%h/x", "cannot tell which paths it holds", "own commit"}
+	startsEmpty := []string{"webhook_secret_path", "starts empty"}
+	runChangeCases(t, []changeCase{
+		{
+			name:      "--volumes-from, mount lines unchanged",
+			change:    selfConfigChange{running: volumesFrom, next: volumesFrom},
+			wantError: []string{"webhook_secret_path", "--volumes-from creds", "own commit"},
+		},
+		{name: "Tmpfs=, mount lines unchanged", change: selfConfigChange{running: "Tmpfs=" + dir + "\n", next: "Tmpfs=" + dir + "\n"}, wantError: startsEmpty},
+		{name: "anonymous volume, mount lines unchanged", change: selfConfigChange{running: "Volume=" + dir + "\n", next: "Volume=" + dir + "\n"}, wantError: startsEmpty},
+		{
+			name:      "specifier target dropped",
+			change:    selfConfigChange{running: specifier, next: "", unchangedConfig: true},
+			wantError: cannotPlace,
+		},
+		{
+			name:      "specifier target added",
+			change:    selfConfigChange{running: "", next: specifier, unchangedConfig: true},
+			wantError: cannotPlace,
+		},
+		{
+			name:      "relative target added",
+			change:    selfConfigChange{running: "", next: "Volume=/host/secrets:x\n", unchangedConfig: true},
+			wantError: []string{"webhook_secret_path", "cannot tell which paths it holds", "own commit"},
+		},
+		{
+			name:      "specifier tmpfs, mount lines unchanged",
+			change:    selfConfigChange{running: "Tmpfs=%t/x\n", next: "Tmpfs=%t/x\n"},
+			wantError: startsEmpty,
+		},
+		{
+			name: "specifier secret target, secret changed",
+			change: selfConfigChange{
+				running: "Secret=hook_secret,target=%h/hook\n", next: "Secret=hook_secret,target=%h/hook\n",
+				managed: []string{"secret:hook_secret"},
+				files:   []resolver.ResolvedFile{{DestPath: "secret:hook_secret", Category: config.CategorySecret, Content: "new"}},
+			},
+			wantError: []string{"webhook_secret_path", "the secret hook_secret, which this commit changes"},
+		},
+		{name: "specifier Host path kept, config changed", change: selfConfigChange{running: runtimeDir, next: runtimeDir}},
+		{name: "specifier Host path kept, mount added", change: selfConfigChange{running: runtimeDir, next: runtimeDir + added, unchangedConfig: true}},
+	}, mountLines(webhookConfig(hook)))
 }
 
 // The running Agent's config secret is found however Podman reads its
@@ -734,11 +805,8 @@ func TestCheckSelfConfigFindsConfigMountSpellings(t *testing.T) {
 		cases = append(cases, changeCase{name: line, change: selfConfigChange{running: unit, next: unit}, wantError: []string{"no_such_key_ever"}})
 	}
 	for _, target := range []string{"/etc/picolet//config.yml", "/etc/picolet/./config.yml", "/etc/picolet/sub/../config.yml"} {
-		cases = append(cases, changeCase{
-			name:      target,
-			change:    selfConfigChange{running: agentBundleUnit(""), next: "[Container]\nImage=x\nSecret=picolet_system_config,target=" + target + "\n"},
-			wantError: []string{"no_such_key_ever"},
-		})
+		unit := "[Container]\nImage=x\nSecret=picolet_system_config,target=" + target + "\n"
+		cases = append(cases, changeCase{name: target, change: selfConfigChange{running: unit, next: unit}, wantError: []string{"no_such_key_ever"}})
 	}
 	runChangeCases(t, cases, func(c *selfConfigChange) {
 		c.config = new("hostname: test-host\nrepo_url: https://example.com/fleet.git\nno_such_key_ever: 1\n")
@@ -812,85 +880,57 @@ func TestAgentRefusesRemovingPodmanArgsSecret(t *testing.T) {
 	}
 }
 
-// relFromCwd returns p relative to the test's working directory, which is
-// the running Agent's in these tests.
-func relFromCwd(t *testing.T, p string) string {
-	t.Helper()
-	cwd, err := os.Getwd()
-	require.NoError(t, err)
-	rel, err := filepath.Rel(cwd, p)
-	require.NoError(t, err)
-	return rel
-}
-
-// TestAgentChecksRelativeSelfConfigCredentialsThroughNewUnitMounts: a
-// relative credential path is read by the next start against its working
-// directory, so a commit that drops the mount it lies under, or changes the
-// working directory it resolves against, is checked like an absolute path
-// rather than through the running container alone.
-func TestAgentChecksRelativeSelfConfigCredentialsThroughNewUnitMounts(t *testing.T) {
+// A commit that changes how the Agent's container shows a path other than
+// by its mount lines fails closed on the file credentials it may hide: a
+// PodmanArgs= option the guard cannot read (a --security-opt mask=, a user
+// or user namespace, a read-only root or tmpfs, image volumes) added,
+// dropped or changed refuses every file credential, and Mask=, Unmask= and
+// VolatileTmp= count as mounts (a masked path, a tmpfs at /tmp). Such an
+// option kept as it was (the reference quadlet's --security-opt
+// apparmor=unconfined), or a PodmanArgs= option that shows no path, passes.
+func TestCheckSelfConfigFailsClosedOnPathOptions(t *testing.T) {
 	t.Parallel()
-	seen := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(seen, "hook"), []byte("secret\n"), 0o600))
-	// The first apply has no running unit on disk and reads the path as
-	// spelled; the next commit spells it relative to the running Agent's
-	// working directory, fixed at seen.
-	config, relative := *webhookConfig(filepath.Join(seen, "hook")), *webhookConfig("hook")
-	inSeen := withGetwd(seen)
-	current := agentBundleUnit("Volume=/host/secrets:" + seen + ":ro\n")
-	t.Run("mount dropped", func(t *testing.T) {
-		t.Parallel()
-		runMountChangeCase(t, current, config, agentBundleUnit(""), relative,
-			[]string{"webhook_secret_path", seen, "no longer mounts", "own commit"}, inSeen)
-	})
-	t.Run("WorkingDir added", func(t *testing.T) {
-		t.Parallel()
-		runMountChangeCase(t, current, config, current+"WorkingDir="+t.TempDir()+"\n", relative,
-			[]string{"webhook_secret_path", "not readable"}, inSeen)
-	})
-}
-
-// withGetwd fixes the Agent's working directory, as the self-restart guard
-// sees it, at dir.
-func withGetwd(dir string) Option {
-	return func(a *Agent) { a.getwd = func() (string, error) { return dir, nil } }
-}
-
-// A relative credential path of a commit that writes the Agent's unit is
-// resolved against the new unit's working directory (WorkingDir=, or a
-// PodmanArgs= -w/--workdir, which podman reads after it) and then checked
-// through the new unit's mounts. Without one, the next start keeps the
-// image's working directory, which is the running Agent's only when the
-// running unit sets none either; any other case, or a working directory
-// the guard cannot read, is refused.
-func TestCheckSelfConfigResolvesRelativeCredentialsAgainstWorkingDir(t *testing.T) {
-	t.Parallel()
-	seen := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(seen, "hook"), []byte("x"), 0o600))
-	mounted := "Volume=/host/secrets:" + seen + ":ro\n"
-	fromCwd := webhookConfig(relFromCwd(t, filepath.Join(seen, "hook")))
-	absolute := []string{"webhook_secret_path", "relative", "absolute"}
-	// config defaults to webhook_secret_path: hook.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
+	hook := filepath.Join(dir, "hook")
+	volume := "Volume=/srv/s:" + dir + "\n"
+	apparmor := "PodmanArgs=--security-opt apparmor=unconfined\n"
+	cannotRead := []string{"webhook_secret_path", "PodmanArgs=", "cannot check"}
 	runChangeCases(t, []changeCase{
-		{name: "no working directory on either unit", change: selfConfigChange{running: mounted, next: mounted, config: fromCwd}},
-		{name: "WorkingDir= on the new unit", change: selfConfigChange{running: mounted, next: mounted + "WorkingDir=" + seen + "\n"}},
-		{name: "same WorkingDir= on both units", change: selfConfigChange{running: mounted + "WorkingDir=" + seen + "\n", next: mounted + "WorkingDir=" + seen + "\n"}},
-		{name: "PodmanArgs= --workdir", change: selfConfigChange{running: mounted, next: mounted + "PodmanArgs=--workdir " + seen + "\n"}},
-		{name: "PodmanArgs= -w", change: selfConfigChange{running: mounted, next: mounted + "PodmanArgs=-w=" + seen + "\n"}},
 		{
-			name:   "PodmanArgs= --workdir overrides WorkingDir=",
-			change: selfConfigChange{running: mounted, next: mounted + "WorkingDir=/nowhere\nPodmanArgs=--workdir=" + seen + "\n"},
+			name:      "--security-opt=mask= added",
+			change:    selfConfigChange{running: volume, next: volume + "PodmanArgs=--security-opt=mask=" + hook + "\n"},
+			wantError: append([]string{"--security-opt mask=" + hook}, cannotRead...),
 		},
 		{
-			name: "WorkingDir= under a dropped mount", change: selfConfigChange{running: mounted, next: "WorkingDir=" + seen + "\n"},
-			wantError: []string{"webhook_secret_path", "no longer mounts", "own commit"},
+			name:      "--security-opt mask= added as two arguments",
+			change:    selfConfigChange{running: volume, next: volume + "PodmanArgs=--security-opt mask=" + hook + "\n"},
+			wantError: cannotRead,
 		},
-		{name: "WorkingDir= dropped", change: selfConfigChange{running: mounted + "WorkingDir=" + seen + "\n", next: mounted}, wantError: absolute},
-		{name: "WorkingDir= with a specifier", change: selfConfigChange{running: mounted, next: mounted + "WorkingDir=%h/secrets\n"}, wantError: absolute},
-		{name: "relative WorkingDir=", change: selfConfigChange{running: mounted, next: mounted + "WorkingDir=secrets\n"}, wantError: absolute},
+		{name: "-u added", change: selfConfigChange{running: volume, next: volume + "PodmanArgs=-u 1000\n"}, wantError: append([]string{"--user 1000"}, cannotRead...)},
+		{name: "--userns changed", change: selfConfigChange{running: volume + "PodmanArgs=--userns=keep-id\n", next: volume + "PodmanArgs=--userns=auto\n"}, wantError: cannotRead},
+		{name: "--read-only added", change: selfConfigChange{running: volume, next: volume + "PodmanArgs=--read-only\n"}, wantError: append([]string{"--read-only"}, cannotRead...)},
+		{name: "--image-volume added", change: selfConfigChange{running: volume, next: volume + "PodmanArgs=--image-volume tmpfs\n"}, wantError: cannotRead},
+		{name: "option kept, mount added", change: selfConfigChange{running: volume + apparmor, next: volume + apparmor + "Volume=/srv/data:/var/lib/picolet\n"}},
+		{name: "--network added", change: selfConfigChange{running: volume, next: volume + "PodmanArgs=--network=host\n"}},
 		{
-			name:   "unit unchanged keeps reading against the running working directory",
-			change: selfConfigChange{running: mounted + "WorkingDir=%h\n", next: mounted + "WorkingDir=%h\n", config: fromCwd, unchangedUnit: true},
+			name:      "Mask= added over the credential",
+			change:    selfConfigChange{running: volume, next: volume + "Mask=/proc/acpi:" + hook + "\n"},
+			wantError: []string{"webhook_secret_path", "not under a mount the new unit keeps", "own commit"},
 		},
-	}, mountLines(webhookConfig("hook")))
+		{name: "Mask= added elsewhere", change: selfConfigChange{running: volume, next: volume + "Mask=/proc/acpi\n"}},
+		{
+			name:      "Unmask=ALL added",
+			change:    selfConfigChange{running: volume, next: volume + "Unmask=ALL\n"},
+			wantError: []string{"webhook_secret_path", "cannot tell which paths it holds"},
+		},
+		{
+			name:      "VolatileTmp= added",
+			change:    selfConfigChange{running: "", next: "VolatileTmp=true\n", config: webhookConfig("/tmp/picolet-hook")},
+			wantError: []string{"webhook_secret_path", "not under a mount the new unit keeps"},
+		},
+	}, func(c *selfConfigChange) {
+		c.unchangedConfig = true
+		mountLines(webhookConfig(hook))(c)
+	})
 }

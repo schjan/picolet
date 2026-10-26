@@ -49,12 +49,13 @@ func TestIntegrationValidateAgentBundleStrict(t *testing.T) {
 		"credentials needed to fetch the Fleet can't be SOPS values"
 	tests := []struct {
 		name, user, service, fn, ref, fix string
+		shown                             string // how the error names ref: no pointer or field
 	}{
-		{name: "rootful readOpSecret", service: "picolet-system", fn: "readOpSecret", ref: "op://vault/item/token", fix: fix},
-		{name: "rootful readProtonPassSecret", service: "picolet-system", fn: "readProtonPassSecret", ref: "pass://share/item/token", fix: fix},
-		{name: "user readOpSecret", user: "app", service: "picolet", fn: "readOpSecret", ref: "op://vault/item/token", fix: fix},
-		{name: "rootful readSopsSecret", service: "picolet-system", fn: "readSopsSecret", ref: "sops://secrets/git.sops.yaml#/token", fix: sopsFix},
-		{name: "rootful readSopsData", service: "picolet-system", fn: "readSopsData", ref: "sops://secrets/git.sops.yaml#/git", fix: sopsFix},
+		{name: "rootful readOpSecret", service: "picolet-system", fn: "readOpSecret", ref: "op://vault/item/token", fix: fix, shown: "op://vault/…"},
+		{name: "rootful readProtonPassSecret", service: "picolet-system", fn: "readProtonPassSecret", ref: "pass://share/item/token", fix: fix, shown: "pass://share/…"},
+		{name: "user readOpSecret", user: "app", service: "picolet", fn: "readOpSecret", ref: "op://vault/item/token", fix: fix, shown: "op://vault/…"},
+		{name: "rootful readSopsSecret", service: "picolet-system", fn: "readSopsSecret", ref: "sops://secrets/git.sops.yaml#/token", fix: sopsFix, shown: "sops://secrets/git.sops.yaml#…"},
+		{name: "rootful readSopsData", service: "picolet-system", fn: "readSopsData", ref: "sops://secrets/git.sops.yaml#/git", fix: sopsFix, shown: "sops://secrets/git.sops.yaml#…"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -62,7 +63,7 @@ func TestIntegrationValidateAgentBundleStrict(t *testing.T) {
 			body := fmt.Sprintf(`{{ $ref := %q }}git_token: {{ %s $ref }}`, tt.ref, tt.fn)
 			err := validateFleet(t, agentBundleFleet(tt.user, tt.service, true, body))
 			require.Error(t, err)
-			for _, want := range []string{"host test-host", "Agent bundle " + tt.service, fmt.Sprintf("%s %q", tt.fn, tt.ref), tt.fix} {
+			for _, want := range []string{"host test-host", "Agent bundle " + tt.service, fmt.Sprintf("%s %q", tt.fn, tt.shown), tt.fix} {
 				assert.ErrorContains(t, err, want)
 			}
 		})

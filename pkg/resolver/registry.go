@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -196,7 +197,7 @@ func SopsProvider(reader SopsReader, noIdentityHint string) ProviderTemplate {
 		IsRef:              sops.IsRef,
 		PlaceholderPending: "<sops-secret-pending>",
 		MissingReader: func(funcName, ref string) error {
-			return sops.NoIdentityError(fmt.Sprintf("%s %q", funcName, ref), noIdentityHint)
+			return sops.NoIdentityError(fmt.Sprintf("%s %q", funcName, refForError(ref)), noIdentityHint)
 		},
 		secretName: func(ref string) (string, error) {
 			parsed, err := sops.ParseRef(ref)
@@ -280,13 +281,82 @@ func (p ProviderTemplate) strictText() (reason, fix string) {
 	return reason, fix
 }
 
+// refForError names ref in an error without the part a template most likely
+// builds from a secret value: a sops:// ref keeps its file, an op:// or
+// pass:// ref its vault (share), and "…" marks the dropped pointer, or item
+// and field. Errors that may quote a ref built at render time use it, since
+// only SOPS values are scrubbed from errors.
+func refForError(ref string) string {
+	if sops.IsRef(ref) {
+		if file, _, found := strings.Cut(ref, "#"); found {
+			return file + "#…"
+		}
+		return ref // the whole file
+	}
+	scheme, rest, _ := strings.Cut(ref, "://")
+	if vault, _, found := strings.Cut(rest, "/"); found && vault != "" {
+		return scheme + "://" + vault + "/…"
+	}
+	return scheme + "://…"
+}
+
+// redactRefs returns err with every op:// or pass:// ref of refs it quotes
+// replaced by refForError's form: a provider client's error quotes the refs
+// it failed to read, and a template may build one from a secret value. A
+// sops:// ref is kept, so a SOPS reader's error still names the pointer it
+// failed at. The result answers errors.Is like err but does not unwrap.
+func redactRefs(err error, refs []string) error {
+	return redact(err, refs, func(ref string) bool { return !sops.IsRef(ref) })
+}
+
+// redactDynamicRef is redactRefs for a ref built at render time (a cache
+// miss): its sops:// pointer may come from an op:// or pass:// value, which
+// no SOPS scrubbing removes, so it is redacted too.
+func redactDynamicRef(err error, ref string) error {
+	return redact(err, []string{ref}, func(string) bool { return true })
+}
+
+// redact returns err with every ref of refs it quotes for which redacted
+// reports true replaced by refForError's form (a redactedError), or err
+// itself when it quotes none. A ref is found as written and as %q escapes
+// it (the provider clients quote refs that way).
+func redact(err error, refs []string, redacted func(string) bool) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	for _, ref := range refs {
+		if redacted(ref) {
+			quoted := strconv.Quote(ref)
+			msg = strings.ReplaceAll(msg, quoted[1:len(quoted)-1], refForError(ref))
+			msg = strings.ReplaceAll(msg, ref, refForError(ref))
+		}
+	}
+	if msg == err.Error() {
+		return err
+	}
+	return redactedError{msg: msg, err: err}
+}
+
+// redactedError is an error whose text redactRefs rewrote. It deliberately
+// does not unwrap, so no caller reaches the original text.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e redactedError) Error() string { return e.msg }
+
+// Is reports whether the original error matches target.
+func (e redactedError) Is(target error) bool { return errors.Is(e.err, target) }
+
 // strictModeError is the error a call of p's function funcName fails with
 // in strict mode, where no provider value can be used. The wording is the
 // table's for p.Key, as strict mode has always keyed it, so a template built
 // by hand under a standard key words it like the standard one.
 func (p ProviderTemplate) strictModeError(funcName, ref string) error {
 	reason, fix := schemeOf(p.Key).strictText()
-	return fmt.Errorf("%s %q: %s; %s", funcName, ref, reason, fix)
+	return fmt.Errorf("%s %q: %s; %s", funcName, refForError(ref), reason, fix)
 }
 
 // strictDirectError is the error p's direct secrets: refs fail with in
@@ -341,7 +411,7 @@ func (c *RefCache) Resolve(ctx context.Context) error {
 	c.log().Debug("batch-resolving template secrets", "count", len(unique))
 	results, err := c.reader(ctx, unique)
 	if err != nil {
-		return fmt.Errorf("resolving template secrets: %w", err)
+		return fmt.Errorf("resolving template secrets: %w", redactRefs(err, unique))
 	}
 	c.resolved = results
 	return nil
@@ -527,11 +597,11 @@ func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p Provi
 		cache.log().Debug("cache miss, resolving individually", "func", p.FuncName)
 		results, err := p.Reader(ctx, []string{ref})
 		if err != nil {
-			return "", err
+			return "", redactDynamicRef(err, ref)
 		}
 		val, ok := results[ref]
 		if !ok {
-			return "", fmt.Errorf("%s: ref %q failed to resolve", p.FuncName, ref)
+			return "", fmt.Errorf("%s: a ref built at render time failed to resolve", p.FuncName)
 		}
 		return val, nil
 	}
@@ -567,7 +637,7 @@ func (p ProviderTemplate) prepareCall(funcName, ref string, hasReader bool) (rea
 		return false, nil
 	}
 	if !p.IsRef(ref) {
-		return false, fmt.Errorf("%s: %q is not a valid reference for this provider", funcName, ref)
+		return false, fmt.Errorf("%s: the argument is not a valid reference for this provider", funcName)
 	}
 	return true, nil
 }

@@ -282,7 +282,8 @@ func TestReadSopsSecretKeylessRejectedRefs(t *testing.T) {
 // pass) fails it with the SOPS fix, even with the keyless reader passed;
 // Service Bundles cannot carry direct secrets: entries, so this seam is where
 // the Agent-bundle pass's direct-ref branch is covered. Each error names the
-// call (or direct entry) and its ref, and never quotes a value.
+// call and its ref's file (a template may build the pointer from a value),
+// or the direct entry and its ref, and never quotes a value.
 func TestSopsRefFailsWithoutReaderAndInStrictMode(t *testing.T) {
 	t.Parallel()
 	const (
@@ -299,11 +300,11 @@ func TestSopsRefFailsWithoutReaderAndInStrictMode(t *testing.T) {
 		call       string
 	}{
 		{
-			name: "secret", base: appTmplBase, call: fmt.Sprintf("readSopsSecret %q", leaf),
+			name: "secret", base: appTmplBase, call: `readSopsSecret "sops://secrets/db.sops.yaml#…"`,
 			files: map[string]string{appTmpl: `password: {{ readSopsSecret "` + leaf + `" }}`},
 		},
 		{
-			name: "data", base: appTmplBase, call: fmt.Sprintf("readSopsData %q", tree),
+			name: "data", base: appTmplBase, call: `readSopsData "sops://secrets/db.sops.yaml#…"`,
 			files: map[string]string{appTmpl: `{{ range readSopsData "` + tree + `" }}{{ . }}{{ end }}`},
 		},
 		{name: "direct", base: secretsBase(leaf), call: "direct secrets " + leaf},
@@ -353,6 +354,6 @@ func TestStrictModeFailsEvenWithReader(t *testing.T) {
 	tmpl, _, err := BuildRegistry(t.Context(), fsys, nil, []ProviderTemplate{p}, "")
 	require.NoError(t, err)
 	err = tmpl.ExecuteTemplate(io.Discard, "s.tmpl", nil)
-	require.ErrorContains(t, err, `readOpSecret "op://vault/item/pw": provider not configured in strict mode`)
+	require.ErrorContains(t, err, `readOpSecret "op://vault/…": provider not configured in strict mode`)
 	assert.False(t, called)
 }

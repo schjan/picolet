@@ -95,9 +95,6 @@ type Agent struct {
 	// sopsIDs are the age identities sops:// refs are decrypted with; nil
 	// when the config has no sops block. Set by setupSops in Run.
 	sopsIDs *sops.Identities
-	// getwd is the Agent's working directory for the self-restart guard
-	// (os.Getwd; tests fix it).
-	getwd func() (string, error)
 	// startup is what the run command's startup checks loaded (WithStartup);
 	// nil makes setupSops load the identities itself.
 	startup *agentcfg.Startup
@@ -268,7 +265,6 @@ func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 		webhookCh:   make(chan struct{}, 1),
 		statusStore: status.NewStore(),
 		logger:      slog.Default(),
-		getwd:       os.Getwd,
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -861,7 +857,7 @@ func (a *Agent) reconcileResolved(ctx context.Context, headSHA string, st *state
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	if err := CheckSelfConfig(resolved, changeset, os.ReadFile, a.getwd); err != nil {
+	if err := CheckSelfConfig(resolved, changeset, os.ReadFile); err != nil {
 		err = scrubError(sopsReader, err)
 		a.logger.Warn("agent config check failed", "error", err)
 		a.recordEvent("failure", headSHA, fmt.Sprintf("agent config check failed: %v", err))
@@ -869,7 +865,7 @@ func (a *Agent) reconcileResolved(ctx context.Context, headSHA string, st *state
 	}
 
 	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset, resolved.Hooks, pendingHookNames(st.PendingHooks), deps,
-		resolved.DataDir, resolved.HostDataDir, sopsReader)
+		resolved.DataDir, resolved.HostDataDir, sopsReader, selfConfigRestart(resolved, changeset)...)
 	recordHookMetrics(applyResult)
 	if errors.Is(err, applier.ErrApplyIncomplete) {
 		a.savePartialState(headSHA, st, store, changeset, applyResult, deps, resolved.Hooks)
@@ -900,6 +896,9 @@ func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Stor
 
 	if applyResult.NeedsSelfRestart && !a.dryRun {
 		a.logger.Info("picolet.container changed, self-update pending")
+	}
+	if applyResult.SelfConfigChanged && !a.dryRun {
+		a.logger.Info("Agent config changed, restarting to load it")
 	}
 
 	return &ReconcileResult{
@@ -1166,15 +1165,17 @@ func (a *Agent) enforceRetryBudget(pending map[string]int, hooks []config.Hook) 
 
 // applyWithRollback applies changeset and rolls back on a fatal error.
 // dataDir and hostDataDir are the resolved host's (applier.WithHostDataDir).
-// The errors it logs are scrubbed with sopsReader (scrubError).
-func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset, hooks []config.Hook, pendingNames []string, deps map[string]status.UnitDependencies, dataDir, hostDataDir string, sopsReader *sops.Reader) (*applier.ApplyResult, error) {
+// The errors it logs are scrubbed with sopsReader (scrubError); opts follow
+// the Applier options it sets.
+func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset, hooks []config.Hook, pendingNames []string, deps map[string]status.UnitDependencies, dataDir, hostDataDir string, sopsReader *sops.Reader, opts ...applier.Option) (*applier.ApplyResult, error) {
 	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile, rollback.WithLogger(a.logger))
 	if err != nil {
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
-	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, hooks,
-		applier.WithDependencies(deps), applier.WithHostDataDir(dataDir, hostDataDir), applier.WithLogger(a.logger))
+	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, hooks, append([]applier.Option{
+		applier.WithDependencies(deps), applier.WithHostDataDir(dataDir, hostDataDir), applier.WithLogger(a.logger),
+	}, opts...)...)
 	result, err := app.ApplyWithPending(ctx, changeset, pendingNames)
 	if err != nil {
 		a.logger.Error("apply failed, rolling back", "error", scrubError(sopsReader, err))
