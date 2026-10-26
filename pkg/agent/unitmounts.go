@@ -111,6 +111,33 @@ func unitMounts(unit *parser.UnitFile) (mounts []mount, opaque []string) {
 	return mounts, opaque
 }
 
+// unitSecret is a Podman secret unit's container uses, of either type
+// (mounted or an environment variable): its name, and the setting that
+// declares it (Secret=… or PodmanArgs=--secret …).
+type unitSecret struct {
+	name string
+	decl string
+}
+
+// unitSecrets lists every Podman secret unit's [Container] group uses, of
+// either type: its Secret= values, then the --secret values its PodmanArgs=
+// pass to podman run. unitMounts reports only the mounted ones.
+func unitSecrets(unit *parser.UnitFile) []unitSecret {
+	var secrets []unitSecret
+	add := func(spec, decl string) {
+		if name, _, _ := resolver.ParseSecretMount(spec); name != "" {
+			secrets = append(secrets, unitSecret{name: name, decl: decl})
+		}
+	}
+	for _, spec := range unit.LookupAllArgs("Container", "Secret") {
+		add(spec, "Secret="+spec)
+	}
+	podmanArgsValues(unit, podmanSecretFlags, func(_, value string) {
+		add(value, "PodmanArgs=--secret "+value)
+	})
+	return secrets
+}
+
 // podmanArgsValues calls each, in order, with every flag of unit's
 // PodmanArgs= that spec recognizes (podmanFlag) and its value (the next
 // argument when the flag carries none; a flag at the end without one is
@@ -162,6 +189,9 @@ var podmanMountFlags = flagSpec{
 	longs: []string{"volume", "mount", "tmpfs", "secret", "volumes-from"},
 	short: 'v', shortName: "volume",
 }
+
+// podmanSecretFlags is podman run's secret flag, which has no short form.
+var podmanSecretFlags = flagSpec{longs: []string{"secret"}}
 
 // podmanWorkdirFlags is podman run's working-directory flag.
 var podmanWorkdirFlags = flagSpec{longs: []string{"workdir"}, short: 'w', shortName: "workdir"}

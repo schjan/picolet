@@ -346,9 +346,10 @@ To manage the config by hand instead, bind-mount a Host file at
 `/etc/picolet/config.yml` with `Volume=` (a Host directory over
 `/etc/picolet` works too; a named volume, `.volume` unit or tmpfs there is
 refused, since it holds no config). Any commit that stops resolving a
-secret (`Secret=`) or `.volume` unit the Agent's quadlet still mounts is
-refused as well, since Podman couldn't create the Agent's container: stop
-mounting it first, or in the same commit.
+secret (`Secret=` or `PodmanArgs=--secret`, mounted or as an environment
+variable) or `.volume` unit the Agent's quadlet still uses is refused as
+well, since Podman couldn't create the Agent's container: stop using it
+first, or in the same commit.
 If a check fails, the reconciliation fails before anything is written and the
 Agent keeps its current config, so it is never left with a config it would
 refuse to restart with. Place a new credential file on the Host (`bootstrap

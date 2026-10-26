@@ -522,8 +522,9 @@ func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p Provi
 		if val, ok := cache.resolved[ref]; ok {
 			return val, nil
 		}
-		// Cache miss: dynamic ref not seen in collect phase.
-		cache.log().Debug("cache miss, resolving individually", "func", p.FuncName, "ref", ref)
+		// Cache miss: dynamic ref not seen in collect phase. The ref is not
+		// logged: a template may build it from a secret value.
+		cache.log().Debug("cache miss, resolving individually", "func", p.FuncName)
 		results, err := p.Reader(ctx, []string{ref})
 		if err != nil {
 			return "", err

@@ -177,17 +177,16 @@ func removesVolumeUnit(changeset *reconciler.Changeset, name string) bool {
 
 // checkLostSources refuses a changeset that removes a source the Agent's next
 // start, with the unit next, needs: a Fleet-managed Podman secret a Secret=
-// names (of either type), or a Fleet-managed .volume unit a Volume= or
-// Mount= names. Podman could not create the Agent's container without the
+// or a PodmanArgs= --secret names (of either type), or a Fleet-managed
+// .volume unit a Volume= or Mount= names. Podman could not create the Agent's container without the
 // secret, nor Quadlet generate its service without the .volume unit, so the
 // Agent would not start again. It runs on every changeset, whether or not
 // it writes the Agent's config or unit.
 func checkLostSources(next *parser.UnitFile, unit string, changeset *reconciler.Changeset) error {
-	for _, spec := range next.LookupAllArgs("Container", "Secret") {
-		name, _, _ := resolver.ParseSecretMount(spec)
-		if name != "" && changeset.Deletes(resolver.SecretDestPath(name)) {
-			return fmt.Errorf("refusing to remove the secret %s: the Agent unit %s still mounts it (Secret=%s), so the Agent could not start; "+
-				"keep resolving the secret, or stop mounting it", name, unit, spec)
+	for _, secret := range unitSecrets(next) {
+		if changeset.Deletes(resolver.SecretDestPath(secret.name)) {
+			return fmt.Errorf("refusing to remove the secret %s: the Agent unit %s still mounts it (%s), so the Agent could not start; "+
+				"keep resolving the secret, or stop mounting it", secret.name, unit, secret.decl)
 		}
 	}
 	mounts, _ := unitMounts(next)
