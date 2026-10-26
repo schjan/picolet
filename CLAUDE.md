@@ -136,6 +136,7 @@ Template data root: `.Host` (hostname, role, features, machine, user, rootful, l
 - Custom error types: `*resolver.HostNotFoundError` and `*applier.HookFallbackError` (check with `errors.As`); `pkg/agent`'s `scrubbedError` deliberately does not unwrap (it answers `errors.Is` only), so no caller reaches the unscrubbed text
 - `errors.Join` for accumulating validation errors in `pkg/validator`
 - Result structs with `Errors []error` fields for non-fatal errors (health checks, apply)
+- A template-function error names its ref by `refForError` (`pkg/resolver/registry.go`: scheme and file or item part, never a `sops://` pointer or an `op://`/`pass://` field), and an unresolved render-time ref by its function only: a template may build the ref from a secret value, and only SOPS values are scrubbed
 - A reconciliation error may embed a value decrypted from a `sops://` ref: every reconciliation error the Agent records as a dashboard event or returns from `ReconcileOnce` (and the validation errors it logs) passes through `scrubError` (`pkg/agent/sops.go`) with the one `sops.Reader` of that resolve first, as do the apply's own log lines (rollback notice, non-fatal apply errors); CLI callers scrub with the function `agent.LoadAndResolveHost` returns
 
 ### Testing Patterns

@@ -196,7 +196,7 @@ func SopsProvider(reader SopsReader, noIdentityHint string) ProviderTemplate {
 		IsRef:              sops.IsRef,
 		PlaceholderPending: "<sops-secret-pending>",
 		MissingReader: func(funcName, ref string) error {
-			return sops.NoIdentityError(fmt.Sprintf("%s %q", funcName, ref), noIdentityHint)
+			return sops.NoIdentityError(fmt.Sprintf("%s %q", funcName, refForError(ref)), noIdentityHint)
 		},
 		secretName: func(ref string) (string, error) {
 			parsed, err := sops.ParseRef(ref)
@@ -280,13 +280,32 @@ func (p ProviderTemplate) strictText() (reason, fix string) {
 	return reason, fix
 }
 
+// refForError names ref in an error without the part a template most likely
+// builds from a secret value: a sops:// ref keeps its file, an op:// or
+// pass:// ref its vault and item, and "…" marks the dropped pointer or
+// field. Errors that may quote a ref built at render time use it, since only
+// SOPS values are scrubbed from errors.
+func refForError(ref string) string {
+	if file, _, found := strings.Cut(ref, "#"); found {
+		return file + "#…"
+	}
+	if sops.IsRef(ref) {
+		return ref // the whole file
+	}
+	if i := strings.LastIndex(ref, "/"); i > len("x://") && strings.Contains(ref[:i], "://") {
+		return ref[:i] + "/…"
+	}
+	scheme, _, _ := strings.Cut(ref, "://")
+	return scheme + "://…"
+}
+
 // strictModeError is the error a call of p's function funcName fails with
 // in strict mode, where no provider value can be used. The wording is the
 // table's for p.Key, as strict mode has always keyed it, so a template built
 // by hand under a standard key words it like the standard one.
 func (p ProviderTemplate) strictModeError(funcName, ref string) error {
 	reason, fix := schemeOf(p.Key).strictText()
-	return fmt.Errorf("%s %q: %s; %s", funcName, ref, reason, fix)
+	return fmt.Errorf("%s %q: %s; %s", funcName, refForError(ref), reason, fix)
 }
 
 // strictDirectError is the error p's direct secrets: refs fail with in
@@ -531,7 +550,7 @@ func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p Provi
 		}
 		val, ok := results[ref]
 		if !ok {
-			return "", fmt.Errorf("%s: ref %q failed to resolve", p.FuncName, ref)
+			return "", fmt.Errorf("%s: a ref built at render time failed to resolve", p.FuncName)
 		}
 		return val, nil
 	}
@@ -567,7 +586,7 @@ func (p ProviderTemplate) prepareCall(funcName, ref string, hasReader bool) (rea
 		return false, nil
 	}
 	if !p.IsRef(ref) {
-		return false, fmt.Errorf("%s: %q is not a valid reference for this provider", funcName, ref)
+		return false, fmt.Errorf("%s: the argument is not a valid reference for this provider", funcName)
 	}
 	return true, nil
 }
