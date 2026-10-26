@@ -11,7 +11,7 @@ import (
 
 	"github.com/getsops/sops/v3/age"
 	"github.com/getsops/sops/v3/config"
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // CreationRulesFile is SOPS's config file, read only at the Fleet root:
@@ -40,9 +40,9 @@ type CreationRules struct {
 // (path_regex) or that upstream reads without building a key backend: its
 // age Recipients, top level or per key group, shamir_threshold and the
 // encryption rules (kept so upstream still refuses a rule naming more than
-// one). Field names and types are upstream's, decoded with upstream's YAML
-// library, so anchors, aliases and merge keys resolve as upstream resolves
-// them, and a value upstream cannot decode fails here too.
+// one). Field names and types are upstream's, decoded with yaml/v4, which
+// resolves anchors, aliases and merge keys as upstream's yaml/v3 does, so a
+// value upstream cannot decode fails here too.
 type ageRule struct {
 	PathRegex               string     `yaml:"path_regex"`
 	Age                     any        `yaml:"age,omitempty"` // string or []string, as upstream
