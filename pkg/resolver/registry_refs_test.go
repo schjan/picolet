@@ -3,6 +3,7 @@ package resolver
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -40,6 +41,25 @@ func failingReader(_ context.Context, refs []string) (map[string]string, error) 
 	return values, nil
 }
 
+// failingSopsReader is failingReader as a SopsReader, quoting the ref as
+// the SOPS readers do.
+type failingSopsReader struct{}
+
+func (failingSopsReader) ReadAll(_ context.Context, refs []string) (map[string]string, error) {
+	values := map[string]string{}
+	for _, ref := range refs {
+		if strings.Contains(ref, secretItem) {
+			return nil, fmt.Errorf("decrypting %q: not found", ref)
+		}
+		values[ref] = secretItem
+	}
+	return values, nil
+}
+
+func (failingSopsReader) ReadData(context.Context, string) (any, error) {
+	return nil, errors.New("not used")
+}
+
 // renderTwoPhase renders body with p as the Agent does (collect pass,
 // Resolve, render pass), with template data .item set to secretItem, and
 // returns the first error.
@@ -66,7 +86,8 @@ func renderTwoPhase(t *testing.T, p ProviderTemplate, body string) error {
 // dynamic ref names the function only, an invalid one too, a strict-mode or
 // no-reader error names the ref's scheme and its file or vault, never a
 // sops:// pointer or an op:// item, and a provider reader's error quoting an
-// op:// ref, in the batch or for a dynamic ref, quotes it the same way.
+// op:// ref, in the batch or for a dynamic ref, quotes it the same way, as
+// does a SOPS reader's error quoting a sops:// ref built at render time.
 func TestResolverErrorsKeepDynamicRefsOut(t *testing.T) {
 	t.Parallel()
 	const fromUser = `{{ readOpSecret (printf "op://vault/%s/pw" (readOpSecret "op://vault/item/user")) }}`
@@ -89,6 +110,11 @@ func TestResolverErrorsKeepDynamicRefsOut(t *testing.T) {
 		},
 		{name: "reader error in the batch", provider: OpProvider(failingReader), body: fromData, want: `resolving 1password secret "op://vault/…": not found`},
 		{name: "reader error on a dynamic ref", provider: OpProvider(failingReader), body: fromUser, want: `resolving 1password secret "op://vault/…": not found`},
+		{
+			name: "SOPS reader error on a dynamic ref", provider: SopsProvider(failingSopsReader{}, ""),
+			body: `{{ readSopsSecret (printf "sops://secrets/db.sops.yaml#/%s" (readSopsSecret "sops://secrets/db.sops.yaml#/user")) }}`,
+			want: `decrypting "sops://secrets/db.sops.yaml#…": not found`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

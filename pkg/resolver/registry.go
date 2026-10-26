@@ -305,12 +305,26 @@ func refForError(ref string) string {
 // sops:// ref is kept, so a SOPS reader's error still names the pointer it
 // failed at. The result answers errors.Is like err but does not unwrap.
 func redactRefs(err error, refs []string) error {
+	return redact(err, refs, func(ref string) bool { return !sops.IsRef(ref) })
+}
+
+// redactDynamicRef is redactRefs for a ref built at render time (a cache
+// miss): its sops:// pointer may come from an op:// or pass:// value, which
+// no SOPS scrubbing removes, so it is redacted too.
+func redactDynamicRef(err error, ref string) error {
+	return redact(err, []string{ref}, func(string) bool { return true })
+}
+
+// redact returns err with every ref of refs it quotes for which redacted
+// reports true replaced by refForError's form (a redactedError), or err
+// itself when it quotes none.
+func redact(err error, refs []string, redacted func(string) bool) error {
 	if err == nil {
 		return nil
 	}
 	msg := err.Error()
 	for _, ref := range refs {
-		if !sops.IsRef(ref) {
+		if redacted(ref) {
 			msg = strings.ReplaceAll(msg, ref, refForError(ref))
 		}
 	}
@@ -579,7 +593,7 @@ func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p Provi
 		cache.log().Debug("cache miss, resolving individually", "func", p.FuncName)
 		results, err := p.Reader(ctx, []string{ref})
 		if err != nil {
-			return "", redactRefs(err, []string{ref})
+			return "", redactDynamicRef(err, ref)
 		}
 		val, ok := results[ref]
 		if !ok {

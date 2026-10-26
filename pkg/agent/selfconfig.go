@@ -38,6 +38,12 @@ import (
 //     lie under a mount the new unit keeps as it was, or under none
 //     (keptMounts): the running container then sees each credential as the
 //     next start will.
+//   - Whether or not the layout changes, a file credential the running
+//     container may see otherwise than a fresh start is refused: under a
+//     mount the guard cannot read (--volumes-from), a tmpfs or anonymous
+//     volume, or a mount whose target it cannot place (a relative or
+//     specifier-led target, which may hold any path) that the changeset
+//     adds, drops or changes the source of (sharedHolders).
 //
 // A changeset whose resolve renders no Agent quadlet (the Agent bundle
 // unassigned, or its container quadlet dropped) decommissions the Fleet's
@@ -113,24 +119,57 @@ func absolutePath(cred agentcfg.Credential) (string, error) {
 }
 
 // unchangedSources returns the agentcfg.Locate of a changeset that keeps the
-// Agent unit's mount layout: a credential path must be absolute, and the
-// changeset may not change the Fleet-managed secret or .volume unit next
-// mounts it from (the deepest mount holding it). The running container still
-// shows that source's old content, so the guard would check the old file
-// while the restart after the apply reads the new one.
+// Agent unit's mount layout: a credential path must be absolute, and a file
+// credential may lie under no mount that shows a fresh start something else
+// than the running container (sharedHolders), nor under one whose
+// Fleet-managed secret or .volume unit the changeset changes: the running
+// container still shows that source's old content, so the guard would check
+// the old file while the restart after the apply reads the new one. A
+// directory credential (protonpass.session_dir) need not exist, so it need
+// only be absolute.
 func unchangedSources(next *parser.UnitFile, changeset *reconciler.Changeset) agentcfg.Locate {
-	mounts, _ := unitMounts(next)
+	mounts, opaque := unitMounts(next)
 	return func(cred agentcfg.Credential) (string, error) {
-		if _, err := absolutePath(cred); err != nil {
+		if _, err := absolutePath(cred); err != nil || cred.Dir {
+			return cred.Path, err
+		}
+		holders := mayHold(mounts, cred.Path)
+		if err := sharedHolders(holders, opaque); err != nil {
 			return "", err
 		}
-		for _, m := range mountsHolding(mounts, cred.Path) {
+		for _, m := range holders {
 			if what := changedSource(m, changeset); what != "" {
 				return "", fmt.Errorf("the Agent unit mounts it from %s, which this commit changes; change %s in its own commit, then the config", what, what)
 			}
 		}
 		return cred.Path, nil
 	}
+}
+
+// mayHold returns the mounts that may hold p: those at the deepest target
+// holding it (mountsHolding), and every mount whose target the guard cannot
+// place (placedTarget).
+func mayHold(mounts []mount, p string) []mount {
+	return append(mountsHolding(mounts, p), unplacedMounts(mounts)...)
+}
+
+// sharedHolders refuses a file credential the running container may see
+// otherwise than a fresh start of the same unit: under a mount the guard
+// cannot read (opaque, a PodmanArgs= --volumes-from), or under a tmpfs or
+// anonymous volume among holders (mayHold), which holds what the running
+// container wrote there and starts empty.
+func sharedHolders(holders []mount, opaque []string) error {
+	if len(opaque) > 0 {
+		return fmt.Errorf("the Agent unit passes %s in PodmanArgs=, which mounts what the guard cannot read; %s",
+			strings.Join(opaque, ", "), errOwnCommit)
+	}
+	for _, m := range holders {
+		if m.source == "" {
+			return fmt.Errorf("the Agent unit mounts a tmpfs or anonymous volume at %s, which may hold it and starts empty in a new container; "+
+				"keep credentials on a Host path or in a secret", m.target)
+		}
+	}
+	return nil
 }
 
 // changedSource names the Fleet-managed secret or .volume unit m mounts when
@@ -147,30 +186,53 @@ func changedSource(m mount, changeset *reconciler.Changeset) string {
 
 // keptMounts returns the agentcfg.Locate of a changeset that changes the
 // Agent unit's mounts from running's to next's: a file credential must lie
-// under the same mounts (target and source as written, no tmpfs) in both
-// units, or under none (in the image), so the running container sees it as
-// the next start will. A mount the guard cannot read (--volumes-from)
-// refuses every file credential. A directory credential
-// (protonpass.session_dir) need not exist, so it need only be absolute.
+// under the same mounts (target and source as written) in both units, or
+// under none (in the image), so the running container sees it as the next
+// start will, and the mounts that may hold it must show a fresh start what
+// they show the running container (sharedHolders, over both units). A mount
+// whose target the guard cannot place (placedTarget) may hold any path, so
+// adding, dropping or changing one refuses every file credential. A
+// directory credential (protonpass.session_dir) need not exist, so it need
+// only be absolute.
 func keptMounts(running, next *parser.UnitFile) agentcfg.Locate {
 	nextMounts, nextOpaque := unitMounts(next)
 	runningMounts, runningOpaque := unitMounts(running)
 	opaque := slices.Concat(nextOpaque, runningOpaque)
+	nextUnplaced, runningUnplaced := unplacedMounts(nextMounts), unplacedMounts(runningMounts)
 	return func(cred agentcfg.Credential) (string, error) {
 		if _, err := absolutePath(cred); err != nil || cred.Dir {
 			return cred.Path, err
 		}
-		if len(opaque) > 0 {
-			return "", fmt.Errorf("the Agent unit passes %s in PodmanArgs=, which mounts what the guard cannot read; %s",
-				strings.Join(opaque, ", "), errOwnCommit)
+		if err := sharedHolders(nil, opaque); err != nil {
+			return "", err
+		}
+		if !slices.Equal(nextUnplaced, runningUnplaced) {
+			return "", fmt.Errorf("this commit changes a mount at %s, and the guard cannot tell which paths it holds; %s",
+				unplacedTargets(nextUnplaced, runningUnplaced), errOwnCommit)
 		}
 		held := mountsHolding(nextMounts, cred.Path)
-		if !slices.Equal(held, mountsHolding(runningMounts, cred.Path)) ||
-			slices.ContainsFunc(held, func(m mount) bool { return m.source == "" }) {
+		if !slices.Equal(held, mountsHolding(runningMounts, cred.Path)) {
 			return "", fmt.Errorf("this commit changes the Agent unit's mounts, and the path is not under a mount the new unit keeps as it was; %s", errOwnCommit)
+		}
+		if err := sharedHolders(slices.Concat(held, nextUnplaced), nil); err != nil {
+			return "", err
 		}
 		return cred.Path, nil
 	}
+}
+
+// unplacedTargets lists the targets of the mounts in a or b that the other
+// lacks, for a refusal.
+func unplacedTargets(a, b []mount) string {
+	var targets []string
+	for _, pair := range [][2][]mount{{a, b}, {b, a}} {
+		for _, m := range pair[0] {
+			if !slices.Contains(pair[1], m) && !slices.Contains(targets, m.target) {
+				targets = append(targets, m.target)
+			}
+		}
+	}
+	return strings.Join(targets, ", ")
 }
 
 // checkRelayoutAlone refuses a changeset that changes the Agent unit's mount

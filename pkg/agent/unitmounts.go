@@ -168,6 +168,26 @@ func mountsHolding(mounts []mount, p string) []mount {
 	return held
 }
 
+// placedTarget reports whether the guard can tell which paths a mount at
+// target holds: an absolute target without systemd specifiers. systemd
+// expands a specifier (%h, %t, %E) to a path the guard does not know, and
+// Podman refuses a relative target; mountsHolding never matches either.
+func placedTarget(target string) bool {
+	return path.IsAbs(target) && !strings.Contains(target, "%")
+}
+
+// unplacedMounts returns the mounts whose target the guard cannot place
+// (placedTarget): any of them may hold any path.
+func unplacedMounts(mounts []mount) []mount {
+	var unplaced []mount
+	for _, m := range mounts {
+		if !placedTarget(m.target) {
+			unplaced = append(unplaced, m)
+		}
+	}
+	return unplaced
+}
+
 // unitSecret is a Podman secret unit's container uses, of either type
 // (mounted or an environment variable): its name, and the setting that
 // declares it (Secret=… or PodmanArgs=--secret …).

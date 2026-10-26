@@ -586,8 +586,9 @@ func TestCheckSelfConfigRefusesRemovingMountedSource(t *testing.T) {
 // A commit that changes only the Agent quadlet's mount layout passes when
 // every credential of the config lies under the same mounts (target and
 // source as written) in both units, or under none; any other mount change
-// around a credential is refused, as is a tmpfs there, a --volumes-from on
-// either unit (the guard cannot read what it mounts) and a relative path.
+// around a credential is refused, as is a tmpfs kept there (it starts
+// empty), a --volumes-from on either unit (the guard cannot read what it
+// mounts) and a relative path.
 func TestCheckSelfConfigRequiresKeptMounts(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -616,7 +617,7 @@ func TestCheckSelfConfigRequiresKeptMounts(t *testing.T) {
 		{
 			name:      "tmpfs kept",
 			change:    selfConfigChange{running: "Tmpfs=" + dir + "\n", next: "Tmpfs=" + dir + "\nVolume=/srv/data:/var/lib/picolet\n"},
-			wantError: refused,
+			wantError: []string{"webhook_secret_path", "tmpfs or anonymous volume", "starts empty"},
 		},
 		{
 			name:      "secret mount options changed",
@@ -719,6 +720,67 @@ func TestCheckSelfConfigRefusesChangedCredentialSource(t *testing.T) {
 				managed: []string{"secret:other"}, files: newSecret("other"),
 			},
 		},
+	}, mountLines(webhookConfig(hook)))
+}
+
+// The guard fails closed on a mount it cannot read, whether or not the
+// commit changes the mount lines: a --volumes-from (on either unit) or a
+// tmpfs or anonymous volume that may hold a file credential refuses it, as
+// does a mount whose target is relative or starts with a systemd specifier
+// (%h, %t: the guard cannot tell which paths it holds) when the commit adds,
+// drops or repoints one, or when it starts empty or its source changes. Such
+// a mount kept as it was from a Host path (the reference quadlet's
+// %t/systemd) passes.
+func TestCheckSelfConfigFailsClosedOnMountsItCannotRead(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
+	hook := filepath.Join(dir, "hook")
+	volumesFrom := "PodmanArgs=--volumes-from=creds\n"
+	specifier := "Volume=/host/secrets:%h/x:ro\n"
+	runtimeDir := "Volume=%t/systemd:%t/systemd\n"
+	added := "Volume=/srv/data:/var/lib/picolet\n"
+	cannotPlace := []string{"webhook_secret_path", "%h/x", "cannot tell which paths it holds", "own commit"}
+	startsEmpty := []string{"webhook_secret_path", "starts empty"}
+	runChangeCases(t, []changeCase{
+		{
+			name:      "--volumes-from, mount lines unchanged",
+			change:    selfConfigChange{running: volumesFrom, next: volumesFrom},
+			wantError: []string{"webhook_secret_path", "--volumes-from creds", "own commit"},
+		},
+		{name: "Tmpfs=, mount lines unchanged", change: selfConfigChange{running: "Tmpfs=" + dir + "\n", next: "Tmpfs=" + dir + "\n"}, wantError: startsEmpty},
+		{name: "anonymous volume, mount lines unchanged", change: selfConfigChange{running: "Volume=" + dir + "\n", next: "Volume=" + dir + "\n"}, wantError: startsEmpty},
+		{
+			name:      "specifier target dropped",
+			change:    selfConfigChange{running: specifier, next: "", unchangedConfig: true},
+			wantError: cannotPlace,
+		},
+		{
+			name:      "specifier target added",
+			change:    selfConfigChange{running: "", next: specifier, unchangedConfig: true},
+			wantError: cannotPlace,
+		},
+		{
+			name:      "relative target added",
+			change:    selfConfigChange{running: "", next: "Volume=/host/secrets:x\n", unchangedConfig: true},
+			wantError: []string{"webhook_secret_path", "cannot tell which paths it holds", "own commit"},
+		},
+		{
+			name:      "specifier tmpfs, mount lines unchanged",
+			change:    selfConfigChange{running: "Tmpfs=%t/x\n", next: "Tmpfs=%t/x\n"},
+			wantError: startsEmpty,
+		},
+		{
+			name: "specifier secret target, secret changed",
+			change: selfConfigChange{
+				running: "Secret=hook_secret,target=%h/hook\n", next: "Secret=hook_secret,target=%h/hook\n",
+				managed: []string{"secret:hook_secret"},
+				files:   []resolver.ResolvedFile{{DestPath: "secret:hook_secret", Category: config.CategorySecret, Content: "new"}},
+			},
+			wantError: []string{"webhook_secret_path", "the secret hook_secret, which this commit changes"},
+		},
+		{name: "specifier Host path kept, config changed", change: selfConfigChange{running: runtimeDir, next: runtimeDir}},
+		{name: "specifier Host path kept, mount added", change: selfConfigChange{running: runtimeDir, next: runtimeDir + added, unchangedConfig: true}},
 	}, mountLines(webhookConfig(hook)))
 }
 

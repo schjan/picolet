@@ -369,13 +369,19 @@ written), it is refused if it also changes the Agent's config or a
 Fleet-managed secret or `.volume` unit the quadlet mounts, and every
 credential file must lie under a mount the new quadlet keeps exactly as before
 (same target, same source and options as written; not a tmpfs) or under no
-mount at all. A `--volumes-from` on the current or new quadlet mounts what the
-check can't read, so it refuses every credential file. With the mounts
-unchanged, a commit that changes the config or the quadlet is refused if it
-also changes the Fleet-managed secret or `.volume` unit a credential file is
-mounted from: the running container still shows the old content, while the
-Agent restarts onto the new one. To move the Agent's credentials to a new
-mount:
+mount at all. A mount whose target starts with a systemd specifier (`%h`,
+`%t`) or is relative may hold any path, so a commit that adds, drops or
+repoints one refuses every credential file. With the mounts unchanged, a
+commit that changes the config or the quadlet is refused if it also changes
+the Fleet-managed secret or `.volume` unit a credential file is mounted from:
+the running container still shows the old content, while the Agent restarts
+onto the new one. Whether or not the mounts change, the check fails closed on
+what it can't compare: a `--volumes-from` on the current or new quadlet
+refuses every credential file, and so does a tmpfs or anonymous volume that
+may hold one (it holds what the running container wrote there, and a new
+container starts it empty). A specifier mount kept as it was from a Host path,
+like the reference quadlet's `Volume=%t/systemd:%t/systemd`, passes. To move
+the Agent's credentials to a new mount:
 
 1. Commit the quadlet change alone (add the mount, keep the config as it is)
    and let the Agent apply it and restart with the new mounts.
@@ -403,6 +409,11 @@ restart:
   `.volume` unit holding a credential, with the quadlet and the config
   unchanged, isn't checked against the new content (the Agent doesn't restart
   for it, but reads it at its next start).
+- A credential bind-mounted from a Host path the Agent itself writes (a
+  delivered data file under its `files/` or `manifests/` directory) is checked
+  as the running container shows it, the old content, even when the same
+  commit rewrites that file and the config, and the Agent restarts onto the
+  new content. Don't deliver Agent credentials as Fleet data files.
 - Only the mount lines above count as a mount change. A commit that changes
   what the container shows at a credential path another way (`Image=`,
   `Rootfs=`, `ReadOnly=`/`ReadOnlyTmpfs=`, `ContainersConfModule=`,
