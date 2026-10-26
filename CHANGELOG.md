@@ -178,7 +178,9 @@ kept as is.
   bind-mounted there opts out). A commit that changes the Agent quadlet's
   mount lines may not also change its config or a Fleet-managed source it
   mounts, and every credential must stay under a mount kept as written (or
-  under none): change the mounts in their own commit, then the config. With
+  under none): change the mounts in their own commit, then the config; a
+  changed `PodmanArgs=` option that changes what a path shows (`--security-opt`,
+  `--user`, `--read-only` and the like) refuses every credential file. With
   the mounts unchanged, a commit that changes the config or quadlet may not
   also change the secret or `.volume` unit a credential is mounted from. The
   reconciliation fails and the Agent keeps running on its current config.

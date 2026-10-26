@@ -364,14 +364,18 @@ machine`) before the commit that points the Agent at it.
 The running Agent checks credential files inside its own container, so a
 commit may not change the Agent's mounts together with anything the Agent
 reads at start. When a commit changes the quadlet's `Volume=`, `Mount=`,
-`Tmpfs=`, `Secret=`, `PodmanArgs=` or `WorkingDir=` lines (compared as
-written), it is refused if it also changes the Agent's config or a
+`Tmpfs=`, `Secret=`, `Mask=`, `Unmask=`, `VolatileTmp=`, `PodmanArgs=` or
+`WorkingDir=` lines (compared as written), it is refused if it also changes the Agent's config or a
 Fleet-managed secret or `.volume` unit the quadlet mounts, and every
 credential file must lie under a mount the new quadlet keeps exactly as before
 (same target, same source and options as written; not a tmpfs) or under no
 mount at all. A mount whose target starts with a systemd specifier (`%h`,
 `%t`) or is relative may hold any path, so a commit that adds, drops or
-repoints one refuses every credential file. With the mounts unchanged, a
+repoints one refuses every credential file. So does a commit that adds,
+drops or changes a `PodmanArgs=` option that changes what the container shows
+at a path or who reads it (`--security-opt`, `-u`/`--user`, `--userns`,
+`--read-only`, `--image-volume`, `--rootfs` and the like): edit the quadlet on
+the Host by hand and restart the Agent first, then commit the same quadlet. With the mounts unchanged, a
 commit that changes the config or the quadlet is refused if it also changes
 the Fleet-managed secret or `.volume` unit a credential file is mounted from:
 the running container still shows the old content, while the Agent restarts
@@ -416,8 +420,14 @@ restart:
   new content. Don't deliver Agent credentials as Fleet data files.
 - Only the mount lines above count as a mount change. A commit that changes
   what the container shows at a credential path another way (`Image=`,
-  `Rootfs=`, `ReadOnly=`/`ReadOnlyTmpfs=`, `ContainersConfModule=`,
-  `GlobalArgs=`) is checked as the running container sees it.
+  `Rootfs=`, `ReadOnly=`/`ReadOnlyTmpfs=`, `User=`/`Group=`/`UserNS=`,
+  `ContainersConfModule=`, `GlobalArgs=`) is checked as the running container
+  sees it.
+- The Agent's restart of its own unit is already under way while it saves
+  its state. If the save fails,
+  the next start finds the old record, rewrites the config and restarts
+  again, so an Agent that can't write its state restarts on every start:
+  fix the state directory.
 
 ### 6. Monitoring
 

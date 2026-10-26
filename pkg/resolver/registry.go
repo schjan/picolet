@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -286,10 +287,10 @@ func (p ProviderTemplate) strictText() (reason, fix string) {
 // and field. Errors that may quote a ref built at render time use it, since
 // only SOPS values are scrubbed from errors.
 func refForError(ref string) string {
-	if file, _, found := strings.Cut(ref, "#"); found {
-		return file + "#…"
-	}
 	if sops.IsRef(ref) {
+		if file, _, found := strings.Cut(ref, "#"); found {
+			return file + "#…"
+		}
 		return ref // the whole file
 	}
 	scheme, rest, _ := strings.Cut(ref, "://")
@@ -317,7 +318,8 @@ func redactDynamicRef(err error, ref string) error {
 
 // redact returns err with every ref of refs it quotes for which redacted
 // reports true replaced by refForError's form (a redactedError), or err
-// itself when it quotes none.
+// itself when it quotes none. A ref is found as written and as %q escapes
+// it (the provider clients quote refs that way).
 func redact(err error, refs []string, redacted func(string) bool) error {
 	if err == nil {
 		return nil
@@ -325,6 +327,8 @@ func redact(err error, refs []string, redacted func(string) bool) error {
 	msg := err.Error()
 	for _, ref := range refs {
 		if redacted(ref) {
+			quoted := strconv.Quote(ref)
+			msg = strings.ReplaceAll(msg, quoted[1:len(quoted)-1], refForError(ref))
 			msg = strings.ReplaceAll(msg, ref, refForError(ref))
 		}
 	}

@@ -12,7 +12,7 @@ import (
 
 // mountKeys are the Agent unit's [Container] keys that decide its mounts and
 // working directory (sameMountLayout).
-var mountKeys = []string{"Volume", "Mount", "Tmpfs", "Secret", "PodmanArgs", "WorkingDir"}
+var mountKeys = []string{"Volume", "Mount", "Tmpfs", "Secret", "Mask", "Unmask", "VolatileTmp", "PodmanArgs", "WorkingDir"}
 
 // sameMountLayout reports whether two Agent units spell their mountKeys the
 // same: the guard compares those keys' values, not what they mean.
@@ -41,7 +41,7 @@ type mount struct {
 
 // unitMounts lists the mounts unit's [Container] group declares, read as
 // Quadlet reads them: Volume=, Mount=, Tmpfs= and Secret= (type=mount),
-// then the mounts its PodmanArgs= pass to podman run (-v/--volume, --mount,
+// the Mask=, Unmask= and VolatileTmp= paths (maskMounts), then the mounts its PodmanArgs= pass to podman run (-v/--volume, --mount,
 // --tmpfs, --secret; a .volume source there is a volume name, not a unit).
 // It returns apart the PodmanArgs= options that mount something the guard
 // cannot read (--volumes-from), each as "flag value". A flag is read wherever
@@ -59,6 +59,7 @@ func unitMounts(unit *parser.UnitFile) (mounts []mount, opaque []string) {
 	for _, spec := range unit.LookupAllArgs("Container", "Secret") {
 		mounts = appendSecret(mounts, spec)
 	}
+	mounts = append(mounts, maskMounts(unit)...)
 	podmanArgsValues(unit, podmanMountFlags, func(flag, value string) {
 		switch flag {
 		case "volume":
@@ -74,6 +75,24 @@ func unitMounts(unit *parser.UnitFile) (mounts []mount, opaque []string) {
 		}
 	})
 	return mounts, opaque
+}
+
+// maskMounts returns unit's Mask= and Unmask= paths, each as a mount whose
+// source is "mask" or "unmask" (Unmask=ALL has no placed target), and
+// VolatileTmp='s tmpfs at /tmp.
+func maskMounts(unit *parser.UnitFile) []mount {
+	var mounts []mount
+	for _, key := range []string{"Mask", "Unmask"} {
+		for _, paths := range unit.LookupAllArgs("Container", key) {
+			for p := range strings.SplitSeq(paths, ":") {
+				mounts = append(mounts, mount{source: strings.ToLower(key), target: path.Clean(p)})
+			}
+		}
+	}
+	if unit.LookupBooleanWithDefault("Container", "VolatileTmp", false) {
+		mounts = append(mounts, mount{target: "/tmp"})
+	}
+	return mounts
 }
 
 // parseVolume parses a Volume= (or -v, quadlet false) value:
@@ -95,7 +114,8 @@ func parseVolume(volume string, quadlet bool) mount {
 
 // parseMount parses a Mount= (or --mount, quadlet false) value
 // (type=…,source=…,destination=…). Its source is the spec without the
-// destination; a tmpfs, ramfs or devpts mount has none.
+// destination; a tmpfs, ramfs or devpts mount has none. Without type=,
+// Podman mounts a volume.
 func parseMount(spec string, quadlet bool) mount {
 	var m mount
 	var kind, source string
@@ -116,7 +136,7 @@ func parseMount(spec string, quadlet bool) mount {
 	switch kind {
 	case "tmpfs", "ramfs", "devpts":
 		return m
-	case "bind", "volume":
+	case "bind", "volume", "":
 		m.hostPath = isHostPath(source)
 		if quadlet && strings.HasSuffix(source, ".volume") {
 			m.volumeUnit = source
@@ -237,10 +257,12 @@ func podmanArgsValues(unit *parser.UnitFile, spec flagSpec, each func(flag, valu
 	}
 }
 
-// flagSpec names podman run flags to look for: their long names, and the
-// one-letter flag short, whose long name is shortName.
+// flagSpec names podman run flags to look for: their long names, the
+// long names of those that take no value (bools; --flag=false carries one),
+// and the one-letter flag short, whose long name is shortName.
 type flagSpec struct {
 	longs     []string
+	bools     []string
 	short     rune
 	shortName string
 }
@@ -254,6 +276,30 @@ var podmanMountFlags = flagSpec{
 // podmanSecretFlags is podman run's secret flag, which has no short form.
 var podmanSecretFlags = flagSpec{longs: []string{"secret"}}
 
+// podmanPathFlags are the podman run flags other than mounts that change
+// what the container shows at a path (a --security-opt mask=, a read-only
+// root, image volumes, a rootfs) or who reads it (the user, groups and user
+// namespace): pathOptions.
+var podmanPathFlags = flagSpec{
+	longs: []string{
+		"security-opt", "image-volume", "user", "userns", "uidmap", "gidmap",
+		"subuidname", "subgidname", "group-add",
+	},
+	bools: []string{"read-only", "read-only-tmpfs", "rootfs", "privileged"},
+	short: 'u', shortName: "user",
+}
+
+// pathOptions lists the podmanPathFlags unit's PodmanArgs= pass, each as
+// "--flag value": the guard cannot tell what they show at a path, so a
+// commit that changes them changes what a credential may read as.
+func pathOptions(unit *parser.UnitFile) []string {
+	var options []string
+	podmanArgsValues(unit, podmanPathFlags, func(flag, value string) {
+		options = append(options, strings.TrimSpace("--"+flag+" "+value))
+	})
+	return options
+}
+
 // podmanValueShorthands are podman run's one-letter flags that take a value.
 const podmanValueShorthands = "acehlmpuvw"
 
@@ -264,7 +310,10 @@ const podmanValueShorthands = "acehlmpuvw"
 func podmanFlag(arg string, spec flagSpec) (flag, value string, hasValue bool) {
 	if long, ok := strings.CutPrefix(arg, "--"); ok {
 		name, value, hasValue := strings.Cut(long, "=")
-		if !slices.Contains(spec.longs, name) {
+		switch {
+		case slices.Contains(spec.bools, name):
+			return name, value, true
+		case !slices.Contains(spec.longs, name):
 			return "", "", false
 		}
 		return name, value, hasValue

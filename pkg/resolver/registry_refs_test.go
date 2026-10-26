@@ -138,3 +138,23 @@ func TestRefForError(t *testing.T) {
 		assert.Equal(t, want, refForError(ref), ref)
 	}
 }
+
+// A provider client quotes the ref it failed with %q, which escapes a quote,
+// backslash or non-printable character a template took from a secret value:
+// the escaped form is redacted too.
+func TestRedactRefsEscapedRef(t *testing.T) {
+	t.Parallel()
+	for _, item := range []string{`it"em`, `it\em`, "it\tem"} {
+		ref := "op://vault/" + item + "/pw"
+		err := redactRefs(fmt.Errorf("resolving 1password secret %q: not found", ref), []string{ref})
+		require.EqualError(t, err, `resolving 1password secret "op://vault/…": not found`, item)
+	}
+}
+
+// refForError cuts an op:// or pass:// ref at its vault (share) even when
+// its item or field holds a #, which only a sops:// ref uses for a pointer.
+func TestRefForErrorHashInProviderRef(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "op://vault/…", refForError("op://vault/it#em/field"))
+	assert.Equal(t, "pass://share/…", refForError("pass://share/item/fi#eld"))
+}

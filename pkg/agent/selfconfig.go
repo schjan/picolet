@@ -193,18 +193,25 @@ func changedSource(m mount, changeset *reconciler.Changeset) string {
 // whose target the guard cannot place (placedTarget) may hold any path, so
 // adding, dropping or changing one refuses every file credential. A
 // directory credential (protonpass.session_dir) need not exist, so it need
-// only be absolute.
+// only be absolute. A PodmanArgs= option other than a mount that changes what
+// the container shows at a path (pathOptions), added, dropped or changed,
+// refuses every file credential too.
 func keptMounts(running, next *parser.UnitFile) agentcfg.Locate {
 	nextMounts, nextOpaque := unitMounts(next)
 	runningMounts, runningOpaque := unitMounts(running)
 	opaque := slices.Concat(nextOpaque, runningOpaque)
 	nextUnplaced, runningUnplaced := unplacedMounts(nextMounts), unplacedMounts(runningMounts)
+	nextOptions, runningOptions := pathOptions(next), pathOptions(running)
 	return func(cred agentcfg.Credential) (string, error) {
 		if _, err := absolutePath(cred); err != nil || cred.Dir {
 			return cred.Path, err
 		}
 		if err := sharedHolders(nil, opaque); err != nil {
 			return "", err
+		}
+		if changed := changedOptions(runningOptions, nextOptions); changed != "" {
+			return "", fmt.Errorf("this commit changes %s in the Agent unit's PodmanArgs=, which may change what the next start sees at the path, "+
+				"and the guard cannot check that; edit the quadlet on the Host by hand and restart the Agent, then commit the same quadlet", changed)
 		}
 		if !slices.Equal(nextUnplaced, runningUnplaced) {
 			return "", fmt.Errorf("this commit changes a mount at %s, and the guard cannot tell which paths it holds; %s",
@@ -219,6 +226,26 @@ func keptMounts(running, next *parser.UnitFile) agentcfg.Locate {
 		}
 		return cred.Path, nil
 	}
+}
+
+// changedOptions lists the pathOptions in a or b that the other lacks, for
+// a refusal, and returns "" when both pass the same ones.
+func changedOptions(a, b []string) string {
+	if slices.Equal(a, b) {
+		return ""
+	}
+	var changed []string
+	for _, pair := range [][2][]string{{a, b}, {b, a}} {
+		for _, option := range pair[0] {
+			if !slices.Contains(pair[1], option) && !slices.Contains(changed, option) {
+				changed = append(changed, option)
+			}
+		}
+	}
+	if len(changed) == 0 { // the same options in another order
+		return strings.Join(b, ", ")
+	}
+	return strings.Join(changed, ", ")
 }
 
 // unplacedTargets lists the targets of the mounts in a or b that the other

@@ -566,6 +566,10 @@ func TestCheckSelfConfigRefusesRemovingMountedSource(t *testing.T) {
 			name: "volume unit of a Mount=", change: selfConfigChange{running: "Mount=type=volume,source=creds.volume,destination=" + dir + "\n", managed: []string{volumePath}},
 			wantError: []string{"creds.volume", "still mounts"},
 		},
+		{
+			name: "volume unit of a Mount= without type=", change: selfConfigChange{running: "Mount=source=creds.volume,destination=" + dir + "\n", managed: []string{volumePath}},
+			wantError: []string{"creds.volume", "still mounts"},
+		},
 		{name: "secret not mounted", change: selfConfigChange{managed: []string{"secret:hook_secret"}}},
 		{name: "secret mounted, not managed", change: selfConfigChange{running: "Secret=hook_secret,target=" + hook + "\n"}},
 	}, func(c *selfConfigChange) {
@@ -874,4 +878,59 @@ func TestAgentRefusesRemovingPodmanArgsSecret(t *testing.T) {
 			h.assertNothingWritten(t)
 		})
 	}
+}
+
+// A commit that changes how the Agent's container shows a path other than
+// by its mount lines fails closed on the file credentials it may hide: a
+// PodmanArgs= option the guard cannot read (a --security-opt mask=, a user
+// or user namespace, a read-only root or tmpfs, image volumes) added,
+// dropped or changed refuses every file credential, and Mask=, Unmask= and
+// VolatileTmp= count as mounts (a masked path, a tmpfs at /tmp). Such an
+// option kept as it was (the reference quadlet's --security-opt
+// apparmor=unconfined), or a PodmanArgs= option that shows no path, passes.
+func TestCheckSelfConfigFailsClosedOnPathOptions(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
+	hook := filepath.Join(dir, "hook")
+	volume := "Volume=/srv/s:" + dir + "\n"
+	apparmor := "PodmanArgs=--security-opt apparmor=unconfined\n"
+	cannotRead := []string{"webhook_secret_path", "PodmanArgs=", "cannot check"}
+	runChangeCases(t, []changeCase{
+		{
+			name:      "--security-opt=mask= added",
+			change:    selfConfigChange{running: volume, next: volume + "PodmanArgs=--security-opt=mask=" + hook + "\n"},
+			wantError: append([]string{"--security-opt mask=" + hook}, cannotRead...),
+		},
+		{
+			name:      "--security-opt mask= added as two arguments",
+			change:    selfConfigChange{running: volume, next: volume + "PodmanArgs=--security-opt mask=" + hook + "\n"},
+			wantError: cannotRead,
+		},
+		{name: "-u added", change: selfConfigChange{running: volume, next: volume + "PodmanArgs=-u 1000\n"}, wantError: append([]string{"--user 1000"}, cannotRead...)},
+		{name: "--userns changed", change: selfConfigChange{running: volume + "PodmanArgs=--userns=keep-id\n", next: volume + "PodmanArgs=--userns=auto\n"}, wantError: cannotRead},
+		{name: "--read-only added", change: selfConfigChange{running: volume, next: volume + "PodmanArgs=--read-only\n"}, wantError: append([]string{"--read-only"}, cannotRead...)},
+		{name: "--image-volume added", change: selfConfigChange{running: volume, next: volume + "PodmanArgs=--image-volume tmpfs\n"}, wantError: cannotRead},
+		{name: "option kept, mount added", change: selfConfigChange{running: volume + apparmor, next: volume + apparmor + "Volume=/srv/data:/var/lib/picolet\n"}},
+		{name: "--network added", change: selfConfigChange{running: volume, next: volume + "PodmanArgs=--network=host\n"}},
+		{
+			name:      "Mask= added over the credential",
+			change:    selfConfigChange{running: volume, next: volume + "Mask=/proc/acpi:" + hook + "\n"},
+			wantError: []string{"webhook_secret_path", "not under a mount the new unit keeps", "own commit"},
+		},
+		{name: "Mask= added elsewhere", change: selfConfigChange{running: volume, next: volume + "Mask=/proc/acpi\n"}},
+		{
+			name:      "Unmask=ALL added",
+			change:    selfConfigChange{running: volume, next: volume + "Unmask=ALL\n"},
+			wantError: []string{"webhook_secret_path", "cannot tell which paths it holds"},
+		},
+		{
+			name:      "VolatileTmp= added",
+			change:    selfConfigChange{running: "", next: "VolatileTmp=true\n", config: webhookConfig("/tmp/picolet-hook")},
+			wantError: []string{"webhook_secret_path", "not under a mount the new unit keeps"},
+		},
+	}, func(c *selfConfigChange) {
+		c.unchangedConfig = true
+		mountLines(webhookConfig(hook))(c)
+	})
 }
