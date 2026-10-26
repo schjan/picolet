@@ -14,7 +14,8 @@ import (
 //   - Encrypted-file pass: the file must be at most sops.MaxFileSize and
 //     carry SOPS metadata (sops.version and sops.mac).
 //   - Creation-rule pass: when the Fleet-root `.sops.yaml` has a rule
-//     matching the file, the file's age Recipients must equal the rule's.
+//     matching the file (upstream's loader picks it), the file's age
+//     Recipients must equal the rule's, and the rule must load.
 //   - Audience pass (skipped when aud is nil): every age Recipient of the
 //     file must belong to an Operator or to a Host that reaches the file.
 //
@@ -24,8 +25,10 @@ func validateSOPSFiles(fsys fs.FS, aud *audience) error {
 	rules, err := sops.ReadCreationRules(fsys)
 	if err != nil {
 		p.errs = append(p.errs, err)
+	} else {
+		defer func() { _ = rules.Close() }()
+		p.rules = rules
 	}
-	p.rules = rules
 	walkErr := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		switch {
 		case err != nil:
@@ -67,14 +70,10 @@ func (p *sopsPass) check(path string) {
 	if p.rules == nil {
 		return
 	}
-	rule, ok, err := p.rules.Match(path)
-	switch {
-	case err != nil:
+	if err := p.rules.Check(path, f); err != nil {
 		p.errs = append(p.errs, err)
-		p.rules = nil // an invalid rule would fail every later file the same way
-	case ok:
-		if err := rule.CheckRecipients(path, f); err != nil {
-			p.errs = append(p.errs, err)
+		if errors.Is(err, sops.ErrInvalidCreationRule) {
+			p.rules = nil // an invalid rule would likely fail every later file the same way
 		}
 	}
 }
