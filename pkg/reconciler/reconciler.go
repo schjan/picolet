@@ -29,8 +29,12 @@ type Change struct {
 	OldHash     string // from state, empty for create
 	NewHash     string // sha256 of NewContent
 	ServiceName string // "foo.service"; "" for non-quadlets/secrets
-	RelPath     string // relative to category dir; "" for non-manifest/file changes
-	SopsValues  bool   // NewContent holds a SOPS value (resolver.ResolvedFile.SopsValues)
+	// OldServiceName is the unit the file on disk generates or is, from the
+	// state (state.ServiceNames): "" for a create. A delete's ServiceName is
+	// this one too; an update's ServiceName is the new file's.
+	OldServiceName string
+	RelPath        string // relative to category dir; "" for non-manifest/file changes
+	SopsValues     bool   // NewContent holds a SOPS value (resolver.ResolvedFile.SopsValues)
 }
 
 // ManagedFile is the state record of a created, updated or unchanged file.
@@ -63,17 +67,6 @@ func (cs *Changeset) Writes(destPath string) bool {
 func (cs *Changeset) Deletes(destPath string) bool {
 	for _, change := range cs.Changes {
 		if change.DestPath == destPath && change.Action == ActionDelete {
-			return true
-		}
-	}
-	return false
-}
-
-// Managed reports whether destPath is a Managed File before the changeset:
-// the changeset updates, deletes or keeps it.
-func (cs *Changeset) Managed(destPath string) bool {
-	for _, change := range cs.Changes {
-		if change.DestPath == destPath && change.Action != ActionCreate {
 			return true
 		}
 	}
@@ -117,11 +110,12 @@ func Diff(
 	for destPath, mf := range currentState.ManagedFiles {
 		if !seen[destPath] {
 			cs.addChange(Change{
-				DestPath:    destPath,
-				Category:    mf.Category,
-				Action:      ActionDelete,
-				OldHash:     mf.Hash,
-				ServiceName: currentState.ServiceNames[destPath], // set for quadlets and raw systemd units; "" otherwise
+				DestPath:       destPath,
+				Category:       mf.Category,
+				Action:         ActionDelete,
+				OldHash:        mf.Hash,
+				ServiceName:    currentState.ServiceNames[destPath], // set for quadlets and raw systemd units; "" otherwise
+				OldServiceName: currentState.ServiceNames[destPath],
 			})
 		}
 	}
@@ -135,14 +129,15 @@ func classifyFile(f resolver.ResolvedFile, currentState *state.State) Change {
 	mf, managed := currentState.ManagedFiles[f.DestPath]
 
 	c := Change{
-		DestPath:    f.DestPath,
-		Category:    f.Category,
-		NewContent:  f.Content,
-		OldHash:     mf.Hash,
-		NewHash:     newHash,
-		ServiceName: f.ServiceName,
-		RelPath:     f.RelPath,
-		SopsValues:  f.SopsValues,
+		DestPath:       f.DestPath,
+		Category:       f.Category,
+		NewContent:     f.Content,
+		OldHash:        mf.Hash,
+		NewHash:        newHash,
+		ServiceName:    f.ServiceName,
+		OldServiceName: currentState.ServiceNames[f.DestPath],
+		RelPath:        f.RelPath,
+		SopsValues:     f.SopsValues,
 	}
 
 	switch {

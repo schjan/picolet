@@ -15,71 +15,74 @@ func parseContainerUnit(t *testing.T, lines string) *parser.UnitFile {
 	return unit
 }
 
-// unitMounts reads each mount line's target as Quadlet and Podman do, and
-// its source as written, without the target.
+// unitMounts reads each mount line's target as Quadlet and Podman do, in
+// every spelling the guard relies on, and what a fresh start finds there.
 func TestUnitMounts(t *testing.T) {
 	t.Parallel()
-	data := []mount{{source: "/srv/s", target: "/data", hostPath: true}}
+	data := []mount{{target: "/data"}}
+	empty := []mount{{target: "/data", empty: true}}
 	tests := []struct {
-		line   string
-		want   []mount
-		opaque []string
+		line        string
+		want        []mount
+		volumesFrom []string
 	}{
-		{line: "Volume=/data", want: []mount{{target: "/data"}}},
-		{line: "Volume=:/data", want: []mount{{target: "/data"}}},
+		{line: "Volume=/data", want: empty},
+		{line: "Volume=:/data", want: empty},
 		{line: "Volume=/srv/s:/data/", want: data},
-		{line: "Volume=%h/s:/data:ro,z", want: []mount{{source: "%h/s:ro,z", target: "/data", hostPath: true}}},
-		{line: "Volume=creds:/data", want: []mount{{source: "creds", target: "/data"}}},
-		{line: "Volume=creds.volume:/data", want: []mount{{source: "creds.volume", target: "/data", volumeUnit: "creds.volume"}}},
-		{
-			line: "Mount=type=volume,source=creds.volume,destination=/data",
-			want: []mount{{source: "type=volume,source=creds.volume", target: "/data", volumeUnit: "creds.volume"}},
-		},
-		{line: `Mount="type=bind,src=/srv/s,dst=/data,ro"`, want: []mount{{source: "type=bind,src=/srv/s,ro", target: "/data", hostPath: true}}},
-		{line: "Mount=type=tmpfs,destination=/data", want: []mount{{target: "/data"}}},
-		{line: "Mount=type=glob,src=/srv/*,dst=/data", want: []mount{{source: "type=glob,src=/srv/*", target: "/data"}}},
-		{line: "Tmpfs=/data:size=1m", want: []mount{{target: "/data"}}},
-		{line: "Secret=tok", want: []mount{{source: "secret tok", target: "/run/secrets/tok", secret: "tok"}}},
-		{line: "Secret=target=/data/tok,source=tok,mode=0400", want: []mount{{source: "secret source=tok,mode=0400", target: "/data/tok", secret: "tok"}}},
+		{line: "Volume=creds.volume:/data", want: []mount{{target: "/data", volumeUnit: "creds.volume"}}},
+		{line: "Mount=type=volume,source=creds.volume,destination=/data", want: []mount{{target: "/data", volumeUnit: "creds.volume"}}},
+		{line: "Mount=target=/data", want: empty},
+		{line: `Mount="type=bind,src=/srv/s,dst=/data,ro"`, want: data},
+		{line: "Mount=type=tmpfs,destination=/data", want: empty},
+		{line: "Mount=type=image,source=creds.build,destination=/data", want: []mount{{target: "/data", image: true}}},
+		{line: "Tmpfs=/data:size=1m", want: empty},
+		{line: "VolatileTmp=true", want: []mount{{target: "/tmp", empty: true}}},
+		{line: "Secret=tok", want: []mount{{target: "/run/secrets/tok", secret: "tok"}}},
+		{line: "Secret=target=/data/tok,source=tok,mode=0400", want: []mount{{target: "/data/tok", secret: "tok"}}},
 		{line: "Secret=tok,type=env"},
 		{line: "PodmanArgs=--volume /srv/s:/data", want: data},
+		{line: "PodmanArgs=--volume=/data", want: empty},
 		{line: "PodmanArgs=-dv=/srv/s:/data", want: data},
 		{line: "PodmanArgs=--security-opt apparmor=unconfined -v/srv/s:/data", want: data},
-		{line: "PodmanArgs=--mount=type=bind,src=/srv/s,dst=/data", want: []mount{{source: "type=bind,src=/srv/s", target: "/data", hostPath: true}}},
-		{line: "PodmanArgs=--volume creds.volume:/data", want: []mount{{source: "creds.volume", target: "/data"}}},
-		{line: "PodmanArgs=--tmpfs /data", want: []mount{{target: "/data"}}},
-		{line: "PodmanArgs=--secret tok,target=/data/tok", want: []mount{{source: "secret tok", target: "/data/tok", secret: "tok"}}},
+		{line: "PodmanArgs=--mount=type=bind,src=/srv/s,dst=/data", want: data},
+		{line: "PodmanArgs=--mount type=image,src=creds,dst=/data", want: []mount{{target: "/data", image: true}}},
+		{line: "PodmanArgs=--volume creds.volume:/data", want: data},
+		{line: "PodmanArgs=--tmpfs /data", want: empty},
+		{line: "PodmanArgs=--secret tok,target=/data/tok", want: []mount{{target: "/data/tok", secret: "tok"}}},
 		{line: "PodmanArgs=-e v=1 -w /data"},
 		{line: "PodmanArgs=--volume"},
-		{line: "PodmanArgs=--volumes-from=other:ro", opaque: []string{"--volumes-from other:ro"}},
+		{line: "PodmanArgs=--volumes-from=other:ro", volumesFrom: []string{"--volumes-from other:ro"}},
 	}
 	for _, tt := range tests {
-		mounts, opaque := unitMounts(parseContainerUnit(t, tt.line+"\n"))
+		mounts, volumesFrom := unitMounts(parseContainerUnit(t, tt.line+"\n"))
 		assert.Equal(t, tt.want, mounts, tt.line)
-		assert.Equal(t, tt.opaque, opaque, tt.line)
+		assert.Equal(t, tt.volumesFrom, volumesFrom, tt.line)
 	}
 }
 
-// mountsHolding returns every mount at the deepest target holding a path.
-func TestMountsHolding(t *testing.T) {
+// mayHold returns the mounts at the deepest target holding a path, then
+// every mount at a target the guard cannot place.
+func TestMayHold(t *testing.T) {
 	t.Parallel()
-	a := mount{source: "/srv/a", target: "/data"}
-	b := mount{source: "/srv/b", target: "/data"}
-	sub := mount{source: "/srv/sub", target: "/data/sub"}
-	mounts := []mount{a, sub, b}
+	a := mount{target: "/data"}
+	b := mount{target: "/data", empty: true}
+	sub := mount{target: "/data/sub"}
+	unplaced := mount{target: "%h/x"}
+	mounts := []mount{a, sub, unplaced, b}
 
-	assert.Equal(t, []mount{a, b}, mountsHolding(mounts, "/data/x"))
-	assert.Equal(t, []mount{sub}, mountsHolding(mounts, "/data/sub/x/"))
-	assert.Equal(t, []mount{a, b}, mountsHolding(mounts, "/data"))
-	assert.Empty(t, mountsHolding(mounts, "/database"))
+	assert.Equal(t, []mount{a, b, unplaced}, mayHold(mounts, "/data/x"))
+	assert.Equal(t, []mount{sub, unplaced}, mayHold(mounts, "/data/sub/x/"))
+	assert.Equal(t, []mount{unplaced}, mayHold(mounts, "/database"))
 }
 
-// sameMountLayout compares the mount keys' values as written.
-func TestSameMountLayout(t *testing.T) {
+// unitSecrets lists every secret a unit uses, mounted or not, and where.
+func TestUnitSecrets(t *testing.T) {
 	t.Parallel()
-	base := "Volume=/srv/s:/data\n"
-	assert.True(t, sameMountLayout(parseContainerUnit(t, base), parseContainerUnit(t, base+"Pull=newer\n")))
-	for _, line := range []string{"Volume=/srv/s:/data:ro", "Mount=type=tmpfs,dst=/x", "Tmpfs=/x", "Secret=tok", "PodmanArgs=--init", "WorkingDir=/x"} {
-		assert.False(t, sameMountLayout(parseContainerUnit(t, base), parseContainerUnit(t, base+line+"\n")), line)
-	}
+	unit := parseContainerUnit(t, "Secret=a\nSecret=source=b,type=env,target=B\nPodmanArgs=--secret=c,type=env -dv /x --secret d\n")
+	assert.Equal(t, []unitSecret{
+		{name: "a", decl: "Secret=a"},
+		{name: "b", decl: "Secret=source=b,type=env,target=B"},
+		{name: "c", decl: "PodmanArgs=--secret c,type=env"},
+		{name: "d", decl: "PodmanArgs=--secret d"},
+	}, unitSecrets(unit))
 }

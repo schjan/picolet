@@ -10,29 +10,14 @@ import (
 	"github.com/schjan/picolet/pkg/resolver"
 )
 
-// mountKeys are the Agent unit's [Container] keys that decide its mounts and
-// working directory (sameMountLayout).
-var mountKeys = []string{"Volume", "Mount", "Tmpfs", "Secret", "Mask", "Unmask", "VolatileTmp", "PodmanArgs", "WorkingDir"}
-
-// sameMountLayout reports whether two Agent units spell their mountKeys the
-// same: the guard compares those keys' values, not what they mean.
-func sameMountLayout(a, b *parser.UnitFile) bool {
-	for _, key := range mountKeys {
-		if !slices.Equal(a.LookupAll("Container", key), b.LookupAll("Container", key)) {
-			return false
-		}
-	}
-	return true
-}
-
-// mount is one mount of the Agent unit's container: its target inside the
-// container and its source as written, without the target. A tmpfs or
-// anonymous volume has no source: it shows nothing another start shares.
+// mount is one mount of the Agent unit's container, as the self-restart
+// guard needs it: its target inside the container, whether a fresh start
+// finds it empty (a tmpfs or anonymous volume) or mounts an image, and the
+// Fleet-managed source it shows (a Podman secret, or a .volume unit).
 type mount struct {
-	source, target string
-	// hostPath reports a bind (or Volume=) of a Host path: absolute,
-	// relative to the unit's directory, or specifier-led (%h).
-	hostPath bool
+	target string
+	empty  bool
+	image  bool
 	// volumeUnit names the .volume unit a Volume= or Mount= mounts.
 	volumeUnit string
 	// secret names the Podman secret a Secret= or --secret mounts.
@@ -40,13 +25,14 @@ type mount struct {
 }
 
 // unitMounts lists the mounts unit's [Container] group declares, read as
-// Quadlet reads them: Volume=, Mount=, Tmpfs= and Secret= (type=mount),
-// the Mask=, Unmask= and VolatileTmp= paths (maskMounts), then the mounts its PodmanArgs= pass to podman run (-v/--volume, --mount,
-// --tmpfs, --secret; a .volume source there is a volume name, not a unit).
-// It returns apart the PodmanArgs= options that mount something the guard
-// cannot read (--volumes-from), each as "flag value". A flag is read wherever
-// it appears, even as another flag's value, so a mount is never missed.
-func unitMounts(unit *parser.UnitFile) (mounts []mount, opaque []string) {
+// Quadlet reads them: Volume=, Mount=, Tmpfs=, Secret= (type=mount) and
+// VolatileTmp='s tmpfs at /tmp, then the mounts its PodmanArgs= pass to
+// podman run (-v/--volume, --mount, --tmpfs, --secret; a .volume source
+// there is a volume name, not a unit). It returns apart the --volumes-from
+// options, each as "--volumes-from value": what they mount the guard cannot
+// read. A flag is read wherever it appears, even as another flag's value, so
+// a mount is never missed.
+func unitMounts(unit *parser.UnitFile) (mounts []mount, volumesFrom []string) {
 	for _, volume := range unit.LookupAll("Container", "Volume") {
 		mounts = append(mounts, parseVolume(volume, true))
 	}
@@ -59,7 +45,16 @@ func unitMounts(unit *parser.UnitFile) (mounts []mount, opaque []string) {
 	for _, spec := range unit.LookupAllArgs("Container", "Secret") {
 		mounts = appendSecret(mounts, spec)
 	}
-	mounts = append(mounts, maskMounts(unit)...)
+	if unit.LookupBooleanWithDefault("Container", "VolatileTmp", false) {
+		mounts = append(mounts, mount{target: "/tmp", empty: true})
+	}
+	podmanMounts, volumesFrom := podmanArgsMounts(unit)
+	return append(mounts, podmanMounts...), volumesFrom
+}
+
+// podmanArgsMounts lists the mounts unit's PodmanArgs= pass to podman run,
+// and apart its --volumes-from options (unitMounts).
+func podmanArgsMounts(unit *parser.UnitFile) (mounts []mount, volumesFrom []string) {
 	podmanArgsValues(unit, podmanMountFlags, func(flag, value string) {
 		switch flag {
 		case "volume":
@@ -71,59 +66,22 @@ func unitMounts(unit *parser.UnitFile) (mounts []mount, opaque []string) {
 		case "secret":
 			mounts = appendSecret(mounts, value)
 		default:
-			opaque = append(opaque, "--"+flag+" "+value)
+			volumesFrom = append(volumesFrom, "--"+flag+" "+value)
 		}
 	})
-	return mounts, opaque
-}
-
-// maskMounts returns unit's Mask= and Unmask= paths (also PodmanArgs=
-// --security-opt mask=/unmask=), each as a mount whose
-// source is "mask" or "unmask" (Unmask=ALL has no placed target), and
-// VolatileTmp='s tmpfs at /tmp. A mask hides every path under it, not only
-// those it holds as the deepest mount (holding).
-func maskMounts(unit *parser.UnitFile) []mount {
-	var mounts []mount
-	for _, key := range []string{"Mask", "Unmask"} {
-		for _, paths := range unit.LookupAllArgs("Container", key) {
-			for p := range strings.SplitSeq(paths, ":") {
-				mounts = append(mounts, mount{source: strings.ToLower(key), target: path.Clean(p)})
-			}
-		}
-	}
-	podmanArgsValues(unit, podmanPathFlags, func(flag, value string) {
-		// Quadlet passes Mask=/Unmask= as these options; a PodmanArgs=
-		// spelling masks the same way.
-		kind, paths, ok := strings.Cut(value, "=")
-		if flag != "security-opt" || !ok || (kind != "mask" && kind != "unmask") {
-			return
-		}
-		for p := range strings.SplitSeq(paths, ":") {
-			mounts = append(mounts, mount{source: kind, target: path.Clean(p)})
-		}
-	})
-	if unit.LookupBooleanWithDefault("Container", "VolatileTmp", false) {
-		mounts = append(mounts, mount{target: "/tmp"})
-	}
-	return mounts
+	return mounts, volumesFrom
 }
 
 // parseVolume parses a Volume= (or -v, quadlet false) value:
 // source:target[:options], or a target alone. A target alone, or (in
 // Quadlet, which then passes the target alone) an empty source, is an
-// anonymous volume: it has no source.
+// anonymous volume.
 func parseVolume(volume string, quadlet bool) mount {
 	parts := strings.SplitN(volume, ":", 3)
 	if len(parts) == 1 {
-		return mount{target: path.Clean(parts[0])}
+		return mount{target: path.Clean(parts[0]), empty: true}
 	}
-	if parts[0] == "" {
-		return mount{target: path.Clean(parts[1])}
-	}
-	m := mount{source: parts[0], target: path.Clean(parts[1]), hostPath: isHostPath(parts[0])}
-	if len(parts) == 3 {
-		m.source += ":" + parts[2]
-	}
+	m := mount{target: path.Clean(parts[1]), empty: parts[0] == ""}
 	if quadlet && strings.HasSuffix(parts[0], ".volume") {
 		m.volumeUnit = parts[0]
 	}
@@ -131,73 +89,51 @@ func parseVolume(volume string, quadlet bool) mount {
 }
 
 // parseMount parses a Mount= (or --mount, quadlet false) value
-// (type=…,source=…,destination=…). Its source is the spec without the
-// destination; a tmpfs, ramfs or devpts mount has none, nor has a volume
-// without a source (an anonymous volume, whatever its options). Without
-// type=, Podman mounts a volume.
+// (type=…,source=…,destination=…). A tmpfs, ramfs or devpts mount starts
+// empty, as does a volume without a source (an anonymous volume, whatever
+// its options). Without type=, Podman mounts a volume.
 func parseMount(spec string, quadlet bool) mount {
-	kind, source, target, rest := mountFields(spec)
-	m := mount{target: target}
-	switch kind {
-	case "tmpfs", "ramfs", "devpts":
-		return m
-	case "volume", "":
-		if source == "" { // an anonymous volume
-			return m
-		}
-		fallthrough
-	case "bind":
-		m.hostPath = isHostPath(source)
-		if quadlet && strings.HasSuffix(source, ".volume") {
-			m.volumeUnit = source
-		}
-	}
-	m.source = strings.Join(rest, ",")
-	return m
-}
-
-// mountFields splits a Mount= (or --mount) value into its type and source,
-// its cleaned destination, and every field but the destination.
-func mountFields(spec string) (kind, source, target string, rest []string) {
+	var kind, source string
+	var m mount
 	for field := range strings.SplitSeq(spec, ",") {
 		key, value, _ := strings.Cut(field, "=")
 		switch key {
 		case "destination", "dst", "target":
-			target = path.Clean(value)
-			continue
+			m.target = path.Clean(value)
 		case "type":
 			kind = value
 		case "source", "src":
 			source = value
 		}
-		rest = append(rest, field)
 	}
-	return kind, source, target, rest
+	switch kind {
+	case "tmpfs", "ramfs", "devpts":
+		m.empty = true
+	case "volume", "":
+		m.empty = source == ""
+	case "image":
+		m.image = true
+	}
+	if quadlet && strings.HasSuffix(source, ".volume") {
+		m.volumeUnit = source
+	}
+	return m
 }
 
 // parseTmpfs parses a Tmpfs= (or --tmpfs) value: target[:options].
 func parseTmpfs(tmpfs string) mount {
 	dir, _, _ := strings.Cut(tmpfs, ":")
-	return mount{target: path.Clean(dir)}
+	return mount{target: path.Clean(dir), empty: true}
 }
 
 // appendSecret appends the mount of a Secret= (or --secret) value; an env
-// secret mounts nothing. Its source is the spec without the target.
+// secret mounts nothing.
 func appendSecret(mounts []mount, spec string) []mount {
 	name, target, mounted := resolver.ParseSecretMount(spec)
 	if !mounted {
 		return mounts
 	}
-	fields := slices.DeleteFunc(strings.Split(spec, ","), func(f string) bool { return strings.HasPrefix(f, "target=") })
-	return append(mounts, mount{source: "secret " + strings.Join(fields, ","), target: target, secret: name})
-}
-
-// isHostPath reports whether a bind or volume source is a Host path:
-// absolute, relative to the unit's directory (Quadlet makes it absolute) or
-// specifier-led (systemd expands %h to an absolute path); anything else is a
-// volume name.
-func isHostPath(source string) bool {
-	return source != "" && strings.ContainsAny(source[:1], "/.%")
+	return append(mounts, mount{target: target, secret: name})
 }
 
 // under reports whether p is target or lies below it.
@@ -205,13 +141,18 @@ func under(p, target string) bool {
 	return p == target || strings.HasPrefix(p, strings.TrimSuffix(target, "/")+"/")
 }
 
-// mountsHolding returns the mounts at the deepest target that holds p (the
-// container sees the innermost mount; more than one may share the target).
-func mountsHolding(mounts []mount, p string) []mount {
+// mayHold returns the mounts that may hold p: those at the deepest target
+// that holds it (the container sees the innermost mount; more than one may
+// share the target), then every mount whose target the guard cannot place
+// (relative, or with a systemd specifier such as %h that expands to a path
+// it does not know), which may hold any path.
+func mayHold(mounts []mount, p string) []mount {
 	p = path.Clean(p)
-	var held []mount
+	var held, unplaced []mount
 	for _, m := range mounts {
 		switch {
+		case !placed(m):
+			unplaced = append(unplaced, m)
 		case !under(p, m.target):
 		case len(held) == 0 || len(m.target) > len(held[0].target):
 			held = []mount{m}
@@ -219,42 +160,13 @@ func mountsHolding(mounts []mount, p string) []mount {
 			held = append(held, m)
 		}
 	}
-	return held
+	return append(held, unplaced...)
 }
 
-// holding returns the mounts that decide what the container shows at p: those
-// at the deepest target holding it (mountsHolding), then every other Mask=
-// above it. Podman masks after it mounts (OCI maskedPaths), so a mask hides
-// every path under it, at any depth, whatever is mounted deeper.
-func holding(mounts []mount, p string) []mount {
-	p = path.Clean(p)
-	held := mountsHolding(mounts, p)
-	for _, m := range mounts {
-		if m.source == "mask" && under(p, m.target) && !slices.Contains(held, m) {
-			held = append(held, m)
-		}
-	}
-	return held
-}
-
-// placedTarget reports whether the guard can tell which paths a mount at
-// target holds: an absolute target without systemd specifiers. systemd
-// expands a specifier (%h, %t, %E) to a path the guard does not know, and
-// Podman refuses a relative target; mountsHolding never matches either.
-func placedTarget(target string) bool {
-	return path.IsAbs(target) && !strings.Contains(target, "%")
-}
-
-// unplacedMounts returns the mounts whose target the guard cannot place
-// (placedTarget): any of them may hold any path.
-func unplacedMounts(mounts []mount) []mount {
-	var unplaced []mount
-	for _, m := range mounts {
-		if !placedTarget(m.target) {
-			unplaced = append(unplaced, m)
-		}
-	}
-	return unplaced
+// placed reports whether the guard can place m's target: an absolute path
+// without a systemd specifier.
+func placed(m mount) bool {
+	return path.IsAbs(m.target) && !strings.Contains(m.target, "%")
 }
 
 // unitSecret is a Podman secret unit's container uses, of either type
@@ -306,12 +218,10 @@ func podmanArgsValues(unit *parser.UnitFile, spec flagSpec, each func(flag, valu
 	}
 }
 
-// flagSpec names podman run flags to look for: their long names, the
-// long names of those that take no value (bools; --flag=false carries one),
-// and the one-letter flag short, whose long name is shortName.
+// flagSpec names podman run flags to look for: their long names, and the
+// one-letter flag short, whose long name is shortName.
 type flagSpec struct {
 	longs     []string
-	bools     []string
 	short     rune
 	shortName string
 }
@@ -325,30 +235,6 @@ var podmanMountFlags = flagSpec{
 // podmanSecretFlags is podman run's secret flag, which has no short form.
 var podmanSecretFlags = flagSpec{longs: []string{"secret"}}
 
-// podmanPathFlags are the podman run flags other than mounts that change
-// what the container shows at a path (a --security-opt mask=, a read-only
-// root, image volumes, a rootfs) or who reads it (the user, groups and user
-// namespace): pathOptions.
-var podmanPathFlags = flagSpec{
-	longs: []string{
-		"security-opt", "image-volume", "user", "userns", "uidmap", "gidmap",
-		"subuidname", "subgidname", "group-add",
-	},
-	bools: []string{"read-only", "read-only-tmpfs", "rootfs", "privileged"},
-	short: 'u', shortName: "user",
-}
-
-// pathOptions lists the podmanPathFlags unit's PodmanArgs= pass, each as
-// "--flag value": the guard cannot tell what they show at a path, so a
-// commit that changes them changes what a credential may read as.
-func pathOptions(unit *parser.UnitFile) []string {
-	var options []string
-	podmanArgsValues(unit, podmanPathFlags, func(flag, value string) {
-		options = append(options, strings.TrimSpace("--"+flag+" "+value))
-	})
-	return options
-}
-
 // podmanValueShorthands are podman run's one-letter flags that take a value.
 const podmanValueShorthands = "acehlmpuvw"
 
@@ -359,10 +245,7 @@ const podmanValueShorthands = "acehlmpuvw"
 func podmanFlag(arg string, spec flagSpec) (flag, value string, hasValue bool) {
 	if long, ok := strings.CutPrefix(arg, "--"); ok {
 		name, value, hasValue := strings.Cut(long, "=")
-		switch {
-		case slices.Contains(spec.bools, name):
-			return name, value, true
-		case !slices.Contains(spec.longs, name):
+		if !slices.Contains(spec.longs, name) {
 			return "", "", false
 		}
 		return name, value, hasValue

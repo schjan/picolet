@@ -162,6 +162,32 @@ func TestDiffServiceNamePropagated(t *testing.T) {
 
 	require.Equal(t, 1, cs.Summary[ActionCreate])
 	assert.Equal(t, "app.service", cs.Changes[0].ServiceName)
+	assert.Empty(t, cs.Changes[0].OldServiceName, "a create has no file on disk")
+}
+
+// An update carries the new file's ServiceName and, apart, the one the
+// state records for the file on disk; a delete carries the state's in both.
+func TestDiffOldServiceName(t *testing.T) {
+	t.Parallel()
+	st := state.NewState()
+	st.ManagedFiles["/q/app.container"] = state.ManagedFile{Hash: "sha256:old", Category: config.CategoryContainer}
+	st.ServiceNames["/q/app.container"] = "app.service"
+	st.ManagedFiles["/q/gone.container"] = state.ManagedFile{Hash: "sha256:old", Category: config.CategoryContainer}
+	st.ServiceNames["/q/gone.container"] = "gone.service"
+
+	cs := Diff([]resolver.ResolvedFile{
+		{DestPath: "/q/app.container", Content: "renamed", Category: config.CategoryContainer, ServiceName: "renamed.service"},
+	}, st)
+
+	byPath := map[string]Change{}
+	for _, c := range cs.Changes {
+		byPath[c.DestPath] = c
+	}
+	assert.Equal(t, ActionUpdate, byPath["/q/app.container"].Action)
+	assert.Equal(t, "renamed.service", byPath["/q/app.container"].ServiceName)
+	assert.Equal(t, "app.service", byPath["/q/app.container"].OldServiceName)
+	assert.Equal(t, "gone.service", byPath["/q/gone.container"].ServiceName)
+	assert.Equal(t, "gone.service", byPath["/q/gone.container"].OldServiceName)
 }
 
 func TestMergeChangesetPreservesUntouchedState(t *testing.T) {

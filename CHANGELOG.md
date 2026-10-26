@@ -178,19 +178,23 @@ kept as is.
 - The self-restart guard refuses a Fleet-rendered Agent config the Agent could
   not start with (strict parse, credential overlap, startup credential checks,
   a relative credential path) or a commit that leaves a Fleet-managed Agent
-  config unreachable (its secret removed while still mounted, the mount
-  repointed at an unresolved secret, or the mount dropped; a Host file
-  bind-mounted there opts out). A commit that changes the Agent quadlet's
-  mount lines may not also change its config or a Fleet-managed source it
-  mounts, and every credential must stay under a mount kept as written (or
-  under none): change the mounts in their own commit, then the config; a
-  changed `PodmanArgs=` option that changes what a path shows (`--security-opt`,
-  `--user`, `--read-only` and the like) refuses every credential file. With
-  the mounts unchanged, a commit that changes the config or quadlet may not
-  also change the secret or `.volume` unit a credential is mounted from. The
-  reconciliation fails and the Agent keeps running on its current config.
-  `picolet apply --config` runs the same check
-  ([#252](https://github.com/schjan/picolet/issues/252)).
+  config or another source the Agent quadlet uses unreachable (a secret or
+  `.volume` unit removed while still used). The Agent quadlet's mount,
+  identity and access lines (`Volume=`, `Mount=`, `Secret=`, `Tmpfs=`,
+  `Mask=`, `User=`, `UserNS=`, `Exec=`, `PodmanArgs=`, `GlobalArgs=`, its
+  `PICOLET_CONFIG`, its `[Service]` lines and the like; see the README) can't
+  change through the Fleet: edit them on the Host, `daemon-reload` and
+  restart the Agent, then commit the same lines; `Image=` stays changeable.
+  A second Fleet unit for the Agent's service (another quadlet with its
+  `ServiceName=`, a raw unit of its name, an `Alias=`) is refused, and so is
+  a commit that makes the Agent's quadlet generate another service while
+  the Agent bundle stays assigned. A
+  credential that a fresh start may not find as the running container shows
+  it (under a tmpfs, anonymous volume, image mount or `--volumes-from`, in
+  the image when `Image=` changes, or mounted from a secret the same commit
+  changes) is refused. The reconciliation fails and the
+  Agent keeps running on its current config. `picolet apply --config` runs
+  the same check ([#252](https://github.com/schjan/picolet/issues/252)).
 - Agents warn about an unknown `host.yml` key instead of refusing the Fleet;
   `picolet validate` still fails on it.
 - `picolet_unit_state_info` is emitted for inactive units too.
