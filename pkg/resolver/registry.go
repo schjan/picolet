@@ -309,22 +309,48 @@ func redactRefs(err error, refs []string) error {
 	return redact(err, refs, func(ref string) bool { return !sops.IsRef(ref) })
 }
 
-// redactDynamicRef is redactRefs for a ref built at render time (a cache
-// miss): its sops:// pointer may come from an op:// or pass:// value, which
-// no SOPS scrubbing removes, so it is redacted too.
-func redactDynamicRef(err error, ref string) error {
-	return redact(err, []string{ref}, func(string) bool { return true })
+// dynamicRefError is the error of funcName's reader failing on ref, a ref
+// built at render time (one the collect pass did not see): the template may
+// have built it from an op:// or pass:// value, which no SOPS scrubbing
+// removes, and a reader quotes more of a ref than the ref itself (a SOPS
+// reader the pointer and its failing key, a provider client the item), so
+// the reader's text is withheld. The error names funcName, refForError's form
+// of ref and the SOPS error class err falls in, if any; it answers
+// errors.Is like err but does not unwrap.
+func dynamicRefError(funcName, ref string, err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := fmt.Sprintf("%s %q: ", funcName, refForError(ref))
+	for _, class := range sopsErrorClasses {
+		if errors.Is(err, class) {
+			msg += class.Error() + "; "
+			break
+		}
+	}
+	msg += "the reader's error is withheld, since the ref was built at render time and may hold a secret value"
+	return redactedError{msg: msg, err: err}
+}
+
+// sopsErrorClasses are the SOPS readers' fixed error classes, whose own text
+// holds no ref, pointer or value.
+var sopsErrorClasses = []error{
+	sops.ErrNoIdentity, sops.ErrNotRecipient, sops.ErrEditedOutsideSOPS, sops.ErrBadPointer, sops.ErrNotLeaf,
+	sops.ErrNotSOPSPath, sops.ErrNotSOPSFile, sops.ErrFileTooLarge, sops.ErrEmptyValue,
 }
 
 // redact returns err with every ref of refs it quotes for which redacted
 // reports true replaced by refForError's form (a redactedError), or err
 // itself when it quotes none. A ref is found as written and as %q escapes
-// it (the provider clients quote refs that way).
+// it (the provider clients quote refs that way), the longest first, so a
+// ref that is a prefix of another never leaves the longer one's tail behind.
 func redact(err error, refs []string, redacted func(string) bool) error {
 	if err == nil {
 		return nil
 	}
 	msg := err.Error()
+	refs = slices.Clone(refs)
+	slices.SortStableFunc(refs, func(a, b string) int { return len(b) - len(a) })
 	for _, ref := range refs {
 		if redacted(ref) {
 			quoted := strconv.Quote(ref)
@@ -384,6 +410,9 @@ type RefCache struct {
 	logger    *slog.Logger
 	collected []string
 	resolved  map[string]string // non-nil after Resolve(); doubles as phase indicator
+	// dataRefs are the refs the provider's data function read before
+	// Resolve (registerDataFunc).
+	dataRefs map[string]bool
 }
 
 // ProviderCaches stores per-provider caches by key so callers do not depend on
@@ -579,7 +608,7 @@ func loadTemplateSources(fsys fs.FS, include func(string) bool) (map[string]stri
 // collect+resolve cycle.
 func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p ProviderTemplate, cache *RefCache) {
 	if p.DataFuncName != "" {
-		registerDataFunc(ctx, funcMap, p)
+		registerDataFunc(ctx, funcMap, p, cache)
 	}
 	funcMap[p.FuncName] = func(ref string) (string, error) {
 		if ready, err := p.prepareCall(p.FuncName, ref, cache != nil); !ready {
@@ -597,7 +626,7 @@ func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p Provi
 		cache.log().Debug("cache miss, resolving individually", "func", p.FuncName)
 		results, err := p.Reader(ctx, []string{ref})
 		if err != nil {
-			return "", redactDynamicRef(err, ref)
+			return "", dynamicRefError(p.FuncName, ref, err)
 		}
 		val, ok := results[ref]
 		if !ok {
@@ -610,14 +639,28 @@ func registerProviderFunc(ctx context.Context, funcMap template.FuncMap, p Provi
 // registerDataFunc adds the provider's data function (p.DataFuncName) to
 // funcMap: the same prechecks, missing-reader error and ref check as the
 // string function, then p.DataReader's structure for ref. It skips the
-// two-phase cache: every call, in the collect pass too, reads through
-// DataReader, which caches per file.
-func registerDataFunc(ctx context.Context, funcMap template.FuncMap, p ProviderTemplate) {
+// two-phase cache's values: every call, in the collect pass too, reads
+// through DataReader, which caches per file. The cache (nil without one)
+// only records the refs the collect pass read; a ref the render pass reads
+// that the collect pass did not was built at render time, maybe from a
+// secret value, so its reader error is withheld (dynamicRefError).
+func registerDataFunc(ctx context.Context, funcMap template.FuncMap, p ProviderTemplate, cache *RefCache) {
 	funcMap[p.DataFuncName] = func(ref string) (any, error) {
 		if ready, err := p.prepareCall(p.DataFuncName, ref, p.DataReader != nil); !ready {
 			return p.PlaceholderEmpty, err
 		}
-		return p.DataReader(ctx, ref)
+		collecting := cache != nil && cache.resolved == nil
+		if collecting {
+			if cache.dataRefs == nil {
+				cache.dataRefs = map[string]bool{}
+			}
+			cache.dataRefs[ref] = true
+		}
+		data, err := p.DataReader(ctx, ref)
+		if err != nil && !collecting && (cache == nil || !cache.dataRefs[ref]) {
+			return nil, dynamicRefError(p.DataFuncName, ref, err)
+		}
+		return data, err
 	}
 }
 
