@@ -57,6 +57,16 @@ func TestRunResolveHeader(t *testing.T) {
 	}
 }
 
+// resolve is keyless: a readSopsSecret value prints as <sops-secret>, never
+// as its plaintext (the example Fleet encrypts TEST-ONLY values to srv-1).
+func TestRunResolveSopsKeyless(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	require.NoError(t, runResolve(t.Context(), &out, "../../testdata/example-fleet", "web-1"))
+	assert.Contains(t, out.String(), "password: <sops-secret>")
+	assert.NotContains(t, out.String(), "TEST-ONLY-web-app-password")
+}
+
 // Cannot use t.Parallel(): t.Setenv() mutates a process-global, so the test
 // (and its subtests) must remain serial.
 func TestDataDirAndLockPathFromConfig(t *testing.T) { //nolint:paralleltest // see comment above
@@ -86,4 +96,28 @@ func TestDataDirAndLockPathFromConfig(t *testing.T) { //nolint:paralleltest // s
 			assert.Equal(t, filepath.Join(tc.wantDataDir, "reconciliation.lock"), lockPath)
 		})
 	}
+}
+
+// `picolet apply --config` runs the self-restart guard like the Agent: a
+// Fleet-rendered Agent config the Agent could not start with fails the apply
+// before it connects to systemd or writes anything.
+func TestApplyWithConfigRefusesSelfConfigItCouldNotStartWith(t *testing.T) {
+	t.Parallel()
+	fleet := t.TempDir()
+	writeFiles(t, fleet, map[string]string{ //nolint:gosec // G101: an Agent config without credentials
+		"fleet.yml":                "images: {}\nports: {picolet_system_metrics: 9418}\n",
+		"assignments.yml":          "base:\n  services:\n    - picolet-system\n",
+		"hosts/test-host/host.yml": "hostname: test-host\nrole: server\nfeatures: []\n",
+		"services/picolet-system/picolet-system.container": "[Container]\nImage=ghcr.io/schjan/picolet:latest\n" +
+			"Secret=picolet_system_config,target=/etc/picolet/config.yml\n",
+		"services/picolet-system/secrets/picolet_system_config.yml": "hostname: test-host\nrepo_url: https://example.com/fleet.git\nno_such_key_ever: x\n",
+	})
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yml")
+	require.NoError(t, os.WriteFile(configPath, []byte("hostname: test-host\nsecrets_dir: "+filepath.Join(dir, "secrets")+
+		"\ndata_dir: "+filepath.Join(dir, "data")+"\n"), 0o600))
+
+	err := runApply(t.Context(), configPath, fleet, "test-host")
+	require.ErrorContains(t, err, "agent config check failed")
+	require.ErrorContains(t, err, "no_such_key_ever")
 }

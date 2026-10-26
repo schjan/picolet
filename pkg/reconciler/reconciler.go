@@ -29,7 +29,17 @@ type Change struct {
 	OldHash     string // from state, empty for create
 	NewHash     string // sha256 of NewContent
 	ServiceName string // "foo.service"; "" for non-quadlets/secrets
-	RelPath     string // relative to category dir; "" for non-manifest/file changes
+	// OldServiceName is the unit the file on disk generates or is, from the
+	// state (state.ServiceNames): "" for a create. A delete's ServiceName is
+	// this one too; an update's ServiceName is the new file's.
+	OldServiceName string
+	RelPath        string // relative to category dir; "" for non-manifest/file changes
+	SopsValues     bool   // NewContent holds a SOPS value (resolver.ResolvedFile.SopsValues)
+}
+
+// ManagedFile is the state record of a created, updated or unchanged file.
+func (c Change) ManagedFile() state.ManagedFile {
+	return state.ManagedFile{Hash: c.NewHash, Category: c.Category, SopsValues: c.SopsValues}
 }
 
 // Changeset is the complete set of changes to apply.
@@ -41,6 +51,44 @@ type Changeset struct {
 // HasChanges returns true if there are any non-noop changes.
 func (cs *Changeset) HasChanges() bool {
 	return cs.Summary[ActionCreate] > 0 || cs.Summary[ActionUpdate] > 0 || cs.Summary[ActionDelete] > 0
+}
+
+// Writes reports whether the changeset creates or updates destPath.
+func (cs *Changeset) Writes(destPath string) bool {
+	for _, change := range cs.Changes {
+		if change.DestPath == destPath && (change.Action == ActionCreate || change.Action == ActionUpdate) {
+			return true
+		}
+	}
+	return false
+}
+
+// Deletes reports whether the changeset deletes destPath.
+func (cs *Changeset) Deletes(destPath string) bool {
+	for _, change := range cs.Changes {
+		if change.DestPath == destPath && change.Action == ActionDelete {
+			return true
+		}
+	}
+	return false
+}
+
+// RefreshNoops updates st's record of each unchanged file whose record
+// differs from what the changeset would write (its SopsValues flag: the
+// content is byte-identical but its render now reads, or no longer reads, a
+// SOPS value), and reports whether it changed any.
+func (cs *Changeset) RefreshNoops(st *state.State) bool {
+	refreshed := false
+	for _, change := range cs.Changes {
+		if change.Action != ActionNoop {
+			continue
+		}
+		if mf := change.ManagedFile(); st.ManagedFiles[change.DestPath] != mf {
+			st.ManagedFiles[change.DestPath] = mf
+			refreshed = true
+		}
+	}
+	return refreshed
 }
 
 // Diff computes the changeset between desired files and current state.
@@ -62,11 +110,12 @@ func Diff(
 	for destPath, mf := range currentState.ManagedFiles {
 		if !seen[destPath] {
 			cs.addChange(Change{
-				DestPath:    destPath,
-				Category:    mf.Category,
-				Action:      ActionDelete,
-				OldHash:     mf.Hash,
-				ServiceName: currentState.ServiceNames[destPath], // set for quadlets and raw systemd units; "" otherwise
+				DestPath:       destPath,
+				Category:       mf.Category,
+				Action:         ActionDelete,
+				OldHash:        mf.Hash,
+				ServiceName:    currentState.ServiceNames[destPath], // set for quadlets and raw systemd units; "" otherwise
+				OldServiceName: currentState.ServiceNames[destPath],
 			})
 		}
 	}
@@ -80,13 +129,15 @@ func classifyFile(f resolver.ResolvedFile, currentState *state.State) Change {
 	mf, managed := currentState.ManagedFiles[f.DestPath]
 
 	c := Change{
-		DestPath:    f.DestPath,
-		Category:    f.Category,
-		NewContent:  f.Content,
-		OldHash:     mf.Hash,
-		NewHash:     newHash,
-		ServiceName: f.ServiceName,
-		RelPath:     f.RelPath,
+		DestPath:       f.DestPath,
+		Category:       f.Category,
+		NewContent:     f.Content,
+		OldHash:        mf.Hash,
+		NewHash:        newHash,
+		ServiceName:    f.ServiceName,
+		OldServiceName: currentState.ServiceNames[f.DestPath],
+		RelPath:        f.RelPath,
+		SopsValues:     f.SopsValues,
 	}
 
 	switch {
@@ -122,7 +173,7 @@ func MergeChangeset(st *state.State, changeset *Changeset) {
 			delete(st.ManagedFiles, change.DestPath)
 			delete(st.ServiceNames, change.DestPath)
 		case ActionCreate, ActionUpdate:
-			st.ManagedFiles[change.DestPath] = state.ManagedFile{Hash: change.NewHash, Category: change.Category}
+			st.ManagedFiles[change.DestPath] = change.ManagedFile()
 			if change.ServiceName != "" {
 				st.ServiceNames[change.DestPath] = change.ServiceName
 			} else {

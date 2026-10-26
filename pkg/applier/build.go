@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"maps"
 	"path/filepath"
 	"slices"
@@ -121,7 +120,7 @@ func (a *Applier) runBuilds(ctx context.Context, builds, tags []string, result *
 		return fmt.Errorf("recording image tags before rebuilding: %w", err)
 	}
 	for _, unit := range builds {
-		slog.Info("building image", "unit", unit)
+		a.logger.Info("building image", "unit", unit)
 		if err := a.systemd.RunBuildUnit(ctx, unit); err != nil {
 			return errors.Join(fmt.Errorf("rebuilding image: %w", err), a.restoreTags(ctx, tags, before))
 		}
@@ -157,10 +156,10 @@ func (a *Applier) restoreTags(ctx context.Context, tags []string, before map[str
 			errs = append(errs, err)
 		case now == before[tag]:
 		case before[tag] == "":
-			slog.Warn("removing tag of a build the failed apply rolls back", "tag", tag)
+			a.logger.Warn("removing tag of a build the failed apply rolls back", "tag", tag)
 			errs = append(errs, a.podman.ImageUntag(ctx, tag))
 		default:
-			slog.Warn("restoring tag of a build the failed apply rolls back", "tag", tag, "image", before[tag])
+			a.logger.Warn("restoring tag of a build the failed apply rolls back", "tag", tag, "image", before[tag])
 			errs = append(errs, a.podman.ImageTag(ctx, before[tag], tag))
 		}
 	}
@@ -205,12 +204,12 @@ func (a *Applier) restartConsumer(ctx context.Context, unit string, result *Appl
 		return
 	}
 	if ExternallyActivated(st) {
-		slog.Info("skipping restart of externally activated consumer", "unit", unit)
+		a.logger.Info("skipping restart of externally activated consumer", "unit", unit)
 		result.SystemdUnitOps = append(result.SystemdUnitOps,
 			SystemdUnitOp{Unit: unit, Operation: SystemdOpRestart, Result: SystemdOpResultSkipped})
 		return
 	}
-	slog.Info("restarting consumer of rebuilt image", "unit", unit, "active_state", st.ActiveState)
+	a.logger.Info("restarting consumer of rebuilt image", "unit", unit, "active_state", st.ActiveState)
 	switch st.ActiveState {
 	case "active", "activating", "reloading":
 		recordRestart(unit, a.systemd.RestartUnitIgnoringDependencies(ctx, unit), result)
@@ -224,7 +223,7 @@ func (a *Applier) restartConsumer(ctx context.Context, unit string, result *Appl
 // ordinary restart would run the build again under the agent.
 func (a *Applier) scheduleSelfConsumerRestarts(units []string, result *ApplyResult) {
 	for _, unit := range units {
-		slog.Info("restarting picolet (rebuilt image), state will be saved before shutdown", "unit", unit)
+		a.logger.Info("restarting picolet (rebuilt image), state will be saved before shutdown", "unit", unit)
 		result.RestartedUnits = append(result.RestartedUnits, unit)
 		a.deferredSelfUnitOp(unit, a.systemd.RestartUnitIgnoringDependencies)
 	}

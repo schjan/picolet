@@ -1,0 +1,3 @@
+# TEST-ONLY: a *.sops.* file left in plaintext (never encrypted).
+db:
+    password: hunter2-test

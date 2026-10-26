@@ -9,6 +9,7 @@ linters:
     - contextcheck
     - copyloopvar
     - cyclop
+    - depguard
     - dupl
     - exptostd
     - durationcheck
@@ -45,6 +46,18 @@ linters:
     paths:
       - third-party
   settings:
+    depguard:
+      # Exactly one rule. An unconfigured depguard denies every non-stdlib
+      # import, so the rule is explicit and lax: only the deny list applies.
+      rules:
+        sops:
+          list-mode: lax
+          files:
+            - $all
+            - "!**/pkg/sops/**"
+          deny:
+            - pkg: github.com/getsops/sops
+              desc: "only pkg/sops may import getsops/sops (spec #248); go through pkg/sops"
     ireturn:
       allow:
         - anon

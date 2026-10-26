@@ -51,14 +51,33 @@ type Checker struct {
 	systemd applier.SystemdManager
 	// Accessed only by the agent tick loop, which runs serially.
 	lastRestart map[string]time.Time
+	logger      *slog.Logger
+}
+
+// Option configures a Checker.
+type Option func(*Checker)
+
+// WithLogger sets the logger the Checker logs through. A nil logger is
+// ignored; the default is slog.Default().
+func WithLogger(l *slog.Logger) Option {
+	return func(c *Checker) {
+		if l != nil {
+			c.logger = l
+		}
+	}
 }
 
 // New creates a new health Checker.
-func New(systemd applier.SystemdManager) *Checker {
-	return &Checker{
+func New(systemd applier.SystemdManager, opts ...Option) *Checker {
+	c := &Checker{
 		systemd:     systemd,
 		lastRestart: make(map[string]time.Time),
+		logger:      slog.Default(),
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // Enforce checks all managed units and restarts any that are failed, subject to
@@ -111,7 +130,7 @@ func (c *Checker) Enforce(ctx context.Context, st *state.State) (*CheckResult, e
 func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State, result *CheckResult) {
 	status, err := c.systemd.GetUnitStatus(ctx, unit)
 	if err != nil {
-		slog.Warn("health check failed", "unit", unit, "error", err)
+		c.logger.Warn("health check failed", "unit", unit, "error", err)
 		result.Errors = append(result.Errors, err)
 		return
 	}
@@ -151,7 +170,7 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State,
 		// it. So is a unit restartableByHealth rules out. Restart everything else
 		// conservatively.
 		external := applier.ExternallyActivated(status)
-		slog.Warn("unit unhealthy", "unit", unit, "active_state", status.ActiveState,
+		c.logger.Warn("unit unhealthy", "unit", unit, "active_state", status.ActiveState,
 			"sub_state", status.SubState, "externally_activated", external)
 		result.Unhealthy = append(result.Unhealthy, unit)
 		if external || !restartableByHealth(unit, st) {
@@ -226,7 +245,7 @@ func (c *Checker) maybeRestart(ctx context.Context, unit string, st *state.State
 	if last, ok := c.lastRestart[unit]; ok {
 		elapsed := time.Since(last)
 		if elapsed < restartCooldown {
-			slog.Info("skipping restart, cooldown active", "unit", unit, "cooldown_remaining", (restartCooldown - elapsed).Round(time.Second))
+			c.logger.Info("skipping restart, cooldown active", "unit", unit, "cooldown_remaining", (restartCooldown - elapsed).Round(time.Second))
 			result.Skipped = append(result.Skipped, unit)
 			return
 		}
@@ -236,7 +255,7 @@ func (c *Checker) maybeRestart(ctx context.Context, unit string, st *state.State
 	now := time.Now()
 	c.lastRestart[unit] = now
 	if err := c.systemd.RestartUnit(ctx, unit); err != nil {
-		slog.Error("restart failed", "unit", unit, "error", err)
+		c.logger.Error("restart failed", "unit", unit, "error", err)
 		result.Errors = append(result.Errors, err)
 		recordPendingUnit(st, unit, now)
 		return

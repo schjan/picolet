@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"time"
 
 	"github.com/schjan/picolet/pkg/metrics"
@@ -22,16 +21,16 @@ func (a *Agent) createDeployment(ctx context.Context, sha string) int64 {
 		metrics.DeploymentStatusTotal.WithLabelValues("pending").Inc()
 	}
 	if err != nil {
-		slog.Warn("deployment status: create failed", "error", err)
+		a.logger.Warn("deployment status: create failed", "error", err)
 		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
 		if deploymentID == 0 {
 			return 0
 		}
-		slog.Info("deployment status: continuing with created deployment despite pending status error", "deployment_id", deploymentID)
+		a.logger.Info("deployment status: continuing with created deployment despite pending status error", "deployment_id", deploymentID)
 	}
 
 	if err := a.deployReporter.ReportInProgress(ctx, deploymentID); err != nil {
-		slog.Warn("deployment status: in_progress failed", "error", err)
+		a.logger.Warn("deployment status: in_progress failed", "error", err)
 		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
 	} else {
 		metrics.DeploymentStatusTotal.WithLabelValues("in_progress").Inc()
@@ -62,7 +61,7 @@ func (a *Agent) reportDeploymentResult(ctx context.Context, deploymentID int64, 
 
 func (a *Agent) reportDeploymentSuccess(ctx context.Context, deploymentID int64) {
 	if err := a.deployReporter.ReportSuccess(ctx, deploymentID); err != nil {
-		slog.Warn("deployment status: success report failed", "error", err)
+		a.logger.Warn("deployment status: success report failed", "error", err)
 		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
 		return
 	}
@@ -74,7 +73,7 @@ func (a *Agent) reportDeploymentSuccess(ctx context.Context, deploymentID int64)
 // shouldReportDeploymentError picks the label upstream.
 func (a *Agent) reportTerminalStatus(ctx context.Context, deploymentID int64, reconcileErr error, label string, report func(context.Context, int64, error) error) {
 	if err := report(ctx, deploymentID, reconcileErr); err != nil {
-		slog.Warn("deployment status: "+label+" report failed", "error", err)
+		a.logger.Warn("deployment status: "+label+" report failed", "error", err)
 		metrics.DeploymentStatusTotal.WithLabelValues("api_error").Inc()
 		return
 	}

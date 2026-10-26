@@ -1,0 +1,35 @@
+=== (whole file) ===
+{
+	"db": {
+		"user": "app",
+		"password": "hunter2-test",
+		"port": 5432,
+		"tls": true,
+		"empty": "",
+		"nothing": null
+	},
+	"tokens": [
+		"alpha-token",
+		"beta-token"
+	],
+	"note_unencrypted": "visible"
+}
+
+=== /db/user ===
+app
+=== /db/password ===
+hunter2-test
+=== /db/port ===
+5432
+=== /db/tls ===
+true
+=== /db/empty ===
+
+=== /db/nothing ===
+
+=== /tokens/0 ===
+alpha-token
+=== /tokens/1 ===
+beta-token
+=== /note_unencrypted ===
+visible

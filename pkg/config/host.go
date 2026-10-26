@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"go.yaml.in/yaml/v4"
+
+	"github.com/schjan/picolet/pkg/sops"
 )
 
 const maxPort = 65535
@@ -57,6 +59,15 @@ type HostConfig struct {
 	// DeclaredBootstrap is bootstrap: as written; nil when absent.
 	DeclaredBootstrap BootstrapFiles `yaml:"bootstrap"`
 
+	// AgeRecipients is age_recipients: parsed into canonical age recipients
+	// (X25519 or hybrid post-quantum), in file order; empty when the Host
+	// declares none. Set by LoadAll.
+	AgeRecipients []sops.Recipient `yaml:"-"`
+	// DeclaredAgeRecipients is age_recipients: as written, kept as a node so
+	// a wrong YAML shape reaches applyAgeRecipients (which lenient loading
+	// turns into a warning) instead of failing the decode of host.yml.
+	DeclaredAgeRecipients yaml.Node `yaml:"age_recipients"`
+
 	// RetiredPiType captures the pre-rename `pi_type:` key so Validate can
 	// reject it with a migration message instead of the generic unknown-field
 	// error WithKnownFields() would produce. Reject-only — see keyPresent.
@@ -102,6 +113,21 @@ func (h *HostConfig) Validate() error {
 	return nil
 }
 
+// parseAgeRecipients parses age_recipients: entries with the SOPS package's
+// parser; an error names the entry by its index (never by its value, which
+// may be a pasted secret key).
+func parseAgeRecipients(entries []string) ([]sops.Recipient, error) {
+	out := make([]sops.Recipient, 0, len(entries))
+	for i, entry := range entries {
+		r, err := sops.ParseRecipient(entry)
+		if err != nil {
+			return nil, fmt.Errorf("age_recipients[%d]: %w", i, err)
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
 func (h *HostConfig) validateUser() error {
 	switch {
 	case h.User == "root":
@@ -121,6 +147,52 @@ func (h *HostConfig) validateMachine() error {
 	case h.Machine != "" && !hostnameLabel.MatchString(h.Machine):
 		return fmt.Errorf("machine %q is not a valid hostname label (letters, digits and '-', not starting or ending with '-', at most 63 characters)", h.Machine)
 	}
+	return nil
+}
+
+// ageRecipientEntries returns age_recipients: as its list of strings: nil
+// when absent or null, an error naming the key when it is not a list or an
+// entry is not a string (never quoting a value, which may be a pasted secret
+// key).
+func ageRecipientEntries(n *yaml.Node) ([]string, error) {
+	if n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
+	}
+	if n.IsZero() || (n.Kind == yaml.ScalarNode && n.ShortTag() == "!!null") {
+		return nil, nil
+	}
+	if n.Kind != yaml.SequenceNode {
+		return nil, errors.New("age_recipients: must be a list of age recipients")
+	}
+	entries := make([]string, 0, len(n.Content))
+	for i, item := range n.Content {
+		if item.Kind != yaml.ScalarNode {
+			return nil, fmt.Errorf("age_recipients[%d]: must be a string", i)
+		}
+		entries = append(entries, item.Value)
+	}
+	return entries, nil
+}
+
+// applyAgeRecipients fills AgeRecipients from age_recipients:, the one place
+// it is parsed. A malformed list (a wrong YAML shape or a bad entry) fails
+// the load, except under lenient host loading (the Agent), which warns and
+// ignores the whole list: one bad entry on any Host must not fail every
+// Agent's reconciliation.
+func (h *HostConfig) applyAgeRecipients(path string, o loadOptions) error {
+	entries, err := ageRecipientEntries(&h.DeclaredAgeRecipients)
+	var recipients []sops.Recipient
+	if err == nil {
+		recipients, err = parseAgeRecipients(entries)
+	}
+	if err != nil {
+		if !o.lenientHosts {
+			return err
+		}
+		o.logger.Warn("ignoring malformed age_recipients: in host.yml", "path", path, "error", err)
+		return nil
+	}
+	h.AgeRecipients = recipients
 	return nil
 }
 

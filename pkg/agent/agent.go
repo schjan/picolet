@@ -27,6 +27,7 @@ import (
 	"github.com/schjan/picolet/pkg/reconciler"
 	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/rollback"
+	"github.com/schjan/picolet/pkg/sops"
 	"github.com/schjan/picolet/pkg/state"
 	"github.com/schjan/picolet/pkg/status"
 	"github.com/schjan/picolet/pkg/validator"
@@ -91,6 +92,12 @@ type Agent struct {
 
 	opReader resolver.SecretRefReader // nil when 1Password not configured; initialized in Run, consumed in secrets.go
 	ppReader resolver.SecretRefReader // nil when Proton Pass not configured; initialized in Run, consumed in secrets.go
+	// sopsIDs are the age identities sops:// refs are decrypted with; nil
+	// when the config has no sops block. Set by WithStartup and by setupSops in Run.
+	sopsIDs *sops.Identities
+	// startup is what the run command's startup checks loaded (WithStartup);
+	// nil makes setupSops load the identities itself.
+	startup *agentcfg.Startup
 	// Accessed only by the agent tick loop, which runs serially.
 	lastOPRefresh time.Time // zero = never refreshed; in-memory only (restart always re-fetches)
 	lastPPRefresh time.Time // zero = never refreshed; in-memory only (restart always re-fetches)
@@ -113,6 +120,9 @@ type Agent struct {
 	consecutiveHealthFailures atomic.Int32
 	routeRegistrar            RouteRegistrar // nil = no extra HTTP routes
 	statusStore               *status.Store
+	// logger receives every log line of the reconcile, secret-resolution and
+	// validation paths; it defaults to slog.Default() (see WithLogger).
+	logger *slog.Logger
 }
 
 // RouteRegistrar is implemented by anything that wants to add routes to the
@@ -224,6 +234,31 @@ func WithStatusStore(store *status.Store) Option {
 	}
 }
 
+// WithStartup hands the Agent what the startup checks loaded
+// (agentcfg.Config.CheckStartup), so it does not read the age identity file
+// again. Its identities decrypt from the first ReconcileOnce, with or
+// without Run.
+func WithStartup(st agentcfg.Startup) Option {
+	return func(a *Agent) {
+		a.startup = &st
+		a.sopsIDs = st.SopsIdentities
+	}
+}
+
+// WithLogger sets the logger the Agent and the components it drives (config
+// load, resolver, validator, applier, health, rollback, git poller, orphan
+// scan) log through. A nil logger is ignored; the default is slog.Default().
+// Components the caller builds and injects (the Podman client, secret
+// readers such as Proton Pass) are outside this option and log through
+// slog.Default().
+func WithLogger(l *slog.Logger) Option {
+	return func(a *Agent) {
+		if l != nil {
+			a.logger = l
+		}
+	}
+}
+
 // New creates a new Agent.
 func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 	a := &Agent{
@@ -233,6 +268,7 @@ func New(cfg *agentcfg.Config, opts ...Option) *Agent {
 		lockPath:    DefaultLockPath,
 		webhookCh:   make(chan struct{}, 1),
 		statusStore: status.NewStore(),
+		logger:      slog.Default(),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -248,7 +284,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	defer func() {
 		if err := releaseLock(); err != nil {
-			slog.Warn("releasing process lock failed", "path", a.lockPath, "error", err)
+			a.logger.Warn("releasing process lock failed", "path", a.lockPath, "error", err)
 		}
 	}()
 
@@ -273,6 +309,10 @@ func (a *Agent) Run(ctx context.Context) error {
 		}()
 	}
 
+	if err := a.setupSops(); err != nil {
+		return err
+	}
+
 	// Initialize 1Password client (if configured)
 	if a.cfg.OnePassword != nil {
 		var err error
@@ -280,8 +320,8 @@ func (a *Agent) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("setting up 1password: %w", err)
 		}
-		slog.Info("1password client initialized", "token_path", a.cfg.OnePassword.TokenPath)
-		publishCredentialExpiry(resolver.ProviderOnePassword, a.cfg.OnePassword.TokenExpiresAt)
+		a.logger.Info("1password client initialized", "token_path", a.cfg.OnePassword.TokenPath)
+		a.publishCredentialExpiry(resolver.ProviderOnePassword, a.cfg.OnePassword.TokenExpiresAt)
 	}
 
 	// Bound pp.NewReader's EnsureSession with a deadline so a hung login can't block startup.
@@ -293,11 +333,11 @@ func (a *Agent) Run(ctx context.Context) error {
 			return fmt.Errorf("setting up protonpass: %w", err)
 		}
 		a.ppReader = reader
-		slog.Info("protonpass client initialized",
+		a.logger.Info("protonpass client initialized",
 			"session_dir", a.cfg.ProtonPass.SessionDir,
 			"lazy_mode", a.cfg.ProtonPass.PATPath == "",
 		)
-		publishCredentialExpiry(resolver.ProviderProtonPass, a.cfg.ProtonPass.PATExpiresAt)
+		a.publishCredentialExpiry(resolver.ProviderProtonPass, a.cfg.ProtonPass.PATExpiresAt)
 	}
 
 	// Required invariant: opReader/ppReader must be non-nil here before resolvePollerAuth()
@@ -310,21 +350,22 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	poller := gitpoll.New(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, auth)
+	poller := gitpoll.New(a.cfg.RepoURL, a.cfg.RepoBranch, a.repoPath, auth, gitpoll.WithLogger(a.logger))
 	if err := poller.Init(ctx); err != nil {
 		return fmt.Errorf("initializing git poller: %w", err)
 	}
 
 	store := state.NewStore(a.statePath)
-	healthChecker := health.New(a.systemd)
+	healthChecker := health.New(a.systemd, health.WithLogger(a.logger))
 
 	a.scanOrphans(ctx, store)
+	a.clearFailureGateOnStartup(store)
 
 	metrics.FeatureInfo.WithLabelValues("mqtt").Set(boolToFloat(a.mqttClient != nil))
 	metrics.FeatureInfo.WithLabelValues(string(resolver.ProviderOnePassword)).Set(boolToFloat(a.opReader != nil))
 	metrics.FeatureInfo.WithLabelValues(string(resolver.ProviderProtonPass)).Set(boolToFloat(a.ppReader != nil))
 
-	slog.Info("agent started",
+	a.logger.Info("agent started",
 		"hostname", a.cfg.Hostname,
 		"poll_interval", a.cfg.PollInterval,
 		"dry_run", a.dryRun,
@@ -334,7 +375,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Run first tick immediately
 	if err := a.tick(ctx, poller, store, healthChecker); err != nil {
-		slog.Error("initial reconciliation failed", "error", err)
+		a.logger.Error("initial reconciliation failed", "error", err)
 	} else {
 		a.ready.Store(true)
 	}
@@ -345,18 +386,18 @@ func (a *Agent) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("agent shutting down")
+			a.logger.Info("agent shutting down")
 			return nil
 		case <-ticker.C:
 			if err := a.tick(ctx, poller, store, healthChecker); err != nil {
-				slog.Error("reconciliation tick failed", "error", err)
+				a.logger.Error("reconciliation tick failed", "error", err)
 			} else if !a.ready.Load() {
 				a.ready.Store(true)
 			}
 		case <-a.webhookCh:
-			slog.Info("webhook-triggered reconciliation")
+			a.logger.Info("webhook-triggered reconciliation")
 			if err := a.tick(ctx, poller, store, healthChecker); err != nil {
-				slog.Error("webhook-triggered reconciliation failed", "error", err)
+				a.logger.Error("webhook-triggered reconciliation failed", "error", err)
 			} else if !a.ready.Load() {
 				a.ready.Store(true)
 			}
@@ -382,12 +423,12 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	defer func() { metrics.SetUnitRestartPending(pendingUnitAttempts(st.PendingUnits)) }()
 
 	// Seed managed-files metrics from state on every tick
-	metrics.FailedSHAConsecutiveCount.Set(float64(st.FailedCount))
+	a.statusStore.SetFailedSHACount(st.FailedCount)
 	managedByCategory := make(map[string]float64, len(config.Deployable()))
 	for _, mf := range st.ManagedFiles {
 		managedByCategory[mf.Category.String()]++
 	}
-	setFilesManagedMetric(managedByCategory)
+	setFilesManaged(a.statusStore, managedByCategory)
 	metrics.SetAppliedSHA(st.AppliedSHA)
 	// Seed once from persisted state (not every tick — prevents backward jumps when
 	// noop timestamps are in-memory only and store.Load() returns the older persisted value).
@@ -405,7 +446,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	// 1. Health enforcement (always — units must stay healthy even when paused)
 	hr, err := healthChecker.Enforce(ctx, st)
 	if err != nil {
-		slog.Error("health enforcement error", "error", err)
+		a.logger.Error("health enforcement error", "error", err)
 	} else {
 		a.recordHealthMetrics(hr)
 	}
@@ -431,13 +472,13 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	// silently break this change detection.
 	if !maps.Equal(st.PendingUnits, pendingUnitsBefore) {
 		if saveErr := store.Save(st); saveErr != nil {
-			slog.Error("saving state after health enforcement", "error", saveErr)
+			a.logger.Error("saving state after health enforcement", "error", saveErr)
 		}
 	}
 
 	// 1b. Pause check — health ran, skip reconciliation when paused via MQTT
 	if a.paused.Load() {
-		slog.Debug("reconciliation paused via MQTT")
+		a.logger.Debug("reconciliation paused via MQTT")
 		metrics.ReconciliationTotal.WithLabelValues("paused").Inc()
 		a.recordEvent("paused", st.AppliedSHA, "reconciliation paused via MQTT")
 		return nil
@@ -461,11 +502,11 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 
 	if !pollResult.Changed && !a.opRefreshDue() && !a.ppRefreshDue() && len(st.PendingHooks) == 0 && len(st.PendingUnits) == 0 {
 		metrics.GitPollTotal.WithLabelValues("noop").Inc()
-		slog.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
+		a.logger.Debug("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "no_git_changes")
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
 		if !a.statusStore.Snapshot().Bootstrapped {
 			if err := a.refreshResolvedSnapshot(ctx); err != nil {
-				slog.Warn("refreshing runtime status snapshot failed", "error", err)
+				a.logger.Warn("refreshing runtime status snapshot failed", "error", err)
 				a.recordEvent("status_error", pollResult.HeadSHA, err.Error())
 			}
 		}
@@ -490,7 +531,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	if !pollResult.Changed && !a.opRefreshDue() && !a.ppRefreshDue() && len(st.PendingHooks) == 0 {
 		metrics.GitPollTotal.WithLabelValues("pending_unit_retry").Inc()
 		metrics.ReconciliationTotal.WithLabelValues("retry_pending").Inc()
-		slog.Warn("apply incomplete, units still failing to restart",
+		a.logger.Warn("apply incomplete, units still failing to restart",
 			"sha", pollResult.HeadSHA, "pending_units", slices.Sorted(maps.Keys(st.PendingUnits)))
 		a.recordEvent("retry_pending", st.AppliedSHA, "units still failing to restart")
 		return nil
@@ -503,10 +544,10 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		// Pending-hook retry takes priority over secret-provider refresh in the
 		// label even when both apply: the retry is the actionable reason this
 		// tick ran, and ReconcileOnce will refresh secrets regardless.
-		slog.Info("forcing reconciliation for pending hook retry", "sha", pollResult.HeadSHA, "pending", st.PendingHooks)
+		a.logger.Info("forcing reconciliation for pending hook retry", "sha", pollResult.HeadSHA, "pending", st.PendingHooks)
 		metrics.GitPollTotal.WithLabelValues("pending_hook_retry").Inc()
 	default:
-		slog.Info("forcing reconciliation for secret-provider refresh", "sha", pollResult.HeadSHA)
+		a.logger.Info("forcing reconciliation for secret-provider refresh", "sha", pollResult.HeadSHA)
 		metrics.GitPollTotal.WithLabelValues("secret_refresh").Inc()
 	}
 
@@ -515,7 +556,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	const maxRetries = 3
 	const failedSHAExpiry = 1 * time.Hour
 	if pollResult.HeadSHA == st.FailedSHA && st.FailedCount >= maxRetries && time.Since(st.FailedAt) < failedSHAExpiry {
-		slog.Warn("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "failed_sha_gate", "failures", st.FailedCount)
+		a.logger.Warn("reconciliation: noop", "sha", pollResult.HeadSHA, "reason", "failed_sha_gate", "failures", st.FailedCount)
 		metrics.ReconciliationTotal.WithLabelValues("noop").Inc()
 		// Bump every provider's last-refresh timestamp so the agent does not
 		// retry secret refreshes every tick while blocked by the failed-SHA gate.
@@ -528,7 +569,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	// same SHA (secret-provider refresh, pending hook retry) are not deployments.
 	var deploymentID int64
 	if pollResult.Changed {
-		slog.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
+		a.logger.Info("new git commit detected", "sha", pollResult.HeadSHA, "prev", st.AppliedSHA)
 		deploymentID = a.createDeployment(ctx, pollResult.HeadSHA)
 	}
 
@@ -543,7 +584,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 		// failed-SHA gate, do not report a failed deployment.
 		a.reportDeploymentResult(ctx, deploymentID, nil)
 		a.markRefreshAttempted()
-		slog.Warn("apply incomplete, hooks will retry on next tick", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
+		a.logger.Warn("apply incomplete, hooks will retry on next tick", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
 		metrics.ReconciliationTotal.WithLabelValues("retry_pending").Inc()
 		a.recordEvent("retry_pending", pollResult.HeadSHA, err.Error())
 		return nil
@@ -552,7 +593,7 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	a.reportDeploymentResult(ctx, deploymentID, err)
 
 	if err != nil {
-		slog.Error("reconciliation failed", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
+		a.logger.Error("reconciliation failed", "sha", pollResult.HeadSHA, "error", err, "duration", elapsed.Round(time.Millisecond))
 		metrics.ReconciliationTotal.WithLabelValues("failure").Inc()
 
 		// Track failure count for the same SHA
@@ -563,22 +604,22 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 			st.FailedCount = 1
 		}
 		st.FailedAt = time.Now()
-		metrics.RecordFailedSHA(st.FailedCount)
+		a.statusStore.SetFailedSHACount(st.FailedCount)
 		a.recordEvent("failure", pollResult.HeadSHA, err.Error())
 		if saveErr := store.Save(st); saveErr != nil {
-			slog.Error("saving failed state", "error", saveErr)
+			a.logger.Error("saving failed state", "error", saveErr)
 		}
 		return err
 	}
 
 	a.markRefreshAttempted()
-	recordProviderSyncSuccess(resolver.ProviderOnePassword, result.OpSecretsCount)
-	recordProviderSyncSuccess(resolver.ProviderProtonPass, result.PPSecretsCount)
+	a.recordProviderSyncSuccess(resolver.ProviderOnePassword, result.OpSecretsCount)
+	a.recordProviderSyncSuccess(resolver.ProviderProtonPass, result.PPSecretsCount)
 	metrics.ReconciliationTotal.WithLabelValues("success").Inc()
 	if result.HasChanges {
 		a.recordEvent("success", pollResult.HeadSHA, "reconciliation complete")
 	}
-	slog.Info("reconciliation complete", "sha", pollResult.HeadSHA, "result", "success", "duration", elapsed.Round(time.Millisecond))
+	a.logger.Info("reconciliation complete", "sha", pollResult.HeadSHA, "result", "success", "duration", elapsed.Round(time.Millisecond))
 	return nil
 }
 
@@ -590,6 +631,17 @@ type ResolveParams struct {
 	Rootless       bool
 	OpSecretReader resolver.SecretRefReader
 	PPSecretReader resolver.SecretRefReader
+
+	// SopsIdentities decrypt sops:// refs: the resolve gets its own
+	// decrypting reader over the Fleet (sops.NewReader), which decrypts each
+	// file at most once. Nil passes no SOPS reader, so a sops:// ref fails
+	// the resolve with the no-identity error; the keyless reader is never
+	// used here.
+	SopsIdentities *sops.Identities
+	// NoSopsIdentityHint is the fix the no-identity error names without
+	// SopsIdentities (resolver.Config.NoSopsIdentityHint); empty: the
+	// Agent's (set sops.age_identity_path).
+	NoSopsIdentityHint string
 
 	// QuadletDir, SystemdDir, and DataDir override the defaults computed by
 	// resolver.ResolveDirs. Empty fields fall back to the default. Used by
@@ -605,70 +657,135 @@ type ResolveParams struct {
 	// LenientHosts ignores unknown host.yml keys with a warning (see
 	// config.LenientHosts). Set only by the Agent's own reconciliation.
 	LenientHosts bool
+
+	// SecretGuard vets every host secret read from SecretsDir; the Agent
+	// passes agentcfg.RefuseCredentials over its credentials so a Fleet
+	// cannot deploy them. Nil vets nothing.
+	SecretGuard resolver.SecretGuard
+
+	// Logger receives the config-load, resolver and secret-resolution log
+	// lines. Nil falls back to slog.Default().
+	Logger *slog.Logger
+}
+
+// SecretProviders are the secret providers set up from the Agent config
+// (1Password, Proton Pass, the sops block's age identities); nil fields are
+// providers the config does not configure.
+type SecretProviders struct {
+	Op   resolver.SecretRefReader
+	PP   resolver.SecretRefReader
+	Sops *sops.Identities
+}
+
+// ResolveParamsFromConfig returns the ResolveParams of a resolve driven by the
+// Agent config cfg: cfg's Host, read from the Fleet below repoDir
+// (cfg.RepoSubDir), with cfg's secrets dir, credential guard, rootless mode,
+// host data dir and the given providers. The Agent and the CLI's `apply
+// --config` and `dry-run --config` all build their params here, so they
+// resolve alike; callers set only what differs (a --host override, the
+// Agent's LenientHosts, test dir overrides, Logger).
+func ResolveParamsFromConfig(cfg *agentcfg.Config, repoDir string, providers SecretProviders) ResolveParams {
+	return ResolveParams{
+		RepoPath:       filepath.Join(repoDir, cfg.RepoSubDir),
+		Hostname:       cfg.Hostname,
+		SecretsDir:     cfg.SecretsDir,
+		SecretGuard:    agentcfg.RefuseCredentials(cfg.Credentials()),
+		Rootless:       cfg.Rootless,
+		OpSecretReader: providers.Op,
+		PPSecretReader: providers.PP,
+		SopsIdentities: providers.Sops,
+		HostDataDir:    cfg.EffectiveHostDataDir(),
+	}
 }
 
 // LoadAndResolveHost loads fleet config from repoPath and resolves the desired state plus host metadata.
 // It is the shared implementation behind Agent.loadAndResolve and CLI subcommands (apply, dry-run).
-func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.ResolvedHost, error) {
-	slog.Debug("loading fleet config", "repo", params.RepoPath)
-	var loadOpts []config.LoadOption
+// Its error never carries a value decrypted from a sops:// ref. The returned
+// scrub (never nil) removes this resolve's decrypted values from a later
+// error's text; pass every error of the work that uses the resolved files
+// (validation, apply) through it before it is printed or logged.
+func LoadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.ResolvedHost, func(error) error, error) {
+	resolved, reader, err := loadAndResolveHost(ctx, params)
+	// The Scrubber, not the reader: the closure must not keep every
+	// decrypted file alive. The resolve is done, so it sees every value.
+	scrub := reader.Scrubber()
+	return resolved, func(err error) error { return scrubError(scrub, err) }, err
+}
+
+// loadAndResolveHost is LoadAndResolveHost that also returns the SOPS reader
+// the resolve decrypted with (nil without params.SopsIdentities), so the
+// Agent can scrub the decrypted values from later errors and count the files
+// it decrypted. The returned error is already scrubbed.
+func loadAndResolveHost(ctx context.Context, params ResolveParams) (*resolver.ResolvedHost, *sops.Reader, error) {
+	log := params.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	log.Debug("loading fleet config", "repo", params.RepoPath)
+	loadOpts := []config.LoadOption{config.WithLogger(log)}
 	if params.LenientHosts {
 		loadOpts = append(loadOpts, config.LenientHosts())
 	}
 	repo, err := config.OpenRepo(params.RepoPath, loadOpts...)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer repo.Close()
 
-	secretReader, releaseSecrets := resolver.DirSecretReader(params.SecretsDir)
+	secretReader, releaseSecrets := resolver.DirSecretReader(params.SecretsDir, params.SecretGuard)
 	defer releaseSecrets()
 
-	slog.Debug("resolving host", "hostname", params.Hostname)
+	// sopsResolver stays a nil interface without identities: a typed nil
+	// *sops.Reader in it would not count as "no reader".
+	var sopsReader *sops.Reader
+	var sopsResolver resolver.SopsReader
+	if params.SopsIdentities != nil {
+		sopsReader = sops.NewReader(repo.FS, params.SopsIdentities)
+		sopsResolver = sopsReader
+	}
+
+	log.Debug("resolving host", "hostname", params.Hostname)
 	loadStart := time.Now()
 	r, err := resolver.New(resolver.Config{
-		FS:             repo.FS,
-		Config:         repo.Config,
-		SecretReader:   secretReader,
-		OpSecretReader: params.OpSecretReader,
-		PPSecretReader: params.PPSecretReader,
-		Rootless:       params.Rootless,
-		QuadletDir:     params.QuadletDir,
-		SystemdDir:     params.SystemdDir,
-		DataDir:        params.DataDir,
-		HostDataDir:    params.HostDataDir,
+		FS:                 repo.FS,
+		Config:             repo.Config,
+		SecretReader:       secretReader,
+		OpSecretReader:     params.OpSecretReader,
+		PPSecretReader:     params.PPSecretReader,
+		Sops:               sopsResolver,
+		NoSopsIdentityHint: params.NoSopsIdentityHint,
+		Rootless:           params.Rootless,
+		QuadletDir:         params.QuadletDir,
+		SystemdDir:         params.SystemdDir,
+		DataDir:            params.DataDir,
+		HostDataDir:        params.HostDataDir,
+		Logger:             log,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("creating resolver: %w", err)
+		return nil, nil, fmt.Errorf("creating resolver: %w", err)
 	}
 	resolved, err := r.ResolveHost(ctx, params.Hostname)
 	if err != nil {
-		return nil, fmt.Errorf("resolving host %s: %w", params.Hostname, err)
+		return nil, sopsReader, scrubError(sopsReader, fmt.Errorf("resolving host %s: %w", params.Hostname, err))
 	}
-	slog.Debug("host resolved", "hostname", params.Hostname, "files", len(resolved.Files), "duration", time.Since(loadStart).Round(time.Millisecond))
-	return resolved, nil
+	log.Debug("host resolved", "hostname", params.Hostname, "files", len(resolved.Files), "duration", time.Since(loadStart).Round(time.Millisecond))
+	return resolved, sopsReader, nil
 }
 
-func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, error) {
-	fleetPath := a.repoPath
-	if a.cfg.RepoSubDir != "" {
-		fleetPath = filepath.Join(a.repoPath, a.cfg.RepoSubDir)
-	}
-	return LoadAndResolveHost(ctx, ResolveParams{
-		RepoPath:       fleetPath,
-		Hostname:       a.cfg.Hostname,
-		SecretsDir:     a.cfg.SecretsDir,
-		Rootless:       a.cfg.Rootless,
-		OpSecretReader: a.opReader,
-		PPSecretReader: a.ppReader,
-		LenientHosts:   true,
-		// Override fields are passed raw; resolver.New applies the
-		// ResolveDirs fallback for any field left empty.
-		QuadletDir:  a.quadletDirOverride,
-		SystemdDir:  a.systemdDirOverride,
-		DataDir:     a.dataDirOverride,
-		HostDataDir: a.cfg.EffectiveHostDataDir(),
-	})
+// loadAndResolve resolves this Agent's Host. It returns the SOPS reader the
+// resolve decrypted with (nil without a sops block); scrub every later error
+// of the reconciliation with it (scrubError). The returned error is already
+// scrubbed.
+func (a *Agent) loadAndResolve(ctx context.Context) (*resolver.ResolvedHost, *sops.Reader, error) {
+	params := ResolveParamsFromConfig(a.cfg, a.repoPath, SecretProviders{Op: a.opReader, PP: a.ppReader, Sops: a.sopsIDs})
+	params.LenientHosts = true
+	// Override fields are passed raw; resolver.New applies the ResolveDirs
+	// fallback for any field left empty.
+	params.QuadletDir = a.quadletDirOverride
+	params.SystemdDir = a.systemdDirOverride
+	params.DataDir = a.dataDirOverride
+	params.Logger = a.logger
+	return loadAndResolveHost(ctx, params)
 }
 
 // ReconcileResult contains the outcome of a single reconciliation cycle.
@@ -692,29 +809,45 @@ type refSecretsCounts struct {
 }
 
 // ReconcileOnce runs a single reconciliation cycle: load config, resolve, diff, validate, apply, save state.
+// Its error never carries a value decrypted from a sops:// ref (scrubError).
 func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.State, store *state.Store) (*ReconcileResult, error) {
-	resolved, err := a.loadAndResolve(ctx)
+	resolved, sopsReader, err := a.loadAndResolve(ctx)
 	if err != nil {
 		return nil, err
 	}
+	a.warnIdentityDrift(resolved.Host, sopsReader)
+	// A SOPS sync is a resolve that decrypted at least one file (through
+	// templates or direct refs), whatever the rest of the cycle does.
+	a.recordProviderSyncSuccess(resolver.ProviderSops, sopsReader.DecryptedFiles())
+	result, err := a.reconcileResolved(ctx, headSHA, st, store, resolved, sopsReader)
+	return result, scrubError(sopsReader, err)
+}
+
+// reconcileResolved is ReconcileOnce after the resolve: diff, validate,
+// apply, save state. Errors it logs or records itself are scrubbed with
+// sopsReader first.
+func (a *Agent) reconcileResolved(ctx context.Context, headSHA string, st *state.State, store *state.Store, resolved *resolver.ResolvedHost, sopsReader *sops.Reader) (*ReconcileResult, error) {
 	files := resolved.Files
 	a.recordHostMetadata(resolved.Host)
 
 	counts := refSecretsCounts{
-		Op: recordProviderRefCount(resolver.ProviderOnePassword, a.opReader != nil, op.IsRef, files),
-		PP: recordProviderRefCount(resolver.ProviderProtonPass, a.ppReader != nil, pp.IsRef, files),
+		Op: a.recordProviderRefCount(resolver.ProviderOnePassword, a.opReader != nil, op.IsRef, files),
+		PP: a.recordProviderRefCount(resolver.ProviderProtonPass, a.ppReader != nil, pp.IsRef, files),
 	}
+	// A SOPS sync is counted per resolve that decrypted (ReconcileOnce),
+	// not per direct secret, so only the managed count is recorded here.
+	_ = a.recordProviderRefCount(resolver.ProviderSops, a.sopsIDs != nil, sops.IsRef, files)
 
 	changeset := reconciler.Diff(files, st)
 
 	if !changeset.HasChanges() {
 		if len(st.PendingHooks) > 0 {
-			return a.retryPendingHooks(ctx, resolved, st, store, changeset, counts)
+			return a.retryPendingHooks(ctx, resolved, st, store, changeset, counts, sopsReader)
 		}
-		return a.reconcileNoChanges(headSHA, resolved, changeset, st, store, counts)
+		return a.reconcileNoChanges(headSHA, resolved, sopsReader, changeset, st, store, counts)
 	}
 
-	slog.Info("changes detected",
+	a.logger.Info("changes detected",
 		"create", changeset.Summary[reconciler.ActionCreate],
 		"update", changeset.Summary[reconciler.ActionUpdate],
 		"delete", changeset.Summary[reconciler.ActionDelete],
@@ -722,13 +855,21 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 
 	deps, err := a.analyze(resolved)
 	if err != nil {
-		slog.Warn("validation failed", "error", err)
+		err = scrubError(sopsReader, err)
+		a.logger.Warn("validation failed", "error", err)
 		a.recordEvent("failure", headSHA, fmt.Sprintf("validation failed: %v", err))
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
+	if err := CheckSelfConfig(resolved, changeset, os.ReadFile); err != nil {
+		err = scrubError(sopsReader, err)
+		a.logger.Warn("agent config check failed", "error", err)
+		a.recordEvent("failure", headSHA, fmt.Sprintf("agent config check failed: %v", err))
+		return nil, fmt.Errorf("agent config check failed: %w", err)
+	}
+
 	applyResult, err := a.applyWithRollback(ctx, headSHA, changeset, resolved.Hooks, pendingHookNames(st.PendingHooks), deps,
-		resolved.DataDir, resolved.HostDataDir)
+		resolved.DataDir, resolved.HostDataDir, sopsReader, selfConfigRestart(resolved, changeset, os.ReadFile)...)
 	recordHookMetrics(applyResult)
 	if errors.Is(err, applier.ErrApplyIncomplete) {
 		a.savePartialState(headSHA, st, store, changeset, applyResult, deps, resolved.Hooks)
@@ -737,30 +878,31 @@ func (a *Agent) ReconcileOnce(ctx context.Context, headSHA string, st *state.Sta
 	if err != nil {
 		return nil, err
 	}
-	return a.finalizeApply(headSHA, st, store, changeset, applyResult, deps, counts, resolved.Hooks)
+	return a.finalizeApply(headSHA, st, store, changeset, applyResult, deps, counts, resolved.Hooks, sopsReader)
 }
 
-func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, counts refSecretsCounts, hooks []config.Hook) (*ReconcileResult, error) {
+func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, counts refSecretsCounts, hooks []config.Hook, sopsReader *sops.Reader) (*ReconcileResult, error) {
 	// Set deps after a successful apply so the dashboard's dep map matches the
 	// deployed state. On apply failure (rollback) we keep the previous good
 	// map rather than advertising deps for a state we couldn't reach.
 	a.statusStore.SetDependencies(deps)
-	st.PendingHooks = enforceRetryBudget(mergePendingHooks(st.PendingHooks, applyResult), hooks)
-	logNonRetryableApplyErrors(applyResult)
+	// Before the apply's error log lines, so a hook's "exhausted retry
+	// budget" line comes first, as it always has.
+	a.recordApply(st, changeset, applyResult, headSHA, hooks)
+	a.logNonRetryableApplyErrors(applyResult, sopsReader)
 
-	markAppliedWithMetrics(st, headSHA)
+	a.markAppliedWithMetrics(st, headSHA)
 	a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
-	UpdateState(st, changeset)
-	// Reconcile pending-unit records: clear units that restarted cleanly, seed
-	// any that failed, then prune records for units removed from the fleet.
-	st.PendingUnits = prunePendingUnits(mergePendingUnits(st.PendingUnits, applyResult, headSHA, time.Now()), st.ServiceNames)
 
 	if err := store.Save(st); err != nil {
 		return nil, fmt.Errorf("saving state: %w", err)
 	}
 
 	if applyResult.NeedsSelfRestart && !a.dryRun {
-		slog.Info("picolet.container changed, self-update pending")
+		a.logger.Info("picolet.container changed, self-update pending")
+	}
+	if applyResult.SelfConfigChanged && !a.dryRun {
+		a.logger.Info("Agent config changed, restarting to load it")
 	}
 
 	return &ReconcileResult{
@@ -784,17 +926,20 @@ func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Stor
 // during refreshResolvedSnapshot are logged and recorded as status_error
 // without aborting the verify-OK signal, because nothing triggered the tick.
 // Here, something *did* trigger the tick (secret-provider refresh or git
-// change that rendered identically), so a bad render is actionable.
-func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHost, changeset *reconciler.Changeset, st *state.State, store *state.Store, counts refSecretsCounts) (*ReconcileResult, error) {
+// change that rendered identically), so a bad render is actionable. The
+// error is scrubbed with sopsReader before it reaches the event.
+func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHost, sopsReader *sops.Reader, changeset *reconciler.Changeset, st *state.State, store *state.Store, counts refSecretsCounts) (*ReconcileResult, error) {
 	deps, err := a.analyze(resolved)
 	if err != nil {
+		err = scrubError(sopsReader, err)
 		a.recordEvent("failure", headSHA, fmt.Sprintf("validation failed: %v", err))
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 	a.statusStore.SetDependencies(deps)
-	slog.Info("no changes to apply", "sha", headSHA)
+	a.logger.Info("no changes to apply", "sha", headSHA)
+	refreshed := changeset.RefreshNoops(st)
 	if headSHA != st.AppliedSHA {
-		markAppliedWithMetrics(st, headSHA)
+		a.markAppliedWithMetrics(st, headSHA)
 		a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
 		if err := store.Save(st); err != nil {
 			return nil, fmt.Errorf("saving state: %w", err)
@@ -805,6 +950,11 @@ func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHo
 	st.LastSuccessfulReconciliationAt = now
 	metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
 	a.statusStore.SetVerifiedAt(now)
+	if refreshed {
+		if err := store.Save(st); err != nil {
+			return nil, fmt.Errorf("saving state: %w", err)
+		}
+	}
 	return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: counts.Op, PPSecretsCount: counts.PP}, nil
 }
 
@@ -816,18 +966,26 @@ func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHo
 // and the pending-hook and pending-unit records are saved so the retries survive
 // an agent restart.
 func (a *Agent) savePartialState(headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, hooks []config.Hook) {
-	UpdateState(st, changeset)
-	st.PendingHooks = enforceRetryBudget(mergePendingHooks(st.PendingHooks, applyResult), hooks)
-	// Prune against the just-rebuilt ServiceNames so a unit removed from the
-	// fleet drops its pending record (health-enforce cannot see removals).
-	st.PendingUnits = prunePendingUnits(mergePendingUnits(st.PendingUnits, applyResult, headSHA, time.Now()), st.ServiceNames)
+	a.recordApply(st, changeset, applyResult, headSHA, hooks)
 	// Record the SHA without advancing the last-successful timestamp: the apply
 	// is incomplete, so staleness alerts must keep firing until it converges.
-	markAppliedIncompleteWithMetrics(st, headSHA)
+	a.markAppliedIncompleteWithMetrics(st, headSHA)
 	if saveErr := store.Save(st); saveErr != nil {
-		slog.Error("saving partial state after incomplete apply", "error", saveErr)
+		a.logger.Error("saving partial state after incomplete apply", "error", saveErr)
 	}
 	a.statusStore.SetDependencies(deps)
+}
+
+// recordApply records an apply of changeset (headSHA) in st: the Managed
+// Files (UpdateState), the pending hooks (within their retry budget) and the
+// pending units: units that restarted cleanly are cleared, failed ones
+// seeded, and the records pruned against the just-rebuilt ServiceNames so a
+// unit removed from the fleet drops its record (health-enforce cannot see
+// removals).
+func (a *Agent) recordApply(st *state.State, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, headSHA string, hooks []config.Hook) {
+	UpdateState(st, changeset)
+	st.PendingHooks = a.enforceRetryBudget(mergePendingHooks(st.PendingHooks, applyResult), hooks)
+	st.PendingUnits = prunePendingUnits(mergePendingUnits(st.PendingUnits, applyResult, headSHA, time.Now()), st.ServiceNames)
 }
 
 // mergePendingHooks computes the new PendingHooks map given the previous
@@ -935,16 +1093,16 @@ func pendingUnitAttempts(pending map[string]state.PendingUnit) map[string]int {
 // otherwise empty. It does NOT call UpdateState — that would wipe ManagedFiles
 // from an empty changeset. State is saved with the (possibly trimmed) pending
 // map. Returns ErrApplyIncomplete when hooks still fail under keep_running.
-func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.ResolvedHost, st *state.State, store *state.Store, changeset *reconciler.Changeset, counts refSecretsCounts) (*ReconcileResult, error) {
+func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.ResolvedHost, st *state.State, store *state.Store, changeset *reconciler.Changeset, counts refSecretsCounts, sopsReader *sops.Reader) (*ReconcileResult, error) {
 	pendingNames := pendingHookNames(st.PendingHooks)
-	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, resolved.Hooks)
+	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, resolved.Hooks, applier.WithLogger(a.logger))
 	result := app.RunPendingHooks(ctx, pendingNames)
 
 	recordHookMetrics(result)
-	logNonRetryableApplyErrors(result)
+	a.logNonRetryableApplyErrors(result, sopsReader)
 
 	newPending := mergePendingHooks(st.PendingHooks, result)
-	newPending = enforceRetryBudget(newPending, resolved.Hooks)
+	newPending = a.enforceRetryBudget(newPending, resolved.Hooks)
 
 	if !maps.Equal(st.PendingHooks, newPending) {
 		st.PendingHooks = newPending
@@ -965,7 +1123,7 @@ func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.Resolv
 		return out, fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(result.RetryableErrors...))
 	}
 
-	slog.Info("pending hooks retried", "restarted", result.RestartedUnits)
+	a.logger.Info("pending hooks retried", "restarted", result.RestartedUnits)
 	return out, nil
 }
 
@@ -981,7 +1139,7 @@ func pendingHookNames(pending map[string]int) []string {
 // enforceRetryBudget removes hooks that exceeded their configured max_retries.
 // Hooks not found in the config are left untouched (they'll be dropped as stale
 // on the next actual retry attempt by RunPendingHooks).
-func enforceRetryBudget(pending map[string]int, hooks []config.Hook) map[string]int {
+func (a *Agent) enforceRetryBudget(pending map[string]int, hooks []config.Hook) map[string]int {
 	if len(pending) == 0 {
 		return nil
 	}
@@ -998,7 +1156,7 @@ func enforceRetryBudget(pending map[string]int, hooks []config.Hook) map[string]
 			limit = config.DefaultMaxRetries
 		}
 		if count >= limit {
-			slog.Error("hook exhausted retry budget, giving up",
+			a.logger.Error("hook exhausted retry budget, giving up",
 				"hook", name, "attempts", count, "max_retries", limit)
 			delete(pending, name)
 		}
@@ -1011,17 +1169,20 @@ func enforceRetryBudget(pending map[string]int, hooks []config.Hook) map[string]
 
 // applyWithRollback applies changeset and rolls back on a fatal error.
 // dataDir and hostDataDir are the resolved host's (applier.WithHostDataDir).
-func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset, hooks []config.Hook, pendingNames []string, deps map[string]status.UnitDependencies, dataDir, hostDataDir string) (*applier.ApplyResult, error) {
-	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile)
+// The errors it logs are scrubbed with sopsReader (scrubError); opts follow
+// the Applier options it sets.
+func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset *reconciler.Changeset, hooks []config.Hook, pendingNames []string, deps map[string]status.UnitDependencies, dataDir, hostDataDir string, sopsReader *sops.Reader, opts ...applier.Option) (*applier.ApplyResult, error) {
+	snap, err := rollback.CreateSnapshot(changeset, os.ReadFile, rollback.WithLogger(a.logger))
 	if err != nil {
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
-	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, hooks,
-		applier.WithDependencies(deps), applier.WithHostDataDir(dataDir, hostDataDir))
+	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, hooks, append([]applier.Option{
+		applier.WithDependencies(deps), applier.WithHostDataDir(dataDir, hostDataDir), applier.WithLogger(a.logger),
+	}, opts...)...)
 	result, err := app.ApplyWithPending(ctx, changeset, pendingNames)
 	if err != nil {
-		slog.Error("apply failed, rolling back", "error", err)
+		a.logger.Error("apply failed, rolling back", "error", scrubError(sopsReader, err))
 		metrics.RollbackTotal.Inc()
 
 		// Use a detached context so rollback can complete even during shutdown.
@@ -1029,10 +1190,10 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer rollbackCancel()
 
-		if rbErr := rollback.Restore(rollbackCtx, snap, a.writer, a.systemd); rbErr != nil {
-			slog.Error("rollback failed", "error", rbErr)
+		if rbErr := rollback.Restore(rollbackCtx, snap, a.writer, a.systemd, rollback.WithLogger(a.logger)); rbErr != nil {
+			a.logger.Error("rollback failed", "error", scrubError(sopsReader, rbErr))
 		} else {
-			slog.Warn("rollback complete", "sha", headSHA)
+			a.logger.Warn("rollback complete", "sha", headSHA)
 		}
 		return nil, fmt.Errorf("%w: apply: %w", errRollbackPerformed, err)
 	}
@@ -1048,7 +1209,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		}
 	}
 	if incompleteErr := applyIncompleteError(result, changesetUnitNames(changeset)); incompleteErr != nil {
-		logNonRetryableApplyErrors(result)
+		a.logNonRetryableApplyErrors(result, sopsReader)
 		// tick() logs the user-facing "apply incomplete" message with sha + duration.
 		// Failed restarts of managed units are recorded in state.PendingUnits and
 		// retried by health-enforce; they make the apply incomplete but do not roll
@@ -1056,7 +1217,7 @@ func (a *Agent) applyWithRollback(ctx context.Context, headSHA string, changeset
 		return result, incompleteErr
 	}
 
-	slog.Info("apply complete",
+	a.logger.Info("apply complete",
 		"applied", result.Applied,
 		"restarted", result.RestartedUnits,
 		"skipped_oneshot_restarts", result.SkippedRestarts(),
@@ -1118,7 +1279,9 @@ func applyIncompleteError(result *applier.ApplyResult, managed map[string]struct
 	return fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(incompleteErrs...))
 }
 
-func logNonRetryableApplyErrors(result *applier.ApplyResult) {
+// logNonRetryableApplyErrors logs result's errors that no retry picks up,
+// scrubbed with sopsReader (scrubError).
+func (a *Agent) logNonRetryableApplyErrors(result *applier.ApplyResult, sopsReader *sops.Reader) {
 	if len(result.Errors) == 0 {
 		return
 	}
@@ -1134,10 +1297,10 @@ func logNonRetryableApplyErrors(result *applier.ApplyResult) {
 			continue
 		}
 		if fallback, ok := errors.AsType[*applier.HookFallbackError](err); ok {
-			slog.Warn("hook failed, fallback restart scheduled", "unit", fallback.Unit, "error", fallback.Err)
+			a.logger.Warn("hook failed, fallback restart scheduled", "unit", fallback.Unit, "error", scrubError(sopsReader, fallback.Err))
 			continue
 		}
-		slog.Warn("non-fatal apply error", "error", err)
+		a.logger.Warn("non-fatal apply error", "error", scrubError(sopsReader, err))
 	}
 }
 
@@ -1151,7 +1314,7 @@ func UpdateState(st *state.State, changeset *reconciler.Changeset) {
 		if change.Action == reconciler.ActionDelete {
 			continue
 		}
-		st.ManagedFiles[change.DestPath] = state.ManagedFile{Hash: change.NewHash, Category: change.Category}
+		st.ManagedFiles[change.DestPath] = change.ManagedFile()
 		if change.ServiceName != "" {
 			st.ServiceNames[change.DestPath] = change.ServiceName
 		}
@@ -1159,18 +1322,47 @@ func UpdateState(st *state.State, changeset *reconciler.Changeset) {
 }
 
 // markAppliedWithMetrics records a fully successful SHA application in both
-// state and metrics.
-func markAppliedWithMetrics(st *state.State, headSHA string) {
+// state and metrics, resetting the consecutive failure count.
+func (a *Agent) markAppliedWithMetrics(st *state.State, headSHA string) {
 	st.MarkApplied(headSHA)
 	metrics.RecordAppliedSHA(headSHA)
+	a.statusStore.SetFailedSHACount(0)
 }
 
 // markAppliedIncompleteWithMetrics records a SHA whose apply did not fully
-// converge. The SHA is recorded so gitpoll stops reporting "Changed", but the
-// last-successful timestamp (state and metric) is not advanced.
-func markAppliedIncompleteWithMetrics(st *state.State, headSHA string) {
+// converge (a keep_running hook or a unit restart is still failing). The SHA
+// is recorded so gitpoll stops reporting "Changed" and the failure count is
+// reset, but the last-successful timestamp (state and metric) is not
+// advanced, so staleness alerts keep firing until the fleet converges.
+func (a *Agent) markAppliedIncompleteWithMetrics(st *state.State, headSHA string) {
 	st.MarkAppliedIncomplete(headSHA)
-	metrics.RecordAppliedSHAIncomplete(headSHA)
+	metrics.SetAppliedSHA(headSHA)
+	a.statusStore.SetFailedSHACount(0)
+}
+
+// clearFailureGateOnStartup resets the persisted failed-SHA gate. Credential
+// fixes (a new age identity, a new 1Password token) arrive with an Agent
+// restart but leave the Fleet's SHA unchanged, so a gate armed before the
+// restart would keep blocking the fixed Host until it expires. The cleared
+// gate is recorded as a dashboard event, so a restart loop stays visible.
+func (a *Agent) clearFailureGateOnStartup(store *state.Store) {
+	st, err := store.Load()
+	if err != nil {
+		a.logger.Error("loading state to clear failure gate", "error", err)
+		return
+	}
+	sha, failures := st.ClearFailureGate()
+	if failures == 0 {
+		return
+	}
+	if err := store.Save(st); err != nil {
+		a.logger.Error("saving state after clearing failure gate", "error", err)
+		return
+	}
+	a.statusStore.SetFailedSHACount(0)
+	a.logger.Info("failure gate cleared by agent restart", "sha", sha, "failures", failures)
+	a.recordEvent("failed_sha_gate_cleared", sha,
+		fmt.Sprintf("failure gate cleared by agent restart (%d consecutive failures)", failures))
 }
 
 // scanOrphans detects and removes files/secrets placed by a previous picolet run
@@ -1184,7 +1376,7 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	}
 	quadletDir, systemdDir, dataDir, err := resolver.ResolveDirs(a.cfg.Rootless)
 	if err != nil {
-		slog.Warn("resolving dirs for orphan scan failed", "error", err)
+		a.logger.Warn("resolving dirs for orphan scan failed", "error", err)
 		a.statusStore.SetOrphanScan(status.OrphanScan{Ran: true, Error: err.Error()})
 		return
 	}
@@ -1196,14 +1388,14 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	dataDir = cmp.Or(a.dataDirOverride, dataDir)
 	st, err := store.Load()
 	if err != nil {
-		slog.Warn("loading state for orphan scan failed", "error", err)
+		a.logger.Warn("loading state for orphan scan failed", "error", err)
 		a.statusStore.SetOrphanScan(status.OrphanScan{Ran: true, Error: err.Error()})
 		return
 	}
-	scanner := orphan.New(a.writer, a.podman, quadletDir, systemdDir, dataDir)
+	scanner := orphan.New(a.writer, a.podman, quadletDir, systemdDir, dataDir, orphan.WithLogger(a.logger))
 	result, err := scanner.Scan(ctx, st.ManagedFiles)
 	if err != nil {
-		slog.Warn("orphan scan error", "error", err)
+		a.logger.Warn("orphan scan error", "error", err)
 	}
 	scan := status.OrphanScan{
 		Ran:            true,
@@ -1215,26 +1407,26 @@ func (a *Agent) scanOrphans(ctx context.Context, store *state.Store) {
 	}
 	a.statusStore.SetOrphanScan(scan)
 	if result.FilesRemoved > 0 || result.SecretsRemoved > 0 {
-		slog.Info("orphan scan complete", "removed_files", result.FilesRemoved, "removed_secrets", result.SecretsRemoved)
+		a.logger.Info("orphan scan complete", "removed_files", result.FilesRemoved, "removed_secrets", result.SecretsRemoved)
 		metrics.OrphansRemovedTotal.WithLabelValues("file").Add(float64(result.FilesRemoved))
 		metrics.OrphansRemovedTotal.WithLabelValues("secret").Add(float64(result.SecretsRemoved))
 	}
 	if result.FilesRemoved > 0 {
 		if err := a.systemd.DaemonReload(ctx); err != nil {
-			slog.Warn("daemon-reload after orphan cleanup failed", "error", err)
+			a.logger.Warn("daemon-reload after orphan cleanup failed", "error", err)
 		}
 	}
 }
 
 func (a *Agent) refreshResolvedSnapshot(ctx context.Context) error {
-	resolved, err := a.loadAndResolve(ctx)
+	resolved, sopsReader, err := a.loadAndResolve(ctx)
 	if err != nil {
 		return err
 	}
 	a.recordHostMetadata(resolved.Host)
 	deps, err := a.analyze(resolved)
 	if err != nil {
-		return fmt.Errorf("validation failed: %w", err)
+		return scrubError(sopsReader, fmt.Errorf("validation failed: %w", err))
 	}
 	a.statusStore.SetDependencies(deps)
 	return nil
@@ -1242,7 +1434,7 @@ func (a *Agent) refreshResolvedSnapshot(ctx context.Context) error {
 
 // analyze validates resolved's files for this Agent's Host.
 func (a *Agent) analyze(resolved *resolver.ResolvedHost) (map[string]status.UnitDependencies, error) {
-	return validator.AnalyzeFiles(resolved.Files, validator.Target{Rootless: a.cfg.Rootless, HostDataDir: resolved.HostDataDir})
+	return validator.AnalyzeFiles(resolved.Files, validator.Target{Rootless: a.cfg.Rootless, HostDataDir: resolved.HostDataDir}, validator.WithLogger(a.logger))
 }
 
 // recordEvent appends a state-changing event to the in-memory ring rendered
@@ -1250,7 +1442,7 @@ func (a *Agent) analyze(resolved *resolver.ResolvedHost) (map[string]status.Unit
 // are NOT recorded — they are conveyed by LastSuccessfulReconciliationAt and
 // Snapshot.VerifiedAt. The ring is reserved for events an operator would
 // want to see in a panel: success, failure, paused, git_error,
-// failed_sha_gate, status_error.
+// failed_sha_gate, failed_sha_gate_cleared, status_error.
 func (a *Agent) recordEvent(result, sha, message string) {
 	a.statusStore.AddEvent(status.ReconcileEvent{
 		At:      time.Now(),
@@ -1280,9 +1472,9 @@ func (a *Agent) publishMQTTStatus(ctx context.Context, st *state.State, tickTime
 		Paused:                       a.paused.Load(),
 	}
 	if err := a.mqttClient.PublishStatus(ctx, status); err != nil {
-		slog.Warn("mqtt status publish failed", "error", err)
+		a.logger.Warn("mqtt status publish failed", "error", err)
 	} else {
-		slog.Debug("mqtt status published", "sha", status.AppliedSHA, "paused", status.Paused)
+		a.logger.Debug("mqtt status published", "sha", status.AppliedSHA, "paused", status.Paused)
 	}
 }
 

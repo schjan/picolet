@@ -28,7 +28,7 @@ func TestFailedImagePullAtApplyIsRetriedByHealth(t *testing.T) {
 	writeTestFile(t, repoDir, "hosts/test-host/host.yml", "hostname: test-host\nrole: server\nfeatures: []\n")
 	writeTestFile(t, repoDir, "quadlets/images/redis.image", "[Image]\nImage=docker.io/library/redis:7\n")
 
-	sys, pod, fw := newBareMocks(t)
+	a, sys, _, fw := newMockedAgent(t, &agentcfg.Config{Hostname: "test-host", SecretsDir: t.TempDir()}, WithRepoPath(repoDir))
 	fw.EXPECT().MkdirAll(mock.Anything).Return(nil)
 	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(nil)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
@@ -37,8 +37,6 @@ func TestFailedImagePullAtApplyIsRetriedByHealth(t *testing.T) {
 		ActiveState: "failed", SubState: "failed", UnitFileState: "generated", ServiceType: "oneshot",
 	}, nil)
 
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "test-host", SecretsDir: t.TempDir()},
-		WithSystemd(sys), WithPodman(pod), WithFileWriter(fw), WithRepoPath(repoDir))
 	store := state.NewStore(filepath.Join(t.TempDir(), "state.json"))
 	require.NoError(t, store.Save(state.NewState()))
 
@@ -49,7 +47,7 @@ func TestFailedImagePullAtApplyIsRetriedByHealth(t *testing.T) {
 	require.Contains(t, st.PendingUnits, unit)
 
 	// Next pass, within the cooldown: not retried yet, and still pending.
-	checker := health.New(sys)
+	checker := health.New(sys, health.WithLogger(discardLogger()))
 	result, err := checker.Enforce(t.Context(), st)
 	require.NoError(t, err)
 	assert.Equal(t, []string{unit}, result.Skipped)
@@ -62,7 +60,7 @@ func TestFailedImagePullAtApplyIsRetriedByHealth(t *testing.T) {
 	pu.LastAttemptAt = time.Now().Add(-time.Hour)
 	st.PendingUnits[unit] = pu
 	sys.EXPECT().RestartUnit(mock.Anything, unit).Return(nil).Once()
-	result, err = health.New(sys).Enforce(t.Context(), st)
+	result, err = health.New(sys, health.WithLogger(discardLogger())).Enforce(t.Context(), st)
 	require.NoError(t, err)
 	assert.Equal(t, []string{unit}, result.Restarted)
 }

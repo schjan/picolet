@@ -23,8 +23,6 @@ import (
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
-	"github.com/schjan/picolet/pkg/gitpoll"
-	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/mqtt"
 	"github.com/schjan/picolet/pkg/reconciler"
@@ -33,80 +31,48 @@ import (
 	"github.com/schjan/picolet/pkg/status"
 )
 
-// initTestRepo creates a git repo with picolet config files for a test host.
-func initTestRepo(t *testing.T) string {
+// initFleetRepo commits files (Fleet-relative path → content) to a new repo
+// and returns a bare clone of it, to use as RepoURL, and its HEAD SHA.
+func initFleetRepo(t *testing.T, files map[string]string) (bareDir, headSHA string) {
 	t.Helper()
-	bareDir := filepath.Join(t.TempDir(), "bare.git")
+	bareDir = filepath.Join(t.TempDir(), "bare.git")
 	workDir := filepath.Join(t.TempDir(), "work")
-
 	repo, err := git.PlainInit(workDir, false)
 	require.NoError(t, err)
-
-	// Create fleet.yml
-	writeTestFile(t, workDir, "fleet.yml", `images:
-  traefik: "traefik:v3"
-ports:
-  alloy_http: 12345
-  picolet_system_metrics: 9418
-`)
-
-	// Create assignments.yml
-	writeTestFile(t, workDir, "assignments.yml", `base:
-  paths:
-    - quadlets/networks/internal.network
-`)
-
-	// Create host config
-	writeTestFile(t, workDir, "hosts/test-host/host.yml", `hostname: test-host
-external_hostname: test-host.ts.net
-role: server
-features: []
-`)
-
-	// Create a network file (not a template)
-	writeTestFile(t, workDir, "quadlets/networks/internal.network", `[Network]
-Internal=true
-`)
-
+	for path, content := range files {
+		writeTestFile(t, workDir, path, content)
+	}
 	wt, err := repo.Worktree()
 	require.NoError(t, err)
 	_, err = wt.Add(".")
 	require.NoError(t, err)
-	_, err = wt.Commit("initial", &git.CommitOptions{
-		Author: &object.Signature{Name: "test", Email: "test@test.com"},
-	})
+	head, err := wt.Commit("initial", &git.CommitOptions{Author: &object.Signature{Name: "test", Email: "test@test.com"}})
 	require.NoError(t, err)
-
-	// Clone as bare
 	_, err = git.PlainClone(bareDir, true, &git.CloneOptions{URL: workDir})
 	require.NoError(t, err)
-	return bareDir
+	return bareDir, head.String()
 }
 
-// initTestRepoWithHook creates a bare git repo whose only service bundle
-// declares a signal hook bound to app.service. Returned path is the bare repo
-// to use as RepoURL.
-func initTestRepoWithHook(t *testing.T) string {
-	t.Helper()
-	bareDir := filepath.Join(t.TempDir(), "bare.git")
-	workDir := filepath.Join(t.TempDir(), "work")
+// networkFleet is a Fleet whose test-host gets one network quadlet (not a
+// template).
+func networkFleet() map[string]string {
+	return map[string]string{
+		"fleet.yml":                          "images:\n  traefik: \"traefik:v3\"\nports:\n  alloy_http: 12345\n  picolet_system_metrics: 9418\n",
+		"assignments.yml":                    "base:\n  paths:\n    - quadlets/networks/internal.network\n",
+		"hosts/test-host/host.yml":           "hostname: test-host\nexternal_hostname: test-host.ts.net\nrole: server\nfeatures: []\n",
+		"quadlets/networks/internal.network": "[Network]\nInternal=true\n",
+	}
+}
 
-	repo, err := git.PlainInit(workDir, false)
-	require.NoError(t, err)
-
-	writeTestFile(t, workDir, "fleet.yml", `images: {}
-ports: {picolet_system_metrics: 9418}
-`)
-	writeTestFile(t, workDir, "assignments.yml", `base:
-  services:
-    - app
-`)
-	writeTestFile(t, workDir, "hosts/test-host/host.yml", `hostname: test-host
-role: server
-features: []
-`)
-	writeTestFile(t, workDir, "services/app/secrets/app_config.yml", "v: 1\n")
-	writeTestFile(t, workDir, "services/app/picolet.yml", `hooks:
+// hookFleet is a Fleet whose only service bundle declares a signal hook
+// bound to app.service.
+func hookFleet() map[string]string {
+	return map[string]string{
+		"fleet.yml":                           "images: {}\nports: {picolet_system_metrics: 9418}\n",
+		"assignments.yml":                     "base:\n  services:\n    - app\n",
+		"hosts/test-host/host.yml":            "hostname: test-host\nrole: server\nfeatures: []\n",
+		"services/app/secrets/app_config.yml": "v: 1\n",
+		"services/app/picolet.yml": `hooks:
   - name: app-sighup
     secrets: [app_config]
     unit: app.service
@@ -114,20 +80,8 @@ features: []
     container: app
     signal: HUP
     on_failure: keep_running
-`)
-
-	wt, err := repo.Worktree()
-	require.NoError(t, err)
-	_, err = wt.Add(".")
-	require.NoError(t, err)
-	_, err = wt.Commit("initial", &git.CommitOptions{
-		Author: &object.Signature{Name: "test", Email: "test@test.com"},
-	})
-	require.NoError(t, err)
-
-	_, err = git.PlainClone(bareDir, true, &git.CloneOptions{URL: workDir})
-	require.NoError(t, err)
-	return bareDir
+`,
+	}
 }
 
 func writeTestFile(t *testing.T, root, path, content string) {
@@ -142,20 +96,29 @@ func newBareMocks(t *testing.T) (*appliermocks.MockSystemdManager, *appliermocks
 	return appliermocks.NewMockSystemdManager(t), appliermocks.NewMockPodmanClient(t), appliermocks.NewMockFileWriter(t)
 }
 
+// newMockedAgent is newTestAgent over fresh strict mocks of the system
+// boundaries, which it returns for the test's expectations.
+func newMockedAgent(t *testing.T, cfg *agentcfg.Config, opts ...Option) (*Agent, *appliermocks.MockSystemdManager, *appliermocks.MockPodmanClient, *appliermocks.MockFileWriter) {
+	t.Helper()
+	sys, pod, fw := newBareMocks(t)
+	return newTestAgent(t, cfg, append([]Option{WithSystemd(sys), WithPodman(pod), WithFileWriter(fw)}, opts...)...), sys, pod, fw
+}
+
 func newTestAgent(t *testing.T, cfg *agentcfg.Config, opts ...Option) *Agent {
 	t.Helper()
+	// The test logger goes first so a caller's WithLogger wins.
+	opts = append([]Option{WithLogger(newTestLogger(t))}, opts...)
 	opts = append(opts, WithLockPath(filepath.Join(t.TempDir(), "reconciliation.lock")))
 	return New(cfg, opts...)
 }
 
 func TestApplyWithRollbackReturnsRetryableHookErrorsWithoutRollback(t *testing.T) {
 	t.Parallel()
-	sys, pod, fw := newBareMocks(t)
+	a, sys, pod, _ := newMockedAgent(t, &agentcfg.Config{Hostname: "host"})
 	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
 	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
 	pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(assert.AnError)
 
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 	result, err := a.applyWithRollback(t.Context(), "sha", &reconciler.Changeset{
 		Changes: []reconciler.Change{{
 			DestPath:   "secret:app_config",
@@ -172,7 +135,7 @@ func TestApplyWithRollbackReturnsRetryableHookErrorsWithoutRollback(t *testing.T
 		Container: "app",
 		Signal:    "HUP",
 		OnFailure: config.HookOnFailureKeepRunning,
-	}}, nil, nil, "", "")
+	}}, nil, nil, "", "", nil)
 
 	require.ErrorIs(t, err, applier.ErrApplyIncomplete)
 	require.NotNil(t, result)
@@ -205,13 +168,11 @@ features: []
     on_failure: keep_running
 `)
 
-	sys, pod, fw := newBareMocks(t)
+	cfg := &agentcfg.Config{Hostname: "test-host", SecretsDir: t.TempDir()}
+	a, sys, pod, _ := newMockedAgent(t, cfg, WithRepoPath(repoDir))
 	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("shared-secret-value\n"), false).Return(nil)
 	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
 	pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(assert.AnError)
-
-	cfg := &agentcfg.Config{Hostname: "test-host", SecretsDir: t.TempDir()}
-	a := newTestAgent(t, cfg, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw), WithRepoPath(repoDir))
 
 	st := state.NewState()
 	statePath := filepath.Join(t.TempDir(), "state.json")
@@ -235,11 +196,9 @@ features: []
 
 func TestRetryPendingHooksClearsListOnSuccess(t *testing.T) {
 	t.Parallel()
-	sys, pod, fw := newBareMocks(t)
+	a, sys, pod, _ := newMockedAgent(t, &agentcfg.Config{Hostname: "host"})
 	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
 	pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(nil)
-
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 
 	st := state.NewState()
 	st.PendingHooks = map[string]int{"app-sighup": 1}
@@ -260,7 +219,7 @@ func TestRetryPendingHooksClearsListOnSuccess(t *testing.T) {
 	}
 	changeset := &reconciler.Changeset{Summary: map[reconciler.Action]int{}}
 
-	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, refSecretsCounts{})
+	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, refSecretsCounts{}, nil)
 	require.NoError(t, err)
 
 	loaded, err := store.Load()
@@ -400,13 +359,12 @@ func TestMergePendingUnitsClearsConvergedAndAddsFailures(t *testing.T) {
 
 func TestApplyWithRollbackReturnsIncompleteOnFailedUnitRestart(t *testing.T) {
 	t.Parallel()
-	sys, pod, fw := newBareMocks(t)
+	a, sys, _, fw := newMockedAgent(t, &agentcfg.Config{Hostname: "host"})
 	fw.EXPECT().MkdirAll(mock.Anything).Return(nil)
 	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(nil)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 	sys.EXPECT().RestartUnit(mock.Anything, "app.service").Return(assert.AnError)
 
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 	result, err := a.applyWithRollback(t.Context(), "sha", &reconciler.Changeset{
 		Changes: []reconciler.Change{{
 			DestPath:    "/etc/containers/systemd/app.container",
@@ -416,7 +374,7 @@ func TestApplyWithRollbackReturnsIncompleteOnFailedUnitRestart(t *testing.T) {
 			ServiceName: "app.service",
 		}},
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
-	}, nil, nil, nil, "", "")
+	}, nil, nil, nil, "", "", nil)
 
 	// A failed unit restart yields ErrApplyIncomplete with a non-nil result;
 	// a rollback would instead return (nil, errRollbackPerformed).
@@ -432,7 +390,7 @@ func TestApplyWithRollbackRollsBackFailedBuild(t *testing.T) {
 	t.Parallel()
 	containerfile := filepath.Join(t.TempDir(), "Containerfile")
 	require.NoError(t, os.WriteFile(containerfile, []byte("FROM alpine:old\n"), 0o600))
-	sys, pod, fw := newBareMocks(t)
+	a, sys, pod, fw := newMockedAgent(t, &agentcfg.Config{Hostname: "host"})
 	fw.EXPECT().MkdirAll(mock.Anything).Return(nil)
 	fw.EXPECT().WriteFile(containerfile, []byte("FROM alpine:new\n")).Return(nil).Once()
 	pod.EXPECT().ImageID(mock.Anything, "localhost/app").Return("old", nil).Twice()
@@ -440,7 +398,6 @@ func TestApplyWithRollbackRollsBackFailedBuild(t *testing.T) {
 	fw.EXPECT().WriteFile(containerfile, []byte("FROM alpine:old\n")).Return(nil).Once()
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 	result, err := a.applyWithRollback(t.Context(), "sha", &reconciler.Changeset{
 		Changes: []reconciler.Change{
 			{
@@ -451,7 +408,7 @@ func TestApplyWithRollbackRollsBackFailedBuild(t *testing.T) {
 			{DestPath: containerfile, Category: config.CategoryFile, Action: reconciler.ActionUpdate, NewContent: "FROM alpine:new\n", RelPath: "app/Containerfile"},
 		},
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1, reconciler.ActionNoop: 1},
-	}, nil, nil, map[string]status.UnitDependencies{"app.service": {Requires: []string{"app-build.service"}}}, "", "")
+	}, nil, nil, map[string]status.UnitDependencies{"app.service": {Requires: []string{"app-build.service"}}}, "", "", nil)
 
 	require.ErrorIs(t, err, errRollbackPerformed)
 	require.ErrorIs(t, err, assert.AnError)
@@ -460,11 +417,10 @@ func TestApplyWithRollbackRollsBackFailedBuild(t *testing.T) {
 
 func TestApplyWithRollbackCompletesWhenUnmanagedHookUnitRestartFails(t *testing.T) {
 	t.Parallel()
-	sys, pod, fw := newBareMocks(t)
+	a, sys, pod, _ := newMockedAgent(t, &agentcfg.Config{Hostname: "host"})
 	pod.EXPECT().SecretCreate(mock.Anything, "app_config", []byte("new"), true).Return(nil)
 	sys.EXPECT().RestartUnit(mock.Anything, "nginx.service").Return(assert.AnError)
 
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 	result, err := a.applyWithRollback(t.Context(), "sha", &reconciler.Changeset{
 		Changes: []reconciler.Change{{
 			DestPath:   "secret:app_config",
@@ -478,7 +434,7 @@ func TestApplyWithRollbackCompletesWhenUnmanagedHookUnitRestartFails(t *testing.
 		Secrets: []string{"app_config"},
 		Unit:    "nginx.service",
 		Action:  config.HookActionRestart,
-	}}, nil, nil, "", "")
+	}}, nil, nil, "", "", nil)
 
 	// nginx.service is not a picolet-managed quadlet — it is absent from the
 	// changeset's ServiceNames, so health-enforce could never retry it. Its
@@ -558,14 +514,12 @@ features: []
 `)
 	writeTestFile(t, repoDir, "quadlets/networks/internal.network", "[Network]\nInternal=true\n")
 
-	sys, pod, fw := newBareMocks(t)
+	cfg := &agentcfg.Config{Hostname: "test-host", SecretsDir: t.TempDir()}
+	a, sys, _, fw := newMockedAgent(t, cfg, WithRepoPath(repoDir))
 	fw.EXPECT().MkdirAll(mock.Anything).Return(nil)
 	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(nil)
 	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
 	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(assert.AnError)
-
-	cfg := &agentcfg.Config{Hostname: "test-host", SecretsDir: t.TempDir()}
-	a := newTestAgent(t, cfg, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw), WithRepoPath(repoDir))
 
 	store := state.NewStore(filepath.Join(t.TempDir(), "state.json"))
 	st := state.NewState()
@@ -606,18 +560,16 @@ func TestFinalizeApplyPrunesPendingUnitsForDeletedUnit(t *testing.T) {
 		Summary: map[reconciler.Action]int{reconciler.ActionDelete: 1},
 	}
 
-	_, err := a.finalizeApply("head-sha", st, store, changeset, &applier.ApplyResult{}, nil, refSecretsCounts{}, nil)
+	_, err := a.finalizeApply("head-sha", st, store, changeset, &applier.ApplyResult{}, nil, refSecretsCounts{}, nil, nil)
 	require.NoError(t, err)
 	assert.Empty(t, st.PendingUnits, "pending record for a unit removed from the fleet must be pruned")
 }
 
 func TestRetryPendingHooksDropsStaleNamesAndKeepsFailures(t *testing.T) {
 	t.Parallel()
-	sys, pod, fw := newBareMocks(t)
+	a, sys, pod, _ := newMockedAgent(t, &agentcfg.Config{Hostname: "host"})
 	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
 	pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(assert.AnError)
-
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 
 	st := state.NewState()
 	st.PendingHooks = map[string]int{"app-sighup": 1, "removed-hook": 3}
@@ -638,7 +590,7 @@ func TestRetryPendingHooksDropsStaleNamesAndKeepsFailures(t *testing.T) {
 	}
 	changeset := &reconciler.Changeset{Summary: map[reconciler.Action]int{}}
 
-	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, refSecretsCounts{})
+	_, err := a.retryPendingHooks(t.Context(), resolved, st, store, changeset, refSecretsCounts{}, nil)
 	require.ErrorIs(t, err, applier.ErrApplyIncomplete)
 
 	loaded, err := store.Load()
@@ -671,81 +623,18 @@ func TestScanOrphansSkipsCorruptState(t *testing.T) {
 	a.scanOrphans(context.Background(), state.NewStore(path))
 }
 
-// setupApplyMocks configures mocks for a test that expects a successful apply
-// (health check + write files + daemon-reload + restart units).
-func setupApplyMocks(sys *appliermocks.MockSystemdManager, pod *appliermocks.MockPodmanClient, fw *appliermocks.MockFileWriter) map[string][]byte {
-	// Orphan scan at startup calls ListManagedSecrets
-	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
-	// Health check
-	sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
-		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
-
-	// Apply phase
-	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
-	sys.EXPECT().StopUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-
-	written := make(map[string][]byte)
-	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).RunAndReturn(func(path string, content []byte) error {
-		written[path] = content
-		return nil
-	}).Maybe()
-	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
-	fw.EXPECT().Remove(mock.Anything).Return(nil).Maybe()
-	return written
-}
-
-// setupNoopMocks configures mocks for a test that should NOT write any files.
-// Only health checks are expected.
-func setupNoopMocks(sys *appliermocks.MockSystemdManager, pod *appliermocks.MockPodmanClient) {
-	sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
-		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
-	// Orphan scan at startup calls ListManagedSecrets (not in dry-run)
-	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
-}
-
 func TestAgentFullCycle(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	stateDir := filepath.Join(t.TempDir(), "state")
-	statePath := filepath.Join(stateDir, "state.json")
+	bareDir, _ := initFleetRepo(t, networkFleet())
+	statePath := filepath.Join(t.TempDir(), "state", "state.json")
 
 	metrics.Register(nil)
 
-	sys, pod, fw := newBareMocks(t)
-	written := setupApplyMocks(sys, pod, fw)
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Second,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(repoDir),
-		WithStatePath(statePath),
-	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- a.Run(ctx)
-	}()
-
-	<-ctx.Done()
-	require.NoError(t, <-errCh)
+	h := newLoopHarness(t, bareDir, WithStatePath(statePath))
+	h.run(t, 5*time.Second)
 
 	// Verify that files were written
-	assert.Contains(t, written, "/etc/containers/systemd/picolet/internal.network")
+	assert.Contains(t, h.written, "/etc/containers/systemd/picolet/internal.network")
 
 	// Verify state was saved
 	_, err := os.Stat(statePath)
@@ -754,299 +643,69 @@ func TestAgentFullCycle(t *testing.T) {
 
 func TestAgentDryRun(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	bareDir, _ := initFleetRepo(t, networkFleet())
 
-	sys, pod, fw := newBareMocks(t)
 	// Dry-run: health checks happen, but no writes/restarts.
-	// No WriteFile expectation set — strict mock will fail if WriteFile is called.
-	setupNoopMocks(sys, pod)
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Second,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-
-	a := newTestAgent(t, cfg,
-		WithDryRun(true),
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(repoDir),
-		WithStatePath(statePath),
-	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- a.Run(ctx)
-	}()
-
-	<-ctx.Done()
-	require.NoError(t, <-errCh)
-
-	// Strict mock (no WriteFile expectation) guards against unexpected writes
-}
-
-func TestAgentSkipsFailedSHA(t *testing.T) {
-	t.Parallel()
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	stateDir := t.TempDir()
-	statePath := filepath.Join(stateDir, "state.json")
-
-	sys, pod, fw := newBareMocks(t)
-	// Skipped SHA: health checks only, no writes expected.
-	// No WriteFile expectation — strict mock will fail if WriteFile is called.
-	setupNoopMocks(sys, pod)
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: 100 * time.Millisecond,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(repoDir),
-		WithStatePath(statePath),
-	)
-
-	// Pre-seed state with the current SHA as permanently failed (FailedCount >= maxRetries)
-	cloneDir := filepath.Join(t.TempDir(), "tmp-clone")
-	clonedRepo, err := git.PlainClone(cloneDir, false, &git.CloneOptions{URL: bareDir})
-	require.NoError(t, err)
-	head, err := clonedRepo.Head()
-	require.NoError(t, err)
-
-	store := state.NewStore(statePath)
-	st := state.NewState()
-	st.FailedSHA = head.Hash().String()
-	st.FailedCount = 3       // maxRetries reached → will be skipped
-	st.FailedAt = time.Now() // recent failure → gate is active
-	require.NoError(t, store.Save(st))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- a.Run(ctx)
-	}()
-
-	<-ctx.Done()
-	require.NoError(t, <-errCh)
-
-	// Strict mock (no WriteFile expectation) guards against unexpected writes
-}
-
-func TestAgentRetriesExpiredFailedSHA(t *testing.T) {
-	t.Parallel()
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	stateDir := t.TempDir()
-	statePath := filepath.Join(stateDir, "state.json")
-
-	sys, pod, fw := newBareMocks(t)
-	written := setupApplyMocks(sys, pod, fw)
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: 100 * time.Millisecond,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(repoDir),
-		WithStatePath(statePath),
-	)
-
-	// Pre-seed state: SHA failed 3+ times but over an hour ago → gate expired, should retry
-	cloneDir := filepath.Join(t.TempDir(), "tmp-clone")
-	clonedRepo, err := git.PlainClone(cloneDir, false, &git.CloneOptions{URL: bareDir})
-	require.NoError(t, err)
-	head, err := clonedRepo.Head()
-	require.NoError(t, err)
-
-	store := state.NewStore(statePath)
-	st := state.NewState()
-	st.FailedSHA = head.Hash().String()
-	st.FailedCount = 5                           // well past maxRetries
-	st.FailedAt = time.Now().Add(-2 * time.Hour) // expired: older than failedSHAExpiry (1h)
-	require.NoError(t, store.Save(st))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- a.Run(ctx)
-	}()
-
-	<-ctx.Done()
-	require.NoError(t, <-errCh)
-
-	// Gate expired → reconciliation should have proceeded and written files
-	assert.Contains(t, written, "/etc/containers/systemd/picolet/internal.network")
+	h := newLoopHarness(t, bareDir, WithDryRun(true))
+	h.mocks = mocksNoop
+	h.run(t, 3*time.Second)
+	h.assertNothingApplied(t)
 }
 
 func TestAgentRetriesFailedSHA(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	stateDir := t.TempDir()
-	statePath := filepath.Join(stateDir, "state.json")
-
-	sys, pod, fw := newBareMocks(t)
-	written := setupApplyMocks(sys, pod, fw)
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: 100 * time.Millisecond,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(repoDir),
-		WithStatePath(statePath),
-	)
+	bareDir, headSHA := initFleetRepo(t, networkFleet())
+	h := newLoopHarness(t, bareDir)
+	h.cfg.PollInterval = 100 * time.Millisecond
 
 	// Pre-seed state with only 1 failure — below maxRetries, should retry
-	cloneDir := filepath.Join(t.TempDir(), "tmp-clone")
-	clonedRepo, err := git.PlainClone(cloneDir, false, &git.CloneOptions{URL: bareDir})
-	require.NoError(t, err)
-	head, err := clonedRepo.Head()
-	require.NoError(t, err)
-
-	store := state.NewStore(statePath)
 	st := state.NewState()
-	st.FailedSHA = head.Hash().String()
+	st.FailedSHA = headSHA
 	st.FailedCount = 1 // only 1 failure, will retry
-	require.NoError(t, store.Save(st))
+	require.NoError(t, h.store.Save(st))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- a.Run(ctx)
-	}()
-
-	<-ctx.Done()
-	require.NoError(t, <-errCh)
+	h.run(t, 3*time.Second)
 
 	// Should have written files (reconciliation proceeded)
-	assert.Contains(t, written, "/etc/containers/systemd/picolet/internal.network")
+	assert.Contains(t, h.written, "/etc/containers/systemd/picolet/internal.network")
 }
 
-func TestAgentDeletionCycle(t *testing.T) { //nolint:funlen // three-phase test: create cycle, disk mutation, deletion reconcile
+func TestAgentDeletionCycle(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	bareDir, _ := initFleetRepo(t, networkFleet())
 
 	metrics.Register(nil)
 
-	sys, pod, fw := newBareMocks(t)
-	// Orphan scan at startup calls ListManagedSecrets
-	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
-	// Health checks
-	sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
-		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
-	// Apply operations (creates and deletes)
-	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
-	sys.EXPECT().StopUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-	sys.EXPECT().RestartUnit(mock.Anything, mock.Anything).Return(nil).Maybe()
-	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
-	written := make(map[string][]byte)
-	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).RunAndReturn(func(path string, content []byte) error {
-		written[path] = content
-		return nil
-	}).Maybe()
-	removed := make(map[string]bool)
-	fw.EXPECT().Remove(mock.Anything).RunAndReturn(func(path string) error {
-		removed[path] = true
-		return nil
-	}).Maybe()
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Second,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(repoDir),
-		WithStatePath(statePath),
-	)
-
-	store := state.NewStore(statePath)
+	h := newLoopHarness(t, bareDir)
 
 	// Phase 1: run the agent to initialize the clone and apply the first cycle
-	runCtx, runCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer runCancel()
-	errCh := make(chan error, 1)
-	go func() { errCh <- a.Run(runCtx) }()
-	<-runCtx.Done()
-	require.NoError(t, <-errCh)
+	h.runUntilApplied(t)
 
-	assert.Contains(t, written, "/etc/containers/systemd/picolet/internal.network",
+	assert.Contains(t, h.written, "/etc/containers/systemd/picolet/internal.network",
 		"first cycle should have written the network file")
-	st, err := store.Load()
-	require.NoError(t, err)
-	require.NotEmpty(t, st.AppliedSHA, "first cycle must have saved state")
+	st := h.st
 	require.Contains(t, st.ManagedFiles, "/etc/containers/systemd/picolet/internal.network")
 
 	// Phase 2: simulate repo change — clear assignments on disk.
 	// loadAndResolve reads os.DirFS(repoPath) directly; no git operations needed.
-	writeTestFile(t, repoDir, "assignments.yml", "base: {}\n")
+	writeTestFile(t, h.repoDir, "assignments.yml", "base: {}\n")
 
 	// Phase 3: deletion reconcile
 	reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer reconcileCancel()
 
-	result, err := a.ReconcileOnce(reconcileCtx, "delete-sha", st, store)
+	result, err := h.a.ReconcileOnce(reconcileCtx, "delete-sha", st, h.store)
 	require.NoError(t, err)
 	assert.True(t, result.HasChanges)
 	assert.Equal(t, 1, result.Summary[reconciler.ActionDelete])
 	require.NotNil(t, result.ApplyResult)
 	assert.Empty(t, result.ApplyResult.Errors)
 
-	assert.Contains(t, removed, "/etc/containers/systemd/picolet/internal.network",
+	assert.Contains(t, h.deleted, "/etc/containers/systemd/picolet/internal.network",
 		"network file should have been passed to FileWriter.Remove")
 
 	// Verify state is updated: deleted file must be removed
-	st2, err := store.Load()
+	st2, err := h.store.Load()
 	require.NoError(t, err)
 	assert.Equal(t, "delete-sha", st2.AppliedSHA)
 	assert.Empty(t, st2.ManagedFiles, "state should have no managed files after deleting all")
@@ -1074,7 +733,7 @@ Internal=true
 		Hostname:   "test-host",
 		SecretsDir: t.TempDir(),
 	}
-	resolved, err := LoadAndResolveHost(t.Context(), ResolveParams{RepoPath: repoDir, Hostname: cfg.Hostname, SecretsDir: cfg.SecretsDir})
+	resolved, _, err := LoadAndResolveHost(t.Context(), ResolveParams{Logger: discardLogger(), RepoPath: repoDir, Hostname: cfg.Hostname, SecretsDir: cfg.SecretsDir})
 	require.NoError(t, err)
 	files := resolved.Files
 
@@ -1099,60 +758,27 @@ Internal=true
 
 func TestAgentRollbackOnApplyFailure(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	bareDir, _ := initFleetRepo(t, networkFleet())
 
 	metrics.Register(nil)
 
-	sys, pod, fw := newBareMocks(t)
-	setupNoopMocks(sys, pod)
-
+	h := newLoopHarness(t, bareDir)
+	h.mocks = mocksNoop | mockFiles
 	// WriteFile always fails to trigger rollback
-	fw.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(fmt.Errorf("simulated disk error")).Maybe()
-	fw.EXPECT().MkdirAll(mock.Anything).Return(nil).Maybe()
-	fw.EXPECT().Remove(mock.Anything).Return(nil).Maybe()
-	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
-	// Orphan scan at startup
-	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Second,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(repoDir),
-		WithStatePath(statePath),
-	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- a.Run(ctx)
-	}()
-
-	<-ctx.Done()
-	require.NoError(t, <-errCh)
+	h.writeErr = fmt.Errorf("simulated disk error")
+	h.run(t, 5*time.Second)
+	assert.Empty(t, h.restarts, "nothing is restarted")
 
 	// Verify state was saved with failure info (not successful apply)
-	store := state.NewStore(statePath)
-	st, err := store.Load()
+	st, err := h.store.Load()
 	require.NoError(t, err)
 	assert.NotEmpty(t, st.FailedSHA, "failed SHA should be recorded after apply failure")
 	assert.Empty(t, st.AppliedSHA, "applied SHA should not be set after failed apply")
 }
 
-func pushToTestRepo(t *testing.T, bareDir string, files map[string]string) {
+// pushToTestRepo commits files (Fleet-relative path → content) on top of
+// the bare repo's HEAD, pushes, and returns the new HEAD SHA.
+func pushToTestRepo(t *testing.T, bareDir string, files map[string]string) (headSHA string) {
 	t.Helper()
 	workDir := filepath.Join(t.TempDir(), "push-work")
 	repo, err := git.PlainClone(workDir, false, &git.CloneOptions{URL: bareDir})
@@ -1164,12 +790,13 @@ func pushToTestRepo(t *testing.T, bareDir string, files map[string]string) {
 	require.NoError(t, err)
 	_, err = wt.Add(".")
 	require.NoError(t, err)
-	_, err = wt.Commit("update", &git.CommitOptions{
+	head, err := wt.Commit("update", &git.CommitOptions{
 		Author: &object.Signature{Name: "test", Email: "test@test.com", When: time.Now()},
 	})
 	require.NoError(t, err)
 	err = repo.Push(&git.PushOptions{})
 	require.NoError(t, err)
+	return head.String()
 }
 
 func TestScanOrphansAfterSchemaMigration(t *testing.T) {
@@ -1184,93 +811,42 @@ func TestScanOrphansAfterSchemaMigration(t *testing.T) {
 
 	metrics.Register(nil)
 
-	sys, pod, fw := newBareMocks(t)
+	cfg := &agentcfg.Config{Hostname: "test-host", RepoURL: "https://example.com/repo.git"}
+	a, _, pod, _ := newMockedAgent(t, cfg, WithStatePath(statePath))
 	// Strict expectation (no .Maybe()): if scanOrphans skips the scan
 	// (e.g. guard on empty ManagedFiles), ListManagedSecrets is never called
 	// and mockery fails the test during cleanup.
 	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil)
 	// System dirs don't exist in test env → file scans are no-ops, but
 	// DaemonReload won't be called (no files removed).
-	_ = sys
-	_ = fw
-
-	cfg := &agentcfg.Config{
-		Hostname: "test-host",
-		RepoURL:  "https://example.com/repo.git",
-	}
-
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithStatePath(statePath),
-	)
 
 	a.scanOrphans(context.Background(), store)
 }
 
 func TestAgentPauseSkipsReconciliation(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	bareDir, _ := initFleetRepo(t, networkFleet())
 
 	metrics.Register(nil)
-
-	sys, pod, fw := newBareMocks(t)
-	// Health checks still run when paused; no writes expected.
-	setupNoopMocks(sys, pod)
 
 	mqttMock := agentmocks.NewMockMQTTClient(t)
 	mqttMock.EXPECT().Start(mock.Anything, mock.Anything, mock.Anything).Return(nil)
 	mqttMock.EXPECT().PublishStatus(mock.Anything, mock.Anything).Return(nil).Maybe()
 	mqttMock.EXPECT().Close(mock.Anything).Maybe()
 
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Second,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(repoDir),
-		WithStatePath(statePath),
-		WithMQTT(mqttMock),
-	)
-	// Pause before running — strict mock (no WriteFile expectation) will fail if writes occur.
-	a.paused.Store(true)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- a.Run(ctx)
-	}()
-
-	<-ctx.Done()
-	require.NoError(t, <-errCh)
-
-	// No file writes should have occurred (strict mock guards this).
+	h := newLoopHarness(t, bareDir, WithMQTT(mqttMock))
+	h.mocks = mocksNoop
+	// Health checks still run when paused; no writes expected.
+	h.a.paused.Store(true)
+	h.run(t, 3*time.Second)
+	h.assertNothingApplied(t)
 }
 
-//nolint:funlen // setup-heavy integration test: mocks + git repo + status capture
 func TestAgentMQTTStatusPublished(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	bareDir, _ := initFleetRepo(t, networkFleet())
 
 	metrics.Register(nil)
-
-	sys, pod, fw := newBareMocks(t)
-	setupApplyMocks(sys, pod, fw)
 
 	var capturedStatus mqtt.Status
 	var statusCaptured sync.Once
@@ -1289,41 +865,16 @@ func TestAgentMQTTStatusPublished(t *testing.T) {
 	}).Maybe()
 	mqttMock.EXPECT().Close(mock.Anything).Maybe()
 
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Hour, // prevent second tick
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(repoDir),
-		WithStatePath(statePath),
-		WithMQTT(mqttMock),
-	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- a.Run(ctx)
-	}()
-
+	h := newLoopHarness(t, bareDir, WithMQTT(mqttMock))
+	h.cfg.PollInterval = time.Hour // prevent second tick
+	stop := h.start(t)
 	select {
 	case <-statusCh:
 		// got a status with applied SHA
-	case <-ctx.Done():
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for MQTT status publish with applied SHA")
 	}
-
-	cancel()
-	require.NoError(t, <-errCh)
+	stop()
 
 	assert.NotEmpty(t, capturedStatus.AppliedSHA, "AppliedSHA should be set after successful reconciliation")
 	assert.False(t, capturedStatus.LastSuccessfulReconciliation.IsZero(), "LastSuccessfulReconciliation should be non-zero")
@@ -1332,53 +883,28 @@ func TestAgentMQTTStatusPublished(t *testing.T) {
 
 func TestLastSuccessfulReconciliationSeededFromState(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	bareDir, _ := initFleetRepo(t, networkFleet())
 
 	metrics.Register(nil)
+
+	h := newLoopHarness(t, bareDir)
+	h.cfg.PollInterval = time.Hour
 
 	// Pre-seed state with a known LastSuccessfulReconciliationAt timestamp.
 	seededTime := time.Now().Add(-1 * time.Hour).Truncate(time.Second)
 	st := state.NewState()
 	st.AppliedSHA = "abc123"
 	st.LastSuccessfulReconciliationAt = seededTime
-	store := state.NewStore(statePath)
-	require.NoError(t, store.Save(st))
+	require.NoError(t, h.store.Save(st))
 
-	sys, pod, fw := newBareMocks(t)
-	setupApplyMocks(sys, pod, fw)
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Hour,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(repoDir),
-		WithStatePath(statePath),
-	)
 	// Pause BEFORE running — tick() seeds from state then returns early at the pause
 	// check, without entering the reconciliation or noop paths.
-	a.paused.Store(true)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- a.Run(ctx)
-	}()
+	h.a.paused.Store(true)
 
 	// Wait for the first tick to complete (agent becomes ready).
-	require.Eventually(t, func() bool { return a.ready.Load() }, 5*time.Second, 50*time.Millisecond)
+	stop := h.start(t)
+	defer stop()
+	require.Eventually(t, func() bool { return h.a.ready.Load() }, 5*time.Second, 50*time.Millisecond)
 
 	// The gauge should have been seeded from the pre-existing state at the start of tick(),
 	// even though a reconciliation may have updated it afterwards. The important thing is
@@ -1387,9 +913,6 @@ func TestLastSuccessfulReconciliationSeededFromState(t *testing.T) {
 	assert.Greater(t, got, float64(0), "LastSuccessfulReconciliation should not be zero after tick with pre-seeded state")
 	assert.GreaterOrEqual(t, got, float64(seededTime.Unix()),
 		"LastSuccessfulReconciliation should be at least the seeded timestamp")
-
-	cancel()
-	require.NoError(t, <-errCh)
 }
 
 func TestLoadAndResolveWithSubDir(t *testing.T) {
@@ -1420,7 +943,7 @@ Internal=true
 
 	// Resolve from the subdirectory path (simulates what Agent.loadAndResolve does with RepoSubDir).
 	fleetPath := filepath.Join(repoDir, subDir)
-	resolved, err := LoadAndResolveHost(t.Context(), ResolveParams{RepoPath: fleetPath, Hostname: "test-host", SecretsDir: t.TempDir()})
+	resolved, _, err := LoadAndResolveHost(t.Context(), ResolveParams{Logger: discardLogger(), RepoPath: fleetPath, Hostname: "test-host", SecretsDir: t.TempDir()})
 	require.NoError(t, err)
 	files := resolved.Files
 	require.NotEmpty(t, files)
@@ -1458,7 +981,7 @@ ContainerName=broken
 `), 0o600))
 
 	store := status.NewStore()
-	a := New(&agentcfg.Config{Hostname: "test-host"},
+	a := New(&agentcfg.Config{Hostname: "test-host"}, WithLogger(newTestLogger(t)),
 		WithLockPath(filepath.Join(t.TempDir(), "lock")),
 		WithStatusStore(store),
 		WithRepoPath(repoDir),
@@ -1486,56 +1009,19 @@ picolet_host_info{machine="test-host",role="server",user="root"} 1
 func TestTickDoesNotCreateDeploymentForUnchangedSHAOpRefresh(t *testing.T) {
 	t.Parallel()
 
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	bareDir, _ := initFleetRepo(t, networkFleet())
 
 	metrics.Register(nil)
 
-	sys, pod, fw := newBareMocks(t)
-	setupApplyMocks(sys, pod, fw)
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Second,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-		OnePassword: &agentcfg.OnePasswordConfig{
-			RefreshInterval: time.Hour,
-		},
-	}
-
 	reporter := agentmocks.NewMockDeploymentReporter(t)
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys),
-		WithPodman(pod),
-		WithFileWriter(fw),
-		WithRepoPath(repoDir),
-		WithStatePath(statePath),
-		WithDeploymentReporter(reporter),
-	)
-	a.opReader = resolver.SecretRefReader(func(_ context.Context, _ []string) (map[string]string, error) {
+	h := newLoopHarness(t, bareDir, WithDeploymentReporter(reporter))
+	h.cfg.OnePassword = &agentcfg.OnePasswordConfig{RefreshInterval: time.Hour}
+	h.a.opReader = resolver.SecretRefReader(func(_ context.Context, _ []string) (map[string]string, error) {
 		return map[string]string{}, nil
 	})
+	h.seedState(t, false, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
-	require.NoError(t, poller.Init(ctx))
-
-	initial, err := poller.Poll(ctx, "")
-	require.NoError(t, err)
-
-	store := state.NewStore(statePath)
-	st := state.NewState()
-	st.MarkApplied(initial.HeadSHA)
-	require.NoError(t, store.Save(st))
-
-	healthChecker := health.New(sys)
-	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
+	require.NoError(t, h.tick(t))
 	reporter.AssertNotCalled(t, "CreateDeployment", mock.Anything, mock.Anything)
 	reporter.AssertNotCalled(t, "ReportInProgress", mock.Anything, mock.Anything)
 	reporter.AssertNotCalled(t, "ReportSuccess", mock.Anything, mock.Anything)
@@ -1545,50 +1031,17 @@ func TestTickDoesNotCreateDeploymentForUnchangedSHAOpRefresh(t *testing.T) {
 
 func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepoWithHook(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	bareDir, _ := initFleetRepo(t, hookFleet())
 	metrics.Register(nil)
 
-	sys, pod, fw := newBareMocks(t)
-	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
-	sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
-		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
-	pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(nil)
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Second,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
-		WithRepoPath(repoDir), WithStatePath(statePath),
-	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
-	require.NoError(t, poller.Init(ctx))
-	initial, err := poller.Poll(ctx, "")
-	require.NoError(t, err)
+	h := newLoopHarness(t, bareDir)
+	h.mocks = mocksNoop
+	h.pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(nil)
 
 	// Pre-seed state at the current SHA, with the secret already managed and
 	// one hook waiting for retry. The diff against this state must be empty;
 	// the noop gate must be bypassed because PendingHooks is non-empty.
-	resolved, err := LoadAndResolveHost(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
-	require.NoError(t, err)
-	files := resolved.Files
-	store := state.NewStore(statePath)
-	st := state.NewState()
-	UpdateState(st, reconciler.Diff(files, st))
-	st.MarkApplied(initial.HeadSHA)
-	st.PendingHooks = map[string]int{"app-sighup": 1}
-	require.NoError(t, store.Save(st))
+	h.seedState(t, true, func(st *state.State) { st.PendingHooks = map[string]int{"app-sighup": 1} })
 
 	// The reason this tick ran was a pending-hook retry, not an OP refresh.
 	// Snapshot the counter before the tick and assert it advanced by at least
@@ -1596,10 +1049,10 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 	// equality assertion would be racy under -count or t.Parallel.
 	beforeRetryLabel := testutil.ToFloat64(metrics.GitPollTotal.WithLabelValues("pending_hook_retry"))
 
-	healthChecker := health.New(sys)
-	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
+	require.NoError(t, h.tick(t))
+	h.assertNothingApplied(t)
 
-	loaded, err := store.Load()
+	loaded, err := h.store.Load()
 	require.NoError(t, err)
 	assert.Empty(t, loaded.PendingHooks, "successful retry should clear pending list")
 	assert.Equal(t, 0, loaded.FailedCount, "FailedCount must not be touched on successful retry")
@@ -1608,33 +1061,20 @@ func TestTickBypassesNoopGateWhenHooksPending(t *testing.T) {
 	assert.GreaterOrEqual(t, afterRetryLabel, beforeRetryLabel+1, "pending-hook retries must increment the pending_hook_retry label, not op_refresh")
 }
 
-// tickPendingUnitFixture clones the network-only test repo, pre-seeds state at
-// the current SHA (empty diff) with one pending unit, and returns the store plus
-// the pending unit's name.
-func tickPendingUnitFixture(t *testing.T, poller *gitpoll.Poller, repoDir, statePath, secretsDir string) (*state.Store, string) {
+// pendingUnitState is a seedState edit for the network-only test repo that
+// adds one pending unit to a state at the current SHA (empty diff).
+func pendingUnitState(t *testing.T) func(*state.State) {
 	t.Helper()
-	ctx := t.Context()
-	initial, err := poller.Poll(ctx, "")
-	require.NoError(t, err)
-
-	resolved, err := LoadAndResolveHost(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
-	require.NoError(t, err)
-	files := resolved.Files
-	store := state.NewStore(statePath)
-	st := state.NewState()
-	UpdateState(st, reconciler.Diff(files, st))
-	st.MarkApplied(initial.HeadSHA)
-
-	var unit string
-	for _, u := range st.ServiceNames {
-		unit = u
+	return func(st *state.State) {
+		var unit string
+		for _, u := range st.ServiceNames {
+			unit = u
+		}
+		require.NotEmpty(t, unit, "fixture must produce at least one managed unit")
+		st.PendingUnits = map[string]state.PendingUnit{
+			unit: {SHA: st.AppliedSHA, Attempts: 5, FirstFailedAt: time.Now().Add(-time.Hour), LastAttemptAt: time.Now()},
+		}
 	}
-	require.NotEmpty(t, unit, "fixture must produce at least one managed unit")
-	st.PendingUnits = map[string]state.PendingUnit{
-		unit: {SHA: initial.HeadSHA, Attempts: 5, FirstFailedAt: time.Now().Add(-time.Hour), LastAttemptAt: time.Now()},
-	}
-	require.NoError(t, store.Save(st))
-	return store, unit
 }
 
 // TestTickReportsRetryPendingWhenUnitsPending verifies that a tick with no git
@@ -1642,43 +1082,28 @@ func tickPendingUnitFixture(t *testing.T, poller *gitpoll.Poller, repoDir, state
 // success — and does not advance failure tracking or the last-successful time.
 func TestTickReportsRetryPendingWhenUnitsPending(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	metrics.Register(nil)
 
-	sys, pod, fw := newBareMocks(t)
-	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
+	h := newLoopHarness(t, bareDir)
+	h.mocks = mockOrphanScan
 	// Unit stays failed; the persisted cooldown (LastAttemptAt now) suppresses
 	// a restart, so RestartUnit must not be called.
-	sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
+	h.sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
 		Return(applier.UnitStatus{ActiveState: "failed", SubState: "failed"}, nil).Maybe()
+	h.seedState(t, true, pendingUnitState(t))
 
-	cfg := &agentcfg.Config{
-		Hostname: "test-host", RepoURL: bareDir, RepoBranch: "master",
-		PollInterval: time.Second, ListenAddr: "127.0.0.1:0", SecretsDir: t.TempDir(),
-	}
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
-		WithRepoPath(repoDir), WithStatePath(statePath),
-	)
-
-	ctx := t.Context()
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
-	require.NoError(t, poller.Init(ctx))
-	store, _ := tickPendingUnitFixture(t, poller, repoDir, statePath, cfg.SecretsDir)
-
-	preTick, err := store.Load()
+	preTick, err := h.store.Load()
 	require.NoError(t, err)
 
 	before := testutil.ToFloat64(metrics.ReconciliationTotal.WithLabelValues("retry_pending"))
-	healthChecker := health.New(sys)
-	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
+	require.NoError(t, h.tick(t))
+	assert.Empty(t, h.restarts, "the cooldown suppresses the restart")
 
 	after := testutil.ToFloat64(metrics.ReconciliationTotal.WithLabelValues("retry_pending"))
 	assert.GreaterOrEqual(t, after, before+1, "a pending-unit tick must count as retry_pending")
 
-	loaded, err := store.Load()
+	loaded, err := h.store.Load()
 	require.NoError(t, err)
 	assert.Len(t, loaded.PendingUnits, 1, "the still-failing unit stays pending")
 	assert.Equal(t, 0, loaded.FailedCount, "retry_pending must not arm the failed-SHA gate")
@@ -1690,61 +1115,25 @@ func TestTickReportsRetryPendingWhenUnitsPending(t *testing.T) {
 // observes a previously-pending unit as healthy clears the pending record.
 func TestTickClearsPendingUnitWhenHealthy(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	metrics.Register(nil)
 
-	sys, pod, fw := newBareMocks(t)
-	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
-	sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
-		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
+	h := newLoopHarness(t, bareDir)
+	h.mocks = mocksNoop
+	h.seedState(t, true, pendingUnitState(t))
+	require.NoError(t, h.tick(t))
 
-	cfg := &agentcfg.Config{
-		Hostname: "test-host", RepoURL: bareDir, RepoBranch: "master",
-		PollInterval: time.Second, ListenAddr: "127.0.0.1:0", SecretsDir: t.TempDir(),
-	}
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
-		WithRepoPath(repoDir), WithStatePath(statePath),
-	)
-
-	ctx := t.Context()
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
-	require.NoError(t, poller.Init(ctx))
-	store, _ := tickPendingUnitFixture(t, poller, repoDir, statePath, cfg.SecretsDir)
-
-	healthChecker := health.New(sys)
-	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
-
-	loaded, err := store.Load()
+	loaded, err := h.store.Load()
 	require.NoError(t, err)
 	assert.Empty(t, loaded.PendingUnits, "a healthy unit must clear its pending record and the change must be persisted")
 }
 
-// tickTimerJobFixture clones the network-only test repo, pre-seeds state at the
-// current SHA (empty diff) and adds a raw .timer + one-shot pair to the managed
-// unit set so the health pass queries them.
-func tickTimerJobFixture(t *testing.T, poller *gitpoll.Poller, repoDir, statePath, secretsDir string) *state.Store {
-	t.Helper()
-	ctx := t.Context()
-	initial, err := poller.Poll(ctx, "")
-	require.NoError(t, err)
-
-	resolved, err := LoadAndResolveHost(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: secretsDir})
-	require.NoError(t, err)
-	files := resolved.Files
-	store := state.NewStore(statePath)
-	st := state.NewState()
-	UpdateState(st, reconciler.Diff(files, st))
-	st.MarkApplied(initial.HeadSHA)
-	if st.ServiceNames == nil {
-		st.ServiceNames = make(map[string]string)
-	}
+// timerJobState is a seedState edit for the network-only test repo that adds
+// a raw .timer + one-shot pair to the managed unit set so the health pass
+// queries them.
+func timerJobState(st *state.State) {
 	st.ServiceNames["/etc/systemd/user/job.service"] = "job.service"
 	st.ServiceNames["/etc/systemd/user/job.timer"] = "job.timer"
-	require.NoError(t, store.Save(st))
-	return store
 }
 
 // timerJobStatuses wires GetUnitStatus for one timer-triggered one-shot
@@ -1786,37 +1175,21 @@ func timerJobStatuses(sys *appliermocks.MockSystemdManager, firstStart, firstEnd
 // and has not yet moved the finish timestamp.
 func TestTickRecordsTimerOneshotRuns(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepo(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	bareDir, _ := initFleetRepo(t, networkFleet())
 	metrics.Register(nil)
 
 	firstStart := time.Date(2026, 8, 20, 1, 0, 0, 0, time.UTC)
 	firstEnd := firstStart.Add(time.Minute)
 	secondStart := firstStart.Add(time.Hour)
 
-	sys, pod, fw := newBareMocks(t)
-	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
-	jobRunning := timerJobStatuses(sys, firstStart, firstEnd, secondStart)
+	h := newLoopHarness(t, bareDir)
+	h.mocks = mockOrphanScan
+	jobRunning := timerJobStatuses(h.sys, firstStart, firstEnd, secondStart)
+	h.seedState(t, true, timerJobState)
 
-	cfg := &agentcfg.Config{
-		Hostname: "test-host", RepoURL: bareDir, RepoBranch: "master",
-		PollInterval: time.Second, MetricsPort: 0, SecretsDir: t.TempDir(),
-	}
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
-		WithRepoPath(repoDir), WithStatePath(statePath),
-	)
+	require.NoError(t, h.tick(t))
 
-	ctx := t.Context()
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
-	require.NoError(t, poller.Init(ctx))
-	store := tickTimerJobFixture(t, poller, repoDir, statePath, cfg.SecretsDir)
-	healthChecker := health.New(sys)
-
-	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
-
-	runs := a.statusStore.Snapshot().Runs
+	runs := h.a.statusStore.Snapshot().Runs
 	require.Contains(t, runs, "job.service")
 	assert.Equal(t, firstStart, runs["job.service"].StartedAt)
 	assert.Equal(t, firstEnd, runs["job.service"].SucceededAt)
@@ -1828,9 +1201,9 @@ func TestTickRecordsTimerOneshotRuns(t *testing.T) {
 	}
 
 	jobRunning.Store(true)
-	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
+	require.NoError(t, h.tick(t))
 
-	runs = a.statusStore.Snapshot().Runs
+	runs = h.a.statusStore.Snapshot().Runs
 	assert.Equal(t, secondStart, runs["job.service"].StartedAt, "the in-flight run is the last run")
 	assert.Equal(t, firstEnd, runs["job.service"].SucceededAt, "a running job keeps its previous last success")
 }
@@ -1841,104 +1214,46 @@ func TestTickRecordsTimerOneshotRuns(t *testing.T) {
 // so mergePendingHooks drops it and stale entries don't accumulate.
 func TestTickDropsStalePendingHookNameOnRetry(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepoWithHook(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	bareDir, _ := initFleetRepo(t, hookFleet())
 	metrics.Register(nil)
 
-	sys, pod, fw := newBareMocks(t)
-	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
-	sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
-		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
-	// No SecretCreate or ContainerKill expected: this tick has only a state-
-	// reconciliation effect (the secret content already matches).
-
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Second,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
-		WithRepoPath(repoDir), WithStatePath(statePath),
-	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
-	require.NoError(t, poller.Init(ctx))
-	initial, err := poller.Poll(ctx, "")
-	require.NoError(t, err)
-
+	h := newLoopHarness(t, bareDir)
+	h.mocks = mocksNoop
 	// Pre-seed state matching the current resolved files (so the diff is empty)
 	// AND a pending hook for a *different* secret that did not change in this
 	// tick. The pending entry must survive the tick.
-	resolved, err := LoadAndResolveHost(ctx, ResolveParams{RepoPath: repoDir, Hostname: "test-host", SecretsDir: cfg.SecretsDir})
-	require.NoError(t, err)
-	files := resolved.Files
-	store := state.NewStore(statePath)
-	st := state.NewState()
-	UpdateState(st, reconciler.Diff(files, st))
-	st.MarkApplied(initial.HeadSHA)
-	st.PendingHooks = map[string]int{"hook-for-other-secret-not-in-this-bundle": 1}
-	require.NoError(t, store.Save(st))
+	h.seedState(t, true, func(st *state.State) {
+		st.PendingHooks = map[string]int{"hook-for-other-secret-not-in-this-bundle": 1}
+	})
 
-	healthChecker := health.New(sys)
-	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
+	require.NoError(t, h.tick(t))
+	// No SecretCreate or ContainerKill: this tick has only a state-
+	// reconciliation effect (the secret content already matches).
+	h.assertNothingApplied(t)
 
-	loaded, err := store.Load()
+	loaded, err := h.store.Load()
 	require.NoError(t, err)
 	assert.Empty(t, loaded.PendingHooks, "stale hook name from a removed config must be dropped after retry")
 }
 
 func TestTickDoesNotIncrementFailedCountOnRetryableHookError(t *testing.T) {
 	t.Parallel()
-	bareDir := initTestRepoWithHook(t)
-	repoDir := filepath.Join(t.TempDir(), "clone")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	bareDir, _ := initFleetRepo(t, hookFleet())
 	metrics.Register(nil)
 
-	sys, pod, fw := newBareMocks(t)
-	pod.EXPECT().ListManagedSecrets(mock.Anything).Return(nil, nil).Maybe()
-	sys.EXPECT().GetUnitStatus(mock.Anything, mock.AnythingOfType("string")).
-		Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil).Maybe()
-	pod.EXPECT().SecretCreate(mock.Anything, "app_config", mock.Anything, false).Return(nil)
+	h := newLoopHarness(t, bareDir)
+	h.mocks = mocksNoop
+	h.pod.EXPECT().SecretCreate(mock.Anything, "app_config", mock.Anything, false).Return(nil)
 	// Hook fails — keep_running default keeps the agent running but should land
 	// in PendingHooks rather than incrementing FailedCount.
-	pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(assert.AnError)
+	h.pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(assert.AnError)
+	require.NoError(t, h.store.Save(state.NewState()))
 
-	cfg := &agentcfg.Config{
-		Hostname:     "test-host",
-		RepoURL:      bareDir,
-		RepoBranch:   "master",
-		PollInterval: time.Second,
-		ListenAddr:   "127.0.0.1:0",
-		SecretsDir:   t.TempDir(),
-	}
-	a := newTestAgent(t, cfg,
-		WithSystemd(sys), WithPodman(pod), WithFileWriter(fw),
-		WithRepoPath(repoDir), WithStatePath(statePath),
-	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	poller := gitpoll.New(cfg.RepoURL, cfg.RepoBranch, repoDir, nil)
-	require.NoError(t, poller.Init(ctx))
-
-	store := state.NewStore(statePath)
-	require.NoError(t, store.Save(state.NewState()))
-
-	healthChecker := health.New(sys)
 	// tick must return nil — ErrApplyIncomplete is handled internally as
 	// "retry pending", not propagated as a reconciliation failure.
-	require.NoError(t, a.tick(ctx, poller, store, healthChecker))
+	require.NoError(t, h.tick(t))
 
-	loaded, err := store.Load()
+	loaded, err := h.store.Load()
 	require.NoError(t, err)
 	assert.Equal(t, 0, loaded.FailedCount, "retryable hook errors must not poison FailedCount")
 	assert.Empty(t, loaded.FailedSHA, "FailedSHA must not be set for retryable hook errors")
@@ -1949,13 +1264,11 @@ func TestTickDoesNotIncrementFailedCountOnRetryableHookError(t *testing.T) {
 
 func TestApplyWithRollbackRunsPendingHooksAlongsideChangeset(t *testing.T) {
 	t.Parallel()
-	sys, pod, fw := newBareMocks(t)
+	a, sys, pod, _ := newMockedAgent(t, &agentcfg.Config{Hostname: "host"})
 	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{ActiveState: "active", SubState: "running"}, nil)
 	pod.EXPECT().SecretCreate(mock.Anything, "app_rules", []byte("new"), true).Return(nil)
 	pod.EXPECT().ContainerKill(mock.Anything, "app", "HUP").Return(nil)
 	// NOTE: no DaemonReload expected — secret-only changesets do not set NeedsReload.
-
-	a := newTestAgent(t, &agentcfg.Config{Hostname: "host"}, WithSystemd(sys), WithPodman(pod), WithFileWriter(fw))
 
 	hooks := []config.Hook{
 		{Name: "stale-pending", Secrets: []string{"app_config"}, Unit: "app.service", Action: config.HookActionSignal, Container: "app", Signal: "HUP", OnFailure: config.HookOnFailureKeepRunning},
@@ -1968,7 +1281,7 @@ func TestApplyWithRollbackRunsPendingHooksAlongsideChangeset(t *testing.T) {
 		Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
 	}
 
-	result, err := a.applyWithRollback(t.Context(), "head-sha", changeset, hooks, []string{"stale-pending"}, nil, "", "")
+	result, err := a.applyWithRollback(t.Context(), "head-sha", changeset, hooks, []string{"stale-pending"}, nil, "", "", nil)
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"stale-pending"}, result.AttemptedHookNames,
 		"pending hook ran even though its trigger was not in the changeset")
@@ -1990,7 +1303,7 @@ func TestPendingHookExhaustsBudgetAfterMaxRetries(t *testing.T) {
 	}}
 	pending := map[string]int{"app-reload": 3}
 
-	got := enforceRetryBudget(pending, hooks)
+	got := newTestAgent(t, &agentcfg.Config{}).enforceRetryBudget(pending, hooks)
 	assert.Empty(t, got, "hook exhausted retry budget should be dropped")
 }
 
@@ -2013,6 +1326,6 @@ func TestMergeThenEnforceBudgetDropsAtLimit(t *testing.T) {
 		PendingHookNames:   []string{"app-reload"},
 	}
 
-	got := enforceRetryBudget(mergePendingHooks(old, result), hooks)
+	got := newTestAgent(t, &agentcfg.Config{}).enforceRetryBudget(mergePendingHooks(old, result), hooks)
 	assert.Empty(t, got, "count reaches MaxRetries=3, budget drops the entry on the same tick")
 }

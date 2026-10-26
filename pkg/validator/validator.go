@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"path/filepath"
 	"slices"
@@ -32,22 +33,57 @@ type Target struct {
 	HostDataDir string
 }
 
+// Option configures a validation run.
+type Option func(*options)
+
+type options struct {
+	logger              *slog.Logger
+	allowTestRecipients bool
+}
+
+// WithLogger sets the logger validation logs through (progress, Quadlet
+// warnings). A nil logger is ignored; the default is slog.Default().
+func WithLogger(l *slog.Logger) Option {
+	return func(o *options) {
+		if l != nil {
+			o.logger = l
+		}
+	}
+}
+
+// AllowTestRecipients turns off ValidateAll's warning about published
+// TEST-ONLY recipients (picolet's fixture keys) declared by a Host or an
+// Operator, for the example Fleet and test Fleets, which declare them on
+// purpose.
+func AllowTestRecipients() Option {
+	return func(o *options) { o.allowTestRecipients = true }
+}
+
+func newOptions(opts []Option) options {
+	o := options{logger: slog.Default()}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
 // ValidateFiles validates a set of already-resolved files.
-func ValidateFiles(files []resolver.ResolvedFile, target Target) error {
-	_, err := AnalyzeFiles(files, target)
+func ValidateFiles(files []resolver.ResolvedFile, target Target, opts ...Option) error {
+	_, err := AnalyzeFiles(files, target, opts...)
 	return err
 }
 
 // AnalyzeFiles validates resolved files and returns the generated systemd
 // dependency map keyed by unit name. If validation fails, the returned map
 // is partial and the error describes all validation failures.
-func AnalyzeFiles(files []resolver.ResolvedFile, target Target) (map[string]status.UnitDependencies, error) {
-	unitsInfo := buildUnitsInfoFromFiles(files, target.Rootless)
+func AnalyzeFiles(files []resolver.ResolvedFile, target Target, opts ...Option) (map[string]status.UnitDependencies, error) {
+	log := newOptions(opts).logger
+	unitsInfo := buildUnitsInfoFromFiles(files, target.Rootless, log)
 	delivered := newDelivery(files, target.HostDataDir)
 	deps := make(map[string]status.UnitDependencies)
 	var errs []error
 	for _, f := range files {
-		d, err := analyzeFile(f, unitsInfo, target.Rootless)
+		d, err := analyzeFile(f, unitsInfo, target.Rootless, log)
 		if !d.IsEmpty() {
 			if unit := unitNameForAnalysis(f); unit != "" {
 				deps[unit] = d
@@ -64,41 +100,72 @@ func AnalyzeFiles(files []resolver.ResolvedFile, target Target) (map[string]stat
 	return deps, errors.Join(errs...)
 }
 
-// ValidateHost resolves and validates files for a single host.
-func ValidateHost(ctx context.Context, r *resolver.Resolver, hostname string) error {
-	slog.Info("validating host", "host", hostname)
+// validateHost resolves and validates the files of one Host and returns its
+// resolve, which is nil exactly when the resolve failed. The resolver logs
+// through its own resolver.Config.Logger.
+func validateHost(ctx context.Context, r *resolver.Resolver, hostname string, opts []Option) (*resolver.ResolvedHost, error) {
+	log := newOptions(opts).logger
+	log.Info("validating host", "host", hostname)
 	resolved, err := r.ResolveHost(ctx, hostname)
 	if err != nil {
-		return fmt.Errorf("host %s: resolve: %w", hostname, err)
+		return nil, fmt.Errorf("host %s: resolve: %w", hostname, err)
 	}
-	if err := ValidateFiles(resolved.Files, Target{Rootless: r.Rootless(), HostDataDir: resolved.HostDataDir}); err != nil {
-		return fmt.Errorf("host %s: %w", hostname, err)
+	if err := ValidateFiles(resolved.Files, Target{Rootless: r.Rootless(), HostDataDir: resolved.HostDataDir}, opts...); err != nil {
+		return resolved, fmt.Errorf("host %s: %w", hostname, err)
 	}
-	slog.Info("host validated", "host", hostname, "files", len(resolved.Files))
-	return nil
+	log.Info("host validated", "host", hostname, "files", len(resolved.Files))
+	return resolved, nil
 }
 
-// ValidateAll resolves and validates all hosts in the fleet config.
-// Intended for CI/CD pipelines; agents use ValidateFiles directly.
-func ValidateAll(ctx context.Context, r *resolver.Resolver, cfg *config.Config) error {
+// ValidateAll resolves and validates all hosts in the fleet config, then runs
+// the Fleet-wide passes over fsys, the Fleet repository r and cfg were
+// loaded from. Intended for CI/CD pipelines; agents use ValidateFiles
+// directly.
+func ValidateAll(ctx context.Context, fsys fs.FS, r *resolver.Resolver, cfg *config.Config, opts ...Option) error {
+	o := newOptions(opts)
 	var errs []error
+	var resolved []*resolver.ResolvedHost
+	var unresolved []string
 	for _, hostname := range cfg.SortedHostnames() {
-		if err := ValidateHost(ctx, r, hostname); err != nil {
+		rh, err := validateHost(ctx, r, hostname, opts)
+		if err != nil {
 			errs = append(errs, err)
 		}
+		if rh == nil {
+			unresolved = append(unresolved, hostname)
+			continue
+		}
+		resolved = append(resolved, rh)
+	}
+	// Fleet-wide passes, after every Host has been resolved.
+	if err := validateAgentBundles(ctx, fsys, cfg, o.logger); err != nil {
+		errs = append(errs, err)
+	}
+	ops, opsErr := config.LoadOperators(fsys, cfg)
+	if !o.allowTestRecipients {
+		warnPublishedTestRecipients(o.logger, cfg, ops)
+	}
+	var aud *audience
+	if opsErr != nil {
+		errs = append(errs, opsErr)
+	} else {
+		aud = newAudience(cfg, resolved, unresolved, ops, o.logger)
+	}
+	if err := validateSOPSFiles(fsys, aud); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }
 
-func analyzeFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo, rootless bool) (status.UnitDependencies, error) {
-	slog.Debug("validating file", "path", f.DestPath, "category", f.Category)
+func analyzeFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo, rootless bool, log *slog.Logger) (status.UnitDependencies, error) {
+	log.Debug("validating file", "path", f.DestPath, "category", f.Category)
 	spec, ok := config.SpecFor(f.Category)
 	if !ok {
 		return status.UnitDependencies{}, fmt.Errorf("%s: unknown file category %q", f.DestPath, f.Category)
 	}
 	switch spec.Check {
 	case config.CheckQuadlet:
-		return analyzeQuadlet(f, unitsInfo, rootless)
+		return analyzeQuadlet(f, unitsInfo, rootless, log)
 	case config.CheckManifest:
 		return status.UnitDependencies{}, validateManifest(f.DestPath, []byte(f.Content))
 	case config.CheckSystemd:
@@ -115,11 +182,11 @@ func analyzeFile(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo
 	}
 }
 
-func analyzeQuadlet(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo, rootless bool) (status.UnitDependencies, error) {
+func analyzeQuadlet(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitInfo, rootless bool, log *slog.Logger) (status.UnitDependencies, error) {
 	if f.ParsedUnit == nil {
 		return status.UnitDependencies{}, fmt.Errorf("%s: quadlet unit could not be parsed (invalid INI syntax)", f.DestPath)
 	}
-	generated, err := convertQuadlet(f.ParsedUnit, unitsInfo, rootless)
+	generated, err := convertQuadlet(f.ParsedUnit, unitsInfo, rootless, log)
 	if err != nil {
 		return status.UnitDependencies{}, err
 	}
@@ -139,7 +206,7 @@ func analyzeQuadlet(f resolver.ResolvedFile, unitsInfo map[string]*quadlet.UnitI
 //     pod's ContainersToStart, which ConvertPod (converted last) turns into
 //     Wants=/Before=. Per-file validation converts containers again, appending
 //     the members a second time; dependenciesFromUnit deduplicates them.
-func buildUnitsInfoFromFiles(files []resolver.ResolvedFile, rootless bool) map[string]*quadlet.UnitInfo {
+func buildUnitsInfoFromFiles(files []resolver.ResolvedFile, rootless bool, log *slog.Logger) map[string]*quadlet.UnitInfo {
 	units := make(map[string]*quadlet.UnitInfo)
 
 	// Pass 1: build initial info entries
@@ -161,7 +228,7 @@ func buildUnitsInfoFromFiles(files []resolver.ResolvedFile, rootless bool) map[s
 	for _, f := range preConvertFiles(files) {
 		_, _, err := quadletConverters[f.Category].convert(f.ParsedUnit, units, rootless)
 		if err != nil {
-			slog.Debug("pre-populating units info: conversion failed, will be reported in per-file validation",
+			log.Debug("pre-populating units info: conversion failed, will be reported in per-file validation",
 				"file", f.DestPath, "error", err)
 		}
 	}

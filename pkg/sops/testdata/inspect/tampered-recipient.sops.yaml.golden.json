@@ -1,0 +1,130 @@
+{
+  "file": {
+    "format": "yaml",
+    "is_sops": true,
+    "version": "3.13.3",
+    "key_groups": [
+      {
+        "age": [
+          "age1eed9cxu2y3xx2s3syz95sanhy3xuajtpmjsnz63skgwl9yvw0g5su77pfq",
+          "age1pre96p2krmjun420xp2jtzgzyryr3gvvvzqvqj439nzvcrjx953sj5vmaa"
+        ]
+      }
+    ],
+    "shamir_threshold": 0,
+    "unencrypted_suffix": "_unencrypted"
+  },
+  "nodes": [
+    {
+      "pointer": "/db",
+      "kind": "map"
+    },
+    {
+      "pointer": "/db/user",
+      "kind": "leaf",
+      "encrypted": true,
+      "type": "str"
+    },
+    {
+      "pointer": "/db/password",
+      "kind": "leaf",
+      "encrypted": true,
+      "type": "str"
+    },
+    {
+      "pointer": "/db/port",
+      "kind": "leaf",
+      "encrypted": true,
+      "type": "int"
+    },
+    {
+      "pointer": "/db/tls",
+      "kind": "leaf",
+      "encrypted": true,
+      "type": "bool"
+    },
+    {
+      "pointer": "/db/ratio",
+      "kind": "leaf",
+      "encrypted": true,
+      "type": "float"
+    },
+    {
+      "pointer": "/db/empty",
+      "kind": "leaf",
+      "type": "str"
+    },
+    {
+      "pointer": "/db/nothing",
+      "kind": "leaf",
+      "type": "null"
+    },
+    {
+      "pointer": "/tokens",
+      "kind": "list"
+    },
+    {
+      "pointer": "/tokens/0",
+      "kind": "leaf",
+      "encrypted": true,
+      "type": "str"
+    },
+    {
+      "pointer": "/tokens/1",
+      "kind": "leaf",
+      "encrypted": true,
+      "type": "str"
+    },
+    {
+      "pointer": "/tokens/2",
+      "kind": "map"
+    },
+    {
+      "pointer": "/tokens/2/name",
+      "kind": "leaf",
+      "encrypted": true,
+      "type": "str"
+    },
+    {
+      "pointer": "/tokens/2/value",
+      "kind": "leaf",
+      "encrypted": true,
+      "type": "str"
+    },
+    {
+      "pointer": "/hosts",
+      "kind": "map"
+    },
+    {
+      "pointer": "/hosts/srv-1.example.net",
+      "kind": "map"
+    },
+    {
+      "pointer": "/hosts/srv-1.example.net/password",
+      "kind": "leaf",
+      "encrypted": true,
+      "type": "str"
+    },
+    {
+      "pointer": "/odd_keys",
+      "kind": "map"
+    },
+    {
+      "pointer": "/odd_keys/a~1b",
+      "kind": "leaf",
+      "encrypted": true,
+      "type": "str"
+    },
+    {
+      "pointer": "/odd_keys/m~0n",
+      "kind": "leaf",
+      "encrypted": true,
+      "type": "str"
+    },
+    {
+      "pointer": "/note_unencrypted",
+      "kind": "leaf",
+      "type": "str"
+    }
+  ]
+}

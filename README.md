@@ -333,6 +333,153 @@ Push to git. Picolet detects the change, writes the updated Quadlet, and restart
 
 An upgrade that changes the Fleet schema (v0.2.0) needs a fixed rollout order; see [MIGRATION.md](MIGRATION.md).
 
+A commit that changes an Agent's own config (the secret its bundle mounts,
+with `Secret=` or `PodmanArgs=--secret`, where the Agent reads its config:
+the path an `Environment=PICOLET_CONFIG=` line sets, else
+`/etc/picolet/config.yml`) makes the Agent restart its own unit once the
+commit is applied, since Podman copies a secret into a container only when it
+creates it: pushing `age_recipients:`, or any other change the Fleet renders
+into the Agent config, takes effect without a manual restart (a dry run
+restarts nothing).
+
+Such a commit, and one that changes the Agent's quadlet, is checked before it
+is applied, by the Agent and by `picolet apply --config`, with the checks the
+Agent runs at startup: the config must parse with the running Agent's strict
+loader (an unknown key fails), every credential path it names must be
+absolute, and every credential file must exist and be readable in the running
+Agent's container. If a check fails, the reconciliation fails before anything
+is written and the Agent keeps its current config, so it is never left with a
+config its startup checks would refuse. Settings the Agent only uses after
+those checks (`podman_socket`, `systemd_user`, the listen address) are not
+tried, so a wrong one stops the restart; see the limits below. Place a new credential file on the
+Host (`bootstrap machine`) before the commit that points the Agent at it.
+
+The running Agent can only check its next start if that start has its own
+mounts, so **the Agent quadlet's mount lines can't change through the
+Fleet**. A commit that changes any of these `[Container]` lines from the
+quadlet on disk is refused (compared as written, value by value): `Volume=`,
+`Mount=`, `Tmpfs=`, `Secret=`, `Mask=`, `Unmask=`, `VolatileTmp=`,
+`ReadOnly=`, `ReadOnlyTmpfs=`, `Rootfs=`, `WorkingDir=`, `AddDevice=`,
+`Annotation=`, `User=`, `Group=`,
+`GroupAdd=`, `UserNS=`, `UIDMap=`, `GIDMap=`, `SubUIDMap=`, `SubGIDMap=`,
+`RemapUsers=`, `RemapUid=`, `RemapGid=`, `RemapUidSize=`, `AddCapability=`,
+`DropCapability=`, `AppArmor=`, `SeccompProfile=`, `SecurityLabelDisable=`,
+`SecurityLabelFileType=`, `SecurityLabelLevel=`, `SecurityLabelNested=`,
+`SecurityLabelType=`, `Exec=`, `Entrypoint=`, `EnvironmentFile=`,
+`EnvironmentHost=`, `PodmanArgs=`, `GlobalArgs=` and `ContainersConfModule=`;
+the `PICOLET_CONFIG` an `Environment=` line sets (unset reads as
+`/etc/picolet/config.yml`); and every `[Service]` line (it decides who runs
+podman and with what environment, which systemd also expands in the
+generated command line) except `Restart=`, `RestartSec=`, `TimeoutStartSec=`
+and `TimeoutStopSec=`. `Image=`, other `Environment=` variables and the other
+keys stay changeable, so the Agent still updates itself. To change a frozen
+line (say, to move the Agent's credentials to a new mount):
+
+1. On the Host, edit the Agent's quadlet
+   (`/etc/containers/systemd/picolet/picolet-system.container` on the rootful
+   Host, `~/.config/containers/systemd/picolet/picolet.container` for a Host
+   with `user:`) to the new lines, and restart the Agent: `systemctl
+   daemon-reload && systemctl restart picolet-system` as root, or `systemctl
+   --user daemon-reload && systemctl --user restart picolet` as the Host's
+   user. The Agent leaves the hand edit alone while the Fleet's quadlet is
+   unchanged, checks the commits in between against the edited file, and
+   refuses a commit that would undo it.
+2. Commit the same lines to the Fleet; the Agent applies them as unchanged
+   mounts.
+3. Then commit the config change that points at files under the new mount.
+
+A commit that stops resolving a secret (`Secret=` or `PodmanArgs=--secret`,
+mounted or as an environment variable) or `.volume` unit the Agent's quadlet
+still uses is refused as well, since Podman couldn't create the Agent's
+container. With the quadlet on disk, that includes the config secret itself
+(a renamed or dropped config file): drop the mount on the Host first, as
+above. To manage the config by hand, bind-mount a Host file at
+`/etc/picolet/config.yml` with `Volume=` the same way. The Agent's quadlet
+must also be the only Fleet unit for the Agent's service: a commit that adds
+another quadlet with the Agent's `ServiceName=`, a raw unit of that name
+(`picolet-system.service`), or a unit whose `[Install] Alias=` names it is
+refused, since systemd would start the Agent from a unit the check never
+read. So is a commit that makes the Agent's quadlet generate another service
+(another `ServiceName=`, or the file renamed) while the Agent bundle stays
+assigned; unassigning the bundle stops managing the Agent and isn't checked.
+
+With the mounts unchanged, the check still fails closed where a fresh start of
+the same quadlet may show a credential file otherwise than the running
+container: a `--volumes-from` refuses every credential file, and so does a
+tmpfs or anonymous volume (`Tmpfs=`, `VolatileTmp=`, a volume mount with a
+target and no source, however it is spelled) or image mount (`type=image`)
+that may hold one, since Quadlet's container starts it empty and a pull or
+rebuild may change an image; a mount at a relative or specifier target
+(`%h`, `%t`) may hold any path. A credential under no mount (in the Agent's
+image) is refused when the commit changes `Image=`. A credential mounted
+from a Fleet-managed secret or `.volume` unit is refused when the same
+commit changes that source: the running container still shows the old
+content. Keep credentials on a Host path or in a secret, and change their
+source in its own commit.
+
+The check has limits; land such changes on their own and watch the Agent
+restart:
+
+- It assumes the running Agent's container was started from the quadlet on
+  disk. The Agent restarts its own unit after every apply that writes the
+  quadlet or the config, but if that restart failed (or the quadlet was
+  edited without a restart) the real mounts may differ.
+- Without the Agent's quadlet on disk (an Agent started by hand, or a Fleet
+  that starts managing it at a path where no quadlet lies; a hand-placed
+  quadlet at the Fleet's path counts as the one on disk, with or without a
+  state record), the frozen lines aren't compared: the commit's
+  quadlet may mount other paths, another config secret or none, and the
+  credentials are read as the config spells them.
+- Only a Fleet-resolved secret mounted where the Agent reads its config is
+  checked as the config. A config bind-mounted from a Host path, a volume or
+  a delivered data file, or read from a path set otherwise than by a
+  `PICOLET_CONFIG` `Environment=` line (`Exec=` `--config`, the image's
+  `ENV` or `CMD`, `PICOLET_CONFIG` passed from the Host's environment), isn't
+  checked.
+- Changeable lines can still break the next start: `Image=` (a new image may
+  set another `PICOLET_CONFIG`, `CMD` or default `USER`, which decides who
+  reads a Host-path credential), and `Environment=` variables the Agent
+  reads besides `PICOLET_CONFIG` (`XDG_RUNTIME_DIR` for the user systemd
+  connection, `PATH`, `HOME` and `XDG_*` for `pass-cli`). A credential under
+  no mount is refused only when `Image=` changes, so one the running
+  container wrote into its own writable layer, which a restart drops, passes.
+- Agent config settings are checked as the startup checks do (parse,
+  credential files), not tried: a `podman_socket` that doesn't exist in the
+  container, a `systemd_user` that doesn't match the Agent's systemd, or a
+  `listen_port:`/`listen_addr` another process holds pass the check, and the
+  Agent then exits at its self-restart. Change them on one Host first.
+- Lines outside `[Container]` and `[Service]` aren't frozen: a `[Unit]`
+  condition, a dependency or `[Install]` `WantedBy=` the commit changes can
+  stop or skip the next start, and so can `Notify=` (the Agent sends no
+  readiness notification) or a `[Container]` `Network=` that can't reach
+  the git server.
+- The content of a file a frozen line names (an `EnvironmentFile=`, a
+  `ContainersConfModule=`, a `containers.conf` the Fleet delivers) isn't
+  compared, nor an image rebuilt or pulled anew under an unchanged `Image=`
+  line, which a credential in the image relies on.
+- `picolet apply --config` checks credential paths as the CLI process sees
+  them, so run it inside the Agent's container. Outside it (say on a user
+  Host's Machine, where `/etc/picolet/secrets` is really
+  `%h/.config/picolet/secrets`) the check can refuse or pass wrongly. It does
+  not restart the Agent for a config change (only a changed Agent quadlet
+  restarts it, as on the Agent), and it records the new config as applied, so
+  the Agent sees no change to apply: restart the Agent by hand (`systemctl
+  restart` its unit) to load a config `apply --config` wrote.
+- A commit that changes only the content of a Fleet-managed secret or
+  `.volume` unit holding a credential, with the quadlet and the config
+  unchanged, isn't checked against the new content (the Agent doesn't restart
+  for it, but reads it at its next start).
+- A credential bind-mounted from a Host path the Agent itself writes (a
+  delivered data file under its `files/` or `manifests/` directory) is checked
+  as the running container shows it, the old content, even when the same
+  commit rewrites that file and the config, and the Agent restarts onto the
+  new content. Don't deliver Agent credentials as Fleet data files.
+- The Agent's restart of its own unit is already under way while it saves
+  its state. If the save fails,
+  the next start finds the old record, rewrites the config and restarts
+  again, so an Agent that can't write its state restarts on every start:
+  fix the state directory.
+
 ### 6. Monitoring
 
 The agent serves `/metrics`, `/health`, `/webhook` and the dashboard on
@@ -491,7 +638,7 @@ Your fleet repo controls what picolet deploys. See `deploy/fleet-repo/` for a co
 |------|---------|
 | `fleet.yml` | Image versions and ports (Renovate-managed) |
 | `assignments.yml` | Assigns files (`paths:`), Podman secrets (`secrets:`) and Service Bundles (`services:`) to hosts: `base`, then per role, then per feature |
-| `hosts/<name>/host.yml` | Per-host config: hostname, external hostname, role, features, machine, user, listen_port |
+| `hosts/<name>/host.yml` | Per-host config: hostname, external hostname, role, features, machine, user, listen_port, age_recipients (the Host's age public keys for `sops://` refs) |
 
 ### Machines, users and ports
 
@@ -610,21 +757,38 @@ the generic domain `example.net`.
 
 - **Host naming.** See [Machines, users and ports](#machines-users-and-ports):
   `srv-1`, `srv-1-system` and `srv-1-runner` follow it.
-- **Nothing secret in git.** The Fleet repo holds templates and references
-  (`op://`, `pass://`), never values: no tokens, passwords, private keys or
-  key-bearing URLs, and no file a secret was ever committed to. Real values
-  live in a [Secret Provider](#secret-providers) or in the Host's local
-  secrets directory.
+- **No plaintext secret in git.** The Fleet repo holds templates and
+  references (`op://`, `pass://`, `sops://`), never plaintext values: no
+  tokens, passwords, private keys or key-bearing URLs, and no file a secret was
+  ever committed to. Real values live in a [Secret Provider](#secret-providers),
+  in the Host's local secrets directory, or encrypted in a `*.sops.*` file in
+  the Fleet ([`sops://`](#sops-setup)). A SOPS file still leaves some things
+  public to every reader of the Fleet: key names and structure, the type and
+  length of every value, list lengths, the `sops:` metadata block (each
+  Recipient's public key, the last-modified time, the SOPS version), and values
+  left unencrypted by its rules (`unencrypted_suffix`/`_regex`,
+  `encrypted_suffix`/`_regex`, `mac_only_encrypted`). See
+  [ADR 0003](docs/adr/0003-no-plaintext-secret-in-git.md).
 - **One provider token per Machine.** By default every Agent on a Machine uses
   the same provider token: one credential to provision and rotate per Machine.
   The stricter options are a token scoped to a single Host's vault or share, or
   no provider at all (secrets provisioned on the Host by hand) — pick them
   when a Host, such as an isolated `runner` user, must not be able to read what
   its siblings can.
+- **One age identity per Host.** `sops://` is stricter than the provider token:
+  every Host, the rootful one included, decrypts with its own age identity and
+  declares its public keys in `host.yml` `age_recipients:`. Every Linux user on
+  a Machine can read the whole checkout, so inside it a SOPS file's Recipients
+  are the only boundary between Hosts; one key per Machine would let a Host
+  that runs foreign code (a CI runner) decrypt its neighbours' values. Encrypt
+  each file only to the Hosts that consume it plus the Operators (one file per
+  audience); `validate` enforces that.
 - **Nothing the Agent deploys hosts the Fleet.** The Fleet repository (forge,
   git server) and the secret provider must never run on a service that an Agent
   deploys from that same Fleet: if that service is down or broken by a bad
-  commit, no Agent can fetch the fix or the credentials to repair it.
+  commit, no Agent can fetch the fix or the credentials to repair it. SOPS runs
+  no service, so for `sops://` only the git server and the Host's identity file
+  matter.
 - **Cross-Host traffic uses loopback ports or the public hostname.** Hosts on
   one Machine talk to each other over `127.0.0.1:<port>` (each Host's ports come
   from the Fleet, e.g. `siblings` → `.ListenPort`); Hosts on different Machines
@@ -1070,7 +1234,7 @@ roles:
 ```
 
 A group accepts exactly `paths:`, `secrets:` and `services:`. `secrets:` lists files
-(or `op://`/`pass://` refs, see [Secret Providers](#secret-providers)) deployed as
+(or `op://`/`pass://`/`sops://` refs, see [Secret Providers](#secret-providers)) deployed as
 Podman secrets whatever their path; `services:` lists [Service Bundles](#service-bundles).
 A file reached twice in one category deploys once; two sources for one destination
 are an error. A file listed under `secrets:` that `paths:` also reaches as another
@@ -1310,6 +1474,7 @@ The template data root exposes `.Images`, `.Ports`, `.Fleet` (all hosts + full c
 | `.Host.User` | The Linux user the host's Agent runs as; empty for the rootful host |
 | `.Host.Rootful` | `true` for the rootful host (no `user:`) |
 | `.Host.ListenPort` | The port the host's Agent listens on (`listen_port:` or its `fleet.yml` default) |
+| `.Host.AgeRecipients` | The host's `age_recipients:` in canonical form, in file order (empty without them) |
 | `.Host.Services` | Resolved service-bundle names for this host (sorted, deduplicated) |
 | `.Host.SystemdUnits` | Systemd unit names picolet manages on this host — quadlet-derived (`.container`/`.kube`/`.network`/`.volume`/`.pod`/`.image`/`.build`) plus raw systemd files, sorted and deduplicated. See [Two-pass rendering](#two-pass-rendering) |
 
@@ -1324,6 +1489,8 @@ The template data root exposes `.Images`, `.Ports`, `.Fleet` (all hosts + full c
 | `readSecretFile(path)` | Read secret (placeholder in CI mode) |
 | `readOpSecret(ref)` | Resolve a 1Password reference, e.g. `op://vault/item/field` |
 | `readProtonPassSecret(ref)` | Resolve a Proton Pass reference, e.g. `pass://share/item/field` |
+| `readSopsSecret(ref)` | Read one value of a SOPS-encrypted file in the Fleet, e.g. `sops://secrets/db.sops.yaml#/db/password` (path relative to the Fleet root, fragment a JSON Pointer to a leaf; no fragment for the whole file). A string leaf and a whole file come back byte-for-byte as `sops decrypt` prints them; a non-string leaf (`5432`, `true`) as `sops decrypt --extract` prints it, without the trailing newline; `null` is empty. A direct `sops://` entry in `secrets:` renders the same way. `validate`, `resolve` and `dry-run` without an Agent config check the ref without a key and render `<sops-secret>` for an encrypted string value and a placeholder of its type for an encrypted number or boolean (`0`, `0.0`, `false`; a timestamp as `0001-01-01T00:00:00Z`), so a typed field such as a manifest's `replicas:` still validates (a value the file's encryption rules leave in plaintext renders as itself; a direct `secrets:` entry renders `<sops-secret>` for every encrypted value); an Agent without an age identity fails the resolve. Not allowed in a Quadlet, a Raw Unit or a Service Bundle's Hook definition (`picolet.yml.tmpl`), directly or through `renderTemplate`: those are world-readable, shown by `systemctl show` or logged, so the render fails; pass the value with `Secret=` (or a secret mounted as a file) instead |
+| `readSopsData(ref)` | The SOPS subtree a `sops://` ref names, to range over: a map, a list or a scalar (no fragment: the whole document), e.g. `{{ range $k, $v := readSopsData "sops://secrets/app.sops.yaml#/env" }}  {{ $k }}: {{ $v \| quote }}{{ end }}` to fill a Kubernetes Secret's `stringData:`. Nested maps and lists keep their structure; every leaf is a string, rendered like a `readSopsSecret` leaf (a string leaf keeps a trailing newline it has). `validate` and `resolve` return the real structure with every encrypted leaf as `<sops-secret>`, or as a placeholder of its type for a number or boolean, like `readSopsSecret` (plaintext leaves as themselves). Otherwise it behaves like `readSopsSecret`: same failures without an identity, in strict mode and in a Quadlet, Raw Unit or Hook definition; a file read by both helpers is decrypted once |
 | `manifestPath(relPath)` | Return the absolute deployed path for a manifest file (handles rootless/rootful, and `host_data_dir` for containerized picolet). `relPath` is relative to the service's `manifests/` dir |
 | `filePath(relPath)` | Return the absolute deployed path for a file (handles rootless/rootful, and `host_data_dir` for containerized picolet). `relPath` is relative to the service's `files/` dir |
 | `has(item, slice)` | Sprig: check if a value is present in a list |
@@ -1343,7 +1510,7 @@ Keep fragments unindented (`- name: ...`) and let the template handle indentatio
 
 Some template data only becomes knowable after `.tmpl` files render, so picolet renders in two passes:
 
-- **First pass** — picolet renders templates with placeholder data. Executing every `.tmpl` file collects secret references (`op://`, `pass://`) so each provider can batch-resolve them; quadlet renders are additionally parsed with Podman's unit-name resolver to derive `.Host.SystemdUnits`. First-pass render errors are non-fatal.
+- **First pass** — picolet renders templates with placeholder data. Executing every `.tmpl` file collects secret references (`op://`, `pass://`, `sops://`) so each provider can batch-resolve them (a SOPS file is decrypted at most once per Host resolve); quadlet renders are additionally parsed with Podman's unit-name resolver to derive `.Host.SystemdUnits`. First-pass render errors are non-fatal.
 - **Final pass** — every template renders again with fully populated data (resolved secrets and `.Host.SystemdUnits`); this pass is the source of truth for diagnostics.
 
 A template consuming `.Host.SystemdUnits` sees it empty during the first pass, so iterate it with `range` rather than indexing — and a template whose own filename or `ServiceName=` depends on `.Host.SystemdUnits` cannot be resolved. See the `preparedData` doc comment in `pkg/resolver/resolver.go` for the full rationale.
@@ -1354,21 +1521,49 @@ All files are validated before deployment: quadlet files via Podman's own `quadl
 
 Secrets always require non-empty content. Repo-backed YAML secrets (`.yml` / `.yaml`, including `.tmpl`) are also syntax-validated after template rendering. External placeholder secrets in repo-only validation mode are skipped for YAML syntax checks.
 
+`validate` also renders each Host's Agent bundle (`picolet` for a Host with `user:`, `picolet-system` for the rootful Host; Hosts without it assigned are skipped) the way `bootstrap` does: strictly, with no secret provider. A `readOpSecret`/`readProtonPassSecret` call in the bundle fails with the Host, the bundle, the ref and the fix, since `bootstrap` would fail on it too; put the ref in the Agent config as a YAML value (e.g. `onepassword.git_token_ref: op://…`) and let the Agent resolve it at runtime. A `readSopsSecret` or `readSopsData` call in the bundle fails the same way: deliver the value as a `--secrets-dir` file and point the Agent config at its path, since credentials needed to fetch the Fleet can't be SOPS values. A bundle whose quadlet mounts a `Secret=` at `/etc/picolet/config.yml` that the bundle itself doesn't resolve (a renamed or dropped config file) fails too: `bootstrap` reads the bundle alone, so a config secret delivered by an `assignments.yml` `secrets:` entry outside the bundle fails as well, and neither `bootstrap` nor the Agent's next start after a rename would find a config.
+
+`validate` checks every `readSopsSecret` ref without a key: the path is a clean Fleet-relative `*.sops.*` path, the file exists and is a SOPS file, and the pointer ends at a leaf. The file's values are checked the way the Agent's decrypt walks them, by the file's own encryption rules: a value the rules encrypt must be SOPS ciphertext with a valid type tag (an edit outside sops fails every ref into the file, as it fails the Agent), and a value they leave in plaintext (`""`, `null`, an `_unencrypted` key) passes and renders as itself. `validate` never fails a ref the Agent would decrypt; what needs the key (the MAC, the ciphertext) only the Agent checks. A `readSopsData` ref may end at a map or a list. A direct `sops://` entry in `secrets:` gets the same checks, except that it must end at a non-empty leaf. Every ref also checks the Host's Recipients:
+
+- A Host that references a SOPS file must declare `age_recipients:` in its `host.yml`, otherwise: *Host srv-1 references sops://… but declares no age_recipients; add its age public key to age_recipients: in its host.yml*.
+- One of the Host's `age_recipients:` must be among the file's age Recipients (during a rotation, either key passes). With key groups, the Host must appear in at least `shamir_threshold` groups (all groups when the threshold is 0). A miss is *not a recipient* and names the file, the Host's recipients and the fix: add one of them to the file's `.sops.yaml` creation rule and run `sops updatekeys <file>`.
+
+These compare the file's unauthenticated recipient labels: they catch drift between `host.yml` and the files, not a hostile edit (see [Threat model](#threat-model)).
+
+A `*.sops.*` file is reachable only through a `sops://` ref: `paths:` directory walks and Service Bundles skip it (and SOPS's own `.sops.yaml`/`.sops.yml`), and an explicit `paths:` entry or a plain `secrets:` entry naming one is an error (*SOPS file is reachable only through a sops:// ref*), as is an explicit `paths:` entry naming `.sops.yaml` or `.sops.yml`.
+
+`validate` checks every `*.sops.*` file in the Fleet, whether or not a Host references it, without any key:
+
+- **Encrypted:** the file must carry SOPS metadata (`sops.version` and `sops.mac`) and be at most 1 MiB. A plaintext file under a SOPS name is an error: its values are in git, so rotate them and commit the file encrypted (rewriting history does not unpublish them).
+- **Creation rule:** when the Fleet-root `.sops.yaml` has a rule matching the file, the file's age Recipients must equal the rule's.
+  - Matching: picolet loads the rule with SOPS's own config loader, as `sops` picks it for the file (first match wins, an empty `path_regex` matches every file, paths are relative to the Fleet root). It first strips every non-age key (`kms`, `gcp_kms`, `azure_keyvault`, `hc_vault_transit_uri`, `pgp`, `hckms` and the like, top level and in key groups) and `destination_rules`, so `validate` never contacts a key service and its result does not depend on cloud credentials or the network; a rule left with no age Recipients still matches and compares as one empty group. Only `creation_rules` and their age material are read, so a value `sops` itself would refuse in a stripped field (a non-age key, `destination_rules`, `stores`) passes. The reduced rules go to a private temporary directory, so `validate` needs a writable `TMPDIR` whenever the Fleet has a root `.sops.yaml`. A rule SOPS cannot load (a bad `path_regex`, a malformed age recipient, two encryption rules) is an error, reported once per reason; it hides no other rule's drift.
+  - Comparison: key group by key group, order ignored; `shamir_threshold`, encryption rules and non-age keys are ignored. A mismatch lists `+` (in the file, not the rule) and `−` (in the rule, not the file) and asks you to run `sops updatekeys <file>`. It does not name the rule (SOPS's loader does not say which one it picked): with several rules, it is the first whose `path_regex` matches the file.
+  - Only the root `.sops.yaml` is read; it must be a regular file, not a symlink. A file without a matching rule, or a Fleet without a root `.sops.yaml`, is not checked: the file's own Recipients decide who can read it. picolet never generates `.sops.yaml`.
+- **Audience (least privilege):** every age Recipient of the file must belong to an [Operator](#operatorsyml) or to a Host whose resolve reaches the file (through `readSopsSecret`, `readSopsData` or a direct `secrets:` ref).
+  - A file no Host references may be read by Operators only.
+  - The error names the file, the Recipient and its owner (a Host, or `unknown`) and both fixes: *planned retirement: drop it from the `.sops.yaml` rule and run `sops updatekeys <file>`; trust lost: drop it, run `sops rotate -i <file>` (new data key) and change every value. `updatekeys` revokes nothing* (see [Leaks and revocation](#leaks-and-revocation)).
+  - The pass needs every Host's resolve, so it is skipped with a warning when any Host failed to resolve.
+
+`validate` warns (without failing) when a Host or an Operator declares one of picolet's published TEST-ONLY recipients (the fixture keys under `testdata/sops`): their identities are public, so never encrypt a real secret to them.
+
+`validate` never decrypts, and needs no key, so CI gives the same result as your laptop. `resolve` and the Agent run none of the Fleet-wide passes.
+
 Run `./picolet validate` in CI to catch errors before pushing.
 
 ## Secret Providers
 
-Picolet integrates with two secret managers so cleartext credentials never live in the fleet repo. Both providers can be configured at the same time; references are routed by URI scheme.
+Picolet integrates with two secret managers, and with SOPS-encrypted files in the Fleet itself, so cleartext credentials never live in the fleet repo. All three can be configured at the same time and mixed per Host and per value, with no preference between them; references are routed by URI scheme.
 
 | Provider | Scheme | Underlying tool | Auth model |
 |----------|--------|-----------------|------------|
 | 1Password | `op://vault/item/field` | Official Go SDK | Service-account token |
 | Proton Pass | `pass://share/item/field` | `pass-cli` (bundled in the container image) | Personal Access Token |
+| SOPS | `sops://<fleet-path>[#<json-pointer>]` | `getsops/sops` (built in, decrypts age only); no service | One age identity per Host |
 
 Refs can appear in two places:
 
-- **Direct Podman secrets** in `assignments.yml` under `secrets:` — Picolet resolves the value and creates a Podman secret named after the URI components (e.g. `vault_item_field` or `share_item_field`).
-- **Inside templates** via `{{ readOpSecret "op://..." }}` or `{{ readProtonPassSecret "pass://..." }}` — Picolet collects all calls in a first render pass, batches them per provider, then renders again with the resolved values.
+- **Direct Podman secrets** in `assignments.yml` under `secrets:` — Picolet resolves the value and creates a Podman secret named after the URI components (e.g. `vault_item_field` or `share_item_field`). A `sops://` ref is named after its JSON Pointer's segments joined by `_` (`sops://secrets/db.sops.yaml#/db/password` → `db_password`, `#/tokens/0` → `tokens_0`), or for a whole-file ref after the file's base name before `.sops.` (`sops://secrets/tls.sops.key` → `tls`). Characters are never rewritten: a segment that can't appear in a Podman secret name (anything but letters, digits, `.`, `_`, `-`) is an error, so deliver such a value through a `secrets/<name>.tmpl` that calls `readSopsSecret`. A direct `sops://` ref must name a non-empty leaf (not a map or list, not `""` or `null`); `validate` checks it without a key, recipients included, and an Agent without an age identity fails the reconciliation instead of skipping it. Its secrets count in `picolet_secrets_managed_count{provider="sops"}`.
+- **Inside templates** via `{{ readOpSecret "op://..." }}`, `{{ readProtonPassSecret "pass://..." }}`, `{{ readSopsSecret "sops://..." }}` or `{{ readSopsData "sops://..." }}` — Picolet collects all calls in a first render pass, batches them per provider, then renders again with the resolved values.
 
 ### 1Password setup
 
@@ -1409,6 +1604,209 @@ Find share IDs and item IDs with:
 pass-cli vault list
 pass-cli item list --share-id <share-id>
 ```
+
+### First SOPS secret on an existing Host
+
+A guided path from a running Host to its first decrypted value; the sections after it are the reference. The example is the rootless Host `srv-1` (user `app`) on Machine `srv-1`, with the Fleet checkout at `/srv/fleet` and the Machine's `--secrets-dir` at `/root/fleet-secrets`. Every Agent and the CLI must already run a picolet version with `sops://` (see [Adopting SOPS](#adopting-sops)). You need [`age-keygen`](https://github.com/FiloSottile/age) where you generate the identity, and the [`sops`](https://github.com/getsops/sops) CLI with an identity of your own (`age-keygen -o ~/.config/sops/age/keys.txt` if you have none) where you edit the Fleet.
+
+1. **Generate the Host's identity** outside the Host's account, into its `--secrets-dir` directory:
+
+   ```console
+   $ age-keygen -o /root/fleet-secrets/srv-1/age-identity   # or age-keygen -pq for a hybrid post-quantum key
+   Public key: age1…
+   ```
+
+2. **Deliver it** with `bootstrap machine`. The new credential file restarts the Agent; it does not use the identity yet, since its config has no `sops:` block:
+
+   ```console
+   $ sudo picolet bootstrap machine srv-1 --repo-dir /srv/fleet --secrets-dir /root/fleet-secrets
+   …
+   Host   User  Port  Health   Agent restart
+   srv-1  app   9417  healthy  restarted (credential files written)
+   ```
+
+3. **Declare the public key** in `hosts/srv-1/host.yml` and push:
+
+   ```yaml
+   age_recipients:
+     - age1…   # the public key from step 1
+   ```
+
+   The reference Agent config now renders a `sops:` block for `srv-1`; the Agent applies it and restarts itself to load the identity (as that user: `journalctl --user -fu picolet.service`):
+
+   ```text
+   {"time":"…","level":"INFO","msg":"Agent config changed, restarting to load it"}
+   {"time":"…","level":"INFO","msg":"sops identities loaded","path":"/etc/picolet/secrets/age-identity","identities":1}
+   ```
+
+   Without step 2 the Agent refuses the new config (`refusing the Agent config … the Agent could not start with it: credential sops.age_identity_path …`) and keeps running on the old one; deliver the identity and the next reconciliation applies it.
+
+4. **Encrypt a file** to the Host and yourself. Declare yourself in `operators.yml`, add a creation rule, and create the file with `sops edit`, which encrypts it on save, so the plaintext never lands in the checkout:
+
+   ```yaml
+   # operators.yml
+   me:
+     age_recipients:
+       - age1…me
+   ```
+
+   ```yaml
+   # .sops.yaml
+   creation_rules:
+     - path_regex: ^secrets/app\.sops\.yaml$
+       age: age1…srv-1, age1…me
+   ```
+
+   ```console
+   $ sops edit secrets/app.sops.yaml   # write: app: {token: …}
+   ```
+
+5. **Reference the value** as a direct secret (named `app_token` after the pointer) from a group only `srv-1` gets, and consume it in a Quadlet; `validate` fails any Host the ref reaches that is not a Recipient of the file:
+
+   ```yaml
+   # assignments.yml
+   features:
+     app:   # listed in srv-1's host.yml features:
+       secrets:
+         - "sops://secrets/app.sops.yaml#/app/token"
+   ```
+
+   ```ini
+   # in the consuming .container
+   Secret=app_token
+   ```
+
+6. **Validate, then push.** `validate` checks the ref, the file's recipients and the `.sops.yaml` rule without a key; `resolve` shows where the value lands:
+
+   ```console
+   $ picolet validate
+   … level=INFO msg="host validated" host=srv-1 files=…
+   $ picolet resolve --host srv-1
+   …
+   === secret:app_token ===
+   <sops-secret>
+   ```
+
+7. **Check the result.** After the push the Agent logs `changes detected` and `apply complete` with the consuming unit restarted; `podman secret ls` (as `app`) lists `app_token`. picolet never prints the value; read it with `sops decrypt secrets/app.sops.yaml`:
+
+   ```text
+   {"time":"…","level":"INFO","msg":"changes detected","create":1,"update":1,"delete":0}
+   {"time":"…","level":"INFO","msg":"apply complete","applied":2,"restarted":["app.service"],"skipped_oneshot_restarts":0,"dry_run":false}
+   ```
+
+Which commands decrypt:
+
+| Command | `sops://` values |
+|---------|------------------|
+| The Agent (`picolet run`), `picolet dry-run --config` | decrypted with `sops.age_identity_path` |
+| `picolet validate`, `picolet resolve`, `picolet dry-run` (no `--config`), `picolet bootstrap` | keyless: checked against `age_recipients:`, shown as `<sops-secret>`, never decrypted (`dry-run` marks an update of a SOPS-backed file unverified; the Agent bundle `bootstrap` renders may not use `sops://` at all) |
+| `picolet apply --config` | refused: a `sops://` ref fails it, even with a `sops:` block; let the Agent apply |
+
+### SOPS setup
+
+The Agent decrypts `sops://` refs only with the age identities in the file its config names; there is no default path, no inline key and no environment fallback (picolet hands only those identities to the SOPS library's age key, so its `SOPS_AGE_KEY*`, `keys.txt` and `~/.ssh` lookup never runs):
+
+```yaml
+# /etc/picolet/config.yml
+sops:
+  age_identity_path: /etc/picolet/secrets/age-identity  # required inside the block
+```
+
+The file holds one or more `AGE-SECRET-KEY-…` lines (two during a rotation). Deliver it like any other Bootstrap credential (the `--secrets-dir` file `age-identity`, or a `bootstrap:` entry). A missing, unreadable or unparsable file, or one holding no identity, stops the Agent at startup; a file readable by group or others logs a warning. The identity is an Agent credential: `readSecretFile` and `secrets:` refuse it, and the Agent refuses to apply a Fleet-rendered config of its own whose identity file is missing. Each file is decrypted at most once per reconciliation; a decrypt failure (not a recipient, edited outside sops) fails the reconciliation like any other error, and decrypted values are removed from error text before it reaches logs, dashboard events, MQTT or GitHub deployment statuses, and the dashboard shows no content hash for a file whose render used a SOPS value. A reconciliation that decrypted at least one SOPS file counts as a sync in `picolet_secret_sync_total{provider="sops"}` and `picolet_secret_last_sync_timestamp{provider="sops"}`. `picolet dry-run --config` decrypts the same way, so an unchanged SOPS-backed file shows no change. Without `--config`, `dry-run` is keyless like `resolve`: an update of a file whose render used a SOPS value shows as `update (unverified: SOPS values not decrypted)`, since its `<sops-secret>` placeholders can't be compared with what the Agent applied. `picolet apply --config` does not decrypt: a Fleet with `sops://` refs fails it, even with a `sops:` block; let the Agent apply that Fleet.
+
+The reference Agent config templates (the `picolet` and `picolet-system` bundles in `deploy/fleet-repo`) emit this block only for a Host whose `host.yml` declares `age_recipients:`. So deliver `age-identity` and run `bootstrap machine` before you push `age_recipients:`; if the identity isn't there yet, the Agent refuses the new config, fails that reconciliation and keeps running on its old config. When none of the Agent's identities is among its Host's `age_recipients:` but every decrypt succeeds, the Agent logs a warning on each reconciliation that decrypts SOPS files, naming both sets of public keys. Nothing fails.
+
+Don't create `/etc/sops/audit.yaml` where picolet runs: the built-in `getsops` library reads it at process start in every command, so a malformed file panics picolet and a Postgres audit backend is contacted at startup and on every decrypt (including the keyless walk `validate`, `resolve` and `dry-run` make over each SOPS file a ref reaches, which upstream records as a decrypt). The Agent image has no such file; only the CLI on a Machine or in CI is exposed.
+
+#### References and SOPS files
+
+A `sops://` ref names a SOPS file by its path relative to the Fleet root, and optionally a value in it by an [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901) JSON Pointer:
+
+```text
+sops://secrets/db.sops.yaml#/db/password     one leaf
+sops://secrets/app.sops.yaml#/tokens/0       a list element
+sops://secrets/app.sops.yaml#/hosts/srv-1.example.net   dots need no escaping
+sops://secrets/app.sops.yaml#/a~1b           the key "a/b" (~1 is /, ~0 is ~)
+sops://secrets/tls.sops.key                  the whole file, as `sops decrypt` prints it
+```
+
+- **The `.sops.` infix.** Every SOPS file is named `<name>.sops.<ext>`, with `.sops.` directly before the final extension (`db.sops.yaml`, `tls.sops.key`, `app.sops.env`); the extension picks the format, as for the `sops` CLI. `.sops.` anywhere else (`db.sops.prod.yaml`, `db.sops.yaml.bak`) makes an ordinary file, which walks deploy like any other. SOPS's own config files `.sops.yaml`/`.sops.yml` are never SOPS files. A `*.sops.*` file is reachable only through a `sops://` ref: walks skip it, so you can keep `secrets.sops.yaml` next to a Service Bundle's units without it being deployed as ciphertext, and reference it as `sops://services/web/secrets.sops.yaml#/…` (there is no bundle-relative form). Paths go through the same relative-path checks and symlink-safe Fleet FS as `readFile`; a file over 1 MiB is an error.
+- **Helpers.** `readSopsSecret` returns one string (a leaf, or the whole file without a fragment); `readSopsData` returns a subtree to `range` over, e.g. to fill separate manifest fields or a Kubernetes Secret's `stringData:`. A ref can be built per Host: `{{ readSopsSecret (printf "sops://hosts/%s/app.sops.yaml#/token" .Host.Hostname) }}`. See [Templates](#templates) for both.
+- **Direct secrets.** A `sops://` entry in `assignments.yml` `secrets:` creates a Podman secret named after the pointer's segments joined by `_` (`#/db/password` → `db_password`), or for a whole-file ref after the base name before `.sops.` (`tls.sops.key` → `tls`). A segment that can't appear in a secret name is an error; deliver that value through a `secrets/<name>.tmpl` whose content is `{{ readSopsSecret "sops://…" }}`, which you name yourself.
+- **Never in a unit file.** A Quadlet, a Raw Unit or a Hook definition that calls `readSopsSecret` or `readSopsData` fails to render: those files are world-readable, shown by `systemctl show` or logged. Hand the value to the container with `Secret=` (a direct `secrets:` entry or a `secrets/*.tmpl`), or mount such a secret as a file.
+- **Looking at a value.** picolet never prints a decrypted value: `resolve` shows `<sops-secret>` where a value lands (`0`, `0.0` or `false` for an encrypted number or boolean), `dry-run --config` prints paths and actions only. An Operator reads a file with `sops decrypt secrets/db.sops.yaml` (or edits it with `sops edit`) using their own identity.
+
+#### Recipients and identities
+
+Each Host declares the public keys of its own identity in `host.yml`, and only the Agent of that Host holds the identity:
+
+```yaml
+# hosts/srv-1/host.yml
+hostname: srv-1
+machine: srv-1
+user: app
+age_recipients:
+  - age1…   # X25519, from `age-keygen`; or a hybrid post-quantum age1pq1… key
+```
+
+Only X25519 (`age1…`) and hybrid post-quantum (`age1pq1…`) recipients are accepted; SSH, plugin, PGP and KMS keys are not. `validate` uses `age_recipients:` to check every ref of the Host (see [Validation](#validation)); templates see it as `.Host.AgeRecipients` (the reference Agent config emits its `sops:` block only when it is non-empty); the Agent itself uses it only for its drift warning. Generate the identity off the Host (`age-keygen -o age-identity`, or `age-keygen -pq` for a hybrid key), put the file at `<secrets-dir>/<hostname>/age-identity` and run `bootstrap machine` (see [Bootstrapping a Machine](#3-bootstrapping-a-machine)); a `bootstrap:` entry such as `age-identity: op://…` works too, but a `sops://` ref never does. Encrypt each file to its consuming Hosts and the Operators through a creation rule in the Fleet-root `.sops.yaml`:
+
+```yaml
+# .sops.yaml
+creation_rules:
+  - path_regex: ^hosts/srv-1/
+    age: >-
+      age1…srv-1, age1…operator, age1…operator-backup
+```
+
+**Rotating an identity** needs no downtime, because the identity file may hold several identities and either key passes the checks:
+
+1. Generate the new identity, append it to the Host's `age-identity` file in `--secrets-dir` (keep the old line) and run `bootstrap machine`; the changed file restarts the Agent with both identities.
+2. Add the new public key to the Host's `age_recipients:` (both listed).
+3. Swap the old key for the new one in the `.sops.yaml` rules and run `sops updatekeys <file>` on each file; commit.
+4. Remove the old key from `age_recipients:` and the old line from `age-identity`, run `bootstrap machine` again, and destroy every copy of the old identity, backups included. Only then is `updatekeys` enough (see [Leaks and revocation](#leaks-and-revocation)).
+
+#### `operators.yml`
+
+The optional Fleet-root `operators.yml` declares the Operators: people, and their offline backup keys, who may read every SOPS file besides the Hosts that consume it. Each top-level key is an Operator name:
+
+```yaml
+# operators.yml
+operator-1:
+  age_recipients:
+    - age1…
+    # Backup key, kept offline.
+    - age1…
+```
+
+Only `validate` reads it (strictly), so adopting it needs no Agent upgrade. A Recipient declared by an Operator and by a Host is an error (*a Recipient belongs to an Operator or to Hosts, never both*); two Hosts may share one. Without `operators.yml`, every Recipient of a file must belong to a Host that consumes it.
+
+#### Adopting SOPS
+
+1. **Release first.** Upgrade every Agent and the CLI you run `validate` with to a picolet version with `sops://` before the Fleet adopts any of `age_recipients:`, a `*.sops.*` file or a `sops://` ref. Older Agents don't skip `*.sops.*` files in walks (at a bundle root they fail with "unknown extension"), and an older `validate` rejects the new `host.yml` key.
+2. **Then per Host** ([walkthrough](#first-sops-secret-on-an-existing-host)): deliver `age-identity` (`--secrets-dir` or `bootstrap:`), run `bootstrap machine`, then push `age_recipients:`. The reference Agent config emits its `sops:` block only once `age_recipients:` is declared; the Agent applies that config and restarts itself to load the identity, with no manual restart. If the identity file isn't on the Host yet, the Agent refuses that config and keeps running on its old one (the self-restart guard), so a wrong order fails a reconciliation instead of locking the Agent out.
+3. Add `operators.yml`, the `.sops.yaml` rules and the `*.sops.*` files, and reference them.
+
+**Fetch credentials are never SOPS values.** The git token and the GitHub App credentials fetch the Fleet, so they can't live in it: the Agent has no checkout to decrypt from on first start, and a rotated token would strand every Agent that hasn't fetched the new commit yet. Keep them as Bootstrap credentials (a `--secrets-dir` file or a `bootstrap:` entry); a token stored next to the identity is protected just as well. `bootstrap` and `validate`'s Agent-bundle check fail on `sops://` in the Agent bundle with that advice, and a `sops://` `bootstrap:` entry fails to load.
+
+**The Agent's own credentials can't be deployed or cross-wired.** `readSecretFile` and file `secrets:` refuse every file the Agent config names as a credential (the identity, provider tokens, the Proton Pass session directory, the git token, the GitHub App key, the webhook secret, the MQTT password): *Agent credentials cannot be deployed*. `picolet bootstrap` (and so `bootstrap machine`) refuses the same files, those the Agent config it renders names, looked up below `--secrets-dir`, and always the `--secrets-dir` files `age-identity`, `op-service-account-token` and `pp-pat` (where `bootstrap machine` places the provider token), even when the rendered Agent config doesn't name them or the Fleet does not render one; the rendered config's credential settings may not depend on a secret file. An Agent config in which two credential settings name the same file fails to load, so a Fleet commit can't send the identity to a server as a "token".
+
+#### Leaks and revocation
+
+Git keeps every commit, so a leak is fixed by **rotation, never by rewriting history**. Both of these are rotation events: a plaintext secret in any reachable commit (including one later replaced by its encrypted form), and a value encrypted to a Recipient that shouldn't read it.
+
+`sops updatekeys` (and `sops edit`) keep the file's data key and only re-wrap it for the new Recipients, so a removed Recipient can still unwrap that key from any older commit. **`updatekeys` alone never revokes anything.**
+
+- **Trust lost** (a person leaves, a Machine is lost or stolen, an identity is exposed): drop the Recipient from `.sops.yaml` (and `operators.yml` or `age_recipients:`), give the file a new data key with `sops rotate -i <file>`, and change every value ever encrypted to that Recipient, in that commit or a later one, never before.
+- **Planned retirement** (an identity rotation, or a decommissioned Host): dropping the Recipient and running `sops updatekeys <file>` suffices only when the identity is destroyed everywhere, its `--secrets-dir` backup included.
+
+#### Threat model
+
+- **Confidentiality, not authenticity.** Encrypting needs only public keys, so anyone with git write access can commit a valid SOPS file; the MAC is no guard against a malicious commit. A git writer can also commit a template that renders any value a Host can decrypt into a place the writer can read. Git write access is the trust boundary for both desired state and secret values.
+- **Recipient checks catch drift, not hostile edits.** `validate` compares the files' unauthenticated recipient labels with `host.yml` and `operators.yml`.
+- **CI stays keyless.** `validate` never decrypts, so a CI job never holds an identity; that is a security property, not a limitation.
+- **Public repositories.** Ciphertext in git is permanent and counts as safe against every reader, a public mirror included. For a public Fleet, use hybrid post-quantum (`age1pq1…`) recipients.
+- **Foreign code.** A Host that runs foreign code (a CI runner whose jobs control that user's Podman) must treat its identity as exposed to that code, and must never share a file's audience with a Host that runs no foreign code: give it its own files.
 
 ### Limitations and operational notes
 

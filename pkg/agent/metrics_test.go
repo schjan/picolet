@@ -14,7 +14,6 @@ import (
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/health"
 	"github.com/schjan/picolet/pkg/metrics"
-	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/status"
 )
 
@@ -108,7 +107,8 @@ func TestRecordHealthMetrics_RunRecordLifecycle(t *testing.T) {
 // including pod, image and build — and none for the unsupported artifact row.
 func TestSetFilesManagedMetric(t *testing.T) {
 	t.Parallel()
-	metrics.Register(nil)
+	store := status.NewStore()
+	collector := metrics.NewFilesManagedCollector(store)
 
 	// Distinct non-zero counts: a missing label would read back as 0.
 	counts := map[string]float64{
@@ -124,38 +124,20 @@ func TestSetFilesManagedMetric(t *testing.T) {
 		"file":      10,
 		"secret":    11,
 	}
-	setFilesManagedMetric(counts)
+	setFilesManaged(store, counts)
 
-	require.Equal(t, len(counts), testutil.CollectAndCount(metrics.FilesManagedTotal))
-	for category, want := range counts {
-		got := testutil.ToFloat64(metrics.FilesManagedTotal.WithLabelValues(category))
-		assert.InDelta(t, want, got, 0.001, "category %s", category)
+	require.Equal(t, len(counts), testutil.CollectAndCount(collector))
+	got := map[string]float64{}
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(collector)
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	for _, family := range families {
+		for _, m := range family.GetMetric() {
+			got[m.GetLabel()[0].GetValue()] = m.GetGauge().GetValue()
+		}
 	}
-}
-
-func TestPublishCredentialExpiry(t *testing.T) {
-	t.Parallel()
-
-	provider := resolver.ProviderKey("test-provider-" + t.Name()) // unique label so parallel tests don't clobber each other
-	expiry := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
-
-	// Zero value: gauge is not touched, no series emitted.
-	publishCredentialExpiry(provider+"-zero", time.Time{})
-	zero, err := metrics.SecretCredentialExpiresAt.GetMetricWithLabelValues(string(provider) + "-zero")
-	require.NoError(t, err)
-	assert.InDelta(t, 0.0, testutil.ToFloat64(zero), 0, "no value should be set for zero time.Time")
-
-	// Future value: gauge holds the Unix timestamp.
-	publishCredentialExpiry(provider, expiry)
-	got, err := metrics.SecretCredentialExpiresAt.GetMetricWithLabelValues(string(provider))
-	require.NoError(t, err)
-	assert.InDelta(t, float64(expiry.Unix()), testutil.ToFloat64(got), 0)
-
-	// Past value: still published (alerts need to see it), no error.
-	pastProvider := provider + "-past"
-	past := time.Now().Add(-24 * time.Hour)
-	publishCredentialExpiry(pastProvider, past)
-	gotPast, err := metrics.SecretCredentialExpiresAt.GetMetricWithLabelValues(string(pastProvider))
-	require.NoError(t, err)
-	assert.InDelta(t, float64(past.Unix()), testutil.ToFloat64(gotPast), 0)
+	for category, want := range counts {
+		assert.InDelta(t, want, got[category], 0.001, "category %s", category)
+	}
 }

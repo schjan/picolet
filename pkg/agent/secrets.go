@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/schjan/picolet/pkg/gitpoll"
@@ -37,14 +36,14 @@ func (a *Agent) resolvePollerAuth(ctx context.Context) (gitpoll.AuthProvider, er
 //nolint:nilnil // (nil, nil) signals "no provider auth configured"; caller handles fallback
 func (a *Agent) gitAuthFromSecretProvider(ctx context.Context) (gitpoll.AuthProvider, error) {
 	if a.opReader != nil && a.cfg.OnePassword != nil && a.cfg.OnePassword.GitTokenRef != "" {
-		token, err := resolveGitToken(ctx, resolver.ProviderOnePassword, a.opReader, a.cfg.OnePassword.GitTokenRef)
+		token, err := a.resolveGitToken(ctx, resolver.ProviderOnePassword, a.opReader, a.cfg.OnePassword.GitTokenRef)
 		if err != nil {
 			return nil, err
 		}
 		return gitpoll.NewStaticTokenAuth(a.cfg.RepoURL, token), nil
 	}
 	if a.ppReader != nil && a.cfg.ProtonPass != nil && a.cfg.ProtonPass.GitTokenRef != "" {
-		token, err := resolveGitToken(ctx, resolver.ProviderProtonPass, a.ppReader, a.cfg.ProtonPass.GitTokenRef)
+		token, err := a.resolveGitToken(ctx, resolver.ProviderProtonPass, a.ppReader, a.cfg.ProtonPass.GitTokenRef)
 		if err != nil {
 			return nil, err
 		}
@@ -55,7 +54,7 @@ func (a *Agent) gitAuthFromSecretProvider(ctx context.Context) (gitpoll.AuthProv
 
 // resolveGitToken fetches a single ref via the given provider reader and
 // validates that the response actually contains it.
-func resolveGitToken(ctx context.Context, provider resolver.ProviderKey, reader resolver.SecretRefReader, ref string) (string, error) {
+func (a *Agent) resolveGitToken(ctx context.Context, provider resolver.ProviderKey, reader resolver.SecretRefReader, ref string) (string, error) {
 	results, err := reader(ctx, []string{ref})
 	if err != nil {
 		return "", fmt.Errorf("resolving git token from %s: %w", provider, err)
@@ -64,7 +63,7 @@ func resolveGitToken(ctx context.Context, provider resolver.ProviderKey, reader 
 	if !ok {
 		return "", fmt.Errorf("resolving git token from %s: ref %q not in response", provider, ref)
 	}
-	slog.Info("git token resolved", "provider", string(provider))
+	a.logger.Info("git token resolved", "provider", string(provider))
 	return token, nil
 }
 

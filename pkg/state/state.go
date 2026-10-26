@@ -21,6 +21,10 @@ var ErrCorrupt = errors.New("state file corrupt")
 type ManagedFile struct {
 	Hash     string          `json:"hash"`
 	Category config.Category `json:"category"`
+	// SopsValues is true when the file's content holds a value read through
+	// a sops:// ref (resolver.ResolvedFile.SopsValues): Hash is then a hash
+	// of a decrypted value, which the dashboard does not show.
+	SopsValues bool `json:"sops_values,omitempty"`
 }
 
 // PendingUnit records a managed systemd unit whose last restart attempt failed.
@@ -78,9 +82,18 @@ func NewState() *State {
 func (s *State) markApplied(headSHA string) {
 	s.AppliedSHA = headSHA
 	s.AppliedAt = time.Now()
+	s.ClearFailureGate()
+}
+
+// ClearFailureGate forgets the failed SHA and its consecutive-failure count,
+// so the next reconciliation of that SHA is attempted again. It returns the
+// cleared SHA and count (count 0: there was no gate).
+func (s *State) ClearFailureGate() (sha string, count int) {
+	sha, count = s.FailedSHA, s.FailedCount
 	s.FailedSHA = ""
 	s.FailedCount = 0
 	s.FailedAt = time.Time{}
+	return sha, count
 }
 
 // MarkApplied records the SHA as a fully successful reconciliation, advancing

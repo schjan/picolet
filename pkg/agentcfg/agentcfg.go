@@ -55,6 +55,14 @@ type ProtonPassConfig struct {
 	GitHubPrivateKeyRef   string        `yaml:"github_private_key_ref"`     // pass:// ref for GitHub App PEM private key
 }
 
+// SopsConfig enables decryption of sops:// refs. AgeIdentityPath names the
+// file holding the Host's age identities (one or more AGE-SECRET-KEY-…
+// lines, so a rotation can carry two); there is no default path, no inline
+// key and no environment fallback.
+type SopsConfig struct {
+	AgeIdentityPath string `yaml:"age_identity_path"`
+}
+
 // Config holds the agent runtime configuration from /etc/picolet/config.yml.
 type Config struct {
 	Hostname             string             `yaml:"hostname"`
@@ -75,6 +83,7 @@ type Config struct {
 	MQTT                 *MQTTConfig        `yaml:"mqtt"`
 	OnePassword          *OnePasswordConfig `yaml:"onepassword"`
 	ProtonPass           *ProtonPassConfig  `yaml:"protonpass"`
+	Sops                 *SopsConfig        `yaml:"sops"`
 	GitHubAppID          int64              `yaml:"github_app_id"`
 	GitHubInstallationID int64              `yaml:"github_installation_id"`
 	GitHubPrivateKeyPath string             `yaml:"github_private_key_path"`
@@ -91,6 +100,9 @@ func Load(path string) (*Config, error) {
 	cfg, err := Parse(data)
 	if err != nil {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
+	}
+	if err := cfg.checkCredentialFiles(); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	return cfg, nil
 }
@@ -215,6 +227,9 @@ func (c *Config) Validate() error {
 		if err := c.validateProtonPass(); err != nil {
 			return err
 		}
+	}
+	if c.Sops != nil && c.Sops.AgeIdentityPath == "" {
+		return errors.New("sops.age_identity_path is required when sops is configured")
 	}
 	if err := c.validateGitTokenSources(); err != nil {
 		return err

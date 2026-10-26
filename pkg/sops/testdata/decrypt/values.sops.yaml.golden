@@ -1,0 +1,53 @@
+=== (whole file) ===
+# TEST-ONLY fixture values for the picolet SOPS corpus. Not real secrets.
+db:
+    user: app
+    password: hunter2-test
+    port: 5432
+    tls: true
+    ratio: 0.75
+    empty: ""
+    nothing: null
+tokens:
+    - alpha-token
+    - beta-token
+    - name: gamma
+      value: gamma-secret
+hosts:
+    srv-1.example.net:
+        password: srv1-pass
+odd_keys:
+    a/b: slash-key
+    m~n: tilde-key
+note_unencrypted: visible
+
+=== /db/user ===
+app
+=== /db/password ===
+hunter2-test
+=== /db/port ===
+5432
+=== /db/tls ===
+true
+=== /db/ratio ===
+0.75
+=== /db/empty ===
+
+=== /db/nothing ===
+
+=== /tokens/0 ===
+alpha-token
+=== /tokens/1 ===
+beta-token
+=== /tokens/2/name ===
+gamma
+=== /tokens/2/value ===
+gamma-secret
+=== /hosts/srv-1.example.net/password ===
+srv1-pass
+=== /odd_keys/a~1b ===
+slash-key
+=== /odd_keys/m~0n ===
+tilde-key
+=== /note_unencrypted ===
+visible

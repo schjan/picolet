@@ -26,7 +26,7 @@ func validateHMAC(body []byte, secret, signature string) bool {
 	return hmac.Equal([]byte(expected), []byte(signature))
 }
 
-func webhookHandler(trigger func(), secretPath string) http.Handler {
+func webhookHandler(trigger func(), secretPath string, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -42,7 +42,7 @@ func webhookHandler(trigger func(), secretPath string) http.Handler {
 		if secretPath != "" {
 			secretData, err := os.ReadFile(secretPath)
 			if err != nil {
-				slog.Error("reading webhook secret file", "path", secretPath, "error", err)
+				logger.Error("reading webhook secret file", "path", secretPath, "error", err)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
@@ -55,7 +55,7 @@ func webhookHandler(trigger func(), secretPath string) http.Handler {
 			}
 		}
 
-		slog.Info("webhook triggered")
+		logger.Info("webhook triggered")
 		trigger()
 		w.WriteHeader(http.StatusAccepted)
 		fmt.Fprint(w, "accepted")

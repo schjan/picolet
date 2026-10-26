@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"log/slog"
 	"path/filepath"
 	"testing"
 
@@ -84,7 +85,7 @@ Network=nonexistent.network
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			unitsInfo := buildUnitsInfoFromFiles(tt.files, false)
+			unitsInfo := buildUnitsInfoFromFiles(tt.files, false, slog.Default())
 
 			unit := parser.NewUnitFile()
 			unit.Filename = "test.container"
@@ -116,7 +117,7 @@ WantedBy=default.target
 	files := []resolver.ResolvedFile{
 		newParsedFile(t, "network", "/etc/containers/systemd/internal.network", "[Network]\n"),
 	}
-	unitsInfo := buildUnitsInfoFromFiles(files, false)
+	unitsInfo := buildUnitsInfoFromFiles(files, false, slog.Default())
 	unit := parseUnit(t, "test.kube", valid)
 	require.NoError(t, validateQuadlet(unit, unitsInfo, false))
 

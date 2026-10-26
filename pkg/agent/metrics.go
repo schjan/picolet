@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"log/slog"
 	"time"
 
 	"github.com/schjan/picolet/pkg/applier"
@@ -76,24 +75,27 @@ func RecordTimerJobRuns(store *status.Store, hr *health.CheckResult) {
 	store.PruneRuns(hr.Managed)
 }
 
-// setFilesManagedMetric overwrites FilesManagedTotal for every deployable category.
-// Because the label set is fixed, each call is a pure Set — no Reset() needed,
-// so a concurrent Prometheus scrape never sees zero or partial values.
-func setFilesManagedMetric(counts map[string]float64) {
+// setFilesManaged records picolet_files_managed_total's counts in store: one
+// per deployable category (0 when counts has none), and none for any other.
+// Each call replaces the whole set, so a concurrent scrape never sees a
+// partial one.
+func setFilesManaged(store *status.Store, counts map[string]float64) {
+	byCategory := make(map[string]float64, len(config.Deployable()))
 	for _, cat := range config.Deployable() {
 		category := cat.String()
-		metrics.FilesManagedTotal.WithLabelValues(category).Set(counts[category])
+		byCategory[category] = counts[category]
 	}
+	store.SetFilesManaged(byCategory)
 }
 
 // recordProviderRefCount publishes the per-provider managed-count gauge
 // and returns the count. Returns 0 when the provider is disabled.
-func recordProviderRefCount(provider resolver.ProviderKey, enabled bool, isRef func(string) bool, files []resolver.ResolvedFile) int {
+func (a *Agent) recordProviderRefCount(provider resolver.ProviderKey, enabled bool, isRef func(string) bool, files []resolver.ResolvedFile) int {
 	if !enabled {
 		return 0
 	}
 	count := countRefs(files, isRef)
-	metrics.SecretsManagedCount.WithLabelValues(string(provider)).Set(float64(count))
+	a.statusStore.SetSecretsManaged(string(provider), count)
 	return count
 }
 
@@ -102,13 +104,11 @@ func recordProviderRefCount(provider resolver.ProviderKey, enabled bool, isRef f
 // A zero count means "nothing to record" — disabled providers always produce
 // zero counts via recordProviderRefCount, so a single count==0 check covers
 // both cases.
-func recordProviderSyncSuccess(provider resolver.ProviderKey, count int) {
+func (a *Agent) recordProviderSyncSuccess(provider resolver.ProviderKey, count int) {
 	if count == 0 {
 		return
 	}
-	label := string(provider)
-	metrics.SecretSyncTotal.WithLabelValues(label).Inc()
-	metrics.SecretLastSyncTimestamp.WithLabelValues(label).SetToCurrentTime()
+	a.statusStore.RecordSecretSync(string(provider), time.Now())
 }
 
 // markRefreshAttempted bumps every configured provider's last-refresh
@@ -139,13 +139,13 @@ func countRefs(files []resolver.ResolvedFile, isRef func(string) bool) int {
 // config. Zero values are skipped (no series emitted), so dashboards can use
 // `absent_over_time(...)` to flag providers whose expiry was never declared.
 // Past expirations are still published — that is the signal the alert needs.
-func publishCredentialExpiry(provider resolver.ProviderKey, expiresAt time.Time) {
+func (a *Agent) publishCredentialExpiry(provider resolver.ProviderKey, expiresAt time.Time) {
 	if expiresAt.IsZero() {
 		return
 	}
-	metrics.SecretCredentialExpiresAt.WithLabelValues(string(provider)).Set(float64(expiresAt.Unix()))
+	a.statusStore.SetCredentialExpiry(string(provider), expiresAt)
 	if time.Now().After(expiresAt) {
-		slog.Warn("secret-provider credential has expired", "provider", provider, "expired_at", expiresAt.Format(time.RFC3339))
+		a.logger.Warn("secret-provider credential has expired", "provider", provider, "expired_at", expiresAt.Format(time.RFC3339))
 	}
 }
 

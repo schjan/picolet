@@ -266,6 +266,43 @@ func TestApplySelfRestart(t *testing.T) {
 	assert.Contains(t, result.RestartedUnits, "picolet.service")
 }
 
+// TestApplySelfConfigRestart: a changeset that writes the self config secret
+// restarts the self unit, deferred like a self-update; another secret does not.
+func TestApplySelfConfigRestart(t *testing.T) {
+	t.Parallel()
+	for secret, want := range map[string]bool{"picolet_system_config": true, "other": false} {
+		t.Run(secret, func(t *testing.T) {
+			t.Parallel()
+			restarted := make(chan struct{})
+			sys := appliermocks.NewMockSystemdManager(t)
+			if want {
+				sys.EXPECT().RestartUnit(mock.Anything, "picolet-system.service").RunAndReturn(func(context.Context, string) error {
+					close(restarted)
+					return nil
+				})
+			}
+			pod := appliermocks.NewMockPodmanClient(t)
+			pod.EXPECT().SecretCreate(mock.Anything, secret, []byte("new"), true).Return(nil)
+			a := applier.New(sys, pod, newMemFileWriter(), false, nil, applier.WithSelfConfig("picolet-system.service", "picolet_system_config"))
+
+			result, err := a.Apply(context.Background(), &reconciler.Changeset{
+				Changes: []reconciler.Change{{DestPath: "secret:" + secret, Category: "secret", Action: reconciler.ActionUpdate, NewContent: "new"}},
+				Summary: map[reconciler.Action]int{reconciler.ActionUpdate: 1},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, want, result.SelfConfigChanged)
+			assert.Equal(t, want, slices.Contains(result.RestartedUnits, "picolet-system.service"))
+			if want {
+				select {
+				case <-restarted:
+				case <-time.After(2 * time.Second):
+					t.Fatal("deferred self restart did not run")
+				}
+			}
+		})
+	}
+}
+
 // TestApplyAgentRenameMigration covers the picolet -> picolet-system bundle
 // rename: the agent's own unit is deleted and a successor created in the same
 // changeset. The old unit must NOT be stopped synchronously in the delete

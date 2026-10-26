@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/schjan/picolet/pkg/config"
+	"github.com/schjan/picolet/pkg/sops"
 )
 
 // TemplateData is the root context passed to all templates as `.`.
@@ -30,6 +31,9 @@ type HostTemplateData struct {
 	Rootful bool
 	// ListenPort is the port the Host's Agent listens on.
 	ListenPort int
+	// AgeRecipients is the Host's age_recipients: in canonical form, in
+	// file order; empty when it declares none.
+	AgeRecipients []string
 
 	// Services is the resolved bundle name list for this host, merged from
 	// assignments.yml (base + role + features). Sorted and deduplicated.
@@ -86,6 +90,7 @@ func NewTemplateData(cfg *config.Config, hostname string) (*TemplateData, error)
 
 func buildHostData(host *config.HostConfig) HostTemplateData {
 	return HostTemplateData{
+		AgeRecipients:    sops.RecipientStrings(host.AgeRecipients),
 		Hostname:         host.Hostname,
 		ExternalHostname: host.ExternalHostname,
 		Role:             host.Role,

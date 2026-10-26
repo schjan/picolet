@@ -60,6 +60,8 @@ func TestLoadAllWithoutBootstrap(t *testing.T) {
 // A bootstrap: entry is a plain file name and a Secret Reference, at every
 // level: a value without a provider scheme is most likely a credential
 // pasted into git.
+//
+//nolint:funlen // table-driven test cases
 func TestLoadAllRejectsInvalidBootstrap(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -102,6 +104,17 @@ func TestLoadAllRejectsInvalidBootstrap(t *testing.T) {
 			name:      "fleet role",
 			bootstrap: "bootstrap:\n  roles:\n    runner:\n      \"\": op://v/i/f\n",
 			want:      `fleet.yml bootstrap.roles.runner: "" is not a file name`,
+		},
+		{
+			name: "host sops reference",
+			host: "bootstrap:\n  git_token: sops://secrets/git.sops.yaml#/token\n",
+			want: "host a: bootstrap: git_token: a sops:// reference can't be a bootstrap: entry; " +
+				"deliver the value as a --secrets-dir file instead",
+		},
+		{
+			name:      "fleet sops reference",
+			bootstrap: "bootstrap:\n  files:\n    git_token: sops://secrets/git.sops.yaml#/token\n",
+			want:      "fleet.yml bootstrap.files: git_token: a sops:// reference can't be a bootstrap: entry; deliver the value as a --secrets-dir file",
 		},
 		{
 			name:      "fleet unknown key",

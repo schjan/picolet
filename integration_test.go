@@ -1,6 +1,8 @@
 package picolet_test
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
 	"regexp"
 	"slices"
@@ -13,6 +15,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/schjan/picolet/internal/testsops"
 	appliermocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
@@ -30,9 +33,263 @@ func TestIntegrationValidate(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	r, err := resolver.NewKeyless(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
-	require.NoError(t, validator.ValidateAll(t.Context(), r, cfg))
+	require.NoError(t, validator.ValidateAll(t.Context(), repoFS, r, cfg, validator.AllowTestRecipients()))
+}
+
+// validate renders each Host's Agent bundle strictly, as bootstrap does: a
+// provider ref the bundle needs at bootstrap fails CI, not the next
+// `bootstrap machine`. The rootful Host's bundle is picolet-system, a Host
+// with user:'s is picolet.
+func TestIntegrationValidateAgentBundleStrict(t *testing.T) {
+	t.Parallel()
+	const fix = "use a YAML-value reference and let the agent resolve it at runtime"
+	const sopsFix = "deliver the value as a --secrets-dir file and point the Agent config at its path; " +
+		"credentials needed to fetch the Fleet can't be SOPS values"
+	tests := []struct {
+		name, user, service, fn, ref, fix string
+		shown                             string // how the error names ref: no pointer or field
+	}{
+		{name: "rootful readOpSecret", service: "picolet-system", fn: "readOpSecret", ref: "op://vault/item/token", fix: fix, shown: "op://vault/…"},
+		{name: "rootful readProtonPassSecret", service: "picolet-system", fn: "readProtonPassSecret", ref: "pass://share/item/token", fix: fix, shown: "pass://share/…"},
+		{name: "user readOpSecret", user: "app", service: "picolet", fn: "readOpSecret", ref: "op://vault/item/token", fix: fix, shown: "op://vault/…"},
+		{name: "rootful readSopsSecret", service: "picolet-system", fn: "readSopsSecret", ref: "sops://secrets/git.sops.yaml#/token", fix: sopsFix, shown: "sops://secrets/git.sops.yaml#…"},
+		{name: "rootful readSopsData", service: "picolet-system", fn: "readSopsData", ref: "sops://secrets/git.sops.yaml#/git", fix: sopsFix, shown: "sops://secrets/git.sops.yaml#…"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			body := fmt.Sprintf(`{{ $ref := %q }}git_token: {{ %s $ref }}`, tt.ref, tt.fn)
+			err := validateFleet(t, agentBundleFleet(tt.user, tt.service, true, body))
+			require.Error(t, err)
+			for _, want := range []string{"host test-host", "Agent bundle " + tt.service, fmt.Sprintf("%s %q", tt.fn, tt.shown), tt.fix} {
+				assert.ErrorContains(t, err, want)
+			}
+		})
+	}
+}
+
+// A Host without its Agent bundle assigned is skipped: the bundle's provider
+// ref is not rendered, so validate passes.
+func TestIntegrationValidateAgentBundleUnassignedSkipped(t *testing.T) {
+	t.Parallel()
+	body := `{{ $ref := "op://vault/item/token" }}git_token: {{ readOpSecret $ref }}`
+	require.NoError(t, validateFleet(t, agentBundleFleet("", "picolet-system", false, body)))
+}
+
+// Secret References as plain YAML values are the Agent's to resolve at
+// runtime: the Agent-bundle pass does not flag them.
+func TestIntegrationValidateAgentBundleYAMLValueRefs(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, validateFleet(t, agentBundleFleet("", "picolet-system", true, `onepassword:
+  token_path: /etc/picolet/secrets/op-token
+  git_token_ref: op://vault/item/token
+  github_app_id_ref: op://vault/app/id
+  github_installation_id_ref: op://vault/app/installation
+  github_private_key_ref: op://vault/app/key
+protonpass:
+  git_token_ref: pass://share/item/token
+  github_app_id_ref: pass://share/app/id
+  github_installation_id_ref: pass://share/app/installation
+  github_private_key_ref: pass://share/app/key`)))
+}
+
+// An Agent bundle whose quadlet mounts a config secret at
+// /etc/picolet/config.yml that the bundle does not resolve (a renamed or
+// dropped file) fails validate: bootstrap and the Agent's next start would
+// find no config.
+func TestIntegrationValidateAgentBundleUnresolvedConfigMount(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ user, service string }{{"", "picolet-system"}, {"app", "picolet"}} {
+		t.Run(tt.service, func(t *testing.T) {
+			t.Parallel()
+			fleet := agentBundleFleet(tt.user, tt.service, true, "")
+			secret := strings.ReplaceAll(tt.service, "-", "_") + "_config"
+			cfgFile := "services/" + tt.service + "/secrets/" + secret + ".yml.tmpl"
+			fleet["services/"+tt.service+"/secrets/renamed.yml.tmpl"] = fleet[cfgFile]
+			delete(fleet, cfgFile)
+
+			err := validateFleet(t, fleet)
+			require.Error(t, err)
+			for _, want := range []string{"host test-host", "Agent bundle " + tt.service, secret, "/etc/picolet/config.yml"} {
+				require.ErrorContains(t, err, want)
+			}
+
+			// Podman mounts a non-canonical spelling of the target at the
+			// config path too.
+			unitFile := "services/" + tt.service + "/" + tt.service + ".container.tmpl"
+			fleet[unitFile] = &fstest.MapFile{Data: []byte(strings.Replace(string(fleet[unitFile].Data),
+				"target=/etc/picolet/config.yml", "target=/etc/picolet//config.yml", 1))}
+			require.ErrorContains(t, validateFleet(t, fleet), secret)
+		})
+	}
+}
+
+// agentBundleFleet is a one-host Fleet whose Host test-host (user: user, or
+// rootful when empty) carries the Agent bundle service, assigned to it when
+// assign; configBody is appended to the bundle's Agent config template.
+func agentBundleFleet(user, service string, assign bool, configBody string) fstest.MapFS {
+	hostYML := "hostname: test-host\nrole: node\nfeatures: []\n"
+	if user != "" {
+		hostYML += "user: " + user + "\n"
+	}
+	assigned := ""
+	if assign {
+		assigned = service
+	}
+	secret := strings.ReplaceAll(service, "-", "_") + "_config"
+	return fstest.MapFS{
+		"fleet.yml":                &fstest.MapFile{Data: []byte("images: {picolet: \"picolet:test\"}\nports: {picolet_metrics: 9417, picolet_system_metrics: 9418}\n")},
+		"assignments.yml":          &fstest.MapFile{Data: []byte("base: {}\nroles:\n  node:\n    services: [" + assigned + "]\nfeatures: {}\n")},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(hostYML)},
+		"services/" + service + "/" + service + ".container.tmpl": &fstest.MapFile{Data: []byte(`[Container]
+Image={{ index .Images "picolet" }}
+Secret=` + secret + `,target=/etc/picolet/config.yml
+`)},
+		"services/" + service + "/secrets/" + secret + ".yml.tmpl": &fstest.MapFile{Data: []byte(`hostname: "{{ .Host.Hostname }}"
+repo_url: "https://github.com/example/fleet.git"
+` + configBody + "\n")},
+	}
+}
+
+// validateFleet runs `picolet validate` on the Fleet in repoFS. Test Fleets
+// declare the corpus's published TEST-ONLY recipients, so their warning is
+// off; opts are extra validate options.
+func validateFleet(t *testing.T, repoFS fs.FS, opts ...validator.Option) error {
+	t.Helper()
+	cfg, err := config.LoadAll(repoFS)
+	require.NoError(t, err)
+	r, err := resolver.NewKeyless(resolver.Config{FS: repoFS, Config: cfg})
+	require.NoError(t, err)
+	return validator.ValidateAll(t.Context(), repoFS, r, cfg, append([]validator.Option{validator.AllowTestRecipients()}, opts...)...)
+}
+
+// validate checks every readSopsSecret ref keyless and fails, naming the
+// ref, on what it can tell is wrong without a key.
+func TestIntegrationValidateSopsRefs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, ref, want string
+		recipients      []string // test-host's age_recipients:; nil means srv-1
+	}{
+		{name: "valid", ref: "sops://secrets/db.sops.yaml#/db/password"},
+		{name: "two-key rotation", ref: "sops://secrets/db.sops.yaml#/db/password", recipients: []string{"srv-3", "srv-2"}},
+		{name: "key groups: threshold reached", ref: "sops://secrets/groups.sops.yaml#/db/password", recipients: []string{"srv-2", "srv-pq"}},
+		{
+			name: "no age_recipients", ref: "sops://secrets/db.sops.yaml#/db/password", recipients: []string{},
+			want: "Host test-host references sops://secrets/db.sops.yaml#/db/password but declares no age_recipients",
+		},
+		{
+			name: "not a recipient", ref: "sops://secrets/db.sops.yaml#/db/password", recipients: []string{"srv-3"},
+			want: "secrets/db.sops.yaml: not a recipient: the file is not encrypted to Host test-host (Host test-host's recipients: " +
+				testsops.Recipient(t, "srv-3") + "); add one of them to the file's .sops.yaml creation rule and run `sops updatekeys secrets/db.sops.yaml`",
+		},
+		{
+			name: "key groups: too few", ref: "sops://secrets/groups.sops.yaml#/db/password", recipients: []string{"srv-1"},
+			want: "the file is encrypted to Host test-host in 1 of the 2 key groups it needs",
+		},
+		{name: "missing file", ref: "sops://secrets/gone.sops.yaml#/db/password", want: "file does not exist"},
+		{name: "no sops infix", ref: "sops://secrets/db.yaml#/db/password", want: "not a SOPS path"},
+		{name: "dot-dot", ref: "sops://secrets/../secrets/db.sops.yaml#/db/password", want: "clean relative path"},
+		{name: "not a SOPS file", ref: "sops://secrets/plain.sops.yaml#/db/password", want: "not a SOPS file"},
+		{name: "missing path", ref: "sops://secrets/db.sops.yaml#/db/nope", want: "bad pointer"},
+		{name: "not a leaf", ref: "sops://secrets/db.sops.yaml#/db", want: "not a leaf"},
+		// The Agent decrypts a leaf the file's rules leave in plaintext, so
+		// validate passes it too.
+		{name: "unencrypted leaf", ref: "sops://secrets/db.sops.yaml#/note_unencrypted"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			recipients := tt.recipients
+			if recipients == nil {
+				recipients = []string{"srv-1"}
+			}
+			err := validateFleet(t, sopsRefsFleet(t, tt.ref, recipients))
+			if tt.want == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			require.ErrorContains(t, err, tt.ref)
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+}
+
+// sopsRefsFleet is TestIntegrationValidateSopsRefs's Fleet: test-host,
+// declaring recipients, renders ref through readSopsSecret.
+func sopsRefsFleet(t *testing.T, ref string, recipients []string) fstest.MapFS {
+	t.Helper()
+	values := testsops.CorpusFile(t, "values.sops.yaml") // srv-1, srv-2, operator-1
+	fleet := fstest.MapFS{
+		"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
+		"assignments.yml":          &fstest.MapFile{Data: []byte("base:\n  secrets: [secrets/app.yml.tmpl]\nroles: {}\nfeatures: {}\n")},
+		"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(sopsHostYML(t, recipients))},
+		"secrets/app.yml.tmpl":     &fstest.MapFile{Data: []byte(`password: {{ readSopsSecret "` + ref + `" }}`)},
+		"secrets/db.sops.yaml":     &fstest.MapFile{Data: values},
+		"secrets/db.yaml":          &fstest.MapFile{Data: values},
+		config.OperatorsFile:       corpusOperatorsExcept(t, recipients),
+	}
+	if strings.Contains(ref, "groups.sops.yaml") {
+		// An unreferenced file allows Operators only (the audience pass),
+		// so the Fleet holds just the SOPS file the ref names.
+		delete(fleet, "secrets/db.sops.yaml")
+		// [srv-1 operator-1] [srv-2] [srv-pq], threshold 2
+		fleet["secrets/groups.sops.yaml"] = &fstest.MapFile{Data: testsops.CorpusFile(t, "key-groups.sops.yaml")}
+	}
+	if strings.Contains(ref, "plain.sops.yaml") {
+		// Only here: the encrypted-file pass fails on it whether referenced or not.
+		fleet["secrets/plain.sops.yaml"] = &fstest.MapFile{Data: testsops.CorpusFile(t, "plaintext.sops.yaml")}
+	}
+	return fleet
+}
+
+// validate runs the keyless per-ref checks on a direct sops:// secrets:
+// entry too: the recipient checks, the leaf rules and the non-empty check.
+func TestIntegrationValidateDirectSopsRefs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, ref, want string
+		recipients      []string // test-host's age_recipients:; nil means srv-1
+	}{
+		{name: "valid", ref: "sops://secrets/db.sops.yaml#/db/password"},
+		{
+			name: "no age_recipients", ref: "sops://secrets/db.sops.yaml#/db/password", recipients: []string{},
+			want: "Host test-host references sops://secrets/db.sops.yaml#/db/password but declares no age_recipients",
+		},
+		{
+			name: "drift", ref: "sops://secrets/db.sops.yaml#/db/password", recipients: []string{"srv-3"},
+			want: "secrets/db.sops.yaml: not a recipient: the file is not encrypted to Host test-host",
+		},
+		{name: "not a leaf", ref: "sops://secrets/db.sops.yaml#/db", want: "not a leaf"},
+		{name: "empty leaf", ref: "sops://secrets/db.sops.yaml#/db/empty", want: "a direct secrets: entry needs a non-empty value"},
+		{name: "unencrypted leaf", ref: "sops://secrets/db.sops.yaml#/note_unencrypted"},
+		{name: "invalid segment", ref: "sops://secrets/db.sops.yaml#/odd_keys/m~0n", want: "can't appear in a Podman secret name"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			recipients := tt.recipients
+			if recipients == nil {
+				recipients = []string{"srv-1"}
+			}
+			err := validateFleet(t, fstest.MapFS{
+				"fleet.yml":                &fstest.MapFile{Data: []byte("images: {}\nports: {picolet_system_metrics: 9418}\n")},
+				"assignments.yml":          &fstest.MapFile{Data: []byte("base:\n  secrets: [\"" + tt.ref + "\"]\nroles: {}\nfeatures: {}\n")},
+				"hosts/test-host/host.yml": &fstest.MapFile{Data: []byte(sopsHostYML(t, recipients))},
+				"secrets/db.sops.yaml":     &fstest.MapFile{Data: testsops.CorpusFile(t, "values.sops.yaml")},
+				config.OperatorsFile:       corpusOperatorsExcept(t, recipients),
+			})
+			if tt.want == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.ref)
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
 }
 
 func TestIntegrationResolveGolden(t *testing.T) {
@@ -41,7 +298,7 @@ func TestIntegrationResolveGolden(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	r, err := resolver.NewKeyless(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
 	g := goldie.New(t, goldie.WithFixtureDir("testdata/fixtures"))
 
@@ -241,7 +498,7 @@ func TestIntegrationMultiHostConsistency(t *testing.T) {
 	cfg, err := config.LoadAll(repoFS)
 	require.NoError(t, err)
 
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
+	r, err := resolver.NewKeyless(resolver.Config{FS: repoFS, Config: cfg})
 	require.NoError(t, err)
 	allResolved, err := r.ResolveAll(t.Context())
 	require.NoError(t, err)
@@ -379,11 +636,7 @@ func validatePathsFleet(t *testing.T, files map[string]string) error {
 	for p, content := range files {
 		repoFS[p] = &fstest.MapFile{Data: []byte(content)}
 	}
-	cfg, err := config.LoadAll(repoFS)
-	require.NoError(t, err)
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg})
-	require.NoError(t, err)
-	return validator.ValidateAll(t.Context(), r, cfg)
+	return validateFleet(t, repoFS)
 }
 
 func newAggregatedSecretFleetFS(ruleExpr string) fstest.MapFS {

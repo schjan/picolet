@@ -366,6 +366,8 @@ func TestServeIndex_Goldie(t *testing.T) {
 			"/etc/containers/systemd/picolet/data.volume":   {Hash: "sha256:dddddddd4444", Category: "volume"},
 			"/etc/containers/systemd/picolet/app.yml":       {Hash: "sha256:eeeeeeee5555", Category: "manifest"},
 			"/etc/systemd/system/backup.service":            {Hash: "sha256:ffffffff6666", Category: "systemd"},
+			// Secrets render without a hash (#250).
+			"secret:db_password": {Hash: "sha256:5ec2e75e7777", Category: "secret"},
 		},
 		ServiceNames: map[string]string{
 			"/etc/containers/systemd/picolet/web.container": "web.service",
@@ -413,4 +415,76 @@ func TestServeIndex_Goldie(t *testing.T) {
 		goldie.WithNameSuffix(".golden.html"),
 	)
 	g.Assert(t, "index", rec.Body.Bytes())
+}
+
+// A bare direct secret's content hash is an unsalted SHA-256 of the secret
+// value; the unauthenticated dashboard must not show it (#250). Other
+// categories keep their short hash.
+func TestServeIndex_SecretRowHidesContentHash(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{Hostname: "pi-edge-01"}
+	store := newTestStore(t, state.State{
+		ManagedFiles: map[string]state.ManagedFile{
+			"secret:db_password": {Hash: "sha256:5ec2e75ecafe0001", Category: "secret"},
+			"/p/web.container":   {Hash: "sha256:c0a7a1ae0002", Category: "container"},
+		},
+		ServiceNames: map[string]string{"/p/web.container": "web.service"},
+	})
+
+	h, err := dashboard.NewHandler(store, cfg, "0.0.0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "db_password") {
+		t.Errorf("secret row missing; body=%s", body)
+	}
+	if strings.Contains(body, "5ec2e75e") {
+		t.Errorf("body exposes the secret's content hash; body=%s", body)
+	}
+	if !strings.Contains(body, "sha256: c0a7a1ae") {
+		t.Errorf("container row lost its short hash; body=%s", body)
+	}
+}
+
+// A Managed File whose render used a SOPS value (any category) shows no
+// content hash: it is a hash of content holding the decrypted value.
+func TestServeIndex_SopsValuesRowHidesContentHash(t *testing.T) {
+	t.Parallel()
+	cfg := &agentcfg.Config{Hostname: "pi-edge-01"}
+	store := newTestStore(t, state.State{
+		ManagedFiles: map[string]state.ManagedFile{
+			"/p/files/pin":     {Hash: "sha256:9105ecafe0001", Category: "file", SopsValues: true},
+			"/p/files/plain":   {Hash: "sha256:9a1ecafe0002", Category: "file"},
+			"/p/web.container": {Hash: "sha256:c0a7a1ae0003", Category: "container"},
+		},
+	})
+
+	h, err := dashboard.NewHandler(store, cfg, "0.0.0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "pin") {
+		t.Errorf("pin row missing; body=%s", body)
+	}
+	if strings.Contains(body, "9105ecaf") {
+		t.Errorf("body exposes the hash of a file holding a SOPS value; body=%s", body)
+	}
+	if !strings.Contains(body, "sha256: 9a1ecafe") {
+		t.Errorf("plain file row lost its short hash; body=%s", body)
+	}
 }

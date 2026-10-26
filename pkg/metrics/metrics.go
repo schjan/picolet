@@ -74,21 +74,6 @@ var (
 		[]string{"action", "category"},
 	)
 
-	FilesManagedTotal = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "picolet_files_managed_total",
-			Help: "Current number of managed files by category.",
-		},
-		[]string{"category"},
-	)
-
-	FailedSHAConsecutiveCount = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "picolet_failed_sha_consecutive_count",
-			Help: "Consecutive reconciliation failures for the current SHA.",
-		},
-	)
-
 	OrphansRemovedTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "picolet_orphans_removed_total",
@@ -141,38 +126,6 @@ var (
 		[]string{"feature"},
 	)
 
-	SecretsManagedCount = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "picolet_secrets_managed_count",
-			Help: "Number of direct provider-backed secret assignments currently managed, per provider.",
-		},
-		[]string{"provider"},
-	)
-
-	SecretSyncTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "picolet_secret_sync_total",
-			Help: "Successful secret-provider sync attempts, per provider. Failures are counted on picolet_reconciliation_total{result=\"failure\"}.",
-		},
-		[]string{"provider"},
-	)
-
-	SecretLastSyncTimestamp = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "picolet_secret_last_sync_timestamp",
-			Help: "Unix timestamp of the last successful secret-provider sync, per provider.",
-		},
-		[]string{"provider"},
-	)
-
-	SecretCredentialExpiresAt = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "picolet_secret_credential_expires_at",
-			Help: "Unix timestamp at which the configured credential (service-account token, PAT) expires, per provider. Only emitted when the operator records the expiry in config.",
-		},
-		[]string{"provider"},
-	)
-
 	HookTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "picolet_hook_total",
@@ -217,47 +170,50 @@ var (
 
 var registerOnce sync.Once
 
+// Collectors returns every collector the Agent exposes on /metrics. Custom
+// collectors that read runtime state are constructed against store.
+func Collectors(store *status.Store) []prometheus.Collector {
+	return []prometheus.Collector{
+		ReconciliationTotal,
+		ReconciliationDuration,
+		LastSuccessfulReconciliation,
+		RollbackTotal,
+		HealthCheckTotal,
+		HealthEnforcementTotal,
+		appliedSHA,
+		GitPollTotal,
+		FilesAppliedTotal,
+		NewFilesManagedCollector(store),
+		OrphansRemovedTotal,
+		MQTTConnected,
+		AgentPaused,
+		DBusConnected,
+		HealthCheckErrorsTotal,
+		DeploymentStatusTotal,
+		BuildInfo,
+		FeatureInfo,
+		HookTotal,
+		SystemdUnitOperationsTotal,
+		ImagePruneTotal,
+		ImagesPrunedTotal,
+		ImagePruneReclaimedBytesTotal,
+		unitRestartPending,
+		NewUnitHealthCollector(store),
+		NewUnitRunCollector(store),
+		NewUnitDependencyCollector(store),
+		NewHostInfoCollector(store),
+		NewLastImagePruneCollector(store),
+		NewSecretProviderCollector(store),
+		NewFailedSHACollector(store),
+	}
+}
+
 // Register registers all metrics with the default Prometheus registry.
 // Custom collectors that read runtime state are constructed against the
 // provided *status.Store. Safe to call multiple times (e.g. in tests).
 func Register(store *status.Store) {
 	registerOnce.Do(func() {
-		prometheus.MustRegister(
-			ReconciliationTotal,
-			ReconciliationDuration,
-			LastSuccessfulReconciliation,
-			RollbackTotal,
-			HealthCheckTotal,
-			HealthEnforcementTotal,
-			appliedSHA,
-			GitPollTotal,
-			FilesAppliedTotal,
-			FilesManagedTotal,
-			FailedSHAConsecutiveCount,
-			OrphansRemovedTotal,
-			MQTTConnected,
-			AgentPaused,
-			DBusConnected,
-			HealthCheckErrorsTotal,
-			DeploymentStatusTotal,
-			BuildInfo,
-			FeatureInfo,
-			SecretsManagedCount,
-			SecretSyncTotal,
-			SecretLastSyncTimestamp,
-			SecretCredentialExpiresAt,
-			HookTotal,
-			SystemdUnitOperationsTotal,
-			ImagePruneTotal,
-			ImagesPrunedTotal,
-			ImagePruneReclaimedBytesTotal,
-			unitRestartPending,
-			NewUnitHealthCollector(store),
-			NewUnitRunCollector(store),
-			NewUnitDependencyCollector(store),
-			NewHostInfoCollector(store),
-			NewLastImagePruneCollector(store),
-		)
+		prometheus.MustRegister(Collectors(store)...)
 		BuildInfo.WithLabelValues(version.Version, version.GitSHA).Set(1)
 	})
 }
@@ -308,25 +264,11 @@ func SetAppliedSHA(sha string) {
 }
 
 // RecordAppliedSHA records a fully successful SHA application: sets the applied
-// SHA, resets the consecutive failure count, and advances the last-successful
-// timestamp.
+// SHA and advances the last-successful timestamp. The consecutive failure count
+// lives in the Agent's status store (status.Store.SetFailedSHACount).
 func RecordAppliedSHA(sha string) {
-	RecordAppliedSHAIncomplete(sha)
-	LastSuccessfulReconciliation.SetToCurrentTime()
-}
-
-// RecordAppliedSHAIncomplete records a SHA whose apply did not fully converge
-// (a keep_running hook or a unit restart is still failing): the applied SHA and
-// the reset failure count are recorded, but the last-successful timestamp is
-// NOT advanced, so staleness alerts keep firing until the fleet converges.
-func RecordAppliedSHAIncomplete(sha string) {
 	SetAppliedSHA(sha)
-	FailedSHAConsecutiveCount.Set(0)
-}
-
-// RecordFailedSHA records a reconciliation failure for the given consecutive count.
-func RecordFailedSHA(consecutiveCount int) {
-	FailedSHAConsecutiveCount.Set(float64(consecutiveCount))
+	LastSuccessfulReconciliation.SetToCurrentTime()
 }
 
 // unitRestartPendingCollector implements prometheus.Collector for per-unit

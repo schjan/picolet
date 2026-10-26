@@ -1,0 +1,219 @@
+package resolver
+
+import (
+	"maps"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/schjan/picolet/internal/testsops"
+	"github.com/schjan/picolet/pkg/config"
+	"github.com/schjan/picolet/pkg/sops"
+)
+
+// directSopsFiles are the corpus copies the direct-ref tests read beside
+// sopsResolver's secrets/db.sops.yaml.
+func directSopsFiles(t *testing.T) map[string]string {
+	t.Helper()
+	return map[string]string{"secrets/tls.sops.pem": testsops.CorpusText(t, "tls.sops.pem")}
+}
+
+// secretsByDest maps each resolved secret's DestPath to its content.
+func secretsByDest(resolved *ResolvedHost) map[string]string {
+	got := map[string]string{}
+	for _, f := range resolved.Files {
+		if f.Category == config.CategorySecret {
+			got[f.DestPath] = f.Content
+		}
+	}
+	return got
+}
+
+// A direct sops:// secret is named after its pointer's segments joined by
+// "_", or for a whole-file ref after the file's base name before `.sops.`.
+// Keyless it renders the string placeholder, for a leaf of any type (a
+// Podman secret is opaque bytes, so no typed placeholder); decrypting the
+// value.
+func TestDirectSopsSecretNaming(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, ref, dest, value string
+	}{
+		{name: "nested pointer", ref: "sops://secrets/db.sops.yaml#/db/password", dest: "secret:db_password", value: "hunter2-test"},
+		{name: "list index", ref: "sops://secrets/db.sops.yaml#/tokens/0", dest: "secret:tokens_0", value: "alpha-token"},
+		{name: "int leaf", ref: "sops://secrets/db.sops.yaml#/db/port", dest: "secret:db_port", value: "5432"},
+		{name: "whole file", ref: "sops://secrets/tls.sops.pem", dest: "secret:tls"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resolved, err := resolveSopsFleet(t, secretsBase(tt.ref), directSopsFiles(t), sopsKeyless, false)
+			require.NoError(t, err)
+			assert.Equal(t, map[string]string{tt.dest: sops.Placeholder}, secretsByDest(resolved))
+
+			resolved, err = resolveSopsFleet(t, secretsBase(tt.ref), directSopsFiles(t), sopsDecrypting, false)
+			require.NoError(t, err)
+			got := secretsByDest(resolved)
+			require.Contains(t, got, tt.dest)
+			if tt.value != "" {
+				assert.Equal(t, tt.value, got[tt.dest])
+			} else {
+				assert.True(t, strings.HasPrefix(got[tt.dest], "-----BEGIN"), "whole file decrypted")
+			}
+		})
+	}
+}
+
+// Direct sops:// refs fail the resolve, naming the ref, on a name collision
+// with any other secret destination, a segment no Podman secret name can
+// hold, a non-leaf, and an "" or null leaf, keyless as well as decrypting;
+// no error quotes a value.
+func TestDirectSopsSecretErrors(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		secrets []string
+		want    []string
+	}{
+		{
+			name:    "collision with a file secret",
+			secrets: []string{"secrets/db_password.tmpl", "sops://secrets/db.sops.yaml#/db/password"},
+			want:    []string{"destination collision for secret:db_password: secrets/db_password.tmpl, sops://secrets/db.sops.yaml#/db/password"},
+		},
+		{
+			name:    "invalid segment",
+			secrets: []string{"sops://secrets/db.sops.yaml#/hosts/srv-1.example.net:443/password"},
+			want: []string{
+				"sops://secrets/db.sops.yaml#/hosts/srv-1.example.net:443/password: invalid Podman secret name",
+				"deliver the value through a secrets/<name>.tmpl file containing {{ readSopsSecret",
+			},
+		},
+		{
+			name:    "escaped slash segment",
+			secrets: []string{"sops://secrets/db.sops.yaml#/odd_keys/a~1b"},
+			want:    []string{`segment "a/b" can't appear in a Podman secret name`},
+		},
+		{
+			name:    "non-leaf",
+			secrets: []string{"sops://secrets/db.sops.yaml#/db"},
+			want:    []string{"sops://secrets/db.sops.yaml#/db", `"/db" is a map; a string ref must end at a leaf`},
+		},
+		{
+			name:    "empty leaf",
+			secrets: []string{"sops://secrets/db.sops.yaml#/db/empty"},
+			want:    []string{"sops://secrets/db.sops.yaml#/db/empty: empty value: a direct secrets: entry needs a non-empty value"},
+		},
+		{
+			name:    "null leaf",
+			secrets: []string{"sops://secrets/db.sops.yaml#/db/nothing"},
+			want:    []string{"sops://secrets/db.sops.yaml#/db/nothing: empty value: a direct secrets: entry needs a non-empty value"},
+		},
+	}
+	files := directSopsFiles(t)
+	files["secrets/db_password.tmpl"] = "static"
+	for _, tt := range tests {
+		for _, mode := range []sopsReaderMode{sopsKeyless, sopsDecrypting} {
+			t.Run(tt.name+"/"+mode.String(), func(t *testing.T) {
+				t.Parallel()
+				_, err := resolveSopsFleet(t, secretsBase(tt.secrets...), files, mode, false)
+				require.Error(t, err)
+				for _, want := range tt.want {
+					require.ErrorContains(t, err, want)
+				}
+				testsops.AssertNoPlaintext(t, err)
+			})
+		}
+	}
+}
+
+// Keyless, a direct ref gets the template refs' recipient checks: the Host
+// must declare age_recipients:, and be among the file's Recipients.
+func TestDirectSopsSecretKeylessRecipientChecks(t *testing.T) {
+	t.Parallel()
+	ref := "sops://secrets/db.sops.yaml#/db/password"
+	tests := []struct {
+		name       string
+		recipients []string
+		want       string
+	}{
+		{name: "no age_recipients", want: "Host test-host references " + ref + " but declares no age_recipients"},
+		{name: "drift", recipients: []string{"srv-3"}, want: "secrets/db.sops.yaml: not a recipient: the file is not encrypted to Host test-host"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			files := directSopsFiles(t)
+			files["hosts/test-host/host.yml"] = sopsHostYAML(t, tt.recipients...)
+			_, err := resolveSopsFleet(t, secretsBase(ref), files, sopsKeyless, false)
+			require.ErrorContains(t, err, ref)
+			require.ErrorContains(t, err, tt.want)
+			testsops.AssertNoPlaintext(t, err)
+		})
+	}
+}
+
+// A direct secrets: ref and a readSopsSecret call render a leaf alike: a
+// scalar leaf that is not a string loses the one trailing newline
+// `sops decrypt --extract` prints, a string leaf keeps its own.
+func TestDirectSopsSecretLeafMatchesReadSopsSecret(t *testing.T) {
+	t.Parallel()
+	files := directSopsFiles(t)
+	files["secrets/port.tmpl"] = `{{ readSopsSecret "sops://secrets/db.sops.yaml#/db/port" }}`
+	files["secrets/key.tmpl"] = `{{ readSopsSecret "sops://secrets/tls.sops.pem#/data" }}`
+	resolved, err := resolveSopsFleet(t, secretsBase(
+		"sops://secrets/db.sops.yaml#/db/port", "sops://secrets/tls.sops.pem#/data",
+		"secrets/port.tmpl", "secrets/key.tmpl",
+	), files, sopsDecrypting, false)
+	require.NoError(t, err)
+	got := secretsByDest(resolved)
+	assert.Equal(t, "5432", got["secret:db_port"])
+	assert.Equal(t, "5432", got["secret:port"])
+	assert.True(t, strings.HasSuffix(got["secret:data"], "-----END TEST-ONLY KEY-----\n"), "a string leaf keeps its newline")
+	assert.Equal(t, got["secret:data"], got["secret:key"])
+}
+
+// ResolvedFile.SopsValues marks the files whose content holds a value read
+// through a sops:// ref: a readSopsSecret or readSopsData call during the
+// file's render (directly or through renderTemplate) or a direct sops://
+// secrets: entry. A keyless dry-run reports those as unverified.
+func TestResolvedFileSopsValues(t *testing.T) {
+	t.Parallel()
+	files := directSopsFiles(t)
+	maps.Copy(files, map[string]string{ //nolint:gosec // G101: test templates, no credentials
+		"secrets/string.tmpl":  `{{ readSopsSecret "sops://secrets/db.sops.yaml#/db/password" }}`,
+		"secrets/data.tmpl":    `{{ range $k, $v := readSopsData "sops://secrets/db.sops.yaml#/hosts" }}{{ $k }}{{ end }}`,
+		"secrets/nested.tmpl":  `{{ renderTemplate "partials/pw.tmpl" . }}`,
+		"partials/pw.tmpl":     `{{ readSopsSecret "sops://secrets/db.sops.yaml#/db/user" }}`,
+		"secrets/plain.tmpl":   `{{ .Host.Hostname }}`,
+		"secrets/static.yml":   "static: true\n",
+		"secrets/partial.tmpl": `{{ renderTemplate "partials/plain.tmpl" . }}`,
+		"partials/plain.tmpl":  `plain`,
+	})
+	secrets := []string{
+		"sops://secrets/db.sops.yaml#/db/password", "secrets/string.tmpl", "secrets/data.tmpl",
+		"secrets/nested.tmpl", "secrets/plain.tmpl", "secrets/static.yml", "secrets/partial.tmpl",
+	}
+	want := map[string]bool{
+		"sops://secrets/db.sops.yaml#/db/password": true,
+		"secrets/string.tmpl":                      true,
+		"secrets/data.tmpl":                        true,
+		"secrets/nested.tmpl":                      true,
+		"secrets/plain.tmpl":                       false,
+		"secrets/static.yml":                       false,
+		"secrets/partial.tmpl":                     false,
+	}
+	for _, mode := range []sopsReaderMode{sopsKeyless, sopsDecrypting} {
+		t.Run(mode.String(), func(t *testing.T) {
+			t.Parallel()
+			resolved, err := resolveSopsFleet(t, secretsBase(secrets...), files, mode, false)
+			require.NoError(t, err)
+			got := map[string]bool{}
+			for _, f := range resolved.Files {
+				got[f.SrcPath] = f.SopsValues
+			}
+			assert.Equal(t, want, got)
+		})
+	}
+}

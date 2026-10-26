@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -21,8 +22,7 @@ import (
 	"go.yaml.in/yaml/v4"
 
 	"github.com/schjan/picolet/pkg/config"
-	op "github.com/schjan/picolet/pkg/onepassword"
-	pp "github.com/schjan/picolet/pkg/protonpass"
+	"github.com/schjan/picolet/pkg/sops"
 )
 
 // ResolvedFile represents a single rendered file with its destination path.
@@ -43,6 +43,12 @@ type ResolvedFile struct {
 	// (e.g. "config/scrape.yml" for a manifest at manifests/config/scrape.yml).
 	// Only set for manifest- and file-category resolved files.
 	RelPath string
+	// SopsValues is true when Content holds a value read through a sops://
+	// ref: a readSopsSecret or readSopsData call during the file's render
+	// (also through renderTemplate) or a direct sops:// secrets: entry.
+	// Keyless, such a value is a placeholder, so the content can't be
+	// compared with what the Agent applied.
+	SopsValues bool
 }
 
 // ResolvedHost is the complete desired state for a single host.
@@ -56,6 +62,14 @@ type ResolvedHost struct {
 	// filePath and manifestPath helpers emit (Config.HostDataDir, else DataDir).
 	DataDir     string
 	HostDataDir string
+	// SopsFiles are the SOPS files (Fleet-relative paths, sorted) this
+	// resolve's sops:// refs reached: template helpers, templated refs and
+	// direct secrets: entries. validate's audience pass unions them over
+	// every Host.
+	SopsFiles []string
+	// Services are the Service Bundles this resolve expanded (the Host's
+	// assigned ones, or those requested), sorted.
+	Services []string
 }
 
 // Config holds configuration for creating a Resolver.
@@ -65,8 +79,21 @@ type Config struct {
 	SecretReader   SecretReader
 	OpSecretReader SecretRefReader
 	PPSecretReader SecretRefReader
-	Rootless       bool
-	Strict         bool
+	// Sops resolves sops:// refs on the Agent (the decrypting reader, one
+	// per resolve). Nil makes every sops:// ref fail the resolve; unlike
+	// op:// and pass://, SOPS never renders a placeholder without a reader.
+	// validate, resolve and bootstrap use NewKeyless instead.
+	Sops SopsReader
+	// NoSopsIdentityHint is the fix the no-identity error names when Sops
+	// is nil; empty: sops.NoIdentityHint (set sops.age_identity_path).
+	NoSopsIdentityHint string
+	Rootless           bool
+	Strict             bool
+
+	// keylessSops (set only by NewKeyless) replaces Sops with
+	// the keyless reader, built per host resolve for that Host so its
+	// recipient checks see the Host's age_recipients:.
+	keylessSops bool
 
 	// QuadletDir, SystemdDir, and DataDir override the defaults computed by
 	// ResolveDirs. Empty fields fall back to the default for the given
@@ -82,6 +109,10 @@ type Config struct {
 	// when picolet runs containerized and the host sees the data dir at a
 	// different path than picolet does.
 	HostDataDir string
+
+	// Logger receives the resolver's log lines (secret resolution, template
+	// rendering). Nil falls back to slog.Default().
+	Logger *slog.Logger
 }
 
 // Resolver renders templates and resolves the desired state for hosts.
@@ -91,16 +122,47 @@ type Resolver struct {
 	secretReader   SecretReader
 	opSecretReader SecretRefReader
 	ppSecretReader SecretRefReader
+	sopsReader     SopsReader
+	noSopsHint     string
+	keylessSops    bool
 	quadletDir     string
 	systemdDir     string
 	dataDir        string
 	hostDataDir    string
 	rootless       bool
 	strict         bool
+	logger         *slog.Logger
+	// rendering is the top-level file being rendered when SOPS values may
+	// not be rendered into it (sopsGuard); nil otherwise. Set by withRender
+	// on the per-resolve copy resolveHostFileSet makes.
+	rendering *unitRender
+	// sopsFiles records the SOPS files this resolve's refs reached; set
+	// fresh on every per-resolve copy (forResolve), nil on the shared
+	// Resolver.
+	sopsFiles sopsFileSet
+	// sopsCalls counts this resolve's readSopsSecret/readSopsData calls
+	// (sopsGuard), so buildFiles can tell which files read a SOPS value.
+	sopsCalls int
+	// keylessReader is this resolve's keyless SOPS reader (NewKeyless),
+	// built for its Host on the per-resolve copy; it serves the template
+	// helpers and the direct refs alike, so each file is read once.
+	keylessReader *sops.KeylessReader
 }
 
 // Rootless reports whether the resolver is configured for rootless mode.
 func (r *Resolver) Rootless() bool { return r.rootless }
+
+// NewKeyless is New with the keyless SOPS reader over rc.FS in place of
+// Sops: the resolver of validate, resolve and bootstrap, where
+// sops:// values render as placeholders and no key is read. Each host
+// resolve checks its refs for that Host, its age_recipients: included. Use it
+// rather than a hand-set reader, so no keyless call site forgets it (which
+// would fail every sops:// ref).
+func NewKeyless(rc Config) (*Resolver, error) {
+	rc.Sops = nil
+	rc.keylessSops = true
+	return New(rc)
+}
 
 // New creates a new Resolver.
 // Pass nil for SecretReader to use placeholder mode (validate/CI).
@@ -132,12 +194,16 @@ func New(rc Config) (*Resolver, error) {
 		secretReader:   rc.SecretReader,
 		opSecretReader: rc.OpSecretReader,
 		ppSecretReader: rc.PPSecretReader,
+		sopsReader:     rc.Sops,
+		noSopsHint:     cmp.Or(rc.NoSopsIdentityHint, sops.NoIdentityHint),
+		keylessSops:    rc.keylessSops,
 		quadletDir:     quadletDir,
 		systemdDir:     systemdDir,
 		dataDir:        dataDir,
 		hostDataDir:    hostDataDir,
 		rootless:       rc.Rootless,
 		strict:         rc.Strict,
+		logger:         cmp.Or(rc.Logger, slog.Default()),
 	}, nil
 }
 
@@ -190,6 +256,7 @@ func (r *Resolver) ResolveHost(ctx context.Context, hostname string) (*ResolvedH
 	if !ok {
 		return nil, &HostNotFoundError{Hostname: hostname}
 	}
+	r.cfg.Assignments.WarnUnassigned(host, r.logger)
 	return r.resolveHostFileSet(ctx, hostname, host, r.cfg.Assignments.Resolve(host), nil)
 }
 
@@ -201,6 +268,7 @@ func (r *Resolver) ResolveServicesForHost(ctx context.Context, hostname string, 
 	if !ok {
 		return nil, &HostNotFoundError{Hostname: hostname}
 	}
+	r.cfg.Assignments.WarnUnassigned(host, r.logger)
 	full := r.cfg.Assignments.Resolve(host)
 	available := config.SortedUnique(full.Services)
 	requested := config.SortedUnique(services)
@@ -218,6 +286,26 @@ func (r *Resolver) ResolveServicesForHost(ctx context.Context, hostname string, 
 }
 
 func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host *config.HostConfig, fileSet *config.ResolvedFileSet, templatePrefixes []string) (*ResolvedHost, error) {
+	return r.forResolve().resolveHostFileSetOnCopy(ctx, hostname, host, fileSet, templatePrefixes)
+}
+
+// forResolve returns the Resolver copy one resolve renders on: rendering is
+// per-resolve state, and one Resolver may resolve Hosts concurrently
+// (validate). The copy is shallow; every other field is read-only during a
+// resolve, so a new mutable field must be copied here too.
+func (r *Resolver) forResolve() *Resolver {
+	rr := *r
+	rr.rendering = nil
+	rr.sopsFiles = sopsFileSet{}
+	rr.sopsCalls = 0
+	rr.keylessReader = nil
+	return &rr
+}
+
+func (r *Resolver) resolveHostFileSetOnCopy(ctx context.Context, hostname string, host *config.HostConfig, fileSet *config.ResolvedFileSet, templatePrefixes []string) (*ResolvedHost, error) {
+	if r.keylessSops {
+		r.keylessReader = keylessSopsReader(r.fsys, host)
+	}
 	tmplData, err := NewTemplateData(r.cfg, hostname)
 	if err != nil {
 		return nil, err
@@ -226,11 +314,12 @@ func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host
 	providers := []ProviderTemplate{
 		r.provider(OpProvider(r.opSecretReader)),
 		r.provider(PPProvider(r.ppSecretReader)),
+		r.provider(r.guardedSopsProvider()),
 	}
 	// hostDataDir (not dataDir) drives filePath/manifestPath: those helpers emit
 	// path strings baked into rendered quadlets, which the host's podman must
 	// resolve. dataDir remains the write path (dataDestPath).
-	registry, caches, err := buildRegistry(ctx, r.fsys, r.secretReader, providers, r.hostDataDir, prefixFilter(templatePrefixes), siblings(tmplData))
+	registry, caches, err := buildRegistry(ctx, r.fsys, r.secretReader, providers, r.hostDataDir, prefixFilter(templatePrefixes), siblings(tmplData), r.logger)
 	if err != nil {
 		return nil, fmt.Errorf("building template registry: %w", err)
 	}
@@ -271,7 +360,31 @@ func (r *Resolver) resolveHostFileSet(ctx context.Context, hostname string, host
 		Hooks:       hooks,
 		DataDir:     r.dataDir,
 		HostDataDir: r.hostDataDir,
+		SopsFiles:   r.sopsFiles.sorted(),
+		Services:    config.SortedUnique(fileSet.Services),
 	}, nil
+}
+
+// resolveSopsReader returns the SOPS reader of this host resolve: its keyless
+// reader (NewKeyless), else the configured one (nil without one), recording
+// the files its refs reach into the resolve's sopsFiles.
+func (r *Resolver) resolveSopsReader() SopsReader { //nolint:ireturn // the keyless or the configured reader, two concrete types
+	reader := r.sopsReader
+	if r.keylessSops {
+		reader = r.keylessReader
+	}
+	if reader == nil {
+		return nil
+	}
+	return sopsFileRecorder{reader: reader, files: r.sopsFiles}
+}
+
+// guardedSopsProvider is SopsProvider over this host resolve's SOPS reader
+// with the unit-file guard.
+func (r *Resolver) guardedSopsProvider() ProviderTemplate {
+	p := SopsProvider(r.resolveSopsReader(), r.noSopsHint)
+	p.Guard = r.sopsGuard
+	return p
 }
 
 func (r *Resolver) provider(p ProviderTemplate) ProviderTemplate {
@@ -399,7 +512,7 @@ func (r *Resolver) expandAndValidate(fileSet *config.ResolvedFileSet) (*expansio
 func (r *Resolver) expandFileSet(fileSet *config.ResolvedFileSet) (*expansion, error) {
 	expanded, bundleErr := expandServiceBundles(r.fsys, fileSet.Services)
 	fromPaths, pathsErr := expandPathEntries(r.fsys, fileSet.Paths)
-	if err := errors.Join(bundleErr, pathsErr); err != nil {
+	if err := errors.Join(bundleErr, pathsErr, rejectPlainSOPSSecrets(fileSet.Secrets)); err != nil {
 		return nil, err
 	}
 	expanded.append(fromPaths)
@@ -466,24 +579,18 @@ func (r *Resolver) dataDestPath(logicalPath string) string {
 }
 
 // secretDestPath returns the DestPath for either a provider-backed ref
-// (op:// or pass://) or a file-based secret. Parsing is pure — no I/O.
+// (op://, pass:// or sops://) or a file-based secret. Parsing is pure — no
+// I/O.
 func (r *Resolver) secretDestPath(srcPath string) (string, error) {
-	if op.IsRef(srcPath) {
-		parsed, err := op.ParseOpRef(srcPath)
+	if p, ok := schemeOfRef(srcPath); ok {
+		name, err := p.secretName(srcPath)
 		if err != nil {
 			return "", err
 		}
-		return "secret:" + parsed.PodmanSecretName(), nil
-	}
-	if pp.IsRef(srcPath) {
-		parsed, err := pp.ParseRef(srcPath)
-		if err != nil {
-			return "", err
-		}
-		return "secret:" + parsed.PodmanSecretName(), nil
+		return SecretDestPath(name), nil
 	}
 	filename := destFilename(srcPath)
-	return "secret:" + strings.TrimSuffix(filename, filepath.Ext(filename)), nil
+	return SecretDestPath(strings.TrimSuffix(filename, filepath.Ext(filename))), nil
 }
 
 // buildFiles renders or reads every ref, in resolution order. A provider ref
@@ -501,6 +608,7 @@ func (r *Resolver) buildFiles(
 			f   *ResolvedFile
 			err error
 		)
+		callsBefore := r.sopsCalls
 		switch spec.Dest {
 		case config.DestQuadlet, config.DestSystemd:
 			f, err = r.resolveFile(registry, tmplData, ref.SrcPath, spec, r.unitDestPath(spec, ref.SrcPath))
@@ -519,15 +627,17 @@ func (r *Resolver) buildFiles(
 		if err != nil {
 			return nil, err
 		}
+		f.SopsValues = r.sopsCalls > callsBefore || sops.IsRef(ref.SrcPath)
 		files = append(files, *f)
 	}
 	return files, nil
 }
 
 // isProviderRef reports whether a secrets entry is a provider ref (op://,
-// pass://) rather than a repo or host-only secret file.
+// pass://, sops://) rather than a repo or host-only secret file.
 func isProviderRef(src string) bool {
-	return op.IsRef(src) || pp.IsRef(src)
+	_, ok := schemeOfRef(src)
+	return ok
 }
 
 func detectCollisions(files []ResolvedFile) error {
@@ -554,7 +664,13 @@ func detectCollisions(files []ResolvedFile) error {
 }
 
 func (r *Resolver) resolveFile(registry *template.Template, tmplData *TemplateData, srcPath string, spec config.Spec, destPath string) (*ResolvedFile, error) {
-	content, err := r.renderOrRead(registry, tmplData, srcPath)
+	var (
+		content string
+		err     error
+	)
+	r.withRender(guardedRender(srcPath, spec.Dest), func() {
+		content, err = r.renderOrRead(registry, tmplData, srcPath)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("resolving %s: %w", srcPath, err)
 	}
@@ -620,7 +736,7 @@ func findQuadletFile(quadletName string, files []ResolvedFile) *ResolvedFile {
 // Quadlet-resolvable and the field is explicitly set. Must be called BEFORE
 // resolveHookQuadletUnit rewrites hook.Unit, since the lookup compares against
 // the original Quadlet filename (e.g. "app.container").
-func validateSignalHookContainer(hook config.Hook, files []ResolvedFile) error {
+func (r *Resolver) validateSignalHookContainer(hook config.Hook, files []ResolvedFile) error {
 	if hook.Action != config.HookActionSignal || !isQuadletUnit(hook.Unit) {
 		return nil
 	}
@@ -631,7 +747,7 @@ func validateSignalHookContainer(hook config.Hook, files []ResolvedFile) error {
 	declared, ok := file.ParsedUnit.LookupLast("Container", "ContainerName")
 	declared = strings.TrimSpace(declared)
 	if !ok || declared == "" {
-		slog.Debug("Quadlet has no explicit ContainerName, container not validated",
+		r.logger.Debug("Quadlet has no explicit ContainerName, container not validated",
 			"hook", hook.Name, "unit", hook.Unit, "container", hook.Container)
 		return nil
 	}
@@ -707,7 +823,13 @@ func (r *Resolver) buildHooks(registry *template.Template, tmplData *TemplateDat
 }
 
 func (r *Resolver) resolveHooksFile(registry *template.Template, tmplData *TemplateData, ref hookRef, files []ResolvedFile) ([]config.Hook, error) {
-	content, err := r.renderOrRead(registry, tmplData, ref.SrcPath)
+	var (
+		content string
+		err     error
+	)
+	r.withRender(hookRender(ref.SrcPath), func() {
+		content, err = r.renderOrRead(registry, tmplData, ref.SrcPath)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("resolving hooks %s: %w", ref.SrcPath, err)
 	}
@@ -716,7 +838,7 @@ func (r *Resolver) resolveHooksFile(registry *template.Template, tmplData *Templ
 		return nil, fmt.Errorf("parsing %s: %w", ref.SrcPath, err)
 	}
 	for i := range file.Hooks {
-		if err := validateSignalHookContainer(file.Hooks[i], files); err != nil {
+		if err := r.validateSignalHookContainer(file.Hooks[i], files); err != nil {
 			return nil, fmt.Errorf("%s: hooks[%d]: %w", ref.SrcPath, i, err)
 		}
 		if isQuadletUnit(file.Hooks[i].Unit) {
@@ -752,25 +874,29 @@ func (r *Resolver) resolveSecret(registry *template.Template, tmplData *Template
 	}, nil
 }
 
-// batchResolveDirectSecrets resolves all provider-backed (op:// + pass://)
-// refs in the secrets list, one batched call per provider. Returns a single
-// map keyed by ref. A resolution failure is fatal to prevent reconciler.Diff
-// from marking unresolved secrets for deletion (which would remove them from
-// Podman). When a provider is not configured, its refs are skipped with a
-// warning so the rest of the reconcile can proceed.
+// batchResolveDirectSecrets resolves all provider-backed (op://, pass://,
+// sops://) refs in the secrets list, one batched call per provider. Returns
+// a single map keyed by ref. A resolution failure is fatal to prevent
+// reconciler.Diff from marking unresolved secrets for deletion (which would
+// remove them from Podman). When op:// or pass:// is not configured, its
+// refs are skipped with a warning so the rest of the reconcile can proceed;
+// sops:// refs never are (resolveSopsDirectRefs).
 //
 //nolint:nilnil // nil map signals "no provider-backed secrets to resolve"
 func (r *Resolver) batchResolveDirectSecrets(ctx context.Context, allSecrets []string) (map[string]string, error) {
-	opRefs, ppRefs := splitDirectRefs(allSecrets)
-	if len(opRefs) == 0 && len(ppRefs) == 0 {
+	refs := splitDirectRefs(allSecrets)
+	if len(refs) == 0 {
 		return nil, nil
 	}
 
 	results := make(map[string]string)
-	if err := r.resolveProviderRefs(ctx, ProviderOnePassword, r.opSecretReader, opRefs, results); err != nil {
+	if err := r.resolveProviderRefs(ctx, ProviderOnePassword, r.opSecretReader, refs[ProviderOnePassword], results); err != nil {
 		return nil, err
 	}
-	if err := r.resolveProviderRefs(ctx, ProviderProtonPass, r.ppSecretReader, ppRefs, results); err != nil {
+	if err := r.resolveProviderRefs(ctx, ProviderProtonPass, r.ppSecretReader, refs[ProviderProtonPass], results); err != nil {
+		return nil, err
+	}
+	if err := r.resolveSopsDirectRefs(ctx, refs[ProviderSops], results); err != nil {
 		return nil, err
 	}
 	if len(results) == 0 {
@@ -779,16 +905,76 @@ func (r *Resolver) batchResolveDirectSecrets(ctx context.Context, allSecrets []s
 	return results, nil
 }
 
-func splitDirectRefs(allSecrets []string) (opRefs, ppRefs []string) {
+// splitDirectRefs returns a secrets list's provider refs by provider.
+func splitDirectRefs(allSecrets []string) map[ProviderKey][]string {
+	refs := map[ProviderKey][]string{}
 	for _, path := range allSecrets {
-		switch {
-		case op.IsRef(path):
-			opRefs = append(opRefs, path)
-		case pp.IsRef(path):
-			ppRefs = append(ppRefs, path)
+		if p, ok := schemeOfRef(path); ok {
+			refs[p.Key] = append(refs[p.Key], path)
 		}
 	}
-	return opRefs, ppRefs
+	return refs
+}
+
+// resolveSopsDirectRefs resolves direct sops:// refs into into, through the
+// host resolve's SOPS reader (directSopsReader), in the same batch as the
+// other providers. Unlike op:// and pass://, they are never skipped: strict
+// mode fails them even with the keyless reader, and without a reader they
+// fail with the no-identity error, so a placeholder is never deployed as a
+// value.
+func (r *Resolver) resolveSopsDirectRefs(ctx context.Context, refs []string, into map[string]string) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	if r.strict {
+		return schemeOf(ProviderSops).strictDirectError(refs)
+	}
+	reader := r.directSopsReader()
+	if reader == nil {
+		return sops.NoIdentityError("direct secrets "+strings.Join(refs, ", "), r.noSopsHint)
+	}
+	r.logger.Debug("batch-resolving secrets", "provider", ProviderSops, "count", len(refs))
+	results, err := reader(ctx, refs)
+	if err != nil {
+		return fmt.Errorf("resolving %s secrets: %w", ProviderSops, err)
+	}
+	maps.Copy(into, results)
+	return nil
+}
+
+// directSopsReader returns the reader of this host resolve's direct
+// sops:// refs, nil without one: the resolve's keyless reader in direct
+// mode (NewKeyless), else the configured reader with an empty value
+// rejected. Either way each ref's path is checked like a template ref's
+// (checkSopsRefs).
+func (r *Resolver) directSopsReader() SecretRefReader {
+	if r.keylessSops {
+		return checkSopsRefs(r.sopsFiles.recordRefs(r.keylessReader.ReadDirect))
+	}
+	if r.sopsReader == nil {
+		return nil
+	}
+	return checkSopsRefs(r.sopsFiles.recordRefs(rejectEmptyDirect(r.sopsReader.ReadAll)))
+}
+
+// rejectEmptyDirect wraps a decrypting reader so that a ref resolving to ""
+// (an "" or null leaf, which SOPS leaves unencrypted) fails: a direct
+// secrets: entry needs a non-empty value.
+func rejectEmptyDirect(reader SecretRefReader) SecretRefReader {
+	return func(ctx context.Context, refs []string) (map[string]string, error) {
+		values, err := reader(ctx, refs)
+		var errs []error
+		if err != nil {
+			errs = append(errs, err)
+		}
+		for _, ref := range refs {
+			if v, ok := values[ref]; ok && v == "" {
+				delete(values, ref)
+				errs = append(errs, sops.EmptyDirectValueError(ref))
+			}
+		}
+		return values, errors.Join(errs...)
+	}
 }
 
 func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, reader SecretRefReader, refs []string, into map[string]string) error {
@@ -797,12 +983,12 @@ func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, re
 	}
 	if reader == nil {
 		if r.strict {
-			return fmt.Errorf("%s provider not configured; cannot resolve direct secrets in strict mode: %s", name, strings.Join(refs, ", "))
+			return schemeOf(name).strictDirectError(refs)
 		}
-		slog.Warn("skipping secrets (provider not configured)", "provider", name, "count", len(refs))
+		r.logger.Warn("skipping secrets (provider not configured)", "provider", name, "count", len(refs))
 		return nil
 	}
-	slog.Debug("batch-resolving secrets", "provider", name, "count", len(refs))
+	r.logger.Debug("batch-resolving secrets", "provider", name, "count", len(refs))
 	results, err := reader(ctx, refs)
 	if err != nil {
 		return fmt.Errorf("resolving %s secrets: %w", name, err)
@@ -815,27 +1001,38 @@ func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, re
 // reader-function calls (readOpSecret, readProtonPassSecret, …). Output is
 // discarded — only the side effect of populating each provider's RefCache matters.
 // Secret templates are included: they may call provider reader functions;
-// direct provider refs (op://, pass://) are not templates and are skipped.
+// direct provider refs (op://, pass://, sops://) are not templates and are
+// skipped.
 func (r *Resolver) collectTemplateRefs(registry *template.Template, tmplData *TemplateData, expanded *expansion) {
-	allPaths := make([]string, 0, len(expanded.Files)+len(expanded.Hooks))
-	for _, ref := range expanded.Files {
-		if !isProviderRef(ref.SrcPath) {
-			allPaths = append(allPaths, ref.SrcPath)
-		}
-	}
-	for _, ref := range expanded.Hooks {
-		allPaths = append(allPaths, ref.SrcPath)
-	}
-	for _, path := range allPaths {
+	collect := func(path string, g *unitRender) {
 		if !config.IsTemplate(path) {
+			return
+		}
+		// The unit-file guard runs here too, so a guarded file's refs are
+		// never collected and never reach a decrypting reader.
+		r.withRender(g, func() {
+			_ = registry.ExecuteTemplate(io.Discard, path, tmplData) // errors are non-fatal in collect phase
+		})
+	}
+	for _, ref := range expanded.Files {
+		if isProviderRef(ref.SrcPath) {
 			continue
 		}
-		_ = registry.ExecuteTemplate(io.Discard, path, tmplData) // errors are non-fatal in collect phase
+		spec, ok := config.SpecFor(ref.Category)
+		if !ok {
+			// No row, no known guard: skip collecting (fail closed), so no
+			// ref of it reaches a decrypting reader; resolving it fails later.
+			continue
+		}
+		collect(ref.SrcPath, guardedRender(ref.SrcPath, spec.Dest))
+	}
+	for _, ref := range expanded.Hooks {
+		collect(ref.SrcPath, hookRender(ref.SrcPath))
 	}
 }
 
 // buildDirectSecretFile creates a ResolvedFile for a pre-resolved
-// provider-backed secret (op:// or pass://).
+// provider-backed secret (op://, pass:// or sops://).
 func (r *Resolver) buildDirectSecretFile(ref, content string) (*ResolvedFile, error) {
 	destPath, err := r.secretDestPath(ref)
 	if err != nil {
@@ -862,7 +1059,7 @@ func (r *Resolver) secretContent(registry *template.Template, tmplData *Template
 	// Static repo file — copy as-is without template rendering.
 	data, readErr := fs.ReadFile(r.fsys, srcPath)
 	if readErr == nil {
-		slog.Debug("reading static secret from repo", "path", srcPath)
+		r.logger.Debug("reading static secret from repo", "path", srcPath)
 		return string(data), nil
 	}
 	if !errors.Is(readErr, fs.ErrNotExist) {
@@ -872,13 +1069,13 @@ func (r *Resolver) secretContent(registry *template.Template, tmplData *Template
 	if r.secretReader != nil {
 		return r.secretReader(filename)
 	}
-	slog.Warn("secret reader not configured, using placeholder", "file", srcPath)
+	r.logger.Warn("secret reader not configured, using placeholder", "file", srcPath)
 	return placeholderSecret, nil
 }
 
 func (r *Resolver) renderOrRead(registry *template.Template, tmplData *TemplateData, path string) (string, error) {
 	if config.IsTemplate(path) {
-		slog.Debug("rendering template", "path", path)
+		r.logger.Debug("rendering template", "path", path)
 		var buf bytes.Buffer
 		if err := registry.ExecuteTemplate(&buf, path, tmplData); err != nil {
 			return "", fmt.Errorf("executing template %s: %w", path, err)
@@ -886,7 +1083,7 @@ func (r *Resolver) renderOrRead(registry *template.Template, tmplData *TemplateD
 		return buf.String(), nil
 	}
 
-	slog.Debug("reading static file", "path", path)
+	r.logger.Debug("reading static file", "path", path)
 	data, err := fs.ReadFile(r.fsys, path)
 	if err != nil {
 		return "", fmt.Errorf("reading %s: %w", path, err)

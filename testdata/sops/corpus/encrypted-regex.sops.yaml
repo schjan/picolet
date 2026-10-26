@@ -1,0 +1,36 @@
+# TEST-ONLY fixture values for the picolet SOPS corpus. Not real secrets.
+db:
+    user: app
+    password: ENC[AES256_GCM,data:II44Wfz8NmXECrGC,iv:Nvdhuv09vSnsd0Lnb3Vx2JqjaXANGp37sw5R3XFJs2M=,tag:vtT8aceey1vA1uCilyS1pQ==,type:str]
+    port: 5432
+    tls: true
+    ratio: 0.75
+    empty: ""
+    nothing: null
+tokens:
+    - alpha-token
+    - beta-token
+    - name: gamma
+      value: ENC[AES256_GCM,data:PoVWwlOnEnbsheyS,iv:Onxsck8g/jKhCBZYpnE/J1qCvJ5ciWzej5qBAiCL4GI=,tag:RdYDQIqieNlewf7rDcxtTw==,type:str]
+hosts:
+    srv-1.example.net:
+        password: ENC[AES256_GCM,data:+suE8SO7dR5o,iv:6C43XwqUGeXp/DvLCmknUb+17atR6vhgFfdgI/C02ew=,tag:EPg07E4h7zA3A8FhGmEw8Q==,type:str]
+odd_keys:
+    a/b: slash-key
+    m~n: tilde-key
+note_unencrypted: visible
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBuZU5HSDNjQVRPTTBkaUhB
+            QzI0Vnk5VzdWUVYrWFlGTmRKRko4V1RJclZzCjFFTjRqdU5FbTRDbndFVTB0ZkNs
+            WURMWFFKaEc0S09ON0ZudmhjZmlQUGMKLS0tIHNubjlIVHJKTkxkc1NjQ09LM3Nw
+            cFBFOXdsVm1vV1RvVnhib3ExUjlqK28KxJM6qs0wUPmHr/r/huSisI0xYNj3ax5H
+            lPNkB5r/ES+/fiOHgqz4Yat6AlQKzrzK7bKf7Fg9k4SkFvJqqKrIlg==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1eed9cxu2y3xx2s3syz95sanhy3xuajtpmjsnz63skgwl9yvw0g5su77pfq
+    encrypted_regex: ^(password|value)$
+    lastmodified: "2026-10-24T23:40:33Z"
+    mac: ENC[AES256_GCM,data:V5GbKoVzrAoD9HSEfSLfV+E3qux/5uzXH/EDoic2ffTI7XZ08b2mOftzykH2bin9Wd3L+lmZLhO2q3qoB2BZSxaIC7Mw8ceaFJGKqYrfW8KyCT2arX3R4yt6wNWibmDC/KTa525CWUxxRUWhnqaWInEIOWx1W7MOTCVszj5YicM=,iv:aoP977R7+6BihkVWevASzt7le2DR6GSqCqCyGnEkvUA=,tag:/XFK2CScAOR7RNK5caXPaA==,type:str]
+    version: 3.13.3
