@@ -1590,7 +1590,7 @@ A guided path from a running Host to its first decrypted value; the sections aft
 
    Without step 2 the Agent refuses the new config (`refusing the Agent config … the Agent could not start with it: credential sops.age_identity_path …`) and keeps running on the old one; deliver the identity and the next reconciliation applies it.
 
-4. **Encrypt a file** to the Host and yourself. Declare yourself in `operators.yml`, add a creation rule, and create the file with `sops edit`, which encrypts it on save, so the plaintext never reaches the disk:
+4. **Encrypt a file** to the Host and yourself. Declare yourself in `operators.yml`, add a creation rule, and create the file with `sops edit`, which encrypts it on save, so the plaintext never lands in the checkout:
 
    ```yaml
    # operators.yml
@@ -1636,7 +1636,12 @@ A guided path from a running Host to its first decrypted value; the sections aft
    <sops-secret>
    ```
 
-7. **Check the result.** After the push the Agent logs `changes detected` and `apply complete` with the consuming unit restarted; `podman secret ls` (as `app`) lists `app_token`. picolet never prints the value; read it with `sops decrypt secrets/app.sops.yaml`.
+7. **Check the result.** After the push the Agent logs `changes detected` and `apply complete` with the consuming unit restarted; `podman secret ls` (as `app`) lists `app_token`. picolet never prints the value; read it with `sops decrypt secrets/app.sops.yaml`:
+
+   ```text
+   {"time":"…","level":"INFO","msg":"changes detected","create":1,"update":1,"delete":0}
+   {"time":"…","level":"INFO","msg":"apply complete","applied":2,"restarted":["app.service"],"skipped_oneshot_restarts":0,"dry_run":false}
+   ```
 
 Which commands decrypt:
 

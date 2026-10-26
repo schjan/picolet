@@ -93,7 +93,7 @@ type Agent struct {
 	opReader resolver.SecretRefReader // nil when 1Password not configured; initialized in Run, consumed in secrets.go
 	ppReader resolver.SecretRefReader // nil when Proton Pass not configured; initialized in Run, consumed in secrets.go
 	// sopsIDs are the age identities sops:// refs are decrypted with; nil
-	// when the config has no sops block. Set by WithStartup, else by setupSops in Run.
+	// when the config has no sops block. Set by WithStartup and by setupSops in Run.
 	sopsIDs *sops.Identities
 	// startup is what the run command's startup checks loaded (WithStartup);
 	// nil makes setupSops load the identities itself.

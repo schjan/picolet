@@ -150,7 +150,7 @@ func TestE2ESopsAdoption(t *testing.T) {
 		require.NoError(t, err)
 		return connCtx
 	}
-	podmanSecret := func(t *testing.T, connCtx context.Context) (id, value string) {
+	podmanSecret := func(connCtx context.Context, t *testing.T) (id, value string) {
 		t.Helper()
 		info, err := secrets.Inspect(connCtx, sopsE2ESecret, new(secrets.InspectOptions).WithShowSecret(true))
 		require.NoError(t, err)
@@ -189,7 +189,7 @@ func TestE2ESopsAdoption(t *testing.T) {
 		require.NotNil(t, result.ApplyResult)
 		assert.Empty(t, result.ApplyResult.Errors)
 
-		_, value := podmanSecret(t, conn(t))
+		_, value := podmanSecret(conn(t), t)
 		assert.Equal(t, sopsE2EValue, value, "the Podman secret holds the decrypted value")
 		st, err := store.Load()
 		require.NoError(t, err)
@@ -217,7 +217,7 @@ func TestE2ESopsAdoption(t *testing.T) {
 		connCtx := conn(t)
 		before, err := containers.Inspect(connCtx, sopsE2EContainer, nil)
 		require.NoError(t, err)
-		secretID, _ := podmanSecret(t, connCtx)
+		secretID, _ := podmanSecret(connCtx, t)
 
 		// The corpus' re-encrypted twin: same values, new data key and
 		// ciphertexts, as `sops rotate` or `sops updatekeys` leave a file.
@@ -232,7 +232,7 @@ func TestE2ESopsAdoption(t *testing.T) {
 		assert.False(t, result.HasChanges, "a re-encrypted file with the same values changes nothing")
 		assert.Nil(t, result.ApplyResult, "no apply runs")
 
-		gotID, value := podmanSecret(t, connCtx)
+		gotID, value := podmanSecret(connCtx, t)
 		assert.Equal(t, secretID, gotID, "the Podman secret is not recreated")
 		assert.Equal(t, sopsE2EValue, value)
 		after, err := containers.Inspect(connCtx, sopsE2EContainer, nil)
