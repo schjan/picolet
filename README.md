@@ -369,7 +369,10 @@ reads at start. When a commit changes the quadlet's `Volume=`, `Mount=`,
 Fleet-managed secret or `.volume` unit the quadlet mounts, and every
 credential file must lie under a mount the new quadlet keeps exactly as before
 (same target, same source and options as written; not a tmpfs) or under no
-mount at all. A mount whose target starts with a systemd specifier (`%h`,
+mount at all. A `Mask=` hides every path under it, whatever is mounted deeper
+(Podman masks after it mounts): a mask added above a credential file refuses
+it, and a quadlet that masks `/etc/picolet/config.yml` or a directory above it
+is refused outright. A mount whose target starts with a systemd specifier (`%h`,
 `%t`) or is relative may hold any path, so a commit that adds, drops or
 repoints one refuses every credential file. So does a commit that adds,
 drops or changes a `PodmanArgs=` option that changes what the container shows

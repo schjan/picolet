@@ -66,6 +66,11 @@ func CheckSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Chan
 	if err != nil {
 		return err
 	}
+	if writesUnit {
+		if err := checkMaskedConfig(next, running, unit); err != nil {
+			return err
+		}
+	}
 	file, err := resolver.AgentConfigSecret(resolved.Files, unit)
 	if errors.Is(err, resolver.ErrAgentConfigNotRendered) {
 		return checkLostSelfConfig(next, running, unit, changeset)
@@ -217,8 +222,8 @@ func keptMounts(running, next *parser.UnitFile) agentcfg.Locate {
 			return "", fmt.Errorf("this commit changes a mount at %s, and the guard cannot tell which paths it holds; %s",
 				unplacedTargets(nextUnplaced, runningUnplaced), errOwnCommit)
 		}
-		held := mountsHolding(nextMounts, cred.Path)
-		if !slices.Equal(held, mountsHolding(runningMounts, cred.Path)) {
+		held := holding(nextMounts, cred.Path)
+		if !slices.Equal(held, holding(runningMounts, cred.Path)) {
 			return "", fmt.Errorf("this commit changes the Agent unit's mounts, and the path is not under a mount the new unit keeps as it was; %s", errOwnCommit)
 		}
 		if err := sharedHolders(slices.Concat(held, nextUnplaced), nil); err != nil {
@@ -344,6 +349,32 @@ func agentQuadlet(files []resolver.ResolvedFile, unit string) *resolver.Resolved
 	for i := range files {
 		if files[i].ServiceName == unit && files[i].Category == config.CategoryContainer && files[i].ParsedUnit != nil {
 			return &files[i]
+		}
+	}
+	return nil
+}
+
+// checkMaskedConfig refuses an Agent unit next whose Mask= hides the Agent
+// config path: Podman masks after it mounts, so a mask on the config path or
+// a directory above it hides whatever config is mounted there, Fleet-managed
+// or not. A mask whose target the guard cannot place (placedTarget: a
+// specifier such as %E may expand to /etc) is refused unless the running
+// unit (nil when there is none on disk) already has it.
+func checkMaskedConfig(next, running *parser.UnitFile, unit string) error {
+	nextMounts, _ := unitMounts(next)
+	var runningMounts []mount
+	if running != nil {
+		runningMounts, _ = unitMounts(running)
+	}
+	for _, m := range nextMounts {
+		switch {
+		case m.source != "mask":
+		case placedTarget(m.target) && under(resolver.AgentConfigTarget, m.target):
+			return fmt.Errorf("refusing the Agent unit %s: its Mask=%s hides %s (a mask hides every path under it), so the Agent could not start; "+
+				"stop masking the config path", unit, m.target, resolver.AgentConfigTarget)
+		case !placedTarget(m.target) && !slices.Contains(runningMounts, m):
+			return fmt.Errorf("refusing the Agent unit %s: its Mask=%s may hide %s, and the guard cannot tell which path it masks, so the Agent could not start; "+
+				"mask an absolute path", unit, m.target, resolver.AgentConfigTarget)
 		}
 	}
 	return nil

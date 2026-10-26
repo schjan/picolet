@@ -79,7 +79,8 @@ func unitMounts(unit *parser.UnitFile) (mounts []mount, opaque []string) {
 
 // maskMounts returns unit's Mask= and Unmask= paths, each as a mount whose
 // source is "mask" or "unmask" (Unmask=ALL has no placed target), and
-// VolatileTmp='s tmpfs at /tmp.
+// VolatileTmp='s tmpfs at /tmp. A mask hides every path under it, not only
+// those it holds as the deepest mount (holding).
 func maskMounts(unit *parser.UnitFile) []mount {
 	var mounts []mount
 	for _, key := range []string{"Mask", "Unmask"} {
@@ -187,6 +188,11 @@ func isHostPath(source string) bool {
 	return source != "" && strings.ContainsAny(source[:1], "/.%")
 }
 
+// under reports whether p is target or lies below it.
+func under(p, target string) bool {
+	return p == target || strings.HasPrefix(p, strings.TrimSuffix(target, "/")+"/")
+}
+
 // mountsHolding returns the mounts at the deepest target that holds p (the
 // container sees the innermost mount; more than one may share the target).
 func mountsHolding(mounts []mount, p string) []mount {
@@ -194,10 +200,25 @@ func mountsHolding(mounts []mount, p string) []mount {
 	var held []mount
 	for _, m := range mounts {
 		switch {
-		case p != m.target && !strings.HasPrefix(p, strings.TrimSuffix(m.target, "/")+"/"):
+		case !under(p, m.target):
 		case len(held) == 0 || len(m.target) > len(held[0].target):
 			held = []mount{m}
 		case m.target == held[0].target:
+			held = append(held, m)
+		}
+	}
+	return held
+}
+
+// holding returns the mounts that decide what the container shows at p: those
+// at the deepest target holding it (mountsHolding), then every other Mask=
+// above it. Podman masks after it mounts (OCI maskedPaths), so a mask hides
+// every path under it, at any depth, whatever is mounted deeper.
+func holding(mounts []mount, p string) []mount {
+	p = path.Clean(p)
+	held := mountsHolding(mounts, p)
+	for _, m := range mounts {
+		if m.source == "mask" && under(p, m.target) && !slices.Contains(held, m) {
 			held = append(held, m)
 		}
 	}
