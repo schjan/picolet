@@ -11,6 +11,7 @@ import (
 
 	"github.com/getsops/sops/v3/age"
 	"github.com/getsops/sops/v3/config"
+	"go.yaml.in/yaml/v3"
 )
 
 // CreationRulesFile is SOPS's config file, read only at the Fleet root:
@@ -30,13 +31,72 @@ var ErrInvalidCreationRule = errors.New("invalid")
 type CreationRules struct {
 	// dir holds the copy as CreationRulesFile; empty when the Fleet has none.
 	dir string
+	// invalid is why the Fleet's file does not load (it does not parse);
+	// Check fails every file with it.
+	invalid error
 }
 
-// ReadCreationRules copies the Fleet-root `.sops.yaml` from fsys into a
-// private temp dir. Without one it returns rules that check no file. The
-// file must be a regular file of at most MaxFileSize: a symlink is an error
-// and never followed, and an fsys that cannot Lstat fails closed. The caller
-// must Close the result.
+// ageRule is the part of an upstream creation rule that selects it
+// (path_regex) or that upstream reads without building a key backend: its
+// age Recipients, top level or per key group, shamir_threshold and the
+// encryption rules (kept so upstream still refuses a rule naming more than
+// one). Field names and types are upstream's, decoded with upstream's YAML
+// library, so anchors, aliases and merge keys resolve as upstream resolves
+// them, and a value upstream cannot decode fails here too.
+type ageRule struct {
+	PathRegex               string     `yaml:"path_regex"`
+	Age                     any        `yaml:"age,omitempty"` // string or []string, as upstream
+	KeyGroups               []ageGroup `yaml:"key_groups,omitempty"`
+	ShamirThreshold         int        `yaml:"shamir_threshold,omitempty"`
+	UnencryptedSuffix       string     `yaml:"unencrypted_suffix,omitempty"`
+	EncryptedSuffix         string     `yaml:"encrypted_suffix,omitempty"`
+	UnencryptedRegex        string     `yaml:"unencrypted_regex,omitempty"`
+	EncryptedRegex          string     `yaml:"encrypted_regex,omitempty"`
+	UnencryptedCommentRegex string     `yaml:"unencrypted_comment_regex,omitempty"`
+	EncryptedCommentRegex   string     `yaml:"encrypted_comment_regex,omitempty"`
+	MACOnlyEncrypted        bool       `yaml:"mac_only_encrypted,omitempty"`
+}
+
+// ageGroup is an upstream key group reduced to its age Recipients and the
+// groups it merges. A group left with none stays, as an empty group.
+type ageGroup struct {
+	Merge []ageGroup `yaml:"merge,omitempty"`
+	Age   []string   `yaml:"age,omitempty"`
+}
+
+// ageRulesFile is the reduced `.sops.yaml`: only its creation rules, in
+// their order (destination_rules and stores are never read).
+type ageRulesFile struct {
+	CreationRules []ageRule `yaml:"creation_rules,omitempty"`
+}
+
+// ageOnlyRules rewrites the creation rules data so that upstream's loader
+// builds no key backend but age: it keeps each rule (so upstream picks the
+// same one) with only the fields of ageRule, and drops every non-age key
+// (kms, aws_profile, gcp_kms, azure_keyvault, hc_vault_transit_uri,
+// hc_vault, hckms, pgp). Upstream builds those backends while it loads the
+// rule, and some reach out: a versionless Azure Key Vault URL makes it
+// discover credentials and look the key's version up over the network. A
+// rule left without age Recipients is still picked, and compares as one
+// empty group. Data that does not decode is an error, as it is upstream.
+func ageOnlyRules(data []byte) ([]byte, error) {
+	var rules ageRulesFile
+	if err := yaml.Unmarshal(data, &rules); err != nil {
+		return nil, fmt.Errorf("the file does not decode: %w", err)
+	}
+	out, err := yaml.Marshal(&rules)
+	if err != nil {
+		return nil, fmt.Errorf("re-encoding the creation rules: %w", err)
+	}
+	return out, nil
+}
+
+// ReadCreationRules copies the Fleet-root `.sops.yaml` from fsys, reduced to
+// its rules' age material (ageOnlyRules), into a private temp dir. Without
+// one it returns rules that check no file; one that does not decode fails
+// every Check. The file must be a regular file of at most MaxFileSize: a
+// symlink is an error and never followed, and an fsys that cannot Lstat
+// fails closed. The caller must Close the result.
 func ReadCreationRules(fsys fs.FS) (*CreationRules, error) {
 	lfs, ok := fsys.(fs.ReadLinkFS)
 	if !ok {
@@ -57,23 +117,35 @@ func ReadCreationRules(fsys fs.FS) (*CreationRules, error) {
 	if err != nil {
 		return nil, err
 	}
-	dir, err := os.MkdirTemp("", "picolet-sops-rules-")
+	data, err = ageOnlyRules(data)
+	if err != nil {
+		return &CreationRules{invalid: err}, nil
+	}
+	dir, err := privateCopy(data)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", CreationRulesFile, err)
+	}
+	return &CreationRules{dir: dir}, nil
+}
+
+// privateCopy writes data as CreationRulesFile into a new private temp dir
+// and returns the dir's absolute path.
+func privateCopy(data []byte) (string, error) {
+	dir, err := os.MkdirTemp("", "picolet-sops-rules-")
+	if err != nil {
+		return "", err
 	}
 	// Upstream trims the config's absolute dir from the file path; a
 	// relative TMPDIR would leave the prefix on and match nothing.
 	abs, err := filepath.Abs(dir)
+	if err == nil {
+		err = os.WriteFile(filepath.Join(abs, CreationRulesFile), data, 0o600)
+	}
 	if err != nil {
 		_ = os.RemoveAll(dir)
-		return nil, fmt.Errorf("%s: %w", CreationRulesFile, err)
+		return "", err
 	}
-	dir = abs
-	if err := os.WriteFile(filepath.Join(dir, CreationRulesFile), data, 0o600); err != nil {
-		_ = os.RemoveAll(dir)
-		return nil, fmt.Errorf("%s: %w", CreationRulesFile, err)
-	}
-	return &CreationRules{dir: dir}, nil
+	return abs, nil
 }
 
 // Close removes the private copy.
@@ -88,12 +160,16 @@ func (c *CreationRules) Close() error {
 // (Fleet-relative), with those of the creation rule upstream picks for it,
 // group by group: the same number of groups and the same set in each, order
 // ignored; a file without key groups is one group. shamir_threshold, the
-// encryption rules and non-age keys are ignored. A Fleet without
+// encryption rules and non-age keys are ignored, and no non-age key backend
+// is ever built (ageOnlyRules). A Fleet without
 // creation_rules, or no rule matching path, passes. A rule upstream cannot
 // load is an error. A drift error lists per group the Recipients in the file
 // but not in the rule (+) and in the rule but not in the file (−), and the
 // `sops updatekeys` fix.
 func (c *CreationRules) Check(path string, f *File) error {
+	if c.invalid != nil {
+		return fmt.Errorf("`%s` rule for `%s` is %w: %s", CreationRulesFile, path, ErrInvalidCreationRule, ruleErrorText(c.invalid))
+	}
 	if c.dir == "" {
 		return nil
 	}
