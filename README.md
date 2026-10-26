@@ -1554,6 +1554,103 @@ pass-cli vault list
 pass-cli item list --share-id <share-id>
 ```
 
+### First SOPS secret on an existing Host
+
+A guided path from a running Host to its first decrypted value; the sections after it are the reference. The example is the rootless Host `srv-1` (user `app`) on Machine `srv-1`, with the Fleet checkout at `/srv/fleet` and the Machine's `--secrets-dir` at `/root/fleet-secrets`. Every Agent and the CLI must already run a picolet version with `sops://` (see [Adopting SOPS](#adopting-sops)). You need [`age-keygen`](https://github.com/FiloSottile/age) where you generate the identity, and the [`sops`](https://github.com/getsops/sops) CLI with an identity of your own (`age-keygen -o ~/.config/sops/age/keys.txt` if you have none) where you edit the Fleet.
+
+1. **Generate the Host's identity** outside the Host's account, into its `--secrets-dir` directory:
+
+   ```console
+   $ age-keygen -o /root/fleet-secrets/srv-1/age-identity   # or age-keygen -pq for a hybrid post-quantum key
+   Public key: age1…
+   ```
+
+2. **Deliver it** with `bootstrap machine`. The new credential file restarts the Agent; it does not use the identity yet, since its config has no `sops:` block:
+
+   ```console
+   $ sudo picolet bootstrap machine srv-1 --repo-dir /srv/fleet --secrets-dir /root/fleet-secrets
+   …
+   Host   User  Port  Health   Agent restart
+   srv-1  app   9417  healthy  restarted (credential files written)
+   ```
+
+3. **Declare the public key** in `hosts/srv-1/host.yml` and push:
+
+   ```yaml
+   age_recipients:
+     - age1…   # the public key from step 1
+   ```
+
+   The reference Agent config now renders a `sops:` block for `srv-1`; the Agent applies it and restarts itself to load the identity (as that user: `journalctl --user -fu picolet.service`):
+
+   ```text
+   {"time":"…","level":"INFO","msg":"Agent config changed, restarting to load it"}
+   {"time":"…","level":"INFO","msg":"sops identities loaded","path":"/etc/picolet/secrets/age-identity","identities":1}
+   ```
+
+   Without step 2 the Agent refuses the new config (`refusing the Agent config … the Agent could not start with it: credential sops.age_identity_path …`) and keeps running on the old one; deliver the identity and the next reconciliation applies it.
+
+4. **Encrypt a file** to the Host and yourself. Declare yourself in `operators.yml`, add a creation rule, and create the file with `sops edit`, which encrypts it on save, so the plaintext never lands in the checkout:
+
+   ```yaml
+   # operators.yml
+   me:
+     age_recipients:
+       - age1…me
+   ```
+
+   ```yaml
+   # .sops.yaml
+   creation_rules:
+     - path_regex: ^secrets/app\.sops\.yaml$
+       age: age1…srv-1, age1…me
+   ```
+
+   ```console
+   $ sops edit secrets/app.sops.yaml   # write: app: {token: …}
+   ```
+
+5. **Reference the value** as a direct secret (named `app_token` after the pointer) from a group only `srv-1` gets, and consume it in a Quadlet; `validate` fails any Host the ref reaches that is not a Recipient of the file:
+
+   ```yaml
+   # assignments.yml
+   features:
+     app:   # listed in srv-1's host.yml features:
+       secrets:
+         - "sops://secrets/app.sops.yaml#/app/token"
+   ```
+
+   ```ini
+   # in the consuming .container
+   Secret=app_token
+   ```
+
+6. **Validate, then push.** `validate` checks the ref, the file's recipients and the `.sops.yaml` rule without a key; `resolve` shows where the value lands:
+
+   ```console
+   $ picolet validate
+   … level=INFO msg="host validated" host=srv-1 files=…
+   $ picolet resolve --host srv-1
+   …
+   === secret:app_token ===
+   <sops-secret>
+   ```
+
+7. **Check the result.** After the push the Agent logs `changes detected` and `apply complete` with the consuming unit restarted; `podman secret ls` (as `app`) lists `app_token`. picolet never prints the value; read it with `sops decrypt secrets/app.sops.yaml`:
+
+   ```text
+   {"time":"…","level":"INFO","msg":"changes detected","create":1,"update":1,"delete":0}
+   {"time":"…","level":"INFO","msg":"apply complete","applied":2,"restarted":["app.service"],"skipped_oneshot_restarts":0,"dry_run":false}
+   ```
+
+Which commands decrypt:
+
+| Command | `sops://` values |
+|---------|------------------|
+| The Agent (`picolet run`), `picolet dry-run --config` | decrypted with `sops.age_identity_path` |
+| `picolet validate`, `picolet resolve`, `picolet dry-run` (no `--config`), `picolet bootstrap` | keyless: checked against `age_recipients:`, shown as `<sops-secret>`, never decrypted (`dry-run` marks an update of a SOPS-backed file unverified; the Agent bundle `bootstrap` renders may not use `sops://` at all) |
+| `picolet apply --config` | refused: a `sops://` ref fails it, even with a `sops:` block; let the Agent apply |
+
 ### SOPS setup
 
 The Agent decrypts `sops://` refs only with the age identities in the file its config names; there is no default path, no inline key and no environment fallback (picolet hands only those identities to the SOPS library's age key, so its `SOPS_AGE_KEY*`, `keys.txt` and `~/.ssh` lookup never runs):
@@ -1636,7 +1733,7 @@ Only `validate` reads it (strictly), so adopting it needs no Agent upgrade. A Re
 #### Adopting SOPS
 
 1. **Release first.** Upgrade every Agent and the CLI you run `validate` with to a picolet version with `sops://` before the Fleet adopts any of `age_recipients:`, a `*.sops.*` file or a `sops://` ref. Older Agents don't skip `*.sops.*` files in walks (at a bundle root they fail with "unknown extension"), and an older `validate` rejects the new `host.yml` key.
-2. **Then per Host:** deliver `age-identity` (`--secrets-dir` or `bootstrap:`), run `bootstrap machine`, then push `age_recipients:`. The reference Agent config emits its `sops:` block only once `age_recipients:` is declared; the Agent applies that config and restarts itself to load the identity, with no manual restart. If the identity file isn't on the Host yet, the Agent refuses that config and keeps running on its old one (the self-restart guard), so a wrong order fails a reconciliation instead of locking the Agent out.
+2. **Then per Host** ([walkthrough](#first-sops-secret-on-an-existing-host)): deliver `age-identity` (`--secrets-dir` or `bootstrap:`), run `bootstrap machine`, then push `age_recipients:`. The reference Agent config emits its `sops:` block only once `age_recipients:` is declared; the Agent applies that config and restarts itself to load the identity, with no manual restart. If the identity file isn't on the Host yet, the Agent refuses that config and keeps running on its old one (the self-restart guard), so a wrong order fails a reconciliation instead of locking the Agent out.
 3. Add `operators.yml`, the `.sops.yaml` rules and the `*.sops.*` files, and reference them.
 
 **Fetch credentials are never SOPS values.** The git token and the GitHub App credentials fetch the Fleet, so they can't live in it: the Agent has no checkout to decrypt from on first start, and a rotated token would strand every Agent that hasn't fetched the new commit yet. Keep them as Bootstrap credentials (a `--secrets-dir` file or a `bootstrap:` entry); a token stored next to the identity is protected just as well. `bootstrap` and `validate`'s Agent-bundle check fail on `sops://` in the Agent bundle with that advice, and a `sops://` `bootstrap:` entry fails to load.

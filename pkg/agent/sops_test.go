@@ -20,6 +20,7 @@ import (
 	"github.com/schjan/picolet/pkg/agentcfg"
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/resolver"
+	"github.com/schjan/picolet/pkg/state"
 )
 
 // dbPasswordSecret is a secret template reading the corpus' db password.
@@ -170,6 +171,28 @@ picolet_secret_sync_total{provider="sops"} 1
 			assert.True(t, h.logs.Has(slog.LevelInfo, "sops identities loaded"))
 		})
 	}
+}
+
+// An Agent built with the run command's startup checks (WithStartup)
+// decrypts with their identities from its first ReconcileOnce, without Run:
+// callers that drive ReconcileOnce themselves (the e2e tests) get the same
+// identities as the Agent loop.
+func TestAgentDecryptsWithStartupIdentitiesWithoutRun(t *testing.T) {
+	t.Parallel()
+	bareDir, _ := initFleetRepo(t, sopsFleet(dbPasswordSecret, map[string]string{
+		"secrets/db.sops.yaml": testsops.CorpusText(t, "values.sops.yaml"),
+	}))
+	cfg := loopConfig(t, bareDir)
+	cfg.Sops = &agentcfg.SopsConfig{AgeIdentityPath: writeIdentityFile(t, "srv-1")}
+	startup, err := cfg.CheckStartup()
+	require.NoError(t, err)
+	h := newConfiguredLoopHarness(t, cfg, WithDataDir(t.TempDir()), WithStartup(startup))
+	h.mocks = mockHealth | mockFiles | mockRestarts | mockSecrets
+	h.gitPoller(t)
+
+	_, err = h.a.ReconcileOnce(t.Context(), "sha", state.NewState(), h.store)
+	require.NoError(t, err)
+	assert.Equal(t, "hunter2-test", h.secret("db_password"))
 }
 
 // A direct sops:// secrets: entry creates the Podman secret named after its
