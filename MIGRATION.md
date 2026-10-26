@@ -30,7 +30,7 @@ a Fleet on v0.1.33 or older needs all of them.
 | Two Hosts on one Machine with the same `user:` (two rootful Hosts included) or the same listen port are rejected; `machine:` defaults to the `hostname`, compared case-insensitively | v0.2.0 | `hosts/<name>/host.yml`, `fleet.yml` | the collision names both Hosts; the Fleet fails to load |
 | The Agent checks every credential file its config names at startup (`webhook_secret_path`, `protonpass.pat_path`, `mqtt.password_path` included) | v0.2.0 | Agent config | none: the upgraded Agent exits with `credential <setting> (<path>) is not readable`; see [Pre-upgrade check](#pre-upgrade-check-agent-credential-files) |
 | Two credential settings naming the same file are rejected | v0.2.0 | Agent config | none: the upgraded Agent exits with `<setting> (<path>) and <setting> (<path>) name the same credential file` |
-| `readSecretFile` and file `secrets:` refuse the Agent's own credential files | v0.2.0 | templates, `assignments.yml` | none: the Agent's reconciliation fails with `… Agent credentials cannot be deployed` |
+| `readSecretFile` and file `secrets:` refuse the Agent's own credential files | v0.2.0 | templates, `assignments.yml` | none: the Agent's reconciliation fails with `… Agent credentials cannot be deployed`; see [Pre-upgrade check](#pre-upgrade-check-agent-credential-files) |
 | SOPS files (`<name>.sops.<ext>`), `.sops.yaml` and `.sops.yml` are skipped by `paths:` and Service Bundle walks; an explicit entry naming a SOPS file is rejected | v0.2.0 | `paths:` entries, `secrets:`, Service Bundles | for an explicit entry: `SOPS file is reachable only through a sops:// ref`; a walked file is no longer deployed |
 | The Agent bundle is rendered strictly: provider template calls or direct provider `secrets:` refs in it fail | v0.2.0 | Agent bundle (`picolet`, `picolet-system`) | `host <name>: Agent bundle <service>: …` |
 
@@ -78,6 +78,14 @@ remove the setting from the Agent config template; for each `named twice:`
 line, give each setting its own file. A Host that was upgraded without the
 check recovers the same way: place the file, then restart its Agent
 (`systemctl restart picolet-system`, `systemctl --user restart picolet`).
+
+A Fleet that deploys one of the Agent's own credential files to a workload
+(its `git_token_path` file for a CI or Renovate container, say, through
+`secrets:` or `readSecretFile`) fails every reconciliation of that Host after
+step 1 (`… Agent credentials cannot be deployed`). Search `assignments.yml`
+`secrets:` and every `readSecretFile` call for the file names the Agent
+config's credential settings use, and give such a workload its own copy under
+another name (the refusal compares files, so a separate copy passes).
 
 ## Rollout order
 

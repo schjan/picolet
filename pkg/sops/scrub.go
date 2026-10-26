@@ -16,14 +16,12 @@ const MinScrubLen = 4
 // Redacted replaces a decrypted value Scrub finds in a text.
 const Redacted = "<redacted>"
 
-// yamlTruncateOver and yamlTruncateKeep mirror how the YAML library
-// (go.yaml.in/yaml) quotes a scalar in a type error: a value longer than
-// yamlTruncateOver bytes appears as its first yamlTruncateKeep bytes and
-// "...". Validator errors on manifests come from it.
-const (
-	yamlTruncateOver = 10
-	yamlTruncateKeep = 7
-)
+// yamlTruncateKeep mirrors how the YAML library (go.yaml.in/yaml) quotes a
+// scalar in a type error: a scalar longer than 10 bytes appears as its first
+// yamlTruncateKeep bytes and "...". Validator errors on manifests come from
+// it. The scalar may hold more than the value (a value followed by other
+// text), so every value longer than yamlTruncateKeep has that form.
+const yamlTruncateKeep = 7
 
 // Scrub returns text with every decrypted leaf value of MinScrubLen or more
 // characters that this Reader produced replaced by Redacted: the values of
@@ -89,7 +87,7 @@ func scrubNeedles(values map[string]struct{}) []string {
 				add(strings.TrimSpace(line))
 			}
 		}
-		if len(v) > yamlTruncateOver {
+		if len(v) > yamlTruncateKeep {
 			add(v[:yamlTruncateKeep] + "...")
 		}
 	}

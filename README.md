@@ -349,7 +349,9 @@ loader (an unknown key fails), every credential path it names must be
 absolute, and every credential file must exist and be readable in the running
 Agent's container. If a check fails, the reconciliation fails before anything
 is written and the Agent keeps its current config, so it is never left with a
-config it would refuse to restart with. Place a new credential file on the
+config its startup checks would refuse. Settings the Agent only uses after
+those checks (`podman_socket`, `systemd_user`, the listen address) are not
+tried, so a wrong one stops the restart; see the limits below. Place a new credential file on the
 Host (`bootstrap machine`) before the commit that points the Agent at it.
 
 The running Agent can only check its next start if that start has its own
@@ -361,7 +363,7 @@ quadlet on disk is refused (compared as written, value by value): `Volume=`,
 `Annotation=`, `User=`, `Group=`,
 `GroupAdd=`, `UserNS=`, `UIDMap=`, `GIDMap=`, `SubUIDMap=`, `SubGIDMap=`,
 `RemapUsers=`, `RemapUid=`, `RemapGid=`, `RemapUidSize=`, `AddCapability=`,
-`DropCapability=`, `AppArmor=`, `SecurityLabelDisable=`,
+`DropCapability=`, `AppArmor=`, `SeccompProfile=`, `SecurityLabelDisable=`,
 `SecurityLabelFileType=`, `SecurityLabelLevel=`, `SecurityLabelNested=`,
 `SecurityLabelType=`, `Exec=`, `Entrypoint=`, `EnvironmentFile=`,
 `EnvironmentHost=`, `PodmanArgs=`, `GlobalArgs=` and `ContainersConfModule=`;
@@ -441,6 +443,16 @@ restart:
   connection, `PATH`, `HOME` and `XDG_*` for `pass-cli`). A credential under
   no mount is refused only when `Image=` changes, so one the running
   container wrote into its own writable layer, which a restart drops, passes.
+- Agent config settings are checked as the startup checks do (parse,
+  credential files), not tried: a `podman_socket` that doesn't exist in the
+  container, a `systemd_user` that doesn't match the Agent's systemd, or a
+  `listen_port:`/`listen_addr` another process holds pass the check, and the
+  Agent then exits at its self-restart. Change them on one Host first.
+- Lines outside `[Container]` and `[Service]` aren't frozen: a `[Unit]`
+  condition, a dependency or `[Install]` `WantedBy=` the commit changes can
+  stop or skip the next start, and so can `Notify=` (the Agent sends no
+  readiness notification) or a `[Container]` `Network=` that can't reach
+  the git server.
 - The content of a file a frozen line names (an `EnvironmentFile=`, a
   `ContainersConfModule=`, a `containers.conf` the Fleet delivers) isn't
   compared, nor an image rebuilt or pulled anew under an unchanged `Image=`

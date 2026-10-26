@@ -82,6 +82,9 @@ func TestReaderScrub(t *testing.T) {
 		{in: "token alpha-token and gamma-secret", want: "token <redacted> and <redacted>"},
 		{in: "port 5432", want: "port <redacted>"},
 		{in: "cannot construct !!str `hunter2...` into struct", want: "cannot construct !!str `<redacted>` into struct"},
+		// A longer scalar that starts with a value of 8 to 10 bytes
+		// ("beta-token" + more text) is truncated inside that value.
+		{in: "cannot construct !!str `beta-to...` into int", want: "cannot construct !!str `<redacted>` into int"},
 		{in: "line VEVTVC1PTkxZIGZpeHR1cmUga2V5IGZvciB0aGUgcGljb2xldCBTT1BTIGNvcnB1cw== of the key", want: "line <redacted> of the key"},
 		{in: "whole " + strconv.Quote(string(pem)), want: "whole \"<redacted>\""},
 		// Values under four characters stay: they would blank common words.

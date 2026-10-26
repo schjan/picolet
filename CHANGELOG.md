@@ -127,7 +127,8 @@ kept as is.
   identities named by the new Agent config block `sops: {age_identity_path: …}`;
   `validate`, `resolve` and `bootstrap` check refs without a key, and so does
   `picolet dry-run` without `--config`, which marks a file whose render used a
-  SOPS value `changed (unverified: SOPS values not decrypted)`. A Quadlet, Raw
+  SOPS value `update (unverified: SOPS values not decrypted)` (creates are not
+  labelled). A Quadlet, Raw
   Unit or Hook definition that renders a SOPS value fails.
   `picolet dry-run --config` decrypts like the Agent, while
   `picolet apply --config` refuses `sops://` refs (let the Agent apply them);

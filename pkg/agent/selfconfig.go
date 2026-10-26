@@ -245,7 +245,7 @@ var frozenKeys = []string{
 	"ReadOnly", "ReadOnlyTmpfs", "Rootfs", "WorkingDir", "AddDevice", "Annotation",
 	"User", "Group", "GroupAdd", "UserNS", "UIDMap", "GIDMap", "SubUIDMap", "SubGIDMap",
 	"RemapUsers", "RemapUid", "RemapGid", "RemapUidSize",
-	"AddCapability", "DropCapability", "AppArmor",
+	"AddCapability", "DropCapability", "AppArmor", "SeccompProfile",
 	"SecurityLabelDisable", "SecurityLabelFileType", "SecurityLabelLevel", "SecurityLabelNested", "SecurityLabelType",
 	"Exec", "Entrypoint", "EnvironmentFile", "EnvironmentHost",
 	"PodmanArgs", "GlobalArgs", "ContainersConfModule",
