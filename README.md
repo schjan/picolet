@@ -1454,7 +1454,7 @@ A `*.sops.*` file is reachable only through a `sops://` ref: `paths:` directory 
 
 - **Encrypted:** the file must carry SOPS metadata (`sops.version` and `sops.mac`) and be at most 1 MiB. A plaintext file under a SOPS name is an error: its values are in git, so rotate them and commit the file encrypted (rewriting history does not unpublish them).
 - **Creation rule:** when the Fleet-root `.sops.yaml` has a rule matching the file, the file's age Recipients must equal the rule's.
-  - Matching: first match wins, an empty `path_regex` matches every file, paths are relative to the Fleet root.
+  - Matching: picolet loads the rule with SOPS's own config loader, as `sops` picks it for the file (first match wins, an empty `path_regex` matches every file, paths are relative to the Fleet root). A rule SOPS cannot load (a bad `path_regex`, a malformed recipient or key entry) is an error.
   - Comparison: key group by key group, order ignored; `shamir_threshold`, encryption rules and non-age keys are ignored. A mismatch lists `+` (in the file, not the rule) and `−` (in the rule, not the file) and asks you to run `sops updatekeys <file>`.
   - Only the root `.sops.yaml` is read; it must be a regular file, not a symlink. A file without a matching rule, or a Fleet without a root `.sops.yaml`, is not checked: the file's own Recipients decide who can read it. picolet never generates `.sops.yaml`.
 - **Audience (least privilege):** every age Recipient of the file must belong to an [Operator](#operatorsyml) or to a Host whose resolve reaches the file (through `readSopsSecret`, `readSopsData` or a direct `secrets:` ref).
