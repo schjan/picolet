@@ -3,7 +3,7 @@ module github.com/schjan/picolet
 go 1.27
 
 require (
-	filippo.io/age v1.3.1
+	filippo.io/age v1.3.2
 	github.com/1password/onepassword-sdk-go v0.4.1
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/bradleyfalzon/ghinstallation/v2 v2.19.0
