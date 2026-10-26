@@ -12,11 +12,12 @@ import (
 
 // mount is one mount of the Agent unit's container, as the self-restart
 // guard needs it: its target inside the container, whether a fresh start
-// finds it empty (a tmpfs or anonymous volume), and the Fleet-managed
-// source it shows (a Podman secret, or a .volume unit).
+// finds it empty (a tmpfs or anonymous volume) or mounts an image, and the
+// Fleet-managed source it shows (a Podman secret, or a .volume unit).
 type mount struct {
 	target string
 	empty  bool
+	image  bool
 	// volumeUnit names the .volume unit a Volume= or Mount= mounts.
 	volumeUnit string
 	// secret names the Podman secret a Secret= or --secret mounts.
@@ -110,6 +111,8 @@ func parseMount(spec string, quadlet bool) mount {
 		m.empty = true
 	case "volume", "":
 		m.empty = source == ""
+	case "image":
+		m.image = true
 	}
 	if quadlet && strings.HasSuffix(source, ".volume") {
 		m.volumeUnit = source
@@ -148,7 +151,7 @@ func mayHold(mounts []mount, p string) []mount {
 	var held, unplaced []mount
 	for _, m := range mounts {
 		switch {
-		case !path.IsAbs(m.target) || strings.Contains(m.target, "%"):
+		case !placed(m):
 			unplaced = append(unplaced, m)
 		case !under(p, m.target):
 		case len(held) == 0 || len(m.target) > len(held[0].target):
@@ -158,6 +161,12 @@ func mayHold(mounts []mount, p string) []mount {
 		}
 	}
 	return append(held, unplaced...)
+}
+
+// placed reports whether the guard can place m's target: an absolute path
+// without a systemd specifier.
+func placed(m mount) bool {
+	return path.IsAbs(m.target) && !strings.Contains(m.target, "%")
 }
 
 // unitSecret is a Podman secret unit's container uses, of either type

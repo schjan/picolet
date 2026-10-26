@@ -22,21 +22,23 @@ import (
 // restart, when it can no longer fetch a fix. The Agent runs it before every
 // apply, and so does `picolet apply --config`. Its policy:
 //
+//   - The Agent's quadlet must be the only Fleet unit that is the Agent's
+//     service (checkOneAgentService): the guard checks no other.
 //   - Every changeset that removes a Fleet-managed secret or .volume unit the
-//     Agent's next unit uses is refused (checkLostSources). This also refuses
-//     losing a Fleet-managed config: with the mount lines frozen, the next
-//     start mounts the same config secret, which the Fleet then no longer
-//     resolves and the changeset removes.
-//   - A changeset that writes the Agent's unit may not change its frozenKeys
-//     lines from the unit on disk (checkFrozenLines): the Agent's mounts,
-//     identity and access change on the Host, then through the Fleet.
+//     Agent's next unit uses is refused (checkLostSources). With a unit on
+//     disk, whose config mount the next unit keeps (checkFrozenLines), this
+//     also refuses losing a Fleet-managed config.
+//   - A changeset that writes the Agent's unit may not change its frozen
+//     lines (frozenKeys, PICOLET_CONFIG, [Service]) from the unit on disk
+//     (checkFrozenLines): the Agent's mounts, identity and access change on
+//     the Host, then through the Fleet.
 //   - A changeset that writes the config (the secret the next unit mounts at
 //     the Agent config path, resolver.AgentConfigSecret) or the Agent's unit
 //     must leave a config that passes agentcfg.CheckRenderedConfig, with
 //     every credential path absolute (absolutePath). With a unit on disk,
 //     whose mounts the next start keeps, each credential is read where it is
-//     spelled, unless the running container may show it otherwise than a
-//     fresh start (sameView).
+//     spelled, unless a fresh start may show it otherwise than the running
+//     container (sameView).
 //
 // A changeset whose resolve renders no Agent quadlet (the Agent bundle
 // unassigned, or its container quadlet dropped) decommissions the Fleet's
@@ -50,6 +52,9 @@ func CheckSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Chan
 	if quadlet == nil {
 		return nil
 	}
+	if err := checkOneAgentService(resolved.Files, quadlet, unit); err != nil {
+		return err
+	}
 	next := quadlet.ParsedUnit
 	if err := checkLostSources(next, unit, changeset); err != nil {
 		return err
@@ -61,7 +66,9 @@ func CheckSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Chan
 	}
 	file, err := resolver.AgentConfigSecret(resolved.Files, unit)
 	if errors.Is(err, resolver.ErrAgentConfigNotRendered) {
-		return nil // a config the Fleet never managed, or one checkLostSources keeps
+		// The next unit mounts no Fleet-resolved secret at the config path:
+		// the Fleet renders no config to check.
+		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("finding the Agent config mounted by %s: %w", unit, err)
@@ -70,6 +77,52 @@ func CheckSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Chan
 		return nil
 	}
 	return checkNextConfig(next, running, file, unit, changeset)
+}
+
+// checkOneAgentService refuses every resolved file but quadlet, the Agent's,
+// that would also be the Agent's service unit: a quadlet that generates it
+// (Quadlet writes the service once per quadlet, and the last one wins), a
+// raw unit file of its name (systemd ranks its unit directory above
+// Quadlet's generator directory), or a unit whose [Install] Alias= names it
+// (enabling it links the alias into the unit directory). The guard checks
+// only quadlet, so the Agent's next start must come from it.
+func checkOneAgentService(files []resolver.ResolvedFile, quadlet *resolver.ResolvedFile, unit string) error {
+	for i := range files {
+		file := &files[i]
+		var how string
+		switch {
+		case file == quadlet:
+			continue
+		case file.ServiceName == unit && file.Category == config.CategorySystemd:
+			how = "it is"
+		case file.ServiceName == unit:
+			how = "it generates"
+		case slices.Contains(installAliases(file), unit):
+			how = "its [Install] Alias= names"
+		default:
+			continue
+		}
+		return fmt.Errorf("refusing %s: %s the Agent's service %s, which %s generates; the Agent must start from one unit only, "+
+			"the quadlet the self-restart guard checks: remove the other unit or give it another name", file.DestPath, how, unit, quadlet.DestPath)
+	}
+	return nil
+}
+
+// installAliases returns the [Install] Alias= names of a resolved quadlet or
+// raw systemd unit; none for a raw unit that does not parse (the validator
+// reports it).
+func installAliases(file *resolver.ResolvedFile) []string {
+	unit := file.ParsedUnit
+	if unit == nil && file.Category == config.CategorySystemd {
+		unit = parser.NewUnitFile()
+		if unit.Parse(file.Content) != nil {
+			return nil
+		}
+	}
+	if unit == nil {
+		return nil
+	}
+	return unit.LookupAllStrv("Install", "Alias")
 }
 
 // checkNextConfig checks file, the config the Agent's next start reads with
@@ -81,7 +134,7 @@ func CheckSelfConfig(resolved *resolver.ResolvedHost, changeset *reconciler.Chan
 func checkNextConfig(next, running *parser.UnitFile, file *resolver.ResolvedFile, unit string, changeset *reconciler.Changeset) error {
 	locate := absolutePath
 	if running != nil {
-		locate = sameView(next, changeset)
+		locate = sameView(running, next, changeset)
 	}
 	if err := agentcfg.CheckRenderedConfig([]byte(file.Content), locate); err != nil {
 		return fmt.Errorf("refusing the Agent config %s mounted by %s: the Agent could not start with it: %w", file.DestPath, unit, err)
@@ -90,26 +143,28 @@ func checkNextConfig(next, running *parser.UnitFile, file *resolver.ResolvedFile
 }
 
 // runningAgentUnit returns the Agent's unit on disk: the resolved quadlet,
-// unless the changeset writes it (writesUnit), and then the file it replaces
-// (runningUnit; nil when there is none), whose frozen lines the quadlet must
-// keep (checkFrozenLines).
+// unless the changeset writes it (writesUnit), and then the file on disk the
+// state records as the Agent's service (runningUnit; nil when there is
+// none), whose frozen lines the quadlet must keep (checkFrozenLines).
 func runningAgentUnit(quadlet *resolver.ResolvedFile, writesUnit, rootful bool, changeset *reconciler.Changeset, readFile func(string) ([]byte, error)) (*parser.UnitFile, error) {
 	if !writesUnit {
 		return quadlet.ParsedUnit, nil
 	}
-	running, err := runningUnit(quadlet.ServiceName, changeset, readFile)
+	running, diskPath, err := runningUnit(quadlet.ServiceName, changeset, readFile)
 	if err != nil || running == nil {
 		return running, err
 	}
-	return running, checkFrozenLines(running, quadlet.ParsedUnit, quadlet.ServiceName, quadlet.DestPath, rootful)
+	return running, checkFrozenLines(running, quadlet.ParsedUnit, quadlet.ServiceName, diskPath, rootful)
 }
 
 // frozenKeys are the Agent unit's [Container] keys the Fleet may not change
 // (checkFrozenLines): every key that decides what paths the container shows
 // (mounts, masks, the root file system, the working directory), who reads
 // them (user, groups, user namespace and ID maps, capabilities, AppArmor and
-// SELinux labels), or what podman adds to either (PodmanArgs=, GlobalArgs=,
-// ContainersConfModule=). Image= is not frozen: the Agent updates itself.
+// SELinux labels), what the Agent runs and where it finds its config (Exec=,
+// Entrypoint=, environment files and the Host's environment), or what podman
+// adds to any of them (PodmanArgs=, GlobalArgs=, ContainersConfModule=).
+// Image= is not frozen: the Agent updates itself.
 var frozenKeys = []string{
 	"Volume", "Mount", "Tmpfs", "Secret", "Mask", "Unmask", "VolatileTmp",
 	"ReadOnly", "ReadOnlyTmpfs", "Rootfs", "WorkingDir",
@@ -117,38 +172,83 @@ var frozenKeys = []string{
 	"RemapUsers", "RemapUid", "RemapGid", "RemapUidSize",
 	"AddCapability", "DropCapability", "AppArmor",
 	"SecurityLabelDisable", "SecurityLabelFileType", "SecurityLabelLevel", "SecurityLabelNested", "SecurityLabelType",
+	"Exec", "Entrypoint", "EnvironmentFile", "EnvironmentHost",
 	"PodmanArgs", "GlobalArgs", "ContainersConfModule",
 }
 
-// checkFrozenLines refuses a next Agent unit whose frozenKeys lines differ
-// from those of running, the unit on disk the running container was started
-// from: each key's values, trimmed, in order, as written. The guard checks
-// the next start in the running container, so it could not check one with
-// other mounts or another identity; the Host's operator changes them by hand
-// (at quadletPath) and restarts the Agent first (rootful: the Host's system
-// manager), and the Fleet then commits the same lines.
-func checkFrozenLines(running, next *parser.UnitFile, unit, quadletPath string, rootful bool) error {
-	var changed []string
-	for _, key := range frozenKeys {
-		if !slices.Equal(trimmedValues(running, key), trimmedValues(next, key)) {
-			changed = append(changed, key+"=")
-		}
-	}
+// changeableServiceKeys are the only [Service] keys of the Agent unit the
+// Fleet may change: every other one is frozen (checkFrozenLines), since
+// [Service] decides who runs podman (User=, Group=), its environment
+// (Environment= and the like, which systemd also expands in the generated
+// ExecStart, and CONTAINERS_CONF_OVERRIDE), and what runs around it.
+var changeableServiceKeys = []string{"Restart", "RestartSec", "TimeoutStartSec", "TimeoutStopSec"}
+
+// checkFrozenLines refuses a next Agent unit whose frozen lines differ from
+// those of running, the unit on disk (at diskPath) the running container was
+// started from (frozenChanges). The guard checks the next start in the
+// running container, so it could not check one with other mounts, another
+// identity or another config path; the Host's operator changes them by hand
+// and restarts the Agent first (Quadlet regenerates the service on
+// daemon-reload; rootful: the Host's system manager), and the Fleet then
+// commits the same lines.
+func checkFrozenLines(running, next *parser.UnitFile, unit, diskPath string, rootful bool) error {
+	changed := frozenChanges(running, next)
 	if len(changed) == 0 {
 		return nil
 	}
-	restart := "systemctl --user restart " + unit + ", as the Host's user"
+	restart := "systemctl --user daemon-reload && systemctl --user restart " + unit + ", as the Host's user"
 	if rootful {
-		restart = "systemctl restart " + unit
+		restart = "systemctl daemon-reload && systemctl restart " + unit
 	}
 	return fmt.Errorf("refusing the Agent unit %s: this commit changes its %s lines, and the Agent unit's mounts can't change through the Fleet: "+
 		"edit %s on the Host to the new lines, restart the Agent (%s), then commit the same lines",
-		unit, strings.Join(changed, ", "), quadletPath, restart)
+		unit, strings.Join(changed, ", "), diskPath, restart)
 }
 
-// trimmedValues returns unit's [Container] values of key, each trimmed.
-func trimmedValues(unit *parser.UnitFile, key string) []string {
-	values := unit.LookupAll("Container", key)
+// frozenChanges names the frozen lines next changes from running, compared
+// as written (each key's values, trimmed, in order): the frozenKeys of
+// [Container], the PICOLET_CONFIG its Environment= lines set (configPath),
+// and every [Service] key but changeableServiceKeys.
+func frozenChanges(running, next *parser.UnitFile) []string {
+	var changed []string
+	for _, key := range frozenKeys {
+		if !slices.Equal(trimmedValues(running, "Container", key), trimmedValues(next, "Container", key)) {
+			changed = append(changed, key+"=")
+		}
+	}
+	if configPath(running) != configPath(next) {
+		changed = append(changed, "Environment=PICOLET_CONFIG")
+	}
+	keys := slices.Concat(running.ListKeys("Service"), next.ListKeys("Service"))
+	slices.Sort(keys)
+	for _, key := range slices.Compact(keys) {
+		if !slices.Contains(changeableServiceKeys, key) &&
+			!slices.Equal(trimmedValues(running, "Service", key), trimmedValues(next, "Service", key)) {
+			changed = append(changed, "[Service] "+key+"=")
+		}
+	}
+	return changed
+}
+
+// configPath is where the Agent in unit's container reads its config:
+// PICOLET_CONFIG as unit's [Container] Environment= lines set it, read as
+// Quadlet reads them, or the default, resolver.AgentConfigTarget. A
+// PICOLET_CONFIG without a value takes podman's own ("$PICOLET_CONFIG").
+func configPath(unit *parser.UnitFile) string {
+	env, _ := unit.LookupAllKeyVal("Container", "Environment") // a value Quadlet cannot split sets nothing
+	value, ok := env["PICOLET_CONFIG"]
+	switch {
+	case !ok:
+		return resolver.AgentConfigTarget
+	case value == nil:
+		return "$PICOLET_CONFIG"
+	}
+	return *value
+}
+
+// trimmedValues returns unit's values of key in group, each trimmed.
+func trimmedValues(unit *parser.UnitFile, group, key string) []string {
+	values := unit.LookupAll(group, key)
 	for i, v := range values {
 		values[i] = strings.TrimSpace(v)
 	}
@@ -166,19 +266,20 @@ func absolutePath(cred agentcfg.Credential) (string, error) {
 }
 
 // sameView returns the agentcfg.Locate of a changeset checked in the running
-// container, which the next start, with the same mounts (checkFrozenLines),
-// replaces: a credential path must be absolute, and a file credential is
-// refused where a fresh start of the unit next may show it otherwise than the
-// running container: when next passes --volumes-from (the guard cannot read
-// what it mounts), or under a tmpfs or anonymous volume (Quadlet runs the
-// container with --rm, so it starts empty), or under a mount whose
-// Fleet-managed secret or .volume unit the changeset writes (the running
-// container still shows the old content). The mounts that may hold a path
-// are those at the deepest target holding it and every mount whose target
-// the guard cannot place (relative or specifier-led). A directory credential
-// (protonpass.session_dir) need not exist, so it need only be absolute.
-func sameView(next *parser.UnitFile, changeset *reconciler.Changeset) agentcfg.Locate {
+// container (started from running), which the next start, with the unit
+// next and the same mounts (checkFrozenLines), replaces: a credential path
+// must be absolute, and a file credential is refused where a fresh start may
+// show it otherwise than the running container: when next passes
+// --volumes-from (the guard cannot read what it mounts), under a mount that
+// may hold it and that a fresh start fills anew (freshMount), or under no
+// mount at all, in the image, when the changeset changes Image=. The mounts
+// that may hold a path are those at the deepest target holding it and every
+// mount whose target the guard cannot place (relative or specifier-led). A
+// directory credential (protonpass.session_dir) need not exist, so it need
+// only be absolute.
+func sameView(running, next *parser.UnitFile, changeset *reconciler.Changeset) agentcfg.Locate {
 	mounts, volumesFrom := unitMounts(next)
+	imageChanged := !slices.Equal(trimmedValues(running, "Container", "Image"), trimmedValues(next, "Container", "Image"))
 	return func(cred agentcfg.Credential) (string, error) {
 		if _, err := absolutePath(cred); err != nil || cred.Dir {
 			return cred.Path, err
@@ -187,19 +288,40 @@ func sameView(next *parser.UnitFile, changeset *reconciler.Changeset) agentcfg.L
 			return "", fmt.Errorf("the Agent unit passes %s in PodmanArgs=, which mounts what the guard cannot read; "+
 				"keep credentials on a Host path or in a secret", strings.Join(volumesFrom, ", "))
 		}
-		for _, m := range mayHold(mounts, cred.Path) {
-			switch {
-			case m.empty:
-				return "", fmt.Errorf("the Agent unit mounts a tmpfs or anonymous volume at %s, which may hold it and starts empty in a new container; "+
-					"keep credentials on a Host path or in a secret", m.target)
-			case m.secret != "" && changeset.Writes(resolver.SecretDestPath(m.secret)):
-				return "", changedSource("the secret " + m.secret)
-			case m.volumeUnit != "" && writesVolumeUnit(changeset, m.volumeUnit):
-				return "", changedSource("the volume unit " + m.volumeUnit)
+		held := mayHold(mounts, cred.Path)
+		if imageChanged && !slices.ContainsFunc(held, placed) {
+			return "", errors.New("it lies under no mount of the Agent unit, so the next start reads it from the image, which this commit changes (Image=); " +
+				"keep credentials on a Host path or in a secret")
+		}
+		for _, m := range held {
+			if err := freshMount(m, changeset); err != nil {
+				return "", err
 			}
 		}
 		return cred.Path, nil
 	}
+}
+
+// freshMount refuses a mount m of the Agent unit that may hold a credential
+// and that a fresh start fills otherwise than the running container shows
+// it: a tmpfs or anonymous volume (Quadlet runs the container with --rm, so
+// it starts empty), an image (a pull or rebuild may change it), or a
+// Fleet-managed secret or .volume unit the changeset writes (the running
+// container still shows the old content).
+func freshMount(m mount, changeset *reconciler.Changeset) error {
+	switch {
+	case m.empty:
+		return fmt.Errorf("the Agent unit mounts a tmpfs or anonymous volume at %s, which may hold it and starts empty in a new container; "+
+			"keep credentials on a Host path or in a secret", m.target)
+	case m.image:
+		return fmt.Errorf("the Agent unit mounts an image at %s, which may hold it and whose content a pull or rebuild may change; "+
+			"keep credentials on a Host path or in a secret", m.target)
+	case m.secret != "" && changeset.Writes(resolver.SecretDestPath(m.secret)):
+		return changedSource("the secret " + m.secret)
+	case m.volumeUnit != "" && writesVolumeUnit(changeset, m.volumeUnit):
+		return changedSource("the volume unit " + m.volumeUnit)
+	}
+	return nil
 }
 
 // changedSource is sameView's refusal of a credential mounted from what, a
@@ -269,11 +391,13 @@ func agentQuadlet(files []resolver.ResolvedFile, unit string) *resolver.Resolved
 }
 
 // runningUnit reads and parses the Agent's container Quadlet file on disk:
-// the file the changeset updates or deletes for unit (a rename creates a
-// new file and deletes the old one). It returns nil when there is none.
-func runningUnit(unit string, changeset *reconciler.Changeset, readFile func(string) ([]byte, error)) (*parser.UnitFile, error) {
+// the file the state records as generating unit (Change.OldServiceName),
+// which the changeset updates (whatever service its new content names) or
+// deletes (a rename creates a new file and deletes the old one), and returns
+// it with its path. It returns nil when there is none.
+func runningUnit(unit string, changeset *reconciler.Changeset, readFile func(string) ([]byte, error)) (*parser.UnitFile, string, error) {
 	for _, change := range changeset.Changes {
-		if change.ServiceName != unit || change.Category != config.CategoryContainer || change.Action == reconciler.ActionCreate {
+		if change.OldServiceName != unit || change.Category != config.CategoryContainer || change.Action == reconciler.ActionCreate {
 			continue
 		}
 		data, readErr := readFile(change.DestPath)
@@ -281,16 +405,16 @@ func runningUnit(unit string, changeset *reconciler.Changeset, readFile func(str
 			continue
 		}
 		if readErr != nil {
-			return nil, fmt.Errorf("reading the running Agent's unit %s: %w", change.DestPath, readErr)
+			return nil, "", fmt.Errorf("reading the running Agent's unit %s: %w", change.DestPath, readErr)
 		}
 		running := parser.NewUnitFile()
 		running.Filename = path.Base(change.DestPath)
 		if err := running.Parse(string(data)); err != nil {
-			return nil, fmt.Errorf("parsing the running Agent's unit %s: %w", change.DestPath, err)
+			return nil, "", fmt.Errorf("parsing the running Agent's unit %s: %w", change.DestPath, err)
 		}
-		return running, nil
+		return running, change.DestPath, nil
 	}
-	return nil, nil //nolint:nilnil // no unit of the Agent on disk
+	return nil, "", nil
 }
 
 // selfConfigRestart returns the Applier option that restarts the Agent's

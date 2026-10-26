@@ -111,7 +111,8 @@ load the Fleet applies nothing, its own image included.
    Leave the Agent quadlet's mount lines (`Volume=`, `Secret=`,
    `PodmanArgs=` and the others the self-restart guard freezes) as they are:
    a v0.2.0 Agent refuses a commit that changes them. If the migration must
-   change them, edit the quadlet on each Host and restart the Agent first
+   change them, edit the quadlet on each Host, `daemon-reload` and restart
+   the Agent first
    ([README: Updating Picolet](README.md#5-updating-picolet)).
 4. **Then add optional `host.yml` keys** (`machine:`, `user:`, `listen_port:`)
    wherever you want them. Never before step 2: an older Agent rejects the

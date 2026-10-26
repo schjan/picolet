@@ -181,12 +181,16 @@ kept as is.
   config or another source the Agent quadlet uses unreachable (a secret or
   `.volume` unit removed while still used). The Agent quadlet's mount,
   identity and access lines (`Volume=`, `Mount=`, `Secret=`, `Tmpfs=`,
-  `Mask=`, `User=`, `UserNS=`, `PodmanArgs=`, `GlobalArgs=` and the like; see
-  the README) can't change through the Fleet: edit them on the Host, restart
-  the Agent, then commit the same lines; `Image=` stays changeable. A
+  `Mask=`, `User=`, `UserNS=`, `Exec=`, `PodmanArgs=`, `GlobalArgs=`, its
+  `PICOLET_CONFIG`, its `[Service]` lines and the like; see the README) can't
+  change through the Fleet: edit them on the Host, `daemon-reload` and
+  restart the Agent, then commit the same lines; `Image=` stays changeable.
+  A second Fleet unit for the Agent's service (another quadlet with its
+  `ServiceName=`, a raw unit of its name, an `Alias=`) is refused. A
   credential that a fresh start may not find as the running container shows
-  it (under a tmpfs, anonymous volume or `--volumes-from`, or mounted from a
-  secret the same commit changes) is refused. The reconciliation fails and the
+  it (under a tmpfs, anonymous volume, image mount or `--volumes-from`, in
+  the image when `Image=` changes, or mounted from a secret the same commit
+  changes) is refused. The reconciliation fails and the
   Agent keeps running on its current config. `picolet apply --config` runs
   the same check ([#252](https://github.com/schjan/picolet/issues/252)).
 - Agents warn about an unknown `host.yml` key instead of refusing the Fleet;
