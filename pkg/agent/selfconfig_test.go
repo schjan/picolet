@@ -774,6 +774,44 @@ func TestAgentRefusesRemovingMountedCredentialSecret(t *testing.T) {
 	h.assertNothingWritten(t)
 }
 
+// TestAgentRefusesRemovingPodmanArgsSecret runs the Agent loop on a Fleet
+// whose Agent quadlet passes a Fleet-managed secret through PodmanArgs=
+// --secret, mounted or as an environment variable: a commit that only stops
+// resolving that secret, leaving the config and the quadlet as they are, is
+// refused and removes nothing, as for a Secret= line.
+func TestAgentRefusesRemovingPodmanArgsSecret(t *testing.T) {
+	t.Parallel()
+	for name, line := range map[string]string{
+		"mounted": "PodmanArgs=--secret token,target=/run/token\n",
+		"env":     "PodmanArgs=--secret=token,type=env,target=TOKEN\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			const tokenFile = "services/picolet-system/secrets/token"
+			files := agentBundleFiles(agentBundleUnit(line), "picolet_system_config.yml",
+				"hostname: test-host\nrepo_url: https://example.com/fleet.git\n")
+			files[tokenFile] = "token\n"
+			bareDir, _ := initFleetRepo(t, files)
+			quadletDir := t.TempDir()
+			h := newLoopHarness(t, bareDir, WithQuadletDir(quadletDir))
+			h.mocks = mocksSelfConfig | mockSecretRemoves
+			h.runUntilApplied(t)
+			require.Contains(t, h.st.ManagedFiles, "secret:token", "the first commit manages the secret")
+			unitPath := filepath.Join(quadletDir, "picolet-system.container")
+			require.NoError(t, os.WriteFile(unitPath, h.written[unitPath], 0o600))
+
+			require.NoError(t, os.Remove(filepath.Join(h.repoDir, tokenFile)))
+			h.reset()
+			_, err := h.a.ReconcileOnce(t.Context(), "drop-sha", h.st, h.store)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "refusing to remove the secret token")
+			assert.Contains(t, err.Error(), "still mounts")
+			assert.Contains(t, err.Error(), "PodmanArgs=--secret")
+			h.assertNothingWritten(t)
+		})
+	}
+}
+
 // relFromCwd returns p relative to the test's working directory, which is
 // the running Agent's in these tests.
 func relFromCwd(t *testing.T, p string) string {
