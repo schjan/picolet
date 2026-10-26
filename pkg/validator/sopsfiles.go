@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
+	"strings"
 
 	"github.com/schjan/picolet/pkg/sops"
 )
@@ -52,6 +54,8 @@ type sopsPass struct {
 	fsys fs.FS
 	// rules are the root `.sops.yaml`'s; nil skips the creation-rule pass.
 	rules *sops.CreationRules
+	// invalidRules are the invalid-rule errors reported, without their path.
+	invalidRules []string
 	// audience is the audience pass's input; nil skips the pass.
 	audience *audience
 	errs     []error
@@ -70,11 +74,20 @@ func (p *sopsPass) check(path string) {
 	if p.rules == nil {
 		return
 	}
-	if err := p.rules.Check(path, f); err != nil {
-		p.errs = append(p.errs, err)
-		if errors.Is(err, sops.ErrInvalidCreationRule) {
-			p.rules = nil // an invalid rule would likely fail every later file the same way
+	err = p.rules.Check(path, f)
+	if errors.Is(err, sops.ErrInvalidCreationRule) {
+		// Upstream loads only the rule it matches, so an invalid rule fails
+		// the files it is tried for (all of them for a .sops.yaml that does
+		// not decode or a path_regex that does not compile) and hides no
+		// other rule's drift: report each reason once, and keep checking.
+		reason := strings.Replace(err.Error(), "`"+path+"`", "", 1)
+		if slices.Contains(p.invalidRules, reason) {
+			return
 		}
+		p.invalidRules = append(p.invalidRules, reason)
+	}
+	if err != nil {
+		p.errs = append(p.errs, err)
 	}
 }
 

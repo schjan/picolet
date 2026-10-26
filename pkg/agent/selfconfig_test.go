@@ -978,6 +978,11 @@ func TestCheckSelfConfigFailsClosedOnPathOptions(t *testing.T) {
 			change:    selfConfigChange{running: volume, next: volume + "Mask=/proc/acpi:" + hook + "\n"},
 			wantError: []string{"webhook_secret_path", "not under a mount the new unit keeps", "own commit"},
 		},
+		{
+			name:      "Mask= added over the credential's mount",
+			change:    selfConfigChange{running: volume, next: volume + "Mask=" + filepath.Dir(dir) + "\n"},
+			wantError: []string{"webhook_secret_path", "not under a mount the new unit keeps", "own commit"},
+		},
 		{name: "Mask= added elsewhere", change: selfConfigChange{running: volume, next: volume + "Mask=/proc/acpi\n"}},
 		{
 			name:      "Unmask=ALL added",
@@ -992,5 +997,36 @@ func TestCheckSelfConfigFailsClosedOnPathOptions(t *testing.T) {
 	}, func(c *selfConfigChange) {
 		c.unchangedConfig = true
 		mountLines(webhookConfig(hook))(c)
+	})
+}
+
+// A Mask= hides every path under it, at any depth (Podman masks after it
+// mounts), so a commit whose Agent quadlet masks the config path or a
+// directory above it is refused, whatever mounts the config there and
+// whether or not the config names a credential.
+func TestCheckSelfConfigRefusesMaskedConfig(t *testing.T) {
+	t.Parallel()
+	valid := new("hostname: test-host\nrepo_url: https://example.com/fleet.git\n")
+	masked := []string{"Mask=", "/etc/picolet/config.yml", "could not start"}
+	runChangeCases(t, []changeCase{
+		{name: "config directory masked", change: selfConfigChange{next: "Mask=/etc/picolet\n", unchangedConfig: true}, wantError: masked},
+		{name: "config file masked", change: selfConfigChange{next: "Mask=/proc/acpi:/etc/picolet/config.yml\n"}, wantError: masked},
+		{name: "/etc masked", change: selfConfigChange{next: "Mask=/etc\n", unchangedConfig: true}, wantError: masked},
+		{name: "masked elsewhere", change: selfConfigChange{next: "Mask=/etc/picolet-other\n", unchangedConfig: true}},
+		{name: "config directory masked via PodmanArgs", change: selfConfigChange{next: "PodmanArgs=--security-opt mask=/etc/picolet\n", unchangedConfig: true}, wantError: masked},
+		{name: "config directory masked via PodmanArgs =", change: selfConfigChange{next: "PodmanArgs=--security-opt=mask=/proc/acpi:/etc/picolet\n", unchangedConfig: true}, wantError: masked},
+		{name: "specifier-led mask added", change: selfConfigChange{next: "Mask=%E/picolet\n", unchangedConfig: true}, wantError: []string{"Mask=%E/picolet", "cannot tell"}},
+		{
+			name:      "Host file mounted at the config path under a mask",
+			change:    selfConfigChange{next: "[Container]\nImage=x\nVolume=/srv/picolet/config.yml:/etc/picolet/config.yml:ro\nMask=/etc/picolet\n", unchanged: true},
+			wantError: masked,
+		},
+	}, func(c *selfConfigChange) {
+		if !c.unchanged {
+			mountLines(valid)(c)
+			return
+		}
+		c.running = agentBundleUnit("")
+		c.unchanged = false
 	})
 }

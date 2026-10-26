@@ -171,6 +171,20 @@ func keyGroupRuleCases(t *testing.T) []creationRuleCase {
 			want: []string{"`.sops.yaml` rule for `secrets/app.sops.yaml` is invalid: can not compile regexp"},
 		},
 		{
+			name: "invalid rule hides no other rule's drift",
+			files: map[string]*fstest.MapFile{
+				".sops.yaml": sopsRules("  - path_regex: ^secrets/a/\n    age: age1nope\n" +
+					"  - path_regex: ^secrets/b/\n    age: " + srv1 + "\n"),
+				"secrets/a/app.sops.yaml": data(values),
+				"secrets/a/db.sops.yaml":  data(values),
+				"secrets/b/db.sops.yaml":  data(values),
+			},
+			want: []string{
+				"`.sops.yaml` rule for `secrets/a/app.sops.yaml` is invalid",
+				"`secrets/b/db.sops.yaml` recipients differ from the `.sops.yaml` creation rule matching it",
+			},
+		},
+		{
 			name: "symlinked .sops.yaml",
 			files: map[string]*fstest.MapFile{
 				".sops.yaml":           {Data: []byte("rules/sops.yaml"), Mode: fs.ModeSymlink},
