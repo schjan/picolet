@@ -788,6 +788,66 @@ func TestCheckSelfConfigFailsClosedOnMountsItCannotRead(t *testing.T) {
 	}, mountLines(webhookConfig(hook)))
 }
 
+// An anonymous volume shares nothing across starts, however it is spelled:
+// a Quadlet Volume= or podman -v/--volume with a target alone, or a Mount=
+// or --mount of type volume (or no type) without a source, whatever its
+// other options. A file credential it may hold is refused, whether or not
+// the commit changes the mount lines: the running container shows what it
+// wrote there, and the next start finds the volume empty. (Quadlet itself
+// refuses a sourceless Mount= volume; the guard refuses it all the same.)
+func TestCheckSelfConfigRefusesCredentialUnderAnonymousVolume(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
+	spellings := map[string]string{
+		"Volume= target alone":               "Volume=" + dir,
+		"Volume= with an empty source":       "Volume=:" + dir + ":ro",
+		"Mount= type=volume, target=":        "Mount=type=volume,target=" + dir,
+		"Mount= type=volume, destination=":   "Mount=type=volume,destination=" + dir,
+		"Mount= type=volume, dst=, options":  "Mount=type=volume,dst=" + dir + ",ro=true",
+		"Mount= type=volume, empty source":   "Mount=type=volume,source=,target=" + dir,
+		"Mount= without type":                "Mount=target=" + dir,
+		"-v target alone":                    "PodmanArgs=-v " + dir,
+		"--volume=target alone":              "PodmanArgs=--volume=" + dir,
+		"--volume target alone":              "PodmanArgs=--volume " + dir,
+		"--mount type=volume, target=":       "PodmanArgs=--mount type=volume,target=" + dir,
+		"--mount=type=volume, target=":       "PodmanArgs=--mount=type=volume,target=" + dir,
+		"--mount type=volume, destination=":  "PodmanArgs=--mount type=volume,destination=" + dir,
+		"--mount=type=volume, dst=, options": "PodmanArgs=--mount=type=volume,dst=" + dir + ",ro",
+		"--mount without type":               "PodmanArgs=--mount target=" + dir,
+	}
+	startsEmpty := []string{"webhook_secret_path", "anonymous volume at " + dir, "starts empty"}
+	var cases []changeCase
+	for name, line := range spellings {
+		line += "\n"
+		cases = append(cases,
+			changeCase{name: name + ", mount lines unchanged", change: selfConfigChange{running: line, next: line}, wantError: startsEmpty},
+			changeCase{
+				name:      name + ", mount added",
+				change:    selfConfigChange{running: line, next: line + "Volume=/srv/data:/var/lib/picolet\n", unchangedConfig: true},
+				wantError: startsEmpty,
+			},
+		)
+	}
+	runChangeCases(t, cases, mountLines(webhookConfig(filepath.Join(dir, "hook"))))
+}
+
+// TestAgentRefusesConfigUnderAnonymousVolume runs the Agent loop: with the
+// Agent quadlet mounting an anonymous volume over its credentials, a commit
+// that changes only the config is refused with nothing written, since the
+// next start finds the volume empty. (Quadlet refuses a Mount= volume
+// without a source, so the Fleet passes it to podman run.)
+func TestAgentRefusesConfigUnderAnonymousVolume(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hook"), []byte("x"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "token"), []byte("token\n"), 0o600))
+	unit := agentBundleUnit("PodmanArgs=--mount=type=volume,target=" + dir + "\n")
+	config := *webhookConfig(filepath.Join(dir, "hook"))
+	runMountChangeCase(t, unit, config, unit, config+"git_token_path: "+filepath.Join(dir, "token")+"\n",
+		[]string{"git_token_path", "anonymous volume at " + dir, "starts empty"})
+}
+
 // The running Agent's config secret is found however Podman reads its
 // Secret= line: with a source= key, or quoted; and the new unit's config
 // mount however its target is spelled: Podman mounts

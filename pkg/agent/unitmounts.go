@@ -96,11 +96,16 @@ func maskMounts(unit *parser.UnitFile) []mount {
 }
 
 // parseVolume parses a Volume= (or -v, quadlet false) value:
-// source:target[:options], or a target alone (an anonymous volume).
+// source:target[:options], or a target alone. A target alone, or (in
+// Quadlet, which then passes the target alone) an empty source, is an
+// anonymous volume: it has no source.
 func parseVolume(volume string, quadlet bool) mount {
 	parts := strings.SplitN(volume, ":", 3)
-	if len(parts) == 1 || parts[0] == "" {
-		return mount{target: path.Clean(parts[len(parts)-1])}
+	if len(parts) == 1 {
+		return mount{target: path.Clean(parts[0])}
+	}
+	if parts[0] == "" {
+		return mount{target: path.Clean(parts[1])}
 	}
 	m := mount{source: parts[0], target: path.Clean(parts[1]), hostPath: isHostPath(parts[0])}
 	if len(parts) == 3 {
@@ -114,17 +119,38 @@ func parseVolume(volume string, quadlet bool) mount {
 
 // parseMount parses a Mount= (or --mount, quadlet false) value
 // (type=…,source=…,destination=…). Its source is the spec without the
-// destination; a tmpfs, ramfs or devpts mount has none. Without type=,
-// Podman mounts a volume.
+// destination; a tmpfs, ramfs or devpts mount has none, nor has a volume
+// without a source (an anonymous volume, whatever its options). Without
+// type=, Podman mounts a volume.
 func parseMount(spec string, quadlet bool) mount {
-	var m mount
-	var kind, source string
-	var rest []string
+	kind, source, target, rest := mountFields(spec)
+	m := mount{target: target}
+	switch kind {
+	case "tmpfs", "ramfs", "devpts":
+		return m
+	case "volume", "":
+		if source == "" { // an anonymous volume
+			return m
+		}
+		fallthrough
+	case "bind":
+		m.hostPath = isHostPath(source)
+		if quadlet && strings.HasSuffix(source, ".volume") {
+			m.volumeUnit = source
+		}
+	}
+	m.source = strings.Join(rest, ",")
+	return m
+}
+
+// mountFields splits a Mount= (or --mount) value into its type and source,
+// its cleaned destination, and every field but the destination.
+func mountFields(spec string) (kind, source, target string, rest []string) {
 	for field := range strings.SplitSeq(spec, ",") {
 		key, value, _ := strings.Cut(field, "=")
 		switch key {
 		case "destination", "dst", "target":
-			m.target = path.Clean(value)
+			target = path.Clean(value)
 			continue
 		case "type":
 			kind = value
@@ -133,17 +159,7 @@ func parseMount(spec string, quadlet bool) mount {
 		}
 		rest = append(rest, field)
 	}
-	switch kind {
-	case "tmpfs", "ramfs", "devpts":
-		return m
-	case "bind", "volume", "":
-		m.hostPath = isHostPath(source)
-		if quadlet && strings.HasSuffix(source, ".volume") {
-			m.volumeUnit = source
-		}
-	}
-	m.source = strings.Join(rest, ",")
-	return m
+	return kind, source, target, rest
 }
 
 // parseTmpfs parses a Tmpfs= (or --tmpfs) value: target[:options].

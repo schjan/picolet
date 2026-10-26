@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/getsops/sops/v3/config"
 	"github.com/stretchr/testify/assert"
@@ -157,7 +158,7 @@ func TestCheckInvalidRule(t *testing.T) {
 		},
 		"malformed YAML": {
 			cfg:  "creation_rules: {",
-			want: "Could not unmarshal config file",
+			want: "the file does not decode",
 		},
 		"age identity is never echoed": {
 			cfg:  "creation_rules:\n  - age: " + zeroIdentity + "\n",
@@ -171,6 +172,90 @@ func TestCheckInvalidRule(t *testing.T) {
 			require.ErrorContains(t, err, "`.sops.yaml` rule for `secrets/db.sops.yaml` is invalid: ")
 			require.ErrorContains(t, err, tt.want)
 			assert.NotContains(t, strings.ToUpper(err.Error()), zeroIdentity)
+		})
+	}
+}
+
+// nonAgeBackends are creation-rule key entries of every non-age backend,
+// pointed at unroutable or unreachable endpoints: a versionless Azure Key
+// Vault URL (which upstream would resolve to its latest version over the
+// network), an HC Vault transit URI, a GCP KMS key, an AWS KMS ARN, a
+// Huawei Cloud KMS key and a PGP fingerprint.
+const (
+	nonAgeTopLevel = "    azure_keyvault: https://unroutable.vault.azure.net/keys/k\n" +
+		"    hc_vault_transit_uri: http://10.255.255.1:8200/v1/sops/keys/k\n" +
+		"    gcp_kms: projects/p/locations/global/keyRings/r/cryptoKeys/k\n" +
+		"    kms: arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000\n" +
+		"    aws_profile: unroutable\n" +
+		"    hckms: [\"tr-west-1:00000000-0000-0000-0000-000000000000\"]\n" +
+		"    pgp: \"0000000000000000000000000000000000000000\"\n"
+	nonAgeGroup = "        azure_keyvault: [{vaultUrl: \"https://unroutable.vault.azure.net\", key: k}]\n" +
+		"        hc_vault: [\"http://10.255.255.1:8200/v1/sops/keys/k\"]\n" +
+		"        gcp_kms: [{resource_id: projects/p/locations/global/keyRings/r/cryptoKeys/k}]\n" +
+		"        kms: [{arn: \"arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000\", aws_profile: unroutable}]\n" +
+		"        hckms: [{key_id: \"tr-west-1:00000000-0000-0000-0000-000000000000\"}]\n" +
+		"        pgp: [\"0000000000000000000000000000000000000000\"]\n"
+)
+
+// Check compares age Recipients only, and never constructs a non-age key
+// backend for that: a rule naming them next to matching age Recipients, at
+// the top level or in key_groups, passes at once, without credentials or a
+// network lookup. A rule left with no age Recipients is still the one that
+// matches, and compares as one empty group.
+func TestCheckNeverBuildsNonAgeBackends(t *testing.T) {
+	t.Parallel()
+	srv1, srv2, op := testsops.Recipient(t, "srv-1"), testsops.Recipient(t, "srv-2"), testsops.Recipient(t, "operator-1")
+	pq := testsops.Recipient(t, "srv-pq")
+	for _, tt := range []struct {
+		name, file, cfg, want string
+	}{
+		{
+			name: "top level, next to age",
+			file: "values.sops.yaml",
+			cfg:  "creation_rules:\n  - path_regex: ^secrets/\n    age: " + srv1 + "," + srv2 + "," + op + "\n" + nonAgeTopLevel,
+		},
+		{
+			name: "versionless Azure URL in key_groups, next to age",
+			file: "key-groups.sops.yaml",
+			cfg: "creation_rules:\n  - path_regex: ^secrets/\n    key_groups:\n" +
+				"      - age: [" + op + ", " + srv1 + "]\n" + nonAgeGroup +
+				"      - age: [" + srv2 + "]\n" +
+				"      - merge:\n          - age: [" + pq + "]\n" + strings.ReplaceAll(nonAgeGroup, "        ", "            "),
+		},
+		{
+			name: "anchors and merge keys, as upstream resolves them",
+			file: "values.sops.yaml",
+			cfg: "defaults: &defaults\n  age: " + srv1 + "," + srv2 + "," + op + "\n" +
+				"  azure_keyvault: https://unroutable.vault.azure.net/keys/k\n" +
+				"creation_rules:\n  - <<: *defaults\n    path_regex: ^secrets/\n",
+		},
+		{
+			name: "rule without age, first match",
+			file: "values.sops.yaml",
+			cfg: "creation_rules:\n  - path_regex: ^secrets/\n" + nonAgeTopLevel +
+				"  - path_regex: ^secrets/\n    age: " + srv1 + "," + srv2 + "," + op + "\n",
+			want: "recipients differ",
+		},
+		{
+			name: "groups without age keep their count",
+			file: "key-groups.sops.yaml",
+			cfg: "creation_rules:\n  - path_regex: ^secrets/\n    key_groups:\n" +
+				"      - age: [" + op + ", " + srv1 + "]\n      - age: [" + srv2 + "]\n" +
+				"      - azure_keyvault: [{vaultUrl: \"https://unroutable.vault.azure.net\", key: k}]\n",
+			want: "key group 3: +" + pq,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			start := time.Now()
+			err := rulesOf(t, tt.cfg).Check("secrets/db.sops.yaml", inspectSOPS(t, tt.file))
+			assert.Less(t, time.Since(start), 2*time.Second, "Check waited on a key backend")
+			if tt.want == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.want)
+			require.NotErrorIs(t, err, sops.ErrInvalidCreationRule)
 		})
 	}
 }
