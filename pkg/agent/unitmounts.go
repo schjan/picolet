@@ -77,7 +77,8 @@ func unitMounts(unit *parser.UnitFile) (mounts []mount, opaque []string) {
 	return mounts, opaque
 }
 
-// maskMounts returns unit's Mask= and Unmask= paths, each as a mount whose
+// maskMounts returns unit's Mask= and Unmask= paths (also PodmanArgs=
+// --security-opt mask=/unmask=), each as a mount whose
 // source is "mask" or "unmask" (Unmask=ALL has no placed target), and
 // VolatileTmp='s tmpfs at /tmp. A mask hides every path under it, not only
 // those it holds as the deepest mount (holding).
@@ -90,6 +91,17 @@ func maskMounts(unit *parser.UnitFile) []mount {
 			}
 		}
 	}
+	podmanArgsValues(unit, podmanPathFlags, func(flag, value string) {
+		// Quadlet passes Mask=/Unmask= as these options; a PodmanArgs=
+		// spelling masks the same way.
+		kind, paths, ok := strings.Cut(value, "=")
+		if flag != "security-opt" || !ok || (kind != "mask" && kind != "unmask") {
+			return
+		}
+		for p := range strings.SplitSeq(paths, ":") {
+			mounts = append(mounts, mount{source: kind, target: path.Clean(p)})
+		}
+	})
 	if unit.LookupBooleanWithDefault("Container", "VolatileTmp", false) {
 		mounts = append(mounts, mount{target: "/tmp"})
 	}

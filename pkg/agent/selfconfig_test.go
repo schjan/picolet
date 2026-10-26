@@ -1013,6 +1013,8 @@ func TestCheckSelfConfigRefusesMaskedConfig(t *testing.T) {
 		{name: "config file masked", change: selfConfigChange{next: "Mask=/proc/acpi:/etc/picolet/config.yml\n"}, wantError: masked},
 		{name: "/etc masked", change: selfConfigChange{next: "Mask=/etc\n", unchangedConfig: true}, wantError: masked},
 		{name: "masked elsewhere", change: selfConfigChange{next: "Mask=/etc/picolet-other\n", unchangedConfig: true}},
+		{name: "config directory masked via PodmanArgs", change: selfConfigChange{next: "PodmanArgs=--security-opt mask=/etc/picolet\n", unchangedConfig: true}, wantError: masked},
+		{name: "config directory masked via PodmanArgs =", change: selfConfigChange{next: "PodmanArgs=--security-opt=mask=/proc/acpi:/etc/picolet\n", unchangedConfig: true}, wantError: masked},
 		{name: "specifier-led mask added", change: selfConfigChange{next: "Mask=%E/picolet\n", unchangedConfig: true}, wantError: []string{"Mask=%E/picolet", "cannot tell"}},
 		{
 			name:      "Host file mounted at the config path under a mask",
