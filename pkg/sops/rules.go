@@ -78,7 +78,11 @@ type ageRulesFile struct {
 // rule, and some reach out: a versionless Azure Key Vault URL makes it
 // discover credentials and look the key's version up over the network. A
 // rule left without age Recipients is still picked, and compares as one
-// empty group. Data that does not decode is an error, as it is upstream.
+// empty group. Data that does not decode into ageRule's fields is an error,
+// as it is upstream; the fields the reduction drops (the non-age keys,
+// destination_rules, stores) are never decoded, so a value there that
+// upstream (and the sops CLI) would refuse passes: only creation_rules and
+// their age material are read.
 func ageOnlyRules(data []byte) ([]byte, error) {
 	var rules ageRulesFile
 	if err := yaml.Unmarshal(data, &rules); err != nil {

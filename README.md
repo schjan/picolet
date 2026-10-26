@@ -409,10 +409,11 @@ restart:
 - `picolet apply --config` checks credential paths as the CLI process sees
   them, so run it inside the Agent's container. Outside it (say on a user
   Host's Machine, where `/etc/picolet/secrets` is really
-  `%h/.config/picolet/secrets`) the check can refuse or pass wrongly. It never
-  restarts the Agent, and it records the new config as applied, so the Agent
-  sees no change to apply: restart the Agent by hand (`systemctl restart` its
-  unit) to load a config `apply --config` wrote.
+  `%h/.config/picolet/secrets`) the check can refuse or pass wrongly. It does
+  not restart the Agent for a config change (only a changed Agent quadlet
+  restarts it, as on the Agent), and it records the new config as applied, so
+  the Agent sees no change to apply: restart the Agent by hand (`systemctl
+  restart` its unit) to load a config `apply --config` wrote.
 - A commit that changes only the content of a Fleet-managed secret or
   `.volume` unit holding a credential, with the quadlet and the config
   unchanged, isn't checked against the new content (the Agent doesn't restart
@@ -1489,8 +1490,8 @@ A `*.sops.*` file is reachable only through a `sops://` ref: `paths:` directory 
 
 - **Encrypted:** the file must carry SOPS metadata (`sops.version` and `sops.mac`) and be at most 1 MiB. A plaintext file under a SOPS name is an error: its values are in git, so rotate them and commit the file encrypted (rewriting history does not unpublish them).
 - **Creation rule:** when the Fleet-root `.sops.yaml` has a rule matching the file, the file's age Recipients must equal the rule's.
-  - Matching: picolet loads the rule with SOPS's own config loader, as `sops` picks it for the file (first match wins, an empty `path_regex` matches every file, paths are relative to the Fleet root). It first strips every non-age key (`kms`, `gcp_kms`, `azure_keyvault`, `hc_vault_transit_uri`, `pgp`, `hckms` and the like, top level and in key groups) and `destination_rules`, so `validate` never contacts a key service and its result does not depend on cloud credentials or the network; a rule left with no age Recipients still matches and compares as one empty group. A rule SOPS cannot load (a bad `path_regex`, a malformed age recipient, two encryption rules) is an error.
-  - Comparison: key group by key group, order ignored; `shamir_threshold`, encryption rules and non-age keys are ignored. A mismatch lists `+` (in the file, not the rule) and `−` (in the rule, not the file) and asks you to run `sops updatekeys <file>`.
+  - Matching: picolet loads the rule with SOPS's own config loader, as `sops` picks it for the file (first match wins, an empty `path_regex` matches every file, paths are relative to the Fleet root). It first strips every non-age key (`kms`, `gcp_kms`, `azure_keyvault`, `hc_vault_transit_uri`, `pgp`, `hckms` and the like, top level and in key groups) and `destination_rules`, so `validate` never contacts a key service and its result does not depend on cloud credentials or the network; a rule left with no age Recipients still matches and compares as one empty group. Only `creation_rules` and their age material are read, so a value `sops` itself would refuse in a stripped field (a non-age key, `destination_rules`, `stores`) passes. The reduced rules go to a private temporary directory, so `validate` needs a writable `TMPDIR` whenever the Fleet has a root `.sops.yaml`. A rule SOPS cannot load (a bad `path_regex`, a malformed age recipient, two encryption rules) is an error, reported once per reason; it hides no other rule's drift.
+  - Comparison: key group by key group, order ignored; `shamir_threshold`, encryption rules and non-age keys are ignored. A mismatch lists `+` (in the file, not the rule) and `−` (in the rule, not the file) and asks you to run `sops updatekeys <file>`. It does not name the rule (SOPS's loader does not say which one it picked): with several rules, it is the first whose `path_regex` matches the file.
   - Only the root `.sops.yaml` is read; it must be a regular file, not a symlink. A file without a matching rule, or a Fleet without a root `.sops.yaml`, is not checked: the file's own Recipients decide who can read it. picolet never generates `.sops.yaml`.
 - **Audience (least privilege):** every age Recipient of the file must belong to an [Operator](#operatorsyml) or to a Host whose resolve reaches the file (through `readSopsSecret`, `readSopsData` or a direct `secrets:` ref).
   - A file no Host references may be read by Operators only.

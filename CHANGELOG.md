@@ -125,9 +125,13 @@ kept as is.
   functions `readSopsSecret` (one value) and `readSopsData` (a subtree), and
   direct `sops://` entries in `secrets:`. The Agent decrypts with the age
   identities named by the new Agent config block `sops: {age_identity_path: …}`;
-  `validate`, `resolve` and `bootstrap` check refs without a key. A Quadlet, Raw
+  `validate`, `resolve` and `bootstrap` check refs without a key, and so does
+  `picolet dry-run` without `--config`, which marks a file whose render used a
+  SOPS value `changed (unverified: SOPS values not decrypted)`. A Quadlet, Raw
   Unit or Hook definition that renders a SOPS value fails.
-  `picolet dry-run --config` decrypts like the Agent; decrypted values are
+  `picolet dry-run --config` decrypts like the Agent, while
+  `picolet apply --config` refuses `sops://` refs (let the Agent apply them);
+  decrypted values are
   scrubbed from errors, logs, events, MQTT and deployment statuses
   ([#256](https://github.com/schjan/picolet/issues/256),
   [#257](https://github.com/schjan/picolet/issues/257),
@@ -168,8 +172,9 @@ kept as is.
 - An Agent restarts its own unit after applying a commit that changes its
   Fleet-rendered config, so pushing `age_recipients:` (or any other Agent
   config change) takes effect without a manual restart; a dry run restarts
-  nothing, and neither does `picolet apply --config` (restart the Agent by
-  hand after it) ([#248](https://github.com/schjan/picolet/issues/248)).
+  nothing, and neither does `picolet apply --config` for a config change
+  (restart the Agent by hand after it; a changed Agent quadlet still restarts
+  it, as before) ([#248](https://github.com/schjan/picolet/issues/248)).
 - The self-restart guard refuses a Fleet-rendered Agent config the Agent could
   not start with (strict parse, credential overlap, startup credential checks,
   a relative credential path) or a commit that leaves a Fleet-managed Agent

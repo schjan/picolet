@@ -1,7 +1,10 @@
 // Package sops owns everything picolet does with SOPS-encrypted files
 // (spec #248): keyless inspection, JSON Pointers, the `.sops.` path rule,
-// Podman secret naming, age recipient parsing, and decryption with explicit
-// age identities. It is the only package allowed to import
+// Podman secret naming, age recipient parsing, checking a file's age
+// Recipients against the Fleet-root `.sops.yaml` creation rule
+// (ReadCreationRules, CreationRules.Check: upstream's loader over a reduced
+// private copy in a temp dir, so it needs a writable TMPDIR), and decryption
+// with explicit age identities. It is the only package allowed to import
 // github.com/getsops/sops/v3; a depguard rule in .golangci.yml enforces that.
 //
 // Nothing in the keyless half reads an age identity. Other packages test
