@@ -193,7 +193,10 @@ type ApplyResult struct {
 	RetryableErrors []error
 
 	NeedsSelfRestart bool
-	RestartedUnits   []string
+	// SelfConfigChanged reports that the changeset writes the self config
+	// secret (WithSelfConfig), so the self unit restarts to load it.
+	SelfConfigChanged bool
+	RestartedUnits    []string
 
 	// DeferredSelfStops names self units whose quadlet file was deleted in this
 	// changeset. Their stop is deferred to a detached goroutine in restartUnits
@@ -260,6 +263,9 @@ type Applier struct {
 	// agent mid-apply, before state is saved, so those operations are deferred
 	// (see restartUnits).
 	selfUnits map[string]struct{}
+	// selfConfigUnit and selfConfigSecret are the self unit and the secret
+	// it reads its config from (WithSelfConfig).
+	selfConfigUnit, selfConfigSecret string
 	// deps are the generated unit dependencies (WithDependencies).
 	deps map[string]status.UnitDependencies
 	// dataDir and hostDataDir map written data paths to the paths the Host
@@ -315,6 +321,15 @@ func WithHookReloader(reloader *HookReloader) Option {
 func WithSelfUnits(units ...string) Option {
 	return func(a *Applier) {
 		a.selfUnits = unitSet(units)
+	}
+}
+
+// WithSelfConfig names the secret the self unit unit mounts as its config: a
+// changeset that writes it restarts unit, deferred like every self restart,
+// since Podman copies a secret into a container only when it creates it.
+func WithSelfConfig(unit, secret string) Option {
+	return func(a *Applier) {
+		a.selfConfigUnit, a.selfConfigSecret = unit, secret
 	}
 }
 
@@ -478,7 +493,7 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		result.Applied++
 		if destination(change.Category) == config.DestSecret {
 			if change.Action == reconciler.ActionCreate || change.Action == reconciler.ActionUpdate {
-				p.ChangedSecrets[reconciler.SecretNameFromPath(change.DestPath)] = struct{}{}
+				a.recordChangedSecret(reconciler.SecretNameFromPath(change.DestPath), p, result)
 			}
 			continue
 		}
@@ -510,6 +525,16 @@ func (a *Applier) applyPhase(ctx context.Context, sorted []reconciler.Change, re
 		}
 	}
 	return p, nil
+}
+
+// recordChangedSecret records the written secret name; the self config
+// secret also restarts its self unit (WithSelfConfig).
+func (a *Applier) recordChangedSecret(name string, p *applyPhaseResult, result *ApplyResult) {
+	p.ChangedSecrets[name] = struct{}{}
+	if a.selfConfigSecret != "" && name == a.selfConfigSecret {
+		p.ChangedUnits[a.selfConfigUnit] = struct{}{}
+		result.SelfConfigChanged = true
+	}
 }
 
 // passiveUnitExts are passive activator unit types: they have no running

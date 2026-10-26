@@ -224,9 +224,15 @@ type loopHarness struct {
 // harness's own options, so they may replace its mocks.
 func newLoopHarness(t *testing.T, bareDir string, opts ...Option) *loopHarness {
 	t.Helper()
+	return newConfiguredLoopHarness(t, loopConfig(t, bareDir), opts...)
+}
+
+// newConfiguredLoopHarness is newLoopHarness for the Agent config cfg.
+func newConfiguredLoopHarness(t *testing.T, cfg *agentcfg.Config, opts ...Option) *loopHarness {
+	t.Helper()
 	h := &loopHarness{
 		applyRecord: newApplyRecord(),
-		cfg:         loopConfig(t, bareDir),
+		cfg:         cfg,
 		repoDir:     filepath.Join(t.TempDir(), "clone"),
 		statePath:   filepath.Join(t.TempDir(), "state.json"),
 		mocks:       mocksApply,

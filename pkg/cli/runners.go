@@ -628,7 +628,7 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		// Defensive: apply decrypts nothing, so scrub has nothing to remove.
 		return scrub(fmt.Errorf("validation failed: %w", err))
 	}
-	if err := agent.CheckSelfConfig(resolved, changeset, os.ReadFile, os.Getwd); err != nil {
+	if err := agent.CheckSelfConfig(resolved, changeset, os.ReadFile); err != nil {
 		return scrub(fmt.Errorf("agent config check failed: %w", err))
 	}
 

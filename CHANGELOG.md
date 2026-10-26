@@ -165,15 +165,21 @@ kept as is.
 - The dashboard no longer shows content hashes of secrets, nor of Managed
   Files whose render used a SOPS value
   ([#250](https://github.com/schjan/picolet/issues/250)).
+- An Agent restarts its own unit after applying a commit that changes its
+  Fleet-rendered config, so pushing `age_recipients:` (or any other Agent
+  config change) takes effect without a manual restart; a dry run restarts
+  nothing ([#248](https://github.com/schjan/picolet/issues/248)).
 - The self-restart guard refuses a Fleet-rendered Agent config the Agent could
   not start with (strict parse, credential overlap, startup credential checks,
-  through the mounts of a changed Agent quadlet, `PodmanArgs=` mounts
-  included, a relative path resolved against its working directory or
-  refused) or a commit that leaves a Fleet-managed Agent config unreachable
-  (its secret removed while still mounted, the mount repointed at an
-  unresolved secret, or the mount dropped; a Host file bind-mounted there
-  opts out): the reconciliation fails and the Agent keeps running on its
-  current config. `picolet apply --config` runs the same check
+  a relative credential path) or a commit that leaves a Fleet-managed Agent
+  config unreachable (its secret removed while still mounted, the mount
+  repointed at an unresolved secret, or the mount dropped; a Host file
+  bind-mounted there opts out). A commit that changes the Agent quadlet's
+  mount lines may not also change its config or a Fleet-managed source it
+  mounts, and every credential must stay under a mount kept as written (or
+  under none): change the mounts in their own commit, then the config. The
+  reconciliation fails and the Agent keeps running on its current config.
+  `picolet apply --config` runs the same check
   ([#252](https://github.com/schjan/picolet/issues/252)).
 - Agents warn about an unknown `host.yml` key instead of refusing the Fleet;
   `picolet validate` still fails on it.
