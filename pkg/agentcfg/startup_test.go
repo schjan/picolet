@@ -2,6 +2,7 @@ package agentcfg
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,6 +42,22 @@ func TestCheckRenderedRejectsMissingCredentialFile(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "git_token_path")
 	assert.Contains(t, err.Error(), missing)
+}
+
+// Every failing check is reported, each its own entry in Failures.
+func TestCheckRenderedReportsEveryFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	git := filepath.Join(dir, "git.token")
+	webhook := filepath.Join(dir, "webhook")
+	err := CheckRenderedConfig([]byte("hostname: node-1\ngit_token_path: "+git+"\nwebhook_secret_path: "+webhook+"\n"), nil)
+	var failures Failures
+	require.ErrorAs(t, err, &failures)
+	require.Len(t, failures, 3, err.Error())
+	assert.Contains(t, failures[0].Error(), "repo_url is required")
+	assert.Contains(t, failures[1].Error(), "git_token_path ("+git+")")
+	assert.Contains(t, failures[2].Error(), "webhook_secret_path ("+webhook+")")
+	require.ErrorIs(t, err, fs.ErrNotExist)
 }
 
 func TestCheckRenderedRejectsUnreadableCredentialFile(t *testing.T) {

@@ -333,6 +333,21 @@ Push to git. Picolet detects the change, writes the updated Quadlet, and restart
 
 An upgrade that changes the Fleet schema (v0.2.0) needs a fixed rollout order; see [MIGRATION.md](MIGRATION.md).
 
+Before bumping the image, check each Host's live Agent config with the new
+image's binary: `picolet agentcfg check [--config /etc/picolet/config.yml]`
+runs the checks the Agent runs at startup (strict parse, no two credential
+settings naming the same file, every credential file readable, SOPS
+identities parse) without starting it, prints one line per failure naming the
+setting and path (never a file's content) and exits non-zero on failure. Run
+it in a container with the running Agent's mounts and config secret:
+
+```bash
+# rootful Host (a Host with user:, as that user: picolet, picolet_config)
+podman run --rm --volumes-from picolet-system:ro \
+  --secret picolet_system_config,target=/etc/picolet/config.yml \
+  ghcr.io/schjan/picolet:<new-version> agentcfg check
+```
+
 A commit that changes an Agent's own config (the secret its bundle mounts,
 with `Secret=` or `PodmanArgs=--secret`, where the Agent reads its config:
 the path an `Environment=PICOLET_CONFIG=` line sets, else

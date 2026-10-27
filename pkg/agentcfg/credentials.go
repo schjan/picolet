@@ -173,20 +173,21 @@ func (c *Config) checkCredentialFiles() error {
 }
 
 // checkCredentialFiles compares creds by spelling and, on disk, at the paths
-// the checks read them at.
+// the checks read them at, reporting every overlapping pair (Failures).
 func checkCredentialFiles(creds []located) error {
+	var errs []error
 	for i, a := range creds {
 		for _, b := range creds[i+1:] {
 			same, err := overlaps(a, b)
-			if err != nil {
-				return err
-			}
-			if same {
-				return fmt.Errorf("%s (%s) and %s (%s) name the same credential file", a.Setting, a.Path, b.Setting, b.Path)
+			switch {
+			case err != nil:
+				errs = append(errs, err)
+			case same:
+				errs = append(errs, fmt.Errorf("%s (%s) and %s (%s) name the same credential file", a.Setting, a.Path, b.Setting, b.Path))
 			}
 		}
 	}
-	return nil
+	return joinFailures(errs)
 }
 
 // overlaps reports whether a and b name the same file, or one names a file

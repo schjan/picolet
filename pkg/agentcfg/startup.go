@@ -9,6 +9,29 @@ import (
 	"github.com/schjan/picolet/pkg/sops"
 )
 
+// Failures is the error of checks that report every failure they find
+// (Load's credential overlap check, CheckStartup): one error per failure,
+// each naming its setting and path. errors.Is and errors.As see each one.
+type Failures []error
+
+func (f Failures) Error() string { return errors.Join(f...).Error() }
+
+func (f Failures) Unwrap() []error { return f }
+
+// joinFailures is the Failures of the non-nil errs, nil when there are none.
+func joinFailures(errs []error) error {
+	var f Failures
+	for _, err := range errs {
+		if err != nil {
+			f = append(f, err)
+		}
+	}
+	if len(f) == 0 {
+		return nil
+	}
+	return f
+}
+
 // Locate returns the path the checking process reads cred at, for a
 // rendered config whose credential paths are spelled as the Agent's next
 // start sees them; an error refuses the config. A nil Locate reads every
@@ -53,7 +76,8 @@ type Startup struct {
 // handshake, no pass-cli login); the age identity file must also parse, and
 // its identities are returned so the Agent does not read it again. A
 // directory credential (protonpass.session_dir) is not required to exist:
-// pass-cli creates it at its first login. Load has already rejected
+// pass-cli creates it at its first login. Every failing check is reported
+// (Failures), not only the first. Load has already rejected
 // overlapping credentials, so CheckStartup does not repeat that check.
 //
 // The Agent runs them at startup and, through CheckRenderedConfig, before it
@@ -69,8 +93,9 @@ func (c *Config) CheckStartup() (Startup, error) {
 
 func (c *Config) checkStartup(creds []located) (Startup, error) {
 	var st Startup
+	var errs []error
 	if c.RepoURL == "" {
-		return st, errors.New("repo_url is required for the run command")
+		errs = append(errs, errors.New("repo_url is required for the run command"))
 	}
 	for _, cred := range creds {
 		var err error
@@ -81,9 +106,10 @@ func (c *Config) checkStartup(creds []located) (Startup, error) {
 		default:
 			err = checkReadable(cred)
 		}
-		if err != nil {
-			return Startup{}, err
-		}
+		errs = append(errs, err)
+	}
+	if err := joinFailures(errs); err != nil {
+		return Startup{}, err
 	}
 	return st, nil
 }
