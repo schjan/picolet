@@ -733,3 +733,34 @@ func TestAllFailed(t *testing.T) {
 		})
 	}
 }
+
+// An Activation Obligation is owned by the activation evaluator: health
+// reports its unit's status but neither restarts it nor clears the record,
+// whatever the observation (the active process may run the old revision, an
+// inactive one-shot never ran the new one). Removal still prunes it.
+func TestEnforceLeavesActivationObligations(t *testing.T) {
+	t.Parallel()
+	for _, activeState := range []string{"active", "activating", "inactive", "failed"} {
+		t.Run(activeState, func(t *testing.T) {
+			t.Parallel()
+			sys := appliermocks.NewMockSystemdManager(t)
+			sys.EXPECT().GetUnitStatus(mock.Anything, "job.service").
+				Return(applier.UnitStatus{ActiveState: activeState, ServiceType: "oneshot"}, nil)
+			// RestartUnit must NOT be called.
+			ob := state.PendingUnit{SHA: "abc", Reason: state.PendingActivationUndecided, Checks: 1}
+			st := &state.State{
+				ManagedFiles: map[string]state.ManagedFile{
+					"/etc/containers/systemd/job.container": {Hash: "sha256:abc", Category: "container"},
+				},
+				ServiceNames: map[string]string{"/etc/containers/systemd/job.container": "job.service"},
+				PendingUnits: map[string]state.PendingUnit{"job.service": ob, "gone.service": ob},
+			}
+
+			result, err := New(sys).Enforce(context.Background(), st)
+			require.NoError(t, err)
+			assert.Empty(t, result.Restarted)
+			assert.Equal(t, map[string]state.PendingUnit{"job.service": ob}, st.PendingUnits)
+			assert.Contains(t, result.Statuses, "job.service")
+		})
+	}
+}

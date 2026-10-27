@@ -27,13 +27,79 @@ type ManagedFile struct {
 	SopsValues bool `json:"sops_values,omitempty"`
 }
 
-// PendingUnit records a managed systemd unit whose last restart attempt failed.
-// Persisted so the failure (and its retry cooldown) survives an agent restart.
+// PendingReason says why a PendingUnit is pending. The empty reason is the
+// legacy one (a record written before reasons existed): PendingRestartFailed.
+type PendingReason string
+
+const (
+	// PendingRestartFailed: an ordinary restart of the unit failed; the
+	// health loop retries it (its existing self-healing policy).
+	PendingRestartFailed PendingReason = "restart_failed"
+	// PendingActivationUndecided: an Activation Obligation whose activation
+	// decision (the pre-restart status check) failed; nothing was executed.
+	PendingActivationUndecided PendingReason = "activation_undecided"
+	// PendingActivationFailed: an Activation Obligation whose required
+	// activation was decided and executed, but failed.
+	PendingActivationFailed PendingReason = "activation_failed"
+)
+
+// Activation is how an Activation Obligation's unit is activated once its
+// decision allows it: the decision differs per kind.
+type Activation string
+
+const (
+	// ActivationRestart: a changed one-shot, restarted unless a .timer
+	// triggers it. The empty value means ActivationRestart.
+	ActivationRestart Activation = "restart"
+	// ActivationRebuiltConsumer: a consumer of a rebuilt image, skipped when
+	// externally activated, else restarted (without its dependencies when
+	// running).
+	ActivationRebuiltConsumer Activation = "rebuilt_consumer"
+)
+
+// PendingUnit records a managed systemd unit whose convergence is pending:
+// a failed restart, or an Activation Obligation (Reason). Persisted so the
+// record, its retry cooldown and attempt count survive an agent restart.
+// Every field after LastAttemptAt is additive (omitted by older Agents).
 type PendingUnit struct {
-	SHA           string    `json:"sha"`             // git SHA in effect when this failure was last recorded
-	Attempts      int       `json:"attempts"`        // consecutive failed restart attempts
-	FirstFailedAt time.Time `json:"first_failed_at"` // when the unit first failed to restart
-	LastAttemptAt time.Time `json:"last_attempt_at"` // most recent restart attempt; backs the retry cooldown
+	SHA           string    `json:"sha"`             // git SHA in effect when this record was last updated
+	Attempts      int       `json:"attempts"`        // consecutive failed restart (execution) attempts
+	FirstFailedAt time.Time `json:"first_failed_at"` // when the unit first became pending
+	LastAttemptAt time.Time `json:"last_attempt_at"` // most recent execution attempt; backs the retry cooldown
+
+	Reason PendingReason `json:"reason,omitempty"`
+	// Activation is how an obligation's unit is activated (obligations only).
+	Activation Activation `json:"activation,omitempty"`
+	// ContentHash is the hash of the Managed File the unit was generated
+	// from when the record was created: the applied content it is about.
+	ContentHash string `json:"content_hash,omitempty"`
+	// Checks counts activation-decision attempts, LastCheckAt the latest
+	// (obligations only; separate from execution attempts).
+	Checks      int       `json:"checks,omitempty"`
+	LastCheckAt time.Time `json:"last_check_at,omitzero"`
+	// LastError is the latest decision or execution error.
+	LastError string `json:"last_error,omitempty"`
+}
+
+// EffectiveReason is Reason with the legacy empty value read as
+// PendingRestartFailed.
+func (p PendingUnit) EffectiveReason() PendingReason {
+	if p.Reason == "" {
+		return PendingRestartFailed
+	}
+	return p.Reason
+}
+
+// IsObligation reports whether the record is an Activation Obligation, which
+// only the activation evaluator may resolve: the health loop neither
+// restarts its unit nor clears it.
+func (p PendingUnit) IsObligation() bool {
+	switch p.EffectiveReason() {
+	case PendingActivationUndecided, PendingActivationFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 // State represents the persisted reconciliation state.
@@ -109,6 +175,16 @@ func (s *State) MarkApplied(headSHA string) {
 // timestamp is NOT advanced — the fleet has not converged.
 func (s *State) MarkAppliedIncomplete(headSHA string) {
 	s.markApplied(headSHA)
+}
+
+// HasObligations reports whether any Activation Obligation is outstanding.
+func (s *State) HasObligations() bool {
+	for _, pu := range s.PendingUnits {
+		if pu.IsObligation() {
+			return true
+		}
+	}
+	return false
 }
 
 // Store manages atomic reads and writes of the state file.

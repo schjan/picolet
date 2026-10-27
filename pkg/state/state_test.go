@@ -187,3 +187,45 @@ func TestLoad_OldSchemaFormat_ReturnsErrCorrupt(t *testing.T) {
 	require.ErrorIs(t, err, ErrCorrupt)
 	assert.Nil(t, st)
 }
+
+// A pending record written before Activation Obligations has no reason: it
+// keeps its legacy meaning, a failed restart the health loop retries.
+func TestLoad_LegacyPendingUnitIsRestartFailed(t *testing.T) {
+	t.Parallel()
+	oldJSON := `{"applied_sha":"abc","managed_files":{},"pending_units":{"app.service":{"sha":"abc","attempts":2}}}`
+	path := filepath.Join(t.TempDir(), "state.json")
+	require.NoError(t, os.WriteFile(path, []byte(oldJSON), 0o600))
+
+	st, err := NewStore(path).Load()
+	require.NoError(t, err)
+	pu := st.PendingUnits["app.service"]
+	assert.Equal(t, PendingRestartFailed, pu.EffectiveReason())
+	assert.False(t, pu.IsObligation())
+	assert.False(t, st.HasObligations())
+}
+
+func TestSaveAndLoadActivationObligation(t *testing.T) {
+	t.Parallel()
+	store := NewStore(filepath.Join(t.TempDir(), "state.json"))
+	checked := time.Now().Truncate(time.Second)
+	st := NewState()
+	st.PendingUnits = map[string]PendingUnit{
+		"job.service": {
+			SHA: "def", Reason: PendingActivationUndecided, Activation: ActivationRebuiltConsumer,
+			ContentHash: "h1", Checks: 3, LastCheckAt: checked, LastError: "dbus down",
+		},
+	}
+	require.NoError(t, store.Save(st))
+
+	got, err := store.Load()
+	require.NoError(t, err)
+	pu := got.PendingUnits["job.service"]
+	assert.Equal(t, PendingActivationUndecided, pu.EffectiveReason())
+	assert.Equal(t, ActivationRebuiltConsumer, pu.Activation)
+	assert.Equal(t, "h1", pu.ContentHash)
+	assert.Equal(t, 3, pu.Checks)
+	assert.True(t, pu.LastCheckAt.Equal(checked))
+	assert.Equal(t, "dbus down", pu.LastError)
+	assert.True(t, pu.IsObligation())
+	assert.True(t, got.HasObligations())
+}

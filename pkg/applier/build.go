@@ -14,6 +14,7 @@ import (
 	"github.com/schjan/picolet/pkg/buildunit"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/reconciler"
+	"github.com/schjan/picolet/pkg/state"
 	"github.com/schjan/picolet/pkg/status"
 )
 
@@ -195,27 +196,23 @@ func (a *Applier) takeBuildConsumers(p *applyPhaseResult) []string {
 // consumer down a second time. A consumer that is not running is started the
 // ordinary way, with its dependencies (and so the build again, from cache):
 // nothing runs that it could take down. A one-shot systemd activates (a
-// timer's job) is left to its trigger. A failure is a failed restart like any
-// other (pending).
+// timer's job) is left to its trigger. A failed status check decides nothing
+// (an undecided Activation Obligation, retried later); a failed restart is a
+// failed restart like any other (pending).
 func (a *Applier) restartConsumer(ctx context.Context, unit string, result *ApplyResult) {
-	st, err := a.systemd.GetUnitStatus(ctx, unit)
+	step, err := a.decideActivation(ctx, unit, state.ActivationRebuiltConsumer)
 	if err != nil {
-		recordRestart(unit, fmt.Errorf("checking %s before restart: %w", unit, err), result)
+		a.logger.Warn("skipping consumer restart: status check failed", "unit", unit, "error", err)
+		recordUndecided(unit, state.ActivationRebuiltConsumer, err, result)
 		return
 	}
-	if ExternallyActivated(st) {
+	if step == stepSkip {
 		a.logger.Info("skipping restart of externally activated consumer", "unit", unit)
-		result.SystemdUnitOps = append(result.SystemdUnitOps,
-			SystemdUnitOp{Unit: unit, Operation: SystemdOpRestart, Result: SystemdOpResultSkipped})
+		recordSkip(unit, result)
 		return
 	}
-	a.logger.Info("restarting consumer of rebuilt image", "unit", unit, "active_state", st.ActiveState)
-	switch st.ActiveState {
-	case "active", "activating", "reloading":
-		recordRestart(unit, a.systemd.RestartUnitIgnoringDependencies(ctx, unit), result)
-	default:
-		recordRestart(unit, a.systemd.RestartUnit(ctx, unit), result)
-	}
+	a.logger.Info("restarting consumer of rebuilt image", "unit", unit, "without_dependencies", step == stepRestartNoDeps)
+	recordRestart(unit, a.executeActivation(ctx, unit, step), result)
 }
 
 // scheduleSelfConsumerRestarts defers the restart of the agent's own units

@@ -80,3 +80,7 @@ _Avoid_: admin, maintainer, user (a Linux user on a Machine is something else)
 **Timer-triggered One-shot**:
 A `Type=oneshot` unit from the Fleet that a `.timer` starts on a schedule (a backup, a restore-verify); picolet tracks when it last ran, last succeeded and with what result.
 _Avoid_: job, cron job, scheduled job (systemd's D-Bus jobs are a different thing picolet already models)
+
+**Activation Obligation**:
+An outstanding requirement for a managed systemd unit to activate its applied definition, or to establish that its activation policy leaves execution to a trigger (a Timer-triggered One-shot's timer). A successful file write or an inactive one-shot does not satisfy it; only an intentional skip decided on a fresh status check, a successful activation, or the unit's removal or replacement does. While one is outstanding the reconciliation is incomplete.
+_Avoid_: pending restart (a failed daemon restart the health loop retries is a different record), retry

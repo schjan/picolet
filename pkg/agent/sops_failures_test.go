@@ -272,7 +272,7 @@ func TestApplyScrubsLoggedErrors(t *testing.T) {
 			t.Helper()
 			st := state.NewState()
 			store := state.NewStore(filepath.Join(t.TempDir(), "state.json"))
-			_, err := a.finalizeApply("sha", st, store, secretChange, &applier.ApplyResult{Errors: []error{leak}}, nil, refSecretsCounts{}, nil, reader)
+			_, err := a.finalizeApply(t.Context(), "sha", st, store, secretChange, &applier.ApplyResult{Errors: []error{leak}}, nil, refSecretsCounts{}, nil, reader)
 			require.NoError(t, err)
 		},
 	}
