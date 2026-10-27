@@ -172,20 +172,22 @@ func TestReadSopsSecretGuardPrecedesStrictAndMissingReader(t *testing.T) {
 	}
 }
 
-// A guarded file may build its sops:// pointer from an op:// value; only SOPS
-// values are scrubbed, so the guard's error names the ref without its
-// pointer (refForError) and never shows the op:// value.
+// A guarded file may build its sops:// pointer from a host secret's value
+// (readSecretFile is not a provider and not guarded); only SOPS values are
+// scrubbed, so the guard's error names the ref without its pointer
+// (refForError) and never shows the host secret's value.
 func TestSopsGuardErrorKeepsDynamicRefOut(t *testing.T) {
 	t.Parallel()
 	mapFS := pathsFleetFS("  paths: [units/app.container.tmpl]\n", map[string]string{
 		"secrets/db.sops.yaml":     testsops.CorpusText(t, "values.sops.yaml"),
 		"hosts/test-host/host.yml": sopsHostYAML(t, "srv-1"),
 		"units/app.container.tmpl": "[Container]\nImage=app\nEnvironment=DB_PASSWORD=" +
-			`{{ readSopsSecret (printf "sops://secrets/db.sops.yaml#/%s" (readOpSecret "op://vault/item/user")) }}` + "\n",
+			`{{ readSopsSecret (printf "sops://secrets/db.sops.yaml#/%s" (readSecretFile "user")) }}` + "\n",
 	})
 	cfg, err := config.LoadAll(mapFS)
 	require.NoError(t, err)
-	r, err := New(Config{FS: mapFS, Config: cfg, OpSecretReader: userReader, Sops: &recordingSopsReader{}})
+	secrets := func(string) (string, error) { return secretItem, nil }
+	r, err := New(Config{FS: mapFS, Config: cfg, SecretReader: secrets, Sops: &recordingSopsReader{}})
 	require.NoError(t, err)
 
 	_, err = r.ResolveHost(t.Context(), "test-host")

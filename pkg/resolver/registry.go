@@ -81,7 +81,7 @@ const (
 // would fail), so DataReader must cache per file itself.
 // Strict (bootstrap, validate's Agent-bundle pass) fails every call.
 // Guard, when set, runs first on every call; its error fails the render
-// before any reader sees the ref (the SOPS unit-file guard).
+// before any reader sees the ref (the unit-file guard, Resolver.guarded).
 // MissingReader and Guard get the called function's name.
 //
 // The standard providers (OpProvider, PPProvider, SopsProvider) also carry
@@ -109,6 +109,9 @@ type ProviderTemplate struct {
 	// call's (sops://); op:// and pass:// keep the wording they had before
 	// sops:// (spec #248).
 	directLikeCalls bool
+	// unitFileErr is the scheme's error for a call in a Quadlet, a Raw Unit
+	// or a Hook definition (Resolver.guarded).
+	unitFileErr error
 }
 
 // providerSchemes is the provider table: the standard providers without
@@ -157,7 +160,8 @@ func OpProvider(reader SecretRefReader) ProviderTemplate {
 			}
 			return parsed.PodmanSecretName(), nil
 		},
-		strictFix: legacyStrictFix,
+		strictFix:   legacyStrictFix,
+		unitFileErr: ErrOpInUnitFile,
 	}
 }
 
@@ -178,7 +182,8 @@ func PPProvider(reader SecretRefReader) ProviderTemplate {
 			}
 			return parsed.PodmanSecretName(), nil
 		},
-		strictFix: legacyStrictFix,
+		strictFix:   legacyStrictFix,
+		unitFileErr: ErrProtonPassInUnitFile,
 	}
 }
 
@@ -210,6 +215,7 @@ func SopsProvider(reader SopsReader, noIdentityHint string) ProviderTemplate {
 		strictFix: "deliver the value as a --secrets-dir file and point the Agent config at its path; " +
 			"credentials needed to fetch the Fleet can't be SOPS values",
 		directLikeCalls: true,
+		unitFileErr:     ErrSopsInUnitFile,
 	}
 	if reader != nil {
 		p.Reader = checkSopsRefs(reader.ReadAll)

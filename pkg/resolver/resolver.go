@@ -132,8 +132,9 @@ type Resolver struct {
 	rootless       bool
 	strict         bool
 	logger         *slog.Logger
-	// rendering is the top-level file being rendered when SOPS values may
-	// not be rendered into it (sopsGuard); nil otherwise. Set by withRender
+	// rendering is the top-level file being rendered when provider values
+	// may not be rendered into it (the unit-file guard, guarded); nil
+	// otherwise. Set by withRender
 	// on the per-resolve copy resolveHostFileSet makes.
 	rendering *unitRender
 	// sopsFiles records the SOPS files this resolve's refs reached; set
@@ -141,7 +142,7 @@ type Resolver struct {
 	// Resolver.
 	sopsFiles sopsFileSet
 	// sopsCalls counts this resolve's readSopsSecret/readSopsData calls
-	// (sopsGuard), so buildFiles can tell which files read a SOPS value.
+	// (guardedSopsProvider), so buildFiles can tell which files read a SOPS value.
 	sopsCalls int
 	// keylessReader is this resolve's keyless SOPS reader (NewKeyless),
 	// built for its Host on the per-resolve copy; it serves the template
@@ -312,8 +313,8 @@ func (r *Resolver) resolveHostFileSetOnCopy(ctx context.Context, hostname string
 	}
 
 	providers := []ProviderTemplate{
-		r.provider(OpProvider(r.opSecretReader)),
-		r.provider(PPProvider(r.ppSecretReader)),
+		r.provider(r.guarded(OpProvider(r.opSecretReader))),
+		r.provider(r.guarded(PPProvider(r.ppSecretReader))),
 		r.provider(r.guardedSopsProvider()),
 	}
 	// hostDataDir (not dataDir) drives filePath/manifestPath: those helpers emit
@@ -377,14 +378,6 @@ func (r *Resolver) resolveSopsReader() SopsReader { //nolint:ireturn // the keyl
 		return nil
 	}
 	return sopsFileRecorder{reader: reader, files: r.sopsFiles}
-}
-
-// guardedSopsProvider is SopsProvider over this host resolve's SOPS reader
-// with the unit-file guard.
-func (r *Resolver) guardedSopsProvider() ProviderTemplate {
-	p := SopsProvider(r.resolveSopsReader(), r.noSopsHint)
-	p.Guard = r.sopsGuard
-	return p
 }
 
 func (r *Resolver) provider(p ProviderTemplate) ProviderTemplate {
