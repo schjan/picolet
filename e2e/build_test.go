@@ -3,7 +3,6 @@
 package e2e_test
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,7 +18,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/schjan/picolet/pkg/applier"
-	"github.com/schjan/picolet/pkg/cli"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/state"
 )
@@ -79,24 +77,19 @@ func buildContainerfile(label, extra string) string {
 	return "FROM " + e2eBuildBase + "\n" + extra + "LABEL " + e2eBuildLabel + "=" + label + "\nCMD [\"sleep\", \"infinity\"]\n"
 }
 
-// removeBuildArtifacts removes the test container and the built image.
-func removeBuildArtifacts() {
-	_ = exec.Command("podman", "rm", "-f", e2eBuildContainer).Run()
-	_ = exec.Command("podman", "rmi", "-f", e2eBuildImage).Run()
-}
-
 // TestE2EBuild is the .build happy path against real systemd and Podman:
 // `picolet apply` deploys a .build, its Containerfile and a container with
 // Image=<name>.build; starting the container runs the generated build service,
 // the container runs the built image, and `picolet down` removes it again.
 //
-// Runs serially (no t.Parallel): runCLI mutates slog's default logger, and a
-// concurrent `image prune -a` (TestE2EImagePrune) could remove the image mid-build.
+// Its runtime is disposable (no other scenario shares its store or user
+// manager), so it leaves cleanup to the runner.
 //
-//nolint:paralleltest,funlen,cyclop // serial for the reasons above; sequential sub-tests sharing helper closures
+//nolint:paralleltest,funlen,cyclop // one scenario per process; sequential sub-tests sharing helper closures
 func TestE2EBuild(t *testing.T) {
+	rt := isolatedRuntime(t)
 	requirePodmanAtLeast(t, 5, 2) // Quadlet .build support landed in Podman 5.2.0
-	socketPath := podmanSocketPath(t)
+	socketPath := rt.PodmanSocket
 	dataDir := t.TempDir()
 	fleetDir := filepath.Join(t.TempDir(), "fleet")
 	setupBuildFleet(t, fleetDir)
@@ -106,21 +99,12 @@ func TestE2EBuild(t *testing.T) {
 		dataDir, t.TempDir(), socketPath)
 	require.NoError(t, os.WriteFile(configPath, []byte(cfg), 0o600))
 
-	home, err := os.UserHomeDir()
-	require.NoError(t, err)
-	quadletDir := filepath.Join(home, ".config", "containers", "systemd", "picolet")
+	quadletDir := rt.QuadletDir
 
-	removeBuildArtifacts()
 	// The container restart waits for the build inside systemd's job (picolet
-	// gives a job 30s); pulling the base image up front keeps a slow registry
+	// gives a job 30s); having the base image up front keeps a slow registry
 	// out of that budget.
-	out, err := exec.Command("podman", "pull", e2eBuildBase).CombinedOutput()
-	require.NoError(t, err, "podman pull %s: %s", e2eBuildBase, out)
-	t.Cleanup(func() {
-		// Best-effort; t.Context is already cancelled at cleanup.
-		_ = cli.Execute(context.Background(), []string{"picolet", "down", "--config", configPath})
-		removeBuildArtifacts()
-	})
+	requireImage(t, e2eBuildBase)
 
 	// Everything below depends on the apply; stop instead of cascading timeouts.
 	// The consumer's unit state is checked too, so a failure shows the
@@ -134,6 +118,8 @@ func TestE2EBuild(t *testing.T) {
 		st, err := systemd.GetUnitStatus(t.Context(), "e2e-build.service")
 		require.NoError(t, err)
 		require.NotEqual(t, "failed", st.ActiveState, "e2e-build.service failed to start (see diagnostics)")
+		assertGeneratedFrom(t, rt, e2eBuildService, filepath.Join(quadletDir, "e2e-build.build"))
+		assertGeneratedFrom(t, rt, "e2e-build.service", filepath.Join(quadletDir, "e2e-build.container"))
 	}), "apply failed")
 
 	t.Run("container_runs_built_image", func(t *testing.T) {
@@ -179,6 +165,7 @@ func TestE2EBuild(t *testing.T) {
 			}
 		}
 		assert.True(t, found, "the Containerfile is a managed file: %v", st.ManagedFiles)
+		assertStateInRuntime(t, rt, st)
 	})
 
 	connCtx, err := bindings.NewConnection(t.Context(), "unix:"+socketPath)
@@ -279,6 +266,7 @@ func TestE2EBuild(t *testing.T) {
 		}, 30*time.Second, 2*time.Second, "container %s should be removed", e2eBuildContainer)
 		assert.NoFileExists(t, filepath.Join(quadletDir, "e2e-build.build"))
 		assert.NoFileExists(t, filepath.Join(quadletDir, "e2e-build.container"))
+		assert.Equal(t, "not-found", unitProperty(t, "e2e-build.service", "LoadState"))
 	})
 }
 

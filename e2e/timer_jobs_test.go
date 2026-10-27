@@ -23,8 +23,7 @@ import (
 	"github.com/schjan/picolet/pkg/status"
 )
 
-// timerJobUnitNames are the raw units this test deploys. Names are unique to this test
-// so it never collides with TestE2EPipeline's fixtures on the same bench.
+// timerJobUnitNames are the raw units this test deploys.
 var timerJobUnitNames = []string{
 	"e2e-job-ok.service", "e2e-job-ok.timer",
 	"e2e-job-fail.service", "e2e-job-fail.timer",
@@ -136,13 +135,13 @@ func requireBothJobsRan(ctx context.Context, t *testing.T, systemd *applier.DBus
 // production health pass + status store + collector turn real systemd properties
 // into the last-run/last-success/last-result/last-trigger series.
 //
-// Runs serially: it deploys raw units into the shared user systemd instance and
-// asserts on their run history, which a parallel daemon-reload from another test
-// could disturb.
+// Its user systemd manager is its own, so no other scenario's daemon-reload
+// disturbs the run history it asserts on.
 //
-//nolint:paralleltest,funlen // shared user systemd instance; sequential staged exercise
+//nolint:paralleltest,funlen // one scenario per process; sequential staged exercise
 func TestE2ETimerJobRunMetrics(t *testing.T) {
-	socketPath := podmanSocketPath(t)
+	rt := isolatedRuntime(t)
+	socketPath := rt.PodmanSocket
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
@@ -150,9 +149,7 @@ func TestE2ETimerJobRunMetrics(t *testing.T) {
 	fleetDir := filepath.Join(t.TempDir(), "fleet")
 	setupTimerJobFleet(t, fleetDir)
 
-	home, err := os.UserHomeDir()
-	require.NoError(t, err)
-	systemdDir := filepath.Join(home, ".config", "systemd", "user")
+	systemdDir := rt.SystemdDir
 
 	podman, err := applier.NewSocketPodmanClient(context.Background(), socketPath)
 	require.NoError(t, err)
@@ -182,19 +179,6 @@ func TestE2ETimerJobRunMetrics(t *testing.T) {
 		agent.WithStatusStore(statusStore),
 	)
 	healthChecker := health.New(systemd)
-
-	// Registered before the deploy so the units are torn down even if a stage below
-	// fails: stop + disable the timers, then remove the unit files and reload.
-	t.Cleanup(func() {
-		cctx, ccancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer ccancel()
-		for _, unit := range timerJobUnitNames {
-			_ = systemd.StopUnit(cctx, unit)
-			_ = systemd.DisableUnit(cctx, unit)
-			_ = os.Remove(filepath.Join(systemdDir, unit))
-		}
-		_ = systemd.DaemonReload(cctx)
-	})
 
 	t.Run("deploy", func(t *testing.T) {
 		result, err := a.ReconcileOnce(ctx, "timer-jobs-sha", state.NewState(), stateStore)

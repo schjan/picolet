@@ -20,7 +20,10 @@ task lint           # golangci-lint (v2 config in .golangci.yml)
 task lint:fix       # golangci-lint with --fix
 task fmt            # run all formatters (gofumpt + gci) via golangci-lint fmt
 task vulncheck      # govulncheck with the build tags; fails on any finding not in .github/govulncheck-exclusions.txt
+task e2e            # E2E scenarios, each as its own disposable Linux user (scripts/e2e.sh; sudo, systemd, Podman >= 5.2)
 ```
+
+`task e2e` runs `scripts/e2e.sh`: it builds the `e2e` test binary once and runs each top-level test of `e2e/` (a scenario) as its own disposable Linux user (home, lingering user manager, Podman store/socket), recorded in `/var/lib/picolet-e2e/<id>/allocation` before the user is created; the runner alone disposes of every runtime (`task e2e:recover` after an interruption), so E2E tests do no global-name cleanup. Every E2E test that touches systemd or Podman starts with `isolatedRuntime(t)` (`e2e/runtime_test.go`), which runs `internal/e2eruntime.Verify` and fails the test before any mutation outside its allocation; never add a fallback to the invoking user's runtime. `TestE2EOrphanNeighbour`'s `plant`/`verify` subtests run before and after the other scenarios.
 
 `go tool sops` runs the pinned SOPS CLI (Go `tool` directive in `go.mod`). `task sops:corpus` regenerates the committed SOPS fixture corpus (`testdata/sops/corpus`, encrypted to the TEST-ONLY identities in `testdata/sops/identities`); packages other than `pkg/sops` can't import getsops, so they test against that corpus and never encrypt.
 

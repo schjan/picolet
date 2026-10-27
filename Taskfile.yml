@@ -27,6 +27,16 @@ tasks:
     cmds:
       - go test -tags "{{.BUILD_TAGS}}" ./... -race -count=1
 
+  e2e:
+    desc: Run the E2E scenarios, each as its own disposable Linux user (needs sudo, systemd, Podman >= 5.2; see scripts/e2e.sh)
+    cmds:
+      - BUILD_TAGS="{{.BUILD_TAGS}}" scripts/e2e.sh run
+
+  e2e:recover:
+    desc: Dispose of the E2E runtimes an interrupted `task e2e` left behind
+    cmds:
+      - scripts/e2e.sh recover
+
   test:onepassword:
     desc: Run 1Password integration tests (requires OP_SERVICE_ACCOUNT_TOKEN + OP_TEST_SECRET_REF)
     cmds:
