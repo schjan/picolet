@@ -55,8 +55,18 @@ type HostTemplateData struct {
 
 // FleetTemplateData holds fleet-wide template variables.
 type FleetTemplateData struct {
-	Config *config.FleetConfig
+	Config FleetConfigTemplateData
 	Hosts  []HostTemplateData
+}
+
+// FleetConfigTemplateData is fleet.yml as templates see it (.Fleet.Config):
+// its values only, never the shared *config.FleetConfig, whose yaml.Node
+// field has methods (Encode, SetString) that would let one render hand a
+// value to a later one or to another Host's resolve.
+type FleetConfigTemplateData struct {
+	Images    map[string]string
+	Ports     map[string]int
+	Bootstrap config.FleetBootstrap
 }
 
 // NewTemplateData builds template data for a specific host.
@@ -80,8 +90,12 @@ func NewTemplateData(cfg *config.Config, hostname string) (*TemplateData, error)
 	return &TemplateData{
 		Host: hostData,
 		Fleet: FleetTemplateData{
-			Config: cfg.Fleet,
-			Hosts:  allHosts,
+			Config: FleetConfigTemplateData{
+				Images:    cfg.Fleet.Images,
+				Ports:     cfg.Fleet.Ports,
+				Bootstrap: cfg.Fleet.Bootstrap,
+			},
+			Hosts: allHosts,
 		},
 		Images: cfg.Fleet.Images,
 		Ports:  cfg.Fleet.Ports,

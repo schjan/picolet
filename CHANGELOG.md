@@ -209,3 +209,7 @@ kept as is.
 - Agents warn about an unknown `host.yml` key instead of refusing the Fleet;
   `picolet validate` still fails on it.
 - `picolet_unit_state_info` is emitted for inactive units too.
+- `.Fleet.Config` is a read-only view of `fleet.yml` (`Images`, `Ports`,
+  `Bootstrap`). It used to be the shared config itself, through which one
+  render could hand a value (a secret too) to a later render or to another
+  Host's resolve ([#273](https://github.com/schjan/picolet/issues/273)).

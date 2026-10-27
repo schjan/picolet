@@ -129,7 +129,7 @@ Files ending in `.tmpl` are rendered with Go `text/template` (`missingkey=error`
 
 Custom functions: `readFile`, `renderTemplate`, `indent`, `readSecretFile`, `readOpSecret`/`readProtonPassSecret`/`readSopsSecret`/`readSopsData` (provider registry, `pkg/resolver/registry.go`), `siblings` (other Hosts on this Host's Machine, sorted by hostname), `has` (slices.Contains for feature checks).
 
-Template data root: `.Host` (hostname, role, features, machine, user, rootful, listen_port, age_recipients, services, systemd_units), `.Fleet` (full config + all hosts), `.Images`, `.Ports`. `.Host.SystemdUnits` is populated by a first render pass — see `prepareTemplateData` in `pkg/resolver/resolver.go`.
+Template data root: `.Host` (hostname, role, features, machine, user, rootful, listen_port, age_recipients, services, systemd_units), `.Fleet` (all hosts, and `.Fleet.Config`: a value view of `fleet.yml`, `resolver.FleetConfigTemplateData`, never the shared `*config.FleetConfig`), `.Images`, `.Ports`. `.Host.SystemdUnits` is populated by a first render pass — see `prepareTemplateData` in `pkg/resolver/resolver.go`.
 
 ### Error Patterns
 

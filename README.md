@@ -1462,7 +1462,7 @@ If not, use `action: restart`.
 
 Files ending in `.tmpl` are rendered with Go `text/template` (`missingkey=error`) plus Sprig's hermetic text helpers. Static files are deployed as-is.
 
-The template data root exposes `.Images`, `.Ports`, `.Fleet` (all hosts + full config), and `.Host`. Every entry of `.Fleet.Hosts` carries the same fields as `.Host` except `Services` and `SystemdUnits`:
+The template data root exposes `.Images`, `.Ports`, `.Fleet` (all hosts as `.Fleet.Hosts`, and `fleet.yml`'s `images`, `ports` and `bootstrap` as `.Fleet.Config.Images`, `.Ports` and `.Bootstrap`), and `.Host`. Every entry of `.Fleet.Hosts` carries the same fields as `.Host` except `Services` and `SystemdUnits`:
 
 | Field | Contents |
 |-------|----------|
