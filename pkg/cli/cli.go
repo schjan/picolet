@@ -52,6 +52,7 @@ func newApp() *cli.Command {
 			applyCmd(),
 			downCmd(),
 			bootstrapCmd(),
+			agentcfgCmd(),
 		},
 	}
 }
@@ -241,6 +242,28 @@ func applyCmd() *cli.Command {
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			return runApply(ctx, cmd.String("config"), cmd.String("repo-dir"), cmd.String("host"))
 		},
+	}
+}
+
+func agentcfgCmd() *cli.Command {
+	return &cli.Command{
+		Name:  "agentcfg",
+		Usage: "inspect an Agent config",
+		Commands: []*cli.Command{{
+			Name:  "check",
+			Usage: "run the Agent's startup checks on its config (credential files readable and distinct, SOPS identities parse)",
+			Flags: []cli.Flag{
+				&cli.StringFlag{
+					Name:    "config",
+					Value:   "/etc/picolet/config.yml",
+					Usage:   "agent config file",
+					Sources: cli.EnvVars("PICOLET_CONFIG"),
+				},
+			},
+			Action: func(_ context.Context, cmd *cli.Command) error {
+				return runAgentConfigCheck(cmd.Root().Writer, cmd.String("config"))
+			},
+		}},
 	}
 }
 

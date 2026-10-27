@@ -54,30 +54,45 @@ Agent that fails the check exits, so the Host stops reconciling right after
 step 1 restarts it onto v0.2.0. The self-restart guard can't catch this: it
 checks a changed Agent config, not a changed image.
 
-Before step 1, run on every Host, against its running Agent (the rootful Host
-as root with `picolet-system`, a Host with `user:` as that user with
-`picolet`):
+Before step 1, run `picolet agentcfg check` from the v0.2.0 image on every
+Host, with its running Agent's mounts and config secret (the rootful Host as
+root with `picolet-system` and `picolet_system_config`, a Host with `user:` as
+that user with `picolet` and `picolet_config`):
 
 ```bash
-podman exec picolet-system sh -c '
-  sed -nE "s/^[[:space:]]*(token_path|pat_path|git_token_path|github_private_key_path|webhook_secret_path|password_path|age_identity_path):[[:space:]]*\"?([^\"#[:space:]]+).*/\1 \2/p" \
-    /etc/picolet/config.yml |
-  while read -r key path; do [ -r "$path" ] || echo "missing: $key $path"; done
-  sed -nE "s/^[[:space:]]*(token_path|pat_path|session_dir|git_token_path|github_private_key_path|webhook_secret_path|password_path|age_identity_path):[[:space:]]*\"?([^\"#[:space:]]+).*/\2/p" \
-    /etc/picolet/config.yml | sort | uniq -d | sed "s/^/named twice: /"'
+podman run --rm --volumes-from picolet-system:ro \
+  --secret picolet_system_config,target=/etc/picolet/config.yml \
+  ghcr.io/schjan/picolet:v0.2.0 agentcfg check
 ```
 
-The two key lists are the credential settings of `Config.Credentials()`
-(by their last key) and differ on purpose: `protonpass.session_dir` is a
-directory, so the readability check (`-r`, for files) skips it, while the
-duplicate check includes it.
+`--volumes-from` carries the Agent's bind mounts and volumes but no Podman
+secret, so this matches the reference Agent bundles. If the Agent quadlet
+differs, mirror it: add one `--secret <name>,target=<path>` per other
+`Secret=` line (a credential delivered as a Podman secret), and for a config
+read from another path (`Environment=PICOLET_CONFIG=`) use that path as the
+config secret's `target=` and pass it with `agentcfg check --config <path>`.
+Without that, the check reports a file the Agent can read as not readable.
 
-It prints nothing when the Host is ready. For each `missing:` line, deliver the
-file (`picolet bootstrap machine --secrets-dir`, or a `bootstrap:` entry) or
-remove the setting from the Agent config template; for each `named twice:`
-line, give each setting its own file. A Host that was upgraded without the
-check recovers the same way: place the file, then restart its Agent
-(`systemctl restart picolet-system`, `systemctl --user restart picolet`).
+It runs the checks a v0.2.0 Agent runs at startup, with the v0.2.0 loader, so
+it reads the config as the upgraded Agent will: every credential file is
+readable (and the SOPS identity file parses), and no two credential settings
+name the same file. It prints `/etc/picolet/config.yml: ok` and exits 0 when
+the Host is ready; otherwise it prints `FAIL` and one line per failure, naming
+the setting and path (never a file's content), and exits 1. For each
+`… is not readable` line, deliver the file (`picolet bootstrap machine
+--secrets-dir`, or a `bootstrap:` entry) or remove the setting from the Agent
+config template; for each `… name the same credential file` line, give each
+setting its own file. Fix any other line at the setting or file it names: a
+SOPS identity file that does not parse (`credential sops.age_identity_path
+(…): …`), `repo_url is required for the run command`, or a file that could
+not be compared (`checking <setting> (<path>): …`, such as a permission
+error). The checks run in the Agent's order and stop at the
+first stage that fails: a config that does not load (an unknown key) prints
+the loader's error, and named-twice files are reported before the readability
+checks run, so run the command again after each fix until it prints `ok`. A
+Host that was upgraded without the check recovers the same way: place the
+file, then restart its Agent (`systemctl restart picolet-system`,
+`systemctl --user restart picolet`).
 
 A Fleet that deploys one of the Agent's own credential files to a workload
 (its `git_token_path` file for a CI or Renovate container, say, through
