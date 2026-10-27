@@ -61,31 +61,22 @@ func (r *Resolver) withRender(g *unitRender, render func()) {
 	render()
 }
 
-// guarded sets p's Guard to the unit-file guard: it fails a call of p's
-// functions while a guarded file renders, with p's unitFileErr, before any
-// reader or cache sees the ref, so the ref is never collected and every
-// path (with or without a reader, strict or not) refuses it alike.
-func (r *Resolver) guarded(p ProviderTemplate) ProviderTemplate {
-	p.Guard = func(funcName, ref string) error {
+// unitFileGuard is the Guard of the provider key names: it fails a call of
+// the provider's functions while a guarded file renders, with the scheme's
+// unitFileErr, before any reader or cache sees the ref, so every path (with
+// or without a reader, strict or not) refuses it alike. It runs on every
+// call, so it also counts the SOPS provider's (sopsCalls).
+func (r *Resolver) unitFileGuard(key ProviderKey) func(funcName, ref string) error {
+	unitFileErr := schemeOf(key).unitFileErr
+	return func(funcName, ref string) error {
+		if key == ProviderSops {
+			r.sopsCalls++
+		}
 		g := r.rendering
 		if g == nil {
 			return nil
 		}
 		return fmt.Errorf("%s: %s %q: %w into %s (%s); use Secret= (or a secret mounted as a file) instead",
-			g.file, funcName, refForError(ref), p.unitFileErr, g.kind, g.reason)
+			g.file, funcName, refForError(ref), unitFileErr, g.kind, g.reason)
 	}
-	return p
-}
-
-// guardedSopsProvider is SopsProvider over this host resolve's SOPS reader
-// with the unit-file guard, which also counts the provider's calls
-// (sopsCalls), since it runs on every one.
-func (r *Resolver) guardedSopsProvider() ProviderTemplate {
-	p := r.guarded(SopsProvider(r.resolveSopsReader(), r.noSopsHint))
-	guard := p.Guard
-	p.Guard = func(funcName, ref string) error {
-		r.sopsCalls++
-		return guard(funcName, ref)
-	}
-	return p
 }

@@ -1,9 +1,6 @@
 package resolver
 
 import (
-	"context"
-	"slices"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -33,56 +30,31 @@ var unitGuardSchemes = []unitGuardScheme{
 	},
 }
 
-// recordingRefReader resolves every ref to "resolved" and records which refs
-// it was asked for.
-type recordingRefReader struct {
-	mu   sync.Mutex
-	refs []string
-}
-
-func (r *recordingRefReader) read(_ context.Context, refs []string) (map[string]string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make(map[string]string, len(refs))
-	for _, ref := range refs {
-		r.refs = append(r.refs, ref)
-		out[ref] = "resolved"
-	}
-	return out, nil
-}
-
-func (r *recordingRefReader) asked(ref string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return slices.Contains(r.refs, ref)
-}
-
-// resolveGuardFleet resolves test-host of a paths Fleet with s's reader
-// (nil: none) and strict mode as given.
-func resolveGuardFleet(t *testing.T, s unitGuardScheme, base string, extra map[string]string, reader SecretRefReader, strict bool) (*ResolvedHost, error) {
+// resolveGuardFleet resolves test-host of a paths Fleet with rc's readers and
+// strict mode.
+func resolveGuardFleet(t *testing.T, rc Config, base string, extra map[string]string) (*ResolvedHost, error) {
 	t.Helper()
 	fsys := pathsFleetFS(base, extra)
 	cfg, err := config.LoadAll(fsys)
 	require.NoError(t, err)
-	rc := s.config(reader)
-	rc.FS, rc.Config, rc.Strict = fsys, cfg, strict
+	rc.FS, rc.Config = fsys, cfg
 	r, err := New(rc)
 	require.NoError(t, err)
 	return r.ResolveHost(t.Context(), "test-host")
 }
 
-// unitFileCases are the guarded renders of call: a Quadlet (directly and
-// through renderTemplate), a Raw Unit and a Hook definition.
-func unitFileCases(call string) []struct {
+// unitFileCase is one guarded render: a Fleet whose base group (base) and
+// files (extra) render a call into file, a unit file of kind.
+type unitFileCase struct {
 	name, base string
 	extra      map[string]string
 	file, kind string
-} {
-	return []struct {
-		name, base string
-		extra      map[string]string
-		file, kind string
-	}{
+}
+
+// unitFileCases are the guarded renders of call: a Quadlet (directly and
+// through renderTemplate), a Raw Unit and a Hook definition.
+func unitFileCases(call string) []unitFileCase {
+	return []unitFileCase{
 		{
 			name:  "quadlet",
 			base:  "  paths: [units/app.container.tmpl]\n",
@@ -137,12 +109,12 @@ func TestProviderSecretRejectedInUnitFiles(t *testing.T) {
 				}
 				t.Run(name, func(t *testing.T) {
 					t.Parallel()
-					rec := &recordingRefReader{}
+					rec := &recordingSopsReader{}
 					var reader SecretRefReader
 					if withReader {
-						reader = rec.read
+						reader = rec.ReadAll
 					}
-					resolved, err := resolveGuardFleet(t, s, tt.base, tt.extra, reader, false)
+					resolved, err := resolveGuardFleet(t, s.config(reader), tt.base, tt.extra)
 					assert.Nil(t, resolved)
 					require.ErrorIs(t, err, s.err)
 					require.ErrorContains(t, err, tt.file+`: `+s.fn+` "`+refForError(s.ref)+`": `+
@@ -171,16 +143,15 @@ func TestProviderSecretRendersOutsideUnitFiles(t *testing.T) {
 				"units/app.container.tmpl":      "[Container]\nImage=app\n",
 			}
 			base := "  paths: [manifests/, files/, units/]\n  secrets: [secrets/app.yml.tmpl]\n"
-			rec := &recordingRefReader{}
-			resolved, err := resolveGuardFleet(t, s, base, extra, rec.read, false)
+			resolved, err := resolveGuardFleet(t, s.config((&recordingSopsReader{}).ReadAll), base, extra)
 			require.NoError(t, err)
 			contents := make(map[string]string, len(resolved.Files))
 			for _, f := range resolved.Files {
 				contents[f.SrcPath] = f.Content
 			}
-			assert.Contains(t, contents["manifests/app/deploy.yml.tmpl"], "value: resolved")
-			assert.Equal(t, "value=resolved\n", contents["files/app/app.conf.tmpl"])
-			assert.Equal(t, "value: resolved", contents["secrets/app.yml.tmpl"])
+			assert.Contains(t, contents["manifests/app/deploy.yml.tmpl"], "value: decrypted")
+			assert.Equal(t, "value=decrypted\n", contents["files/app/app.conf.tmpl"])
+			assert.Equal(t, "value: decrypted", contents["secrets/app.yml.tmpl"])
 		})
 	}
 }
@@ -195,8 +166,32 @@ func TestProviderSecretGuardPrecedesStrict(t *testing.T) {
 			extra := map[string]string{
 				"units/app.container.tmpl": "[Container]\nImage=app\nEnvironment=TOKEN={{ " + s.fn + ` "` + s.ref + "\" }}\n",
 			}
-			_, err := resolveGuardFleet(t, s, "  paths: [units/app.container.tmpl]\n", extra, nil, true)
+			rc := s.config(nil)
+			rc.Strict = true
+			_, err := resolveGuardFleet(t, rc, "  paths: [units/app.container.tmpl]\n", extra)
 			require.ErrorIs(t, err, s.err)
+		})
+	}
+}
+
+// A template that passes a value instead of a ref (here a host secret's) gets
+// the guard's error without that value: refForError names only a provider
+// ref's scheme and vault.
+func TestUnitFileGuardErrorKeepsNonRefArgumentOut(t *testing.T) {
+	t.Parallel()
+	const value = "https://user:hunter2@host/x" //nolint:gosec // G101: a fake secret value the error must not show
+	for _, s := range unitGuardSchemes {
+		t.Run(s.name, func(t *testing.T) {
+			t.Parallel()
+			extra := map[string]string{
+				"units/app.container.tmpl": "[Container]\nImage=app\nEnvironment=TOKEN={{ " + s.fn + ` (readSecretFile "tok") }}` + "\n",
+			}
+			rc := s.config(nil)
+			rc.SecretReader = func(string) (string, error) { return value, nil }
+			_, err := resolveGuardFleet(t, rc, "  paths: [units/app.container.tmpl]\n", extra)
+			require.ErrorIs(t, err, s.err)
+			require.ErrorContains(t, err, s.fn+` "…"`)
+			assert.NotContains(t, err.Error(), "hunter2")
 		})
 	}
 }

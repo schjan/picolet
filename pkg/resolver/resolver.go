@@ -133,17 +133,15 @@ type Resolver struct {
 	strict         bool
 	logger         *slog.Logger
 	// rendering is the top-level file being rendered when provider values
-	// may not be rendered into it (the unit-file guard, guarded); nil
-	// otherwise. Set by withRender on the per-resolve copy
-	// resolveHostFileSet makes.
+	// may not be rendered into it (unitFileGuard); nil otherwise. Set by
+	// withRender on the per-resolve copy resolveHostFileSet makes.
 	rendering *unitRender
 	// sopsFiles records the SOPS files this resolve's refs reached; set
 	// fresh on every per-resolve copy (forResolve), nil on the shared
 	// Resolver.
 	sopsFiles sopsFileSet
 	// sopsCalls counts this resolve's readSopsSecret/readSopsData calls
-	// (guardedSopsProvider), so buildFiles can tell which files read a
-	// SOPS value.
+	// (unitFileGuard), so buildFiles can tell which files read a SOPS value.
 	sopsCalls int
 	// keylessReader is this resolve's keyless SOPS reader (NewKeyless),
 	// built for its Host on the per-resolve copy; it serves the template
@@ -314,9 +312,9 @@ func (r *Resolver) resolveHostFileSetOnCopy(ctx context.Context, hostname string
 	}
 
 	providers := []ProviderTemplate{
-		r.provider(r.guarded(OpProvider(r.opSecretReader))),
-		r.provider(r.guarded(PPProvider(r.ppSecretReader))),
-		r.provider(r.guardedSopsProvider()),
+		r.provider(OpProvider(r.opSecretReader)),
+		r.provider(PPProvider(r.ppSecretReader)),
+		r.provider(SopsProvider(r.resolveSopsReader(), r.noSopsHint)),
 	}
 	// hostDataDir (not dataDir) drives filePath/manifestPath: those helpers emit
 	// path strings baked into rendered quadlets, which the host's podman must
@@ -333,9 +331,10 @@ func (r *Resolver) resolveHostFileSetOnCopy(ctx context.Context, hostname string
 		return nil, err
 	}
 
-	// First render pass: render quadlets with placeholder data to collect
-	// secret refs (op://, pass://) for batch resolution and to derive the
-	// host's systemd unit names into tmplData.Host.SystemdUnits.
+	// First render pass: render quadlets with placeholder data to derive the
+	// host's systemd unit names into tmplData.Host.SystemdUnits, and the
+	// other templates to collect secret refs (op://, pass://) for batch
+	// resolution.
 	if _, err := r.prepareTemplateData(ctx, registry, tmplData, expanded, caches); err != nil {
 		return nil, err
 	}
@@ -381,8 +380,11 @@ func (r *Resolver) resolveSopsReader() SopsReader { //nolint:ireturn // the keyl
 	return sopsFileRecorder{reader: reader, files: r.sopsFiles}
 }
 
+// provider returns p as this resolve renders it: strict as the resolver is,
+// and with the unit-file guard.
 func (r *Resolver) provider(p ProviderTemplate) ProviderTemplate {
 	p.Strict = r.strict
+	p.Guard = r.unitFileGuard(p.Key)
 	return p
 }
 
@@ -416,15 +418,17 @@ func prefixFilter(prefixes []string) func(string) bool {
 //
 // The first pass renders every .tmpl with placeholder data (nil/empty for the
 // not-yet-discovered fields). Quadlet renders are parsed to harvest unit names;
-// other renders are kept only for their secret-collection side effect. The
+// the other renders (unit files and Hook definitions excepted, which may call
+// no provider) are kept only for their secret-collection side effect. The
 // second (final) pass renders for real with fully populated TemplateData.
 // Render errors in the first pass are non-fatal; the final pass surfaces real
 // template errors with proper diagnostics.
 //
-// Cost: quadlet templates render once in the first pass for unit discovery,
-// plus a second first-pass render for secret collection when secret providers
-// are configured, and once more in the final pass. All renders are in-memory;
-// cost is negligible vs. git fetches and secret-provider round-trips.
+// Cost: quadlet templates render once in the first pass for unit discovery
+// and once more in the final pass; the other templates render once for secret
+// collection when secret providers are configured, and once in the final
+// pass. All renders are in-memory; cost is negligible vs. git fetches and
+// secret-provider round-trips.
 type preparedData struct {
 	SystemdUnits []string // sorted, unique; e.g. "node-exporter.service"
 }
@@ -991,37 +995,26 @@ func (r *Resolver) resolveProviderRefs(ctx context.Context, name ProviderKey, re
 	return nil
 }
 
-// collectTemplateRefs executes all .tmpl files in collect mode to discover
-// reader-function calls (readOpSecret, readProtonPassSecret, …). Output is
-// discarded — only the side effect of populating each provider's RefCache matters.
-// Secret templates are included: they may call provider reader functions;
-// direct provider refs (op://, pass://, sops://) are not templates and are
-// skipped.
+// collectTemplateRefs executes the .tmpl files that may call provider
+// functions (readOpSecret, readProtonPassSecret, …) in collect mode to
+// discover those calls: manifests, data files and secret templates. Output
+// is discarded — only the side effect of populating each provider's RefCache
+// matters. Direct provider refs (op://, pass://, sops://) are not templates
+// and are skipped.
 func (r *Resolver) collectTemplateRefs(registry *template.Template, tmplData *TemplateData, expanded *expansion) {
-	collect := func(path string, g *unitRender) {
-		if !config.IsTemplate(path) {
-			return
-		}
-		// The unit-file guard runs here too, so a guarded file's refs are
-		// never collected and never reach a decrypting reader.
-		r.withRender(g, func() {
-			_ = registry.ExecuteTemplate(io.Discard, path, tmplData) // errors are non-fatal in collect phase
-		})
-	}
 	for _, ref := range expanded.Files {
-		if isProviderRef(ref.SrcPath) {
+		if isProviderRef(ref.SrcPath) || !config.IsTemplate(ref.SrcPath) {
 			continue
 		}
+		// A file without a row (no known guard) is skipped, failing closed:
+		// no ref of it reaches a decrypting reader, and resolving it fails
+		// later. A guarded file and every Hook definition fail each provider
+		// call (the unit-file guard), so they have nothing to collect.
 		spec, ok := config.SpecFor(ref.Category)
-		if !ok {
-			// No row, no known guard: skip collecting (fail closed), so no
-			// ref of it reaches a decrypting reader; resolving it fails later.
+		if !ok || guardedRender(ref.SrcPath, spec.Dest) != nil {
 			continue
 		}
-		collect(ref.SrcPath, guardedRender(ref.SrcPath, spec.Dest))
-	}
-	for _, ref := range expanded.Hooks {
-		collect(ref.SrcPath, hookRender(ref.SrcPath))
+		_ = registry.ExecuteTemplate(io.Discard, ref.SrcPath, tmplData) // errors are non-fatal in collect phase
 	}
 }
 

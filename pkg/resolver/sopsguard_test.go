@@ -52,49 +52,7 @@ func (r *recordingSopsReader) asked(ref string) bool {
 // and the decrypting reader is never asked for the ref.
 func TestReadSopsSecretRejectedInUnitFiles(t *testing.T) {
 	t.Parallel()
-	call := `{{ readSopsSecret "` + guardRef + `" }}`
-	tests := []struct {
-		name, base string
-		extra      map[string]string
-		file, kind string
-	}{
-		{
-			name:  "quadlet",
-			base:  "  paths: [units/app.container.tmpl]\n",
-			extra: map[string]string{"units/app.container.tmpl": "[Container]\nImage=app\nEnvironment=DB_PASSWORD=" + call + "\n"},
-			file:  "units/app.container.tmpl",
-			kind:  "a Quadlet",
-		},
-		{
-			name: "quadlet through renderTemplate",
-			base: "  paths: [units/app.container.tmpl]\n",
-			extra: map[string]string{
-				"units/app.container.tmpl": "[Container]\nImage=app\n{{ renderTemplate \"partials/env.tmpl\" . }}",
-				"partials/env.tmpl":        "Environment=DB_PASSWORD=" + call + "\n",
-			},
-			file: "units/app.container.tmpl",
-			kind: "a Quadlet",
-		},
-		{
-			name:  "raw unit",
-			base:  "  paths: [units/backup.service.tmpl]\n",
-			extra: map[string]string{"units/backup.service.tmpl": "[Service]\nExecStart=/bin/true\nEnvironment=DB_PASSWORD=" + call + "\n"},
-			file:  "units/backup.service.tmpl",
-			kind:  "a Raw Unit",
-		},
-		{
-			name: "hook definition",
-			base: "  services: [app]\n",
-			extra: map[string]string{
-				"services/app/app.container": "[Container]\nImage=app\nContainerName=app\n",
-				"services/app/picolet.yml.tmpl": "hooks:\n  - name: app-reload\n    unit: app.service\n    action: http\n" +
-					"    method: GET\n    url: \"http://localhost:1234/-/reload?token=" + call + "\"\n",
-			},
-			file: "services/app/picolet.yml.tmpl",
-			kind: "a Hook definition",
-		},
-	}
-	for _, tt := range tests {
+	for _, tt := range unitFileCases(`{{ readSopsSecret "` + guardRef + `" }}`) {
 		for _, mode := range []sopsReaderMode{sopsKeyless, sopsRecording} {
 			t.Run(tt.name+"/"+mode.String(), func(t *testing.T) {
 				t.Parallel()
