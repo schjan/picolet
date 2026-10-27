@@ -296,6 +296,8 @@ const (
 	tagFloat = "float"
 	tagBool  = "bool"
 	tagTime  = "time"
+	// tagComment is a comment SOPS encrypted; it is not a value.
+	tagComment = "comment"
 )
 
 // plainType names a plaintext leaf's type in the type-tag vocabulary.

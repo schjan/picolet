@@ -85,6 +85,13 @@ var yamlPointers = []string{
 	"/hosts/srv-1.example.net/password", "/odd_keys/a~1b", "/odd_keys/m~0n", "/note_unencrypted",
 }
 
+// listCommentPointers are every leaf in list-comments.sops.yaml's lists,
+// whose encrypted comments sit before, between and after the elements.
+var listCommentPointers = []string{
+	"/tokens/0", "/tokens/1", "/tokens/2/name", "/tokens/2/value", "/tokens/3",
+	"/ports/0", "/ports/1", "/nested/0/0",
+}
+
 // decryptCases are the corpus files that decrypt, with the identities that
 // open them and the pointers rendered into their golden file.
 var decryptCases = []struct {
@@ -106,6 +113,8 @@ var decryptCases = []struct {
 	}},
 	{file: "blob.sops.bin", ids: []string{"srv-1"}, pointers: []string{"/data"}},
 	{file: "tls.sops.pem", ids: []string{"srv-1"}, pointers: []string{"/data"}},
+	// Encrypted comments inside lists are not elements.
+	{file: "list-comments.sops.yaml", ids: []string{"srv-1"}, pointers: listCommentPointers},
 	{file: "unencrypted-suffix.sops.yaml", ids: []string{"srv-1"}, pointers: yamlPointers},
 	{file: "encrypted-regex.sops.yaml", ids: []string{"srv-1"}, pointers: yamlPointers},
 	{file: "mac-only-encrypted.sops.yaml", ids: []string{"srv-1"}, pointers: yamlPointers},

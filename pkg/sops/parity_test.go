@@ -64,6 +64,56 @@ func TestKeylessAcceptsWhatDecryptingAccepts(t *testing.T) {
 	}
 }
 
+// SOPS stores a comment inside a list as a list item tagged type:comment.
+// The Agent's decrypt turns it into a comment, which is no element; keyless
+// skips it too, so every index names the Agent's element (a placeholder
+// would hide a shift, so the kind and type of each element are compared) and
+// an index past the Agent's last element fails both readers.
+func TestKeylessListCommentsAreNoElements(t *testing.T) {
+	t.Parallel()
+	const file = "sops://corpus/list-comments.sops.yaml"
+	dec := corpusReader(t, "srv-1")
+	keyless := sops.NewKeylessReader(os.DirFS(corpusDir), keylessHost(t, "srv", "srv-1"))
+
+	for _, list := range []string{"/tokens", "/ports", "/nested", "/nested/0"} {
+		wantData, err := dec.ReadData(t.Context(), file+"#"+list)
+		require.NoError(t, err)
+		gotData, err := keyless.ReadData(t.Context(), file+"#"+list)
+		require.NoError(t, err)
+		want, ok := wantData.([]any)
+		require.True(t, ok, "%s: decrypted %T", list, wantData)
+		got, ok := gotData.([]any)
+		require.True(t, ok, "%s: keyless %T", list, gotData)
+		require.Len(t, got, len(want), list)
+		for i, w := range want {
+			assert.IsType(t, w, got[i], "%s/%d", list, i)
+		}
+	}
+
+	scalars := map[string]string{
+		"/tokens/0": sops.Placeholder, "/tokens/1": sops.Placeholder, "/tokens/2/value": sops.Placeholder,
+		"/tokens/3": sops.Placeholder, "/ports/0": "0", "/ports/1": "0", "/nested/0/0": sops.Placeholder,
+	}
+	for ptr, wantKeyless := range scalars {
+		got, err := keyless.ReadAll(t.Context(), []string{file + "#" + ptr})
+		require.NoError(t, err, ptr)
+		assert.Equal(t, wantKeyless, got[file+"#"+ptr], ptr)
+	}
+	tokens, err := keyless.ReadData(t.Context(), file+"#/tokens/2")
+	require.NoError(t, err)
+	assert.IsType(t, map[string]any{}, tokens)
+
+	for _, ptr := range []string{"/tokens/4", "/ports/2", "/nested/0/1"} {
+		ref := file + "#" + ptr
+		_, err := dec.ReadAll(t.Context(), []string{ref})
+		require.ErrorIs(t, err, sops.ErrBadPointer, ptr)
+		_, err = keyless.ReadAll(t.Context(), []string{ref})
+		require.ErrorIs(t, err, sops.ErrBadPointer, "keyless accepts %s, past the Agent's last element", ptr)
+		_, err = keyless.ReadData(t.Context(), ref)
+		require.ErrorIs(t, err, sops.ErrBadPointer, ptr)
+	}
+}
+
 // assertKeylessValue fails unless got (keyless) is the decrypted value
 // want, the string placeholder, or a typed placeholder (0, 0.0, false, the
 // zero time) that want parses as the same type as.

@@ -1,0 +1,20 @@
+# TEST-ONLY fixture values for the picolet SOPS corpus. Not real secrets.
+# SOPS keeps a comment inside a list as a list item and encrypts it.
+tokens:
+    # before the first element
+    - alpha-token
+    # between elements
+    - beta-token
+    - name: gamma
+      # inside a map in the list
+      value: gamma-secret
+    - delta-token
+    # after the last element
+ports:
+    - 5432
+    # between typed elements
+    - 6379
+nested:
+    -
+        # before a nested list's only element
+        - inner-token

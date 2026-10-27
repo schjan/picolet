@@ -73,7 +73,7 @@ const (
 // decryptableTypes are the type tags upstream's cipher decrypts
 // (aes/cipher.go); any other fails the Agent's decrypt.
 var decryptableTypes = map[string]bool{
-	tagStr: true, tagBytes: true, tagInt: true, tagFloat: true, tagBool: true, tagTime: true, "comment": true,
+	tagStr: true, tagBytes: true, tagInt: true, tagFloat: true, tagBool: true, tagTime: true, tagComment: true,
 }
 
 // placeholderCipher is a gsops.Cipher that decrypts nothing: it checks a
@@ -104,6 +104,12 @@ func (c *placeholderCipher) Decrypt(ciphertext string, _ []byte, _ string) (any,
 	}
 	if !decryptableTypes[m[4]] {
 		return nil, c.refuse(ciphertext, reasonTypeTag)
+	}
+	if m[4] == tagComment {
+		// Upstream's cipher decrypts a comment to a gsops.Comment, which the
+		// readers skip; a comment inside a list is stored as a plain list
+		// item, so a marker string here would count as an extra element.
+		return gsops.Comment{Value: Placeholder}, nil
 	}
 	return encryptedMarker(m[4]), nil
 }
