@@ -705,7 +705,7 @@ func TestEnforceIncrementsPendingUnitAttempts(t *testing.T) {
 		// testing/synctest advances the fake clock instantly, so this ages both
 		// the in-memory and persisted cooldowns without mutating implementation
 		// internals or sleeping in real time.
-		time.Sleep(restartCooldown + time.Nanosecond)
+		time.Sleep(applier.RestartCooldown + time.Nanosecond)
 
 		_, err = c.Enforce(t.Context(), st)
 		require.NoError(t, err)

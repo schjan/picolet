@@ -610,7 +610,7 @@ func recordCLIApply(ctx context.Context, store *state.Store, st *state.State, ch
 		st.MarkApplied(sha)
 	}
 	if err := store.Save(st); err != nil {
-		return errors.Join(pendingErr, err)
+		return errors.Join(pendingErr, fmt.Errorf("saving state: %w", err))
 	}
 	return pendingErr
 }

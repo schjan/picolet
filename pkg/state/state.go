@@ -70,8 +70,9 @@ type PendingUnit struct {
 	Reason PendingReason `json:"reason,omitempty"`
 	// Activation is how an obligation's unit is activated (obligations only).
 	Activation Activation `json:"activation,omitempty"`
-	// ContentHash is the hash of the Managed File the unit was generated
-	// from when the record was created: the applied content it is about.
+	// ContentHash identifies the applied content the record is about: the
+	// hashes of the Managed Files the unit is generated from, sorted and
+	// comma-joined, when the record was created.
 	ContentHash string `json:"content_hash,omitempty"`
 	// Checks counts activation-decision attempts, LastCheckAt the latest
 	// (obligations only; separate from execution attempts).
@@ -91,8 +92,8 @@ func (p PendingUnit) EffectiveReason() PendingReason {
 }
 
 // IsObligation reports whether the record is an Activation Obligation, which
-// only the activation evaluator may resolve: the health loop neither
-// restarts its unit nor clears it.
+// only the Agent's reconciliation resolves (agent.RetryObligations): the
+// health loop neither restarts its unit nor clears it.
 func (p PendingUnit) IsObligation() bool {
 	switch p.EffectiveReason() {
 	case PendingActivationUndecided, PendingActivationFailed:

@@ -39,28 +39,28 @@ const (
 )
 
 // decideActivation checks unit's current status and decides its activation
-// under kind's policy. A status error decides nothing: the caller must fail
-// closed and never execute on it.
-func (a *Applier) decideActivation(ctx context.Context, unit string, kind state.Activation) (activationStep, error) {
+// under kind's policy; it also returns the status it decided on. A status
+// error decides nothing: the caller must fail closed and never execute on it.
+func (a *Applier) decideActivation(ctx context.Context, unit string, kind state.Activation) (activationStep, UnitStatus, error) {
 	st, err := a.systemd.GetUnitStatus(ctx, unit)
 	if err != nil {
-		return stepSkip, fmt.Errorf("checking %s before restart: %w", unit, err)
+		return stepSkip, st, fmt.Errorf("checking %s before restart: %w", unit, err)
 	}
 	if kind == state.ActivationRebuiltConsumer {
 		if ExternallyActivated(st) {
-			return stepSkip, nil
+			return stepSkip, st, nil
 		}
 		switch st.ActiveState {
 		case "active", "activating", "reloading":
-			return stepRestartNoDeps, nil
+			return stepRestartNoDeps, st, nil
 		default:
-			return stepRestart, nil
+			return stepRestart, st, nil
 		}
 	}
 	if TimerTriggered(st) {
-		return stepSkip, nil
+		return stepSkip, st, nil
 	}
-	return stepRestart, nil
+	return stepRestart, st, nil
 }
 
 // executeActivation runs the restart step decided on.
@@ -80,6 +80,14 @@ func recordUndecided(unit string, kind state.Activation, err error, result *Appl
 		SystemdUnitOp{Unit: unit, Operation: SystemdOpRestart, Result: SystemdOpResultError})
 	result.Obligations = append(result.Obligations,
 		ActivationObligation{Unit: unit, Activation: kind, Undecided: true, Err: err})
+}
+
+// recordFailedActivation records a decided activation that failed: an
+// error and an Activation Obligation the caller retries (RetryActivation).
+func recordFailedActivation(unit string, kind state.Activation, err error, result *ApplyResult) {
+	err = fmt.Errorf("restarting %s: %w", unit, err)
+	result.Errors = append(result.Errors, err)
+	result.Obligations = append(result.Obligations, ActivationObligation{Unit: unit, Activation: kind, Err: err})
 }
 
 // recordSkip records an activation intentionally left to its trigger.
@@ -113,7 +121,7 @@ const (
 // apply's own activations.
 func (a *Applier) RetryActivation(ctx context.Context, unit string, kind state.Activation, mayExecute bool) (ActivationResult, error) {
 	mayExecute = mayExecute && !a.dryRun
-	step, err := a.decideActivation(ctx, unit, kind)
+	step, _, err := a.decideActivation(ctx, unit, kind)
 	switch {
 	case err != nil:
 		a.logger.Warn("activation decision failed, not executing", "unit", unit, "error", err)

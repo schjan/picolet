@@ -197,10 +197,12 @@ func (a *Applier) takeBuildConsumers(p *applyPhaseResult) []string {
 // ordinary way, with its dependencies (and so the build again, from cache):
 // nothing runs that it could take down. A one-shot systemd activates (a
 // timer's job) is left to its trigger. A failed status check decides nothing
-// (an undecided Activation Obligation, retried later); a failed restart is a
-// failed restart like any other (pending).
+// (an undecided Activation Obligation, retried later). A failed restart of a
+// daemon is a failed restart like any other (pending, the health loop's); of
+// a one-shot, which the health loop leaves alone once inactive, it is an
+// Activation Obligation.
 func (a *Applier) restartConsumer(ctx context.Context, unit string, result *ApplyResult) {
-	step, err := a.decideActivation(ctx, unit, state.ActivationRebuiltConsumer)
+	step, status, err := a.decideActivation(ctx, unit, state.ActivationRebuiltConsumer)
 	if err != nil {
 		a.logger.Warn("skipping consumer restart: status check failed", "unit", unit, "error", err)
 		recordUndecided(unit, state.ActivationRebuiltConsumer, err, result)
@@ -212,7 +214,12 @@ func (a *Applier) restartConsumer(ctx context.Context, unit string, result *Appl
 		return
 	}
 	a.logger.Info("restarting consumer of rebuilt image", "unit", unit, "without_dependencies", step == stepRestartNoDeps)
-	recordRestart(unit, a.executeActivation(ctx, unit, step), result)
+	err = a.executeActivation(ctx, unit, step)
+	if err != nil && status.ServiceType == "oneshot" {
+		recordFailedActivation(unit, state.ActivationRebuiltConsumer, err, result)
+		return
+	}
+	recordRestart(unit, err, result)
 }
 
 // scheduleSelfConsumerRestarts defers the restart of the agent's own units

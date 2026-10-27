@@ -877,8 +877,7 @@ func (a *Agent) reconcileResolved(ctx context.Context, headSHA string, st *state
 		resolved.DataDir, resolved.HostDataDir, sopsReader, selfConfigRestart(resolved, changeset, os.ReadFile)...)
 	recordHookMetrics(applyResult)
 	if errors.Is(err, applier.ErrApplyIncomplete) {
-		a.savePartialState(ctx, headSHA, st, store, changeset, applyResult, deps, resolved.Hooks)
-		return nil, err
+		return nil, errors.Join(err, a.savePartialState(ctx, headSHA, st, store, changeset, applyResult, deps, resolved.Hooks))
 	}
 	if err != nil {
 		return nil, err
@@ -1003,16 +1002,19 @@ func (a *Agent) saveIncompleteNoChanges(headSHA string, st *state.State, store *
 // which would otherwise produce duplicate deployment reports for the same SHA),
 // and the pending-hook and pending-unit records are saved so the retries survive
 // an agent restart.
-func (a *Agent) savePartialState(ctx context.Context, headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, hooks []config.Hook) {
+func (a *Agent) savePartialState(ctx context.Context, headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, hooks []config.Hook) error {
 	a.recordApply(st, changeset, applyResult, headSHA, hooks)
 	a.retryObligations(ctx, st)
 	// Record the SHA without advancing the last-successful timestamp: the apply
 	// is incomplete, so staleness alerts must keep firing until it converges.
 	a.markAppliedIncompleteWithMetrics(st, headSHA)
-	if saveErr := store.Save(st); saveErr != nil {
-		a.logger.Error("saving partial state after incomplete apply", "error", saveErr)
-	}
 	a.statusStore.SetDependencies(deps)
+	// Returned, not only logged: unsaved, the pending records of this apply
+	// are lost, so a failed save must not read as a plain incomplete apply.
+	if err := store.Save(st); err != nil {
+		return fmt.Errorf("saving partial state after incomplete apply: %w", err)
+	}
+	return nil
 }
 
 // recordApply records an apply of changeset (headSHA) in st: the Managed

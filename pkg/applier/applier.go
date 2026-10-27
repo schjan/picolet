@@ -857,7 +857,7 @@ func recordRestart(unit string, err error, result *ApplyResult) {
 // restart is an obligation too: the health loop, which leaves inactive
 // one-shots alone, must not own it.
 func (a *Applier) restartOneshot(ctx context.Context, unit string, result *ApplyResult) {
-	step, err := a.decideActivation(ctx, unit, state.ActivationRestart)
+	step, _, err := a.decideActivation(ctx, unit, state.ActivationRestart)
 	if err != nil {
 		a.logger.Warn("skipping one-shot restart: status check failed", "unit", unit, "error", err)
 		recordUndecided(unit, state.ActivationRestart, err, result)
@@ -870,10 +870,7 @@ func (a *Applier) restartOneshot(ctx context.Context, unit string, result *Apply
 	}
 	a.logger.Info("restarting unit", "unit", unit)
 	if err := a.executeActivation(ctx, unit, step); err != nil {
-		err = fmt.Errorf("restarting %s: %w", unit, err)
-		result.Errors = append(result.Errors, err)
-		result.Obligations = append(result.Obligations,
-			ActivationObligation{Unit: unit, Activation: state.ActivationRestart, Err: err})
+		recordFailedActivation(unit, state.ActivationRestart, err, result)
 		return
 	}
 	result.RestartedUnits = append(result.RestartedUnits, unit)

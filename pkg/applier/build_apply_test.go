@@ -299,6 +299,28 @@ func TestApplyConsumerStatusErrorIsUndecidedObligation(t *testing.T) {
 	assert.True(t, result.Obligations[0].Undecided)
 }
 
+// A one-shot consumer (not timer-run) whose restart fails is an Activation
+// Obligation: the health loop leaves an inactive one-shot alone, so it could
+// not retry it. A daemon consumer stays an ordinary failed restart.
+func TestApplyFailedOneshotConsumerRestartIsObligation(t *testing.T) {
+	t.Parallel()
+	sys, _ := recordingSystemd(t, map[string]applier.UnitStatus{
+		"app.service": {ActiveState: "inactive", ServiceType: "oneshot"},
+	}, "restart app.service")
+	a := applier.New(sys, imagePodman(t), newMemFileWriter(), false, nil,
+		applier.WithDependencies(buildDeps))
+
+	result, err := a.Apply(context.Background(), &reconciler.Changeset{Changes: []reconciler.Change{
+		buildChange(testBuildUnit, reconciler.ActionNoop),
+		dataFileChange(testContainerfile, reconciler.ActionUpdate),
+	}})
+	require.NoError(t, err)
+	assert.Empty(t, result.FailedRestartUnits)
+	require.Len(t, result.Obligations, 1)
+	assert.Equal(t, state.ActivationRebuiltConsumer, result.Obligations[0].Activation)
+	assert.False(t, result.Obligations[0].Undecided)
+}
+
 // A consumer a timer runs (a scheduled one-shot job) is not run by a
 // rebuild: its timer starts it on the new image next time.
 func TestApplyRebuildLeavesTimerJobConsumer(t *testing.T) {

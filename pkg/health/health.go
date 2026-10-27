@@ -12,9 +12,6 @@ import (
 	"github.com/schjan/picolet/pkg/state"
 )
 
-// restartCooldown is the shared execution-retry cooldown.
-const restartCooldown = applier.RestartCooldown
-
 // CheckResult holds the outcome of a health enforcement pass.
 type CheckResult struct {
 	Healthy   []string
@@ -183,10 +180,10 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State,
 
 // reportOnly reports, without acting on it, a unit health must not restart
 // whatever its state, and reports whether it did:
-//   - A unit with an Activation Obligation belongs to the activation
-//     evaluator. Clearing the record because the unit looks active, or
-//     restarting it here, would bypass the evaluator's decision, cooldown and
-//     pause policy, so the record is kept.
+//   - A unit with an Activation Obligation belongs to the Agent's
+//     reconciliation (agent.RetryObligations). Clearing the record because
+//     the unit looks active, or restarting it here, would bypass its fresh
+//     decision, its cooldown and a pause, so the record is kept.
 //   - Passive activator units (.timer/.socket/.target/.path): a timer at rest
 //     is active (waiting), and an enabled-but-inactive timer is expected
 //     between runs. Any stale pending record is cleared.
@@ -282,8 +279,8 @@ func timerJobUnits(statuses map[string]applier.UnitStatus) []string {
 func (c *Checker) maybeRestart(ctx context.Context, unit string, st *state.State, result *CheckResult) {
 	if last, ok := c.lastRestart[unit]; ok {
 		elapsed := time.Since(last)
-		if elapsed < restartCooldown {
-			c.logger.Info("skipping restart, cooldown active", "unit", unit, "cooldown_remaining", (restartCooldown - elapsed).Round(time.Second))
+		if elapsed < applier.RestartCooldown {
+			c.logger.Info("skipping restart, cooldown active", "unit", unit, "cooldown_remaining", (applier.RestartCooldown - elapsed).Round(time.Second))
 			result.Skipped = append(result.Skipped, unit)
 			return
 		}
