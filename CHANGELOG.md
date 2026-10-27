@@ -47,8 +47,9 @@ kept as is.
   `onepassword.token_path` and `sops.age_identity_path` must exist and be
   readable, or the Agent exits (`credential <setting> (<path>) is not
   readable`). Run the pre-upgrade check in
-  [MIGRATION.md](MIGRATION.md#pre-upgrade-check-agent-credential-files) before
-  bumping `images.picolet`
+  [MIGRATION.md](MIGRATION.md#pre-upgrade-check-agent-credential-files)
+  (`picolet agentcfg check` from the new image) before bumping
+  `images.picolet`
   ([#252](https://github.com/schjan/picolet/issues/252)).
 - An Agent config in which two credential settings name the same file fails to
   load (`… name the same credential file`), and `readSecretFile` and file
@@ -72,6 +73,11 @@ kept as is.
 
 ### Added
 
+- `picolet agentcfg check [--config]` runs the Agent's startup checks on an
+  Agent config without starting it, printing every failing credential setting
+  and path, never a file's content; the Agent's own startup errors also list
+  every failure instead of the first
+  ([#275](https://github.com/schjan/picolet/issues/275)).
 - `.pod`, `.build` and `.image` Quadlets
   ([#183](https://github.com/schjan/picolet/pull/183),
   [#145](https://github.com/schjan/picolet/issues/145)); a changed `.build` or

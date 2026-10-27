@@ -65,6 +65,14 @@ podman run --rm --volumes-from picolet-system:ro \
   ghcr.io/schjan/picolet:v0.2.0 agentcfg check
 ```
 
+`--volumes-from` carries the Agent's bind mounts and volumes but no Podman
+secret, so this matches the reference Agent bundles. If the Agent quadlet
+differs, mirror it: add one `--secret <name>,target=<path>` per other
+`Secret=` line (a credential delivered as a Podman secret), and for a config
+read from another path (`Environment=PICOLET_CONFIG=`) use that path as the
+config secret's `target=` and pass it with `agentcfg check --config <path>`.
+Without that, the check reports a file the Agent can read as not readable.
+
 It runs the checks a v0.2.0 Agent runs at startup, with the v0.2.0 loader, so
 it reads the config as the upgraded Agent will: every credential file is
 readable (and the SOPS identity file parses), and no two credential settings
@@ -74,7 +82,11 @@ the setting and path (never a file's content), and exits 1. For each
 `… is not readable` line, deliver the file (`picolet bootstrap machine
 --secrets-dir`, or a `bootstrap:` entry) or remove the setting from the Agent
 config template; for each `… name the same credential file` line, give each
-setting its own file. The checks run in the Agent's order and stop at the
+setting its own file. Fix any other line at the setting or file it names: a
+SOPS identity file that does not parse (`credential sops.age_identity_path
+(…): …`), `repo_url is required for the run command`, or a file that could
+not be compared (`checking <setting> (<path>): …`, such as a permission
+error). The checks run in the Agent's order and stop at the
 first stage that fails: a config that does not load (an unknown key) prints
 the loader's error, and named-twice files are reported before the readability
 checks run, so run the command again after each fix until it prints `ok`. A

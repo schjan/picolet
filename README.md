@@ -337,9 +337,12 @@ Before bumping the image, check each Host's live Agent config with the new
 image's binary: `picolet agentcfg check [--config /etc/picolet/config.yml]`
 runs the checks the Agent runs at startup (strict parse, no two credential
 settings naming the same file, every credential file readable, SOPS
-identities parse) without starting it, prints one line per failure naming the
-setting and path (never a file's content) and exits non-zero on failure. Run
-it in a container with the running Agent's mounts and config secret:
+identities parse) without starting it and exits non-zero on failure. Each
+credential failure is one line naming the setting and path (never a file's
+content); a config that does not load prints the loader's error instead. Run
+it in a container with the running Agent's mounts and Podman secrets (an
+Agent quadlet with other `Secret=` lines or another config path needs them
+too; see [MIGRATION.md](MIGRATION.md#pre-upgrade-check-agent-credential-files)):
 
 ```bash
 # rootful Host, as root; on a Host with user:, run as that user

@@ -54,8 +54,6 @@ func TestAgentConfigCheckPassesCleanConfig(t *testing.T) {
 	var out bytes.Buffer
 	require.NoError(t, runAgentConfigCheck(&out, cfg))
 	assert.Equal(t, cfg+": ok\n", out.String())
-	assert.NotContains(t, out.String(), credentialContent)
-	assert.NotContains(t, out.String(), secretKey(t, "srv-1"))
 }
 
 // Every unreadable credential is reported, each by setting and path, not
@@ -117,6 +115,40 @@ func TestAgentConfigCheckNeverPrintsIdentityContent(t *testing.T) {
 	assert.Contains(t, out.String(), "sops.age_identity_path ("+identity+")")
 	assert.NotContains(t, out.String(), credentialContent)
 	assert.NotContains(t, out.String(), secretKey(t, "srv-1"))
+}
+
+// A malformed AGE-SECRET-KEY line is reported without quoting it: age's own
+// parse error would.
+func TestAgentConfigCheckNeverPrintsMalformedIdentity(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	identity := filepath.Join(dir, "age.key")
+	key := secretKey(t, "srv-1")
+	truncated := key[:len(key)-8]
+	writeCheckFile(t, identity, truncated+"\n")
+	cfg := writeCheckConfig(t, dir, "sops:\n  age_identity_path: "+identity+"\n")
+
+	var out bytes.Buffer
+	require.Error(t, runAgentConfigCheck(&out, cfg))
+	assert.Contains(t, out.String(), "sops.age_identity_path ("+identity+")")
+	assert.NotContains(t, out.String(), truncated[len("AGE-SECRET-KEY-1"):])
+}
+
+// A credential file inside protonpass.session_dir is named twice.
+func TestAgentConfigCheckReportsCredentialInsideSessionDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	session := filepath.Join(dir, "session")
+	require.NoError(t, os.Mkdir(session, 0o700))
+	token := filepath.Join(session, "git.token")
+	writeCheckFile(t, token, credentialContent)
+	cfg := writeCheckConfig(t, dir, "git_token_path: "+token+"\nprotonpass:\n  session_dir: "+session+"\n")
+
+	var out bytes.Buffer
+	require.Error(t, runAgentConfigCheck(&out, cfg))
+	assert.Contains(t, out.String(), "git_token_path ("+token+")")
+	assert.Contains(t, out.String(), "protonpass.session_dir ("+session+")")
+	assert.NotContains(t, out.String(), credentialContent)
 }
 
 func TestAgentConfigCheckReportsUnloadableConfig(t *testing.T) {
