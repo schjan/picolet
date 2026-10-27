@@ -22,9 +22,10 @@
 # so a failed disposal stays recoverable.
 #
 # Environment:
+#   BUILD_TAGS    Go build tags (required for run; Taskfile.yml and CI set them)
 #   E2E_RUN       regexp selecting scenarios (default: all)
 #   E2E_PARALLEL  scenarios run at once (default 4)
-#   E2E_TIMEOUT   seconds per scenario (default 600)
+#   E2E_TIMEOUT   seconds per scenario (default 300)
 #   E2E_LOG_DIR   scenario logs (default ./e2e-logs)
 #   E2E_IMAGES    images pulled once into a private store and loaded into
 #                 every scenario's store (default: the alpine tags the
@@ -37,9 +38,8 @@ set -euo pipefail
 
 readonly STATE_ROOT=/var/lib/picolet-e2e # e2eruntime.StateRoot
 readonly ID_PREFIX=pe2e-
-readonly BUILD_TAGS="${BUILD_TAGS:-remote,containers_image_openpgp,exclude_graphdriver_btrfs,btrfs_noversion,exclude_graphdriver_devicemapper}"
 readonly PARALLEL="${E2E_PARALLEL:-4}"
-readonly TIMEOUT="${E2E_TIMEOUT:-600}"
+readonly TIMEOUT="${E2E_TIMEOUT:-300}"
 readonly IMAGES="${E2E_IMAGES:-docker.io/library/alpine:3.22 docker.io/library/alpine:3.23 docker.io/library/alpine:3.24}"
 # The neighbour scenario plants sentinels before the other scenarios run and
 # checks them after; see e2e/orphan_startup_test.go.
@@ -95,20 +95,25 @@ wait_for() { # wait_for <seconds> <cmd...>
 	done
 }
 
-# allocate <scenario>: creates the runtime and prints its id. On failure the
-# record stays for dispose.
+# allocate <scenario>: creates the runtime and prints its id once its record
+# exists (no account is created before that). On failure the record stays
+# for dispose.
 allocate() {
 	local scenario=$1 id home uid
 	id="$ID_PREFIX$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
 	home="$STATE_ROOT/$id/home"
-	root install -d -m 0755 -o root -g root "$STATE_ROOT/$id"
-	record_write "$id" "id=$id
+	# No -p: an id colliding with a leftover allocation fails here instead of
+	# overwriting its record.
+	if ! root mkdir -m 0755 "$STATE_ROOT/$id" || ! record_write "$id" "id=$id
 user=$id
 home=$home
 scenario=$scenario
 run=$RUN_ID
 runner_pid=$$
-"
+"; then
+		log "$scenario: recording allocation $id failed"
+		return 1
+	fi
 	echo "$id"
 	{
 		root useradd --create-home --home-dir "$home" --shell /bin/bash --user-group \
@@ -131,23 +136,41 @@ uid=$uid
 	}
 }
 
+# no_processes <uid>: true when uid runs no process; a failing pgrep (not
+# "none found") is not taken for none.
+no_processes() {
+	local rc=0
+	root pgrep -u "$1" >/dev/null || rc=$?
+	((rc == 1))
+}
+
 # dispose <id>: stops the runtime's manager and processes, then removes its
-# account, home, subordinate IDs and record. Every step is bounded; a failure
-# keeps the record and returns 1.
+# account (userdel also removes its group and subordinate IDs), home and
+# record. Every step is bounded; a failure keeps the record and returns 1.
 dispose() {
-	local id=$1 uid comment failed=0
+	local id=$1 uid acct comment acct_uid failed=0
 	uid=$(record_get "$id" uid)
-	comment=$(getent passwd "$id" | cut -d: -f5 || true)
-	if getent passwd "$id" >/dev/null && [[ $comment != "picolet-e2e $id" ]]; then
-		log "$id: account exists but was not created by the E2E runner (comment '$comment'); not touching it"
-		return 1
+	acct=$(getent passwd "$id" || true)
+	if [[ -n $acct ]]; then
+		comment=$(cut -d: -f5 <<<"$acct")
+		acct_uid=$(cut -d: -f3 <<<"$acct")
+		if [[ $comment != "picolet-e2e $id" ]]; then
+			log "$id: account exists but was not created by the E2E runner (comment '$comment'); not touching it"
+			return 1
+		fi
+		# Interrupted before the record got its uid: the account names it.
+		uid=${uid:-$acct_uid}
+		if [[ $uid != "$acct_uid" ]]; then
+			log "$id: recorded uid $uid is not the account's uid $acct_uid; not touching it"
+			return 1
+		fi
 	fi
-	if [[ -n $uid ]] && getent passwd "$id" >/dev/null; then
+	if [[ -n $acct ]]; then
 		root timeout "$STEP_TIMEOUT" loginctl disable-linger "$id" || failed=1
 		root timeout "$STEP_TIMEOUT" systemctl stop "user@$uid.service" || failed=1
 		root timeout "$STEP_TIMEOUT" loginctl terminate-user "$id" 2>/dev/null || true
 		root pkill -KILL -u "$uid" 2>/dev/null || true
-		wait_for 30 bash -c "! ${SUDO[*]} pgrep -u $uid >/dev/null" || {
+		wait_for 30 no_processes "$uid" || {
 			log "$id: processes of uid $uid survive"
 			failed=1
 		}
@@ -162,10 +185,12 @@ dispose() {
 			failed=1
 		fi
 	fi
-	if ((failed == 0)); then
-		root sed -i "/^$id:/d" /etc/subuid /etc/subgid || failed=1
-		if getent group "$id" >/dev/null; then root groupdel "$id" || failed=1; fi
+	# Check only: editing these files here would race the parallel useradds.
+	if ((failed == 0)) && root grep -q "^$id:" /etc/subuid /etc/subgid; then
+		log "$id: subordinate IDs survive userdel"
+		failed=1
 	fi
+	if ((failed == 0)) && getent group "$id" >/dev/null; then root groupdel "$id" || failed=1; fi
 	if ((failed == 0)) && [[ -n $uid && -e /run/user/$uid ]]; then
 		log "$id: /run/user/$uid survives"
 		failed=1
@@ -180,6 +205,13 @@ dispose() {
 }
 
 # --- scenarios --------------------------------------------------------------
+
+# interruptible <cmd...>: runs cmd as a job, so a signal to the runner runs
+# its trap at once instead of after cmd.
+interruptible() {
+	"$@" &
+	wait "$!"
+}
 
 # run_test <id> <name> <run-pattern> <log>: runs the test binary in the
 # runtime; on failure captures the runtime's diagnostics before disposal.
@@ -231,6 +263,7 @@ report() {
 }
 
 prepare_shared() {
+	: "${BUILD_TAGS:?BUILD_TAGS must be set (Taskfile.yml defines it; run task e2e)}"
 	go test -c -race -tags "e2e,$BUILD_TAGS" -o "$WORK/e2e.test" ./e2e
 	SHARED="$STATE_ROOT/run-$RUN_ID"
 	root install -d -m 0755 -o root -g root "$STATE_ROOT" "$SHARED"
@@ -265,19 +298,23 @@ prepare_shared() {
 	fi
 }
 
+# kill_tree <pid>: kills pid and its descendants (some are root's: sudo,
+# useradd, runuser), children first.
+kill_tree() {
+	local child
+	for child in $(pgrep -P "$1" || true); do kill_tree "$child"; done
+	root kill -KILL "$1" 2>/dev/null || true
+}
+
 # cleanup_run disposes of every allocation this run recorded and its shared
 # directory; it runs on exit and on interruption.
 cleanup_run() {
-	local rc=$? dir id
+	local rc=$? dir id pid
 	trap - EXIT INT TERM
-	# Stop the scenario jobs first so no disposal races them.
-	local pids
-	pids=$(jobs -pr)
-	if [[ -n $pids ]]; then
-		# shellcheck disable=SC2086 # one pid per word
-		kill $pids 2>/dev/null || true
-		wait 2>/dev/null || true
-	fi
+	# Stop every job and everything it started (a useradd in flight
+	# included) before disposing, so no disposal races them.
+	for pid in $(jobs -p); do kill_tree "$pid"; done
+	wait 2>/dev/null || true
 	if [[ ${E2E_KEEP:-} != 1 ]]; then
 		for dir in "$STATE_ROOT/$ID_PREFIX"*/; do
 			id=$(basename "$dir")
@@ -286,7 +323,7 @@ cleanup_run() {
 		done
 		if [[ -n ${SHARED:-} ]]; then root rm -rf --one-file-system "$SHARED" || rc=1; fi
 	fi
-	rm -rf "$WORK"
+	rm -rf "$WORK" 2>/dev/null || root rm -rf "$WORK" || rc=1
 	exit "$rc"
 }
 
@@ -299,7 +336,9 @@ cmd_run() {
 	trap 'log interrupted; exit 130' INT TERM
 
 	prepare_shared
-	mapfile -t SCENARIOS < <("$WORK/e2e.test" -test.list '^Test' | grep -E "${E2E_RUN:-.}")
+	local listed
+	listed=$("$WORK/e2e.test" -test.list '^Test')
+	mapfile -t SCENARIOS < <(grep -E "${E2E_RUN:-.}" <<<"$listed" || true)
 	if ((${#SCENARIOS[@]} == 0)); then
 		log "no scenario matches E2E_RUN=${E2E_RUN:-}"
 		exit 1
@@ -312,7 +351,7 @@ cmd_run() {
 		if [[ $name == "$NEIGHBOUR" ]]; then
 			: >"$LOG_DIR/$name.log"
 			if neighbour_id=$(allocate "$name" 2>>"$LOG_DIR/$name.log") &&
-				run_test "$neighbour_id" "$name" "^$name\$/^plant\$" "$LOG_DIR/$name.log"; then
+				interruptible run_test "$neighbour_id" "$name" "^$name\$/^plant\$" "$LOG_DIR/$name.log"; then
 				echo 0 >"$WORK/status/$name"
 			else
 				echo 1 >"$WORK/status/$name"
@@ -331,7 +370,7 @@ cmd_run() {
 	if [[ -n $neighbour_id ]]; then
 		if [[ $(cat "$WORK/status/$NEIGHBOUR") == 0 ]]; then
 			rc=0
-			run_test "$neighbour_id" "$NEIGHBOUR" "^$NEIGHBOUR\$/^verify\$" "$LOG_DIR/$NEIGHBOUR.log" || rc=$?
+			interruptible run_test "$neighbour_id" "$NEIGHBOUR" "^$NEIGHBOUR\$/^verify\$" "$LOG_DIR/$NEIGHBOUR.log" || rc=$?
 			echo "$rc" >"$WORK/status/$NEIGHBOUR"
 		fi
 		if [[ ${E2E_KEEP:-} != 1 ]]; then

@@ -78,8 +78,10 @@ jobs:
     # actions/runner-images#14642; ubuntu-26.04 ships 5.7.0 (preview image).
     if: github.event_name != 'schedule'
     runs-on: ubuntu-26.04-arm
-    # Provisioning a user, manager and store per scenario, plus bounded disposal.
-    timeout-minutes: 25
+    # Worst case: the neighbour's plant, three waves of four scenarios and its
+    # verify, each bounded by E2E_TIMEOUT (300s), plus provisioning and the
+    # bounded disposal; a normal run takes minutes.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
 

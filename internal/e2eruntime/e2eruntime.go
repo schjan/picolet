@@ -128,28 +128,28 @@ func Verify(p Probe, scenario string) (*Runtime, error) {
 	}
 	rec, err := readRecord(p, recordPath)
 	if err != nil {
-		return nil, unsafe(err)
+		return nil, unsafeRuntime(err)
 	}
 	rt := &Runtime{ID: rec["id"], Scenario: rec["scenario"], Home: rec["home"]}
 	if rt.UID, err = strconv.Atoi(rec["uid"]); err != nil || rt.UID <= 0 {
-		return nil, unsafe(fmt.Errorf("allocation record %s: invalid uid %q", recordPath, rec["uid"]))
+		return nil, unsafeRuntime(fmt.Errorf("allocation record %s: invalid uid %q", recordPath, rec["uid"]))
 	}
 	rt.RuntimeDir = "/run/user/" + strconv.Itoa(rt.UID)
 	rt.PodmanSocket = rt.RuntimeDir + "/podman/podman.sock"
 	if err := errors.Join(checkIdentity(p, rec, rt, scenario), checkEnv(p, rt)); err != nil {
-		return nil, unsafe(err)
+		return nil, unsafeRuntime(err)
 	}
 	graphRoot, err := p.GraphRoot()
 	if err != nil {
-		return nil, unsafe(err)
+		return nil, unsafeRuntime(err)
 	}
 	if !within(rt.Home, graphRoot) {
-		return nil, unsafe(fmt.Errorf("podman storage %s is outside the allocated home %s", graphRoot, rt.Home))
+		return nil, unsafeRuntime(fmt.Errorf("podman storage %s is outside the allocated home %s", graphRoot, rt.Home))
 	}
 	return rt, nil
 }
 
-func unsafe(err error) error { return fmt.Errorf("%w: %w", ErrUnsafeRuntime, err) }
+func unsafeRuntime(err error) error { return fmt.Errorf("%w: %w", ErrUnsafeRuntime, err) }
 
 // readRecord reads the allocation record at path, which must be
 // StateRoot/<id>/allocation, root-owned and writable by root only all the
@@ -233,15 +233,14 @@ func checkIdentity(p Probe, rec map[string]string, rt *Runtime, scenario string)
 // checkEnv checks that the environment selects the allocated runtime.
 func checkEnv(p Probe, rt *Runtime) error {
 	var errs []error
-	want := map[string]string{
-		"HOME":                     rt.Home,
-		"XDG_RUNTIME_DIR":          rt.RuntimeDir,
-		"DBUS_SESSION_BUS_ADDRESS": "unix:path=" + rt.RuntimeDir + "/bus",
-		"PODMAN_SOCKET":            rt.PodmanSocket,
-	}
-	for _, k := range []string{"HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "PODMAN_SOCKET"} {
-		if got := p.Getenv(k); got != want[k] {
-			errs = append(errs, fmt.Errorf("%s=%q, want %q", k, got, want[k]))
+	for _, want := range []struct{ key, value string }{
+		{"HOME", rt.Home},
+		{"XDG_RUNTIME_DIR", rt.RuntimeDir},
+		{"DBUS_SESSION_BUS_ADDRESS", "unix:path=" + rt.RuntimeDir + "/bus"},
+		{"PODMAN_SOCKET", rt.PodmanSocket},
+	} {
+		if got := p.Getenv(want.key); got != want.value {
+			errs = append(errs, fmt.Errorf("%s=%q, want %q", want.key, got, want.value))
 		}
 	}
 	for _, k := range redirects {
