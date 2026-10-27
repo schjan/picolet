@@ -28,7 +28,7 @@ func corpusReader(t *testing.T, names ...string) *sops.Reader {
 // (testsops.Plaintexts) long enough to be recognisable in an error. (The
 // value "edited" of tampered-mac.sops.yaml is left out: it is part of the
 // class name "edited outside sops".)
-var morePlaintexts = []string{"VEVTVC1PTkxZIGZpeHR1cmUga2V5", "TEST-ONLY fixture values"}
+var morePlaintexts = []string{"VEVTVC1PTkxZIGZpeHR1cmUga2V5", "TEST-ONLY fixture values", "delta-token", "inner-token"}
 
 func TestReaderSingleRef(t *testing.T) {
 	t.Parallel()
@@ -106,6 +106,12 @@ var decryptCases = []struct {
 	}},
 	{file: "blob.sops.bin", ids: []string{"srv-1"}, pointers: []string{"/data"}},
 	{file: "tls.sops.pem", ids: []string{"srv-1"}, pointers: []string{"/data"}},
+	// Encrypted comments inside lists, before, between and after the
+	// elements, are not elements.
+	{file: "list-comments.sops.yaml", ids: []string{"srv-1"}, pointers: []string{
+		"/tokens/0", "/tokens/1", "/tokens/2/name", "/tokens/2/value", "/tokens/3",
+		"/ports/0", "/ports/1", "/nested/0/0",
+	}},
 	{file: "unencrypted-suffix.sops.yaml", ids: []string{"srv-1"}, pointers: yamlPointers},
 	{file: "encrypted-regex.sops.yaml", ids: []string{"srv-1"}, pointers: yamlPointers},
 	{file: "mac-only-encrypted.sops.yaml", ids: []string{"srv-1"}, pointers: yamlPointers},

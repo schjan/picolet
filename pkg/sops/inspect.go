@@ -258,7 +258,9 @@ type Node struct {
 
 // Lookup resolves p in the file's data (the first document of a multi-document
 // file) and describes the node it ends at. A path that names no node is
-// ErrBadPointer; a file that is not a SOPS file is ErrNotSOPSFile.
+// ErrBadPointer; a file that is not a SOPS file is ErrNotSOPSFile. It reads
+// the file as written, where an encrypted comment inside a list is a string
+// item (Type "comment") and counts as an index; the readers' pointers skip it.
 func (f *File) Lookup(p Pointer) (Node, error) {
 	if !f.IsSOPS {
 		return Node{}, fmt.Errorf("%w: %s", ErrNotSOPSFile, f.NotSOPSReason)
@@ -288,7 +290,7 @@ func describe(v any) Node {
 }
 
 // The type tags SOPS's cipher decrypts a value as: the one vocabulary of
-// plainType and the keyless reader's type-tag check (decryptableTypes).
+// plainType and the keyless reader's type-tag check (placeholderCipher.Decrypt).
 const (
 	tagStr   = "str"
 	tagBytes = "bytes"
@@ -296,6 +298,8 @@ const (
 	tagFloat = "float"
 	tagBool  = "bool"
 	tagTime  = "time"
+	// tagComment is a comment SOPS encrypted; it is not a value.
+	tagComment = "comment"
 )
 
 // plainType names a plaintext leaf's type in the type-tag vocabulary.
@@ -322,7 +326,9 @@ func plainType(v any) string {
 
 // resolvePointer walks p through a SOPS tree (encrypted or decrypted). Each
 // segment is a list index on a list and a map key otherwise. Comment items
-// are not data: they are skipped by key lookups and list indices alike.
+// are not data: they are skipped by key lookups and list indices alike. (In
+// an encrypted tree, an encrypted comment inside a list is a string item, not
+// yet a comment, and counts.)
 func resolvePointer(branches gsops.TreeBranches, p Pointer) (any, error) {
 	if len(branches) == 0 {
 		return nil, fmt.Errorf("%w %q: the file holds no data", ErrBadPointer, p.String())

@@ -64,6 +64,39 @@ func TestKeylessAcceptsWhatDecryptingAccepts(t *testing.T) {
 	}
 }
 
+// SOPS stores a comment inside a list as a list item tagged type:comment,
+// which the Agent's decrypt skips (TestKeylessAcceptsWhatDecryptingAccepts
+// compares the lists' lengths and every element): keyless skips it too, so an
+// index past the Agent's last element fails both readers alike.
+func TestKeylessListCommentsAreNotElements(t *testing.T) {
+	t.Parallel()
+	dec := corpusReader(t, "srv-1")
+	keyless := sops.NewKeylessReader(os.DirFS(corpusDir), keylessHost(t, "srv", "srv-1"))
+	for _, ptr := range []string{"/tokens/4", "/ports/2", "/nested/0/1"} {
+		ref := "sops://corpus/list-comments.sops.yaml#" + ptr
+		_, decErr := dec.ReadAll(t.Context(), []string{ref})
+		require.ErrorIs(t, decErr, sops.ErrBadPointer, ptr)
+		_, err := keyless.ReadAll(t.Context(), []string{ref})
+		require.Error(t, err, "keyless accepts %s, past the Agent's last element", ptr)
+		assert.Equal(t, decErr.Error(), err.Error(), ptr)
+		_, err = keyless.ReadData(t.Context(), ref)
+		require.ErrorIs(t, err, sops.ErrBadPointer, ptr)
+	}
+}
+
+// A plaintext value where the rules require ciphertext is named by the
+// pointer the readers use: the encrypted comments before it shift no index.
+func TestKeylessWalkErrorSkipsListComments(t *testing.T) {
+	t.Parallel()
+	data := regexp.MustCompile(`(?m)^(tokens:\n(?:    - ENC\[[^\]]*type:comment\]\n)*    - )ENC\[[^\]]*\]`).
+		ReplaceAllString(testsops.CorpusText(t, "list-comments.sops.yaml"), "${1}hunter2-test")
+	fsys := fstest.MapFS{"db.sops.yaml": {Data: []byte(data)}}
+	_, err := sops.NewKeylessReader(fsys, hostSrv1(t)).ReadAll(t.Context(), []string{"sops://db.sops.yaml#/tokens/1"})
+	require.ErrorIs(t, err, sops.ErrEditedOutsideSOPS)
+	require.ErrorContains(t, err, `"/tokens/0" is not encrypted`)
+	testsops.AssertNoPlaintext(t, err, morePlaintexts...)
+}
+
 // assertKeylessValue fails unless got (keyless) is the decrypted value
 // want, the string placeholder, or a typed placeholder (0, 0.0, false, the
 // zero time) that want parses as the same type as.

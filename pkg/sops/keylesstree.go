@@ -17,9 +17,9 @@ type keylessFile struct {
 	*File
 
 	// branches is the tree with each encrypted value replaced by its
-	// encrypted marker (encryptedMarker, rendered by leaf); plaintext values
-	// keep their decoded value. Nil when
-	// walkErr is set.
+	// encrypted marker (encryptedMarker, rendered by leaf) and each encrypted
+	// comment by a gsops.Comment; plaintext values keep their decoded value.
+	// Nil when walkErr is set.
 	branches gsops.TreeBranches
 	// walkErr is why the Agent's decrypt fails on the file's structure,
 	// before any key is needed (a plaintext value where the rules require
@@ -34,8 +34,7 @@ type keylessFile struct {
 // Agent's decrypt. What fails here fails the Agent's decrypt too; what needs
 // the key (the MAC, the ciphertext itself) is left to the Agent. It walks a
 // tree parsed anew from data (the file's bytes, which Inspect parsed as f)
-// with f's store, so f keeps the file as written (walkError and Lookup read
-// it).
+// with f's store, so f keeps the file as written (Lookup reads it).
 func keylessTree(path string, f *File, data []byte) (gsops.TreeBranches, error) {
 	silenceSOPSLogs()
 	tree, err := f.store.LoadEncryptedFile(data)
@@ -46,7 +45,7 @@ func keylessTree(path string, f *File, data []byte) (gsops.TreeBranches, error) 
 	}
 	c := &placeholderCipher{}
 	if _, err := tree.Decrypt(nil, c); err != nil {
-		return nil, c.walkError(path, f, err)
+		return nil, c.walkError(path, tree.Branches, err)
 	}
 	return tree.Branches, nil
 }
@@ -70,16 +69,12 @@ const (
 	reasonTypeTag      = "invalid type tag"
 )
 
-// decryptableTypes are the type tags upstream's cipher decrypts
-// (aes/cipher.go); any other fails the Agent's decrypt.
-var decryptableTypes = map[string]bool{
-	tagStr: true, tagBytes: true, tagInt: true, tagFloat: true, tagBool: true, tagTime: true, "comment": true,
-}
-
 // placeholderCipher is a gsops.Cipher that decrypts nothing: it checks a
 // value the way upstream's cipher does before it needs the key (the
-// ENC[AES256_GCM,…] format, base64 fields, a known type tag) and returns
-// the encryptedMarker of its type tag. It remembers its last refusal for walkError.
+// ENC[AES256_GCM,…] format, base64 fields, a type tag upstream's cipher
+// (aes/cipher.go) decrypts) and returns the encryptedMarker of its type tag,
+// or for a comment a gsops.Comment, as upstream's cipher does. It remembers
+// its last refusal for walkError.
 type placeholderCipher struct {
 	last *cipherFailure
 }
@@ -102,10 +97,16 @@ func (c *placeholderCipher) Decrypt(ciphertext string, _ []byte, _ string) (any,
 			return nil, c.refuse(ciphertext, reasonMalformed)
 		}
 	}
-	if !decryptableTypes[m[4]] {
-		return nil, c.refuse(ciphertext, reasonTypeTag)
+	switch tag := m[4]; tag {
+	case tagComment:
+		// The readers skip a gsops.Comment; a comment inside a list is
+		// stored as a plain list item, so a marker string here would count
+		// as an extra element.
+		return gsops.Comment{}, nil
+	case tagStr, tagBytes, tagInt, tagFloat, tagBool, tagTime:
+		return encryptedMarker(tag), nil
 	}
-	return encryptedMarker(m[4]), nil
+	return nil, c.refuse(ciphertext, reasonTypeTag)
 }
 
 // markerPrefix and markerSuffix frame an encrypted value's type tag in the
@@ -168,16 +169,19 @@ func (c *placeholderCipher) refuse(value, reason string) error {
 
 // walkError turns the error of upstream's tree walk over the file at path
 // into an ErrEditedOutsideSOPS error that names the offending value's
-// pointer (found in f's tree) and never quotes a value or upstream's text.
+// pointer and never quotes a value or upstream's text. branches is the tree
+// as the walk left it: the values before the offending one are walked (an
+// encrypted list comment is a gsops.Comment, so it shifts no index), the
+// offending one is as written.
 // Upstream swallows a refusal for a comment, so only a refusal its error
 // text carries counts.
-func (c *placeholderCipher) walkError(path string, f *File, err error) error {
+func (c *placeholderCipher) walkError(path string, branches gsops.TreeBranches, err error) error {
 	last := c.last
 	if last == nil || !strings.Contains(err.Error(), last.Error()) {
 		return editedError(path, "a value the file's encryption rules require to be encrypted is not a string, or a key is not a string",
 			"re-create the file with `sops edit %s`")
 	}
-	ptr := strconv.Quote(findLeaf(f.tree, last.value))
+	ptr := strconv.Quote(findLeaf(branches, last.value))
 	switch last.reason {
 	case reasonNotEncrypted:
 		return editedError(path, ptr+" is not encrypted, though the file's encryption rules require it", "re-create the value with `sops edit %s`")

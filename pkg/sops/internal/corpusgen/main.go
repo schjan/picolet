@@ -48,6 +48,9 @@ var encryptions = []encryption{
 	{out: "values.sops.ini", plain: "values.ini", rule: "age: {srv-1}"},
 	{out: "blob.sops.bin", plain: "blob.bin", rule: "age: {srv-1}"},
 	{out: "tls.sops.pem", plain: "tls.pem", rule: "age: {srv-1}"},
+	// Encrypted comments inside lists (list items tagged type:comment),
+	// before, between and after real elements.
+	{out: "list-comments.sops.yaml", plain: "list-comments.yaml", rule: "age: {srv-1}"},
 	// The re-encrypted twin of values.sops.yaml: same values and recipients,
 	// a new data key.
 	{out: "values-reencrypted.sops.yaml", plain: "values.yaml", rule: ageAll},
