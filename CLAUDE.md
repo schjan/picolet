@@ -10,13 +10,13 @@ Module path: `github.com/schjan/picolet`
 
 ## Build & Test
 
-Requires [Task](https://taskfile.dev/) runner. All commands use shared build tags defined in `Taskfile.yml`.
+Requires [Task](https://taskfile.dev/) runner. All commands use shared build tags defined in `Taskfile.yml`; lint takes them (plus the `e2e`/provider-integration test tags) from `.golangci.yml` `run.build-tags`, pinned to `BUILD_TAGS` by `TestLintBuildTags`.
 
 ```bash
 task build          # native binary
 task build-arm64    # cross-compile for RPi (linux/arm64)
 task test           # all tests with -race -count=1
-task lint           # golangci-lint (v2 config in .golangci.yml; its run.build-tags add e2e + provider-integration tags, so a bare `golangci-lint run` matches CI)
+task lint           # golangci-lint (v2 config in .golangci.yml, incl. build tags: a bare `golangci-lint run` matches CI)
 task lint:fix       # golangci-lint with --fix
 task fmt            # run all formatters (gofumpt + gci) via golangci-lint fmt
 task vulncheck      # govulncheck with the build tags; fails on any finding not in .github/govulncheck-exclusions.txt

@@ -364,17 +364,17 @@ func TestE2EPipeline(t *testing.T) {
 					if err != nil || d.IsDir() {
 						return nil //nolint:nilerr // skip unreadable entries gracefully
 					}
-					// Enable links (*.wants/) are absolute symlinks the Root refuses to
-					// follow; their targets are the unit files this walk reads anyway.
+					// Symlinks (enable links, aliases, masks) are skipped: the Root refuses
+					// absolute ones, and the managed units they point at are read directly.
 					if d.Type()&fs.ModeSymlink != 0 {
 						return nil
 					}
-					full := filepath.Join(dir, path)
+					hostPath := filepath.Join(dir, path)
 					data, readErr := root.ReadFile(path)
-					require.NoError(t, readErr, "should be able to read %s", full)
+					require.NoError(t, readErr, "should be able to read %s", hostPath)
 					content := string(data)
-					assert.NotContains(t, content, "{{", "file %s should not contain template markers", full)
-					assert.NotContains(t, content, "}}", "file %s should not contain template markers", full)
+					assert.NotContains(t, content, "{{", "file %s should not contain template markers", hostPath)
+					assert.NotContains(t, content, "}}", "file %s should not contain template markers", hostPath)
 					return nil
 				})
 				assert.NoError(t, err, "walking %s should not fail", dir)
