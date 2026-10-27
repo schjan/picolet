@@ -335,7 +335,15 @@ func worldReadableChanges(root *os.Root) (changes []modeChange, linked []string,
 // linkCount is the number of hard links to info's inode; 1 when unknown.
 func linkCount(info fs.FileInfo) uint64 {
 	if st, ok := info.Sys().(*syscall.Stat_t); ok {
-		return uint64(st.Nlink)
+		return widen(st.Nlink)
 	}
 	return 1
+}
+
+// widen converts a Stat_t field whose width differs per architecture
+// (Nlink is uint64 on amd64, uint32 on arm64). A plain uint64(...) is an
+// unnecessary conversion on one of them, which unconvert reports, and a
+// //nolint there is unused on the other, which nolintlint reports.
+func widen[T uint32 | uint64](v T) uint64 {
+	return uint64(v)
 }
