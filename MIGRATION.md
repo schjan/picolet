@@ -33,6 +33,7 @@ a Fleet on v0.1.33 or older needs all of them.
 | `readSecretFile` and file `secrets:` refuse the Agent's own credential files | v0.2.0 | templates, `assignments.yml` | none: the Agent's reconciliation fails with `… Agent credentials cannot be deployed`; see [Pre-upgrade check](#pre-upgrade-check-agent-credential-files) |
 | SOPS files (`<name>.sops.<ext>`), `.sops.yaml` and `.sops.yml` are skipped by `paths:` and Service Bundle walks; an explicit entry naming a SOPS file is rejected | v0.2.0 | `paths:` entries, `secrets:`, Service Bundles | for an explicit entry: `SOPS file is reachable only through a sops:// ref`; a walked file is no longer deployed |
 | The Agent bundle is rendered strictly: provider template calls or direct provider `secrets:` refs in it fail | v0.2.0 | Agent bundle (`picolet`, `picolet-system`) | `host <name>: Agent bundle <service>: …` |
+| `readOpSecret`/`readProtonPassSecret` in a Quadlet, a Raw Unit or a Hook definition (also through `renderTemplate`) are rejected; see [Provider values in unit files](#provider-values-in-unit-files-v020) | v0.2.0 | Quadlets, Raw Units, `picolet.yml.tmpl` | `<file>: readOpSecret "op://<vault>/…": 1Password values can't be rendered into a Quadlet (…); use Secret= (or a secret mounted as a file) instead` (`Proton Pass values …` for `readProtonPassSecret`) |
 
 `state.json` needs nothing: keep it. Its `managed_files[].category` values are
 unchanged rows of the new category table, so an Agent of this release loads the
@@ -337,6 +338,30 @@ services/picolet-system/secrets/                services/picolet-system/secrets/
 New in v0.2.0, readable only by v0.2.0 Agents (so use them from step 3 on):
 `.Host.Machine`, `.Host.User`, `.Host.ListenPort` (also on every
 `.Fleet.Hosts` entry) and the `siblings` function.
+
+### Provider values in unit files (v0.2.0)
+
+A Quadlet, a Raw Unit or a Hook definition may no longer render a
+`readOpSecret` or `readProtonPassSecret` value: Quadlets and Raw Units are
+world-readable, `Environment=` values show in `systemctl show`, and Hook
+definitions are logged and stored in `state.json`. `validate` fails such a
+file, so CI finds every use before the upgrade. Move the value into a Podman
+secret (a direct `secrets:` entry or a `secrets/<name>.tmpl`) and hand it to
+the container with `Secret=`:
+
+```ini
+# before (units/app.container.tmpl)
+[Container]
+Environment=API_TOKEN={{ readOpSecret "op://infra/app/token" }}
+
+# after (units/app.container; assignments.yml: secrets: [op://infra/app/token],
+# which creates the Podman secret infra_app_token)
+[Container]
+Secret=infra_app_token,type=env,target=API_TOKEN
+```
+
+A Hook definition has no `Secret=`; a Hook URL can't carry a provider value.
+Manifests, data files and `secrets/*.tmpl` still call the helpers.
 
 ### Agent config: `listen_addr` and the loopback default (v0.1.34)
 

@@ -93,3 +93,45 @@ sibling vps-runner machine=vps user=runner rootful=false port=9419
 		})
 	}
 }
+
+// .Fleet.Config is a value view of fleet.yml: Images, Ports and Bootstrap
+// render, and no template reaches the shared config's yaml.Node, whose
+// pointer methods (Encode, SetString) would let one render hand a value to
+// a later one (an op:// value into a Hook definition, past the unit-file
+// guard) or to another Host's resolve.
+func TestFleetConfigTemplateData(t *testing.T) {
+	t.Parallel()
+	t.Run("value fields render", func(t *testing.T) {
+		t.Parallel()
+		fsys := pathsFleetFS("  paths: [files/fleet.txt.tmpl]\n", map[string]string{
+			"files/fleet.txt.tmpl": `{{ .Fleet.Config.Ports.picolet_system_metrics }} {{ len .Fleet.Config.Images }} {{ len .Fleet.Config.Bootstrap.Files }}`,
+		})
+		resolved, err := resolveFS(t, fsys, Config{})
+		require.NoError(t, err)
+		require.Len(t, resolved.Files, 1)
+		assert.Equal(t, "9418 0 0", resolved.Files[0].Content)
+	})
+	t.Run("no shared node", func(t *testing.T) {
+		t.Parallel()
+		fsys := pathsFleetFS("  paths: [files/app.conf.tmpl]\n  services: [app]\n", map[string]string{
+			"files/app.conf.tmpl":        `{{ .Fleet.Config.RetiredPrometheus.Encode (readOpSecret "op://vault/item/user") }}`,
+			"services/app/app.container": "[Container]\nImage=app\nContainerName=app\n",
+			"services/app/picolet.yml.tmpl": "hooks:\n  - name: app-reload\n    secrets: [app_config]\n    unit: app.service\n    action: http\n" +
+				"    method: GET\n    url: \"http://localhost:1234/?token={{ .Fleet.Config.RetiredPrometheus.Value }}\"\n",
+		})
+		resolved, err := resolveFS(t, fsys, Config{OpSecretReader: userReader})
+		require.ErrorContains(t, err, "can't evaluate field RetiredPrometheus")
+		assert.Nil(t, resolved)
+	})
+}
+
+// resolveFS resolves test-host of fsys with rc's readers.
+func resolveFS(t *testing.T, fsys fstest.MapFS, rc Config) (*ResolvedHost, error) {
+	t.Helper()
+	cfg, err := config.LoadAll(fsys)
+	require.NoError(t, err)
+	rc.FS, rc.Config = fsys, cfg
+	r, err := New(rc)
+	require.NoError(t, err)
+	return r.ResolveHost(t.Context(), "test-host")
+}

@@ -70,6 +70,16 @@ kept as is.
   `onepassword.git_token_ref` pass. A bundle whose quadlet mounts a config
   secret at `/etc/picolet/config.yml` that the bundle itself doesn't resolve
   fails too ([#253](https://github.com/schjan/picolet/issues/253)).
+- A Quadlet, a Raw Unit or a Hook definition (`picolet.yml.tmpl`) whose render
+  calls `readOpSecret` or `readProtonPassSecret`, directly or through
+  `renderTemplate`, fails (`1Password values can't be rendered into a Quadlet
+  …; use Secret= (or a secret mounted as a file) instead`), as one calling
+  `readSopsSecret`/`readSopsData` does: those files are world-readable, shown
+  by `systemctl show` or logged. It fails in the Agent, `validate`, `resolve`
+  and `bootstrap` alike; manifests, data files and `secrets/*.tmpl` still call
+  the helpers. Move the value into a Podman secret and pass it with `Secret=`;
+  see [MIGRATION.md](MIGRATION.md#provider-values-in-unit-files-v020)
+  ([#273](https://github.com/schjan/picolet/issues/273)).
 
 ### Added
 
@@ -205,3 +215,7 @@ kept as is.
 - Agents warn about an unknown `host.yml` key instead of refusing the Fleet;
   `picolet validate` still fails on it.
 - `picolet_unit_state_info` is emitted for inactive units too.
+- `.Fleet.Config` is a read-only view of `fleet.yml` (`Images`, `Ports`,
+  `Bootstrap`). It used to be the shared config itself, through which one
+  render could hand a value (a secret too) to a later render or to another
+  Host's resolve ([#273](https://github.com/schjan/picolet/issues/273)).

@@ -81,7 +81,7 @@ const (
 // would fail), so DataReader must cache per file itself.
 // Strict (bootstrap, validate's Agent-bundle pass) fails every call.
 // Guard, when set, runs first on every call; its error fails the render
-// before any reader sees the ref (the SOPS unit-file guard).
+// before any reader sees the ref (the unit-file guard, Resolver.unitFileGuard).
 // MissingReader and Guard get the called function's name.
 //
 // The standard providers (OpProvider, PPProvider, SopsProvider) also carry
@@ -109,6 +109,9 @@ type ProviderTemplate struct {
 	// call's (sops://); op:// and pass:// keep the wording they had before
 	// sops:// (spec #248).
 	directLikeCalls bool
+	// unitFileErr is the scheme's error for a call in a Quadlet, a Raw Unit
+	// or a Hook definition (Resolver.unitFileGuard).
+	unitFileErr error
 }
 
 // providerSchemes is the provider table: the standard providers without
@@ -157,7 +160,8 @@ func OpProvider(reader SecretRefReader) ProviderTemplate {
 			}
 			return parsed.PodmanSecretName(), nil
 		},
-		strictFix: legacyStrictFix,
+		strictFix:   legacyStrictFix,
+		unitFileErr: ErrOpInUnitFile,
 	}
 }
 
@@ -178,7 +182,8 @@ func PPProvider(reader SecretRefReader) ProviderTemplate {
 			}
 			return parsed.PodmanSecretName(), nil
 		},
-		strictFix: legacyStrictFix,
+		strictFix:   legacyStrictFix,
+		unitFileErr: ErrProtonPassInUnitFile,
 	}
 }
 
@@ -210,6 +215,7 @@ func SopsProvider(reader SopsReader, noIdentityHint string) ProviderTemplate {
 		strictFix: "deliver the value as a --secrets-dir file and point the Agent config at its path; " +
 			"credentials needed to fetch the Fleet can't be SOPS values",
 		directLikeCalls: true,
+		unitFileErr:     ErrSopsInUnitFile,
 	}
 	if reader != nil {
 		p.Reader = checkSopsRefs(reader.ReadAll)
@@ -284,7 +290,8 @@ func (p ProviderTemplate) strictText() (reason, fix string) {
 // refForError names ref in an error without the part a template most likely
 // builds from a secret value: a sops:// ref keeps its file, an op:// or
 // pass:// ref its vault (share), and "…" marks the dropped pointer, or item
-// and field. Errors that may quote a ref built at render time use it, since
+// and field; anything else (a template passed a value, not a ref) is "…"
+// alone. Errors that may quote a ref built at render time use it, since
 // only SOPS values are scrubbed from errors.
 func refForError(ref string) string {
 	if sops.IsRef(ref) {
@@ -293,11 +300,15 @@ func refForError(ref string) string {
 		}
 		return ref // the whole file
 	}
-	scheme, rest, _ := strings.Cut(ref, "://")
-	if vault, _, found := strings.Cut(rest, "/"); found && vault != "" {
-		return scheme + "://" + vault + "/…"
+	for _, prefix := range []string{op.Prefix, pp.Prefix} {
+		if rest, found := strings.CutPrefix(ref, prefix); found {
+			if vault, _, found := strings.Cut(rest, "/"); found && vault != "" {
+				return prefix + vault + "/…"
+			}
+			return prefix + "…"
+		}
 	}
-	return scheme + "://…"
+	return "…"
 }
 
 // redactRefs returns err with every op:// or pass:// ref of refs it quotes

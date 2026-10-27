@@ -138,6 +138,10 @@ func TestRefForError(t *testing.T) {
 		"op://vault/item/field":                    "op://vault/…",
 		"pass://share/item/field":                  "pass://share/…",
 		"op://vault":                               "op://…",
+		// Not a provider ref (a template passed a value): nothing of it.
+		"hunter2-TOKEN://x/y":    "…",
+		"https://user:pw@host/x": "…",
+		"hunter2":                "…",
 	} {
 		assert.Equal(t, want, refForError(ref), ref)
 	}

@@ -70,6 +70,33 @@ func TestIntegrationValidateAgentBundleStrict(t *testing.T) {
 	}
 }
 
+// validate fails a Quadlet, a Raw Unit or a Hook definition that renders a
+// provider value, as resolve and the Agent do (they share the resolver's
+// unit-file guard), so CI catches it before any Agent does.
+func TestIntegrationValidateProviderValueInUnitFile(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		fn, ref string
+		err     error
+	}{
+		{fn: "readOpSecret", ref: "op://vault/app/token", err: resolver.ErrOpInUnitFile},
+		{fn: "readProtonPassSecret", ref: "pass://share/app/token", err: resolver.ErrProtonPassInUnitFile},
+		{fn: "readSopsSecret", ref: "sops://secrets/db.sops.yaml#/db/password", err: resolver.ErrSopsInUnitFile},
+	}
+	for _, tt := range tests {
+		t.Run(tt.fn, func(t *testing.T) {
+			t.Parallel()
+			fleet := agentBundleFleet("", "picolet-system", false, "")
+			fleet["assignments.yml"] = &fstest.MapFile{Data: []byte("base:\n  paths: [units/app.container.tmpl]\nroles: {}\nfeatures: {}\n")}
+			fleet["units/app.container.tmpl"] = &fstest.MapFile{Data: []byte(
+				fmt.Sprintf("[Container]\nImage=app\nEnvironment=TOKEN={{ %s %q }}\n", tt.fn, tt.ref))}
+			err := validateFleet(t, fleet)
+			require.ErrorIs(t, err, tt.err)
+			assert.ErrorContains(t, err, "use Secret= (or a secret mounted as a file) instead")
+		})
+	}
+}
+
 // A Host without its Agent bundle assigned is skipped: the bundle's provider
 // ref is not rendered, so validate passes.
 func TestIntegrationValidateAgentBundleUnassignedSkipped(t *testing.T) {
