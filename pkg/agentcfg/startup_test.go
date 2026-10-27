@@ -58,6 +58,7 @@ func TestCheckRenderedReportsEveryFailure(t *testing.T) {
 	assert.Contains(t, failures[1].Error(), "git_token_path ("+git+")")
 	assert.Contains(t, failures[2].Error(), "webhook_secret_path ("+webhook+")")
 	require.ErrorIs(t, err, fs.ErrNotExist)
+	assert.NotContains(t, err.Error(), "\n", "one line, for dashboard events and MQTT")
 }
 
 func TestCheckRenderedRejectsUnreadableCredentialFile(t *testing.T) {

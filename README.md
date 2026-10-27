@@ -342,7 +342,8 @@ setting and path (never a file's content) and exits non-zero on failure. Run
 it in a container with the running Agent's mounts and config secret:
 
 ```bash
-# rootful Host (a Host with user:, as that user: picolet, picolet_config)
+# rootful Host, as root; on a Host with user:, run as that user
+# with picolet and picolet_config instead
 podman run --rm --volumes-from picolet-system:ro \
   --secret picolet_system_config,target=/etc/picolet/config.yml \
   ghcr.io/schjan/picolet:<new-version> agentcfg check
