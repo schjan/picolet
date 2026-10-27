@@ -134,15 +134,16 @@ type Resolver struct {
 	logger         *slog.Logger
 	// rendering is the top-level file being rendered when provider values
 	// may not be rendered into it (the unit-file guard, guarded); nil
-	// otherwise. Set by withRender
-	// on the per-resolve copy resolveHostFileSet makes.
+	// otherwise. Set by withRender on the per-resolve copy
+	// resolveHostFileSet makes.
 	rendering *unitRender
 	// sopsFiles records the SOPS files this resolve's refs reached; set
 	// fresh on every per-resolve copy (forResolve), nil on the shared
 	// Resolver.
 	sopsFiles sopsFileSet
 	// sopsCalls counts this resolve's readSopsSecret/readSopsData calls
-	// (guardedSopsProvider), so buildFiles can tell which files read a SOPS value.
+	// (guardedSopsProvider), so buildFiles can tell which files read a
+	// SOPS value.
 	sopsCalls int
 	// keylessReader is this resolve's keyless SOPS reader (NewKeyless),
 	// built for its Host on the per-resolve copy; it serves the template
