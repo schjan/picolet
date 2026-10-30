@@ -12,8 +12,6 @@ import (
 	"github.com/schjan/picolet/pkg/state"
 )
 
-const restartCooldown = 5 * time.Minute
-
 // CheckResult holds the outcome of a health enforcement pass.
 type CheckResult struct {
 	Healthy   []string
@@ -83,7 +81,9 @@ func New(systemd applier.SystemdManager, opts ...Option) *Checker {
 // Enforce checks all managed units and restarts any that are failed, subject to
 // a per-unit restart cooldown. It also maintains st.PendingUnits: units observed
 // healthy are cleared, units whose restart fails are recorded, and records for
-// units no longer managed are pruned. The caller persists st after Enforce.
+// units no longer managed are pruned. Activation Obligations
+// (state.PendingUnit.IsObligation) are only reported: their units are neither
+// restarted nor their records cleared here. The caller persists st after Enforce.
 func (c *Checker) Enforce(ctx context.Context, st *state.State) (*CheckResult, error) {
 	result := &CheckResult{Statuses: make(map[string]applier.UnitStatus)}
 
@@ -99,19 +99,7 @@ func (c *Checker) Enforce(ctx context.Context, st *state.State) (*CheckResult, e
 			delete(c.lastRestart, unit)
 		}
 	}
-	// Restore the restart cooldown across an agent restart (a fresh Checker has
-	// an empty lastRestart map) and prune pending records for units that left
-	// the fleet — health-enforce, unlike the apply path, has no other signal
-	// that a unit was removed.
-	for unit, pu := range st.PendingUnits {
-		if !units[unit] {
-			delete(st.PendingUnits, unit)
-			continue
-		}
-		if pu.LastAttemptAt.After(c.lastRestart[unit]) {
-			c.lastRestart[unit] = pu.LastAttemptAt
-		}
-	}
+	c.restorePending(st, units)
 	result.Managed = slices.Sorted(maps.Keys(units))
 	for _, unit := range result.Managed {
 		c.enforceUnit(ctx, unit, st, result)
@@ -127,6 +115,23 @@ func (c *Checker) Enforce(ctx context.Context, st *state.State) (*CheckResult, e
 	return result, nil
 }
 
+// restorePending restores the restart cooldown across an agent restart (a
+// fresh Checker has an empty lastRestart map) and prunes pending records for
+// units that left the fleet — health-enforce, unlike the apply path, has no
+// other signal that a unit was removed. An Activation Obligation's attempts
+// are not health's restarts, so they set no cooldown here.
+func (c *Checker) restorePending(st *state.State, units map[string]bool) {
+	for unit, pu := range st.PendingUnits {
+		if !units[unit] {
+			delete(st.PendingUnits, unit)
+			continue
+		}
+		if !pu.IsObligation() && pu.LastAttemptAt.After(c.lastRestart[unit]) {
+			c.lastRestart[unit] = pu.LastAttemptAt
+		}
+	}
+}
+
 func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State, result *CheckResult) {
 	status, err := c.systemd.GetUnitStatus(ctx, unit)
 	if err != nil {
@@ -136,16 +141,7 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State,
 	}
 	result.Statuses[unit] = status
 
-	// Passive activator units (.timer/.socket/.target/.path) are never restarted:
-	// a timer at rest is active (waiting), and an enabled-but-inactive timer is
-	// expected between runs. Report status, clear any stale pending record, return.
-	if applier.IsPassiveUnit(unit) {
-		if status.ActiveState == "active" || status.ActiveState == "activating" {
-			result.Healthy = append(result.Healthy, unit)
-		} else {
-			result.Inactive = append(result.Inactive, unit)
-		}
-		delete(st.PendingUnits, unit)
+	if reportOnly(unit, status, st, result) {
 		return
 	}
 
@@ -179,6 +175,45 @@ func (c *Checker) enforceUnit(ctx context.Context, unit string, st *state.State,
 			return
 		}
 		c.maybeRestart(ctx, unit, st, result)
+	}
+}
+
+// reportOnly reports, without acting on it, a unit health must not restart
+// whatever its state, and reports whether it did:
+//   - A unit with an Activation Obligation belongs to the Agent's
+//     reconciliation (agent.RetryObligations). Clearing the record because
+//     the unit looks active, or restarting it here, would bypass its fresh
+//     decision, its cooldown and a pause, so the record is kept.
+//   - Passive activator units (.timer/.socket/.target/.path): a timer at rest
+//     is active (waiting), and an enabled-but-inactive timer is expected
+//     between runs. Any stale pending record is cleared.
+func reportOnly(unit string, status applier.UnitStatus, st *state.State, result *CheckResult) bool {
+	if st.PendingUnits[unit].IsObligation() {
+		reportObligationUnit(unit, status, result)
+		return true
+	}
+	if !applier.IsPassiveUnit(unit) {
+		return false
+	}
+	if status.ActiveState == "active" || status.ActiveState == "activating" {
+		result.Healthy = append(result.Healthy, unit)
+	} else {
+		result.Inactive = append(result.Inactive, unit)
+	}
+	delete(st.PendingUnits, unit)
+	return true
+}
+
+// reportObligationUnit classifies a unit with an outstanding Activation
+// Obligation for reporting, without acting on it.
+func reportObligationUnit(unit string, status applier.UnitStatus, result *CheckResult) {
+	switch status.ActiveState {
+	case "active", "activating":
+		result.Healthy = append(result.Healthy, unit)
+	case "failed":
+		result.Unhealthy = append(result.Unhealthy, unit)
+	default:
+		result.Inactive = append(result.Inactive, unit)
 	}
 }
 
@@ -244,8 +279,8 @@ func timerJobUnits(statuses map[string]applier.UnitStatus) []string {
 func (c *Checker) maybeRestart(ctx context.Context, unit string, st *state.State, result *CheckResult) {
 	if last, ok := c.lastRestart[unit]; ok {
 		elapsed := time.Since(last)
-		if elapsed < restartCooldown {
-			c.logger.Info("skipping restart, cooldown active", "unit", unit, "cooldown_remaining", (restartCooldown - elapsed).Round(time.Second))
+		if elapsed < applier.RestartCooldown {
+			c.logger.Info("skipping restart, cooldown active", "unit", unit, "cooldown_remaining", (applier.RestartCooldown - elapsed).Round(time.Second))
 			result.Skipped = append(result.Skipped, unit)
 			return
 		}

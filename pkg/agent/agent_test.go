@@ -560,7 +560,7 @@ func TestFinalizeApplyPrunesPendingUnitsForDeletedUnit(t *testing.T) {
 		Summary: map[reconciler.Action]int{reconciler.ActionDelete: 1},
 	}
 
-	_, err := a.finalizeApply("head-sha", st, store, changeset, &applier.ApplyResult{}, nil, refSecretsCounts{}, nil, nil)
+	_, err := a.finalizeApply(t.Context(), "head-sha", st, store, changeset, &applier.ApplyResult{}, nil, refSecretsCounts{}, nil, nil)
 	require.NoError(t, err)
 	assert.Empty(t, st.PendingUnits, "pending record for a unit removed from the fleet must be pruned")
 }

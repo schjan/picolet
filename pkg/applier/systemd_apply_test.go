@@ -11,6 +11,7 @@ import (
 	appliermocks "github.com/schjan/picolet/mocks/applier"
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/reconciler"
+	"github.com/schjan/picolet/pkg/state"
 )
 
 const timerWithInstall = "# Managed by picolet\n[Timer]\nOnCalendar=daily\n\n[Install]\nWantedBy=timers.target\n"
@@ -208,8 +209,9 @@ func TestApplyQuadletOneshotNoTriggerRestarted(t *testing.T) {
 
 // When the pre-restart status check fails, the quadlet one-shot is not restarted
 // (fail closed), the error surfaces on result.Errors, and the restart op is
-// recorded as "error" — NOT "skipped" (that bucket is for deliberate timer gating)
-// and NOT in FailedRestartUnits (so it does not trip the 3-strike gate).
+// recorded as "error" — NOT "skipped" (that bucket is for deliberate timer
+// gating). The unit is reported as an undecided Activation Obligation, not a
+// failed restart: nothing was executed, and the decision must be retried.
 func TestApplyQuadletOneshotStatusCheckErrorNotRestarted(t *testing.T) {
 	t.Parallel()
 	sys := appliermocks.NewMockSystemdManager(t)
@@ -234,6 +236,39 @@ func TestApplyQuadletOneshotStatusCheckErrorNotRestarted(t *testing.T) {
 	assert.Contains(t, result.SystemdUnitOps, applier.SystemdUnitOp{
 		Unit: "job.service", Operation: applier.SystemdOpRestart, Result: applier.SystemdOpResultError,
 	})
+	require.Len(t, result.Obligations, 1)
+	ob := result.Obligations[0]
+	assert.Equal(t, "job.service", ob.Unit)
+	assert.Equal(t, state.ActivationRestart, ob.Activation)
+	assert.True(t, ob.Undecided)
+	require.ErrorIs(t, ob.Err, assert.AnError)
+}
+
+// An eligible one-shot (no timer) whose required restart fails is an
+// Activation Obligation, not an ordinary failed restart: the health loop,
+// which clears inactive one-shots, must not own it.
+func TestApplyQuadletOneshotRestartFailureIsObligation(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "job.service").Return(applier.UnitStatus{
+		ActiveState: "inactive", SubState: "dead", ServiceType: "oneshot",
+	}, nil)
+	sys.EXPECT().RestartUnit(mock.Anything, "job.service").Return(assert.AnError)
+	a := applier.New(sys, appliermocks.NewMockPodmanClient(t), newMemFileWriter(), false, nil)
+
+	cs := systemdChangeset(reconciler.Change{
+		DestPath: "/etc/containers/systemd/picolet/job.container", Category: "container",
+		Action: reconciler.ActionUpdate, NewContent: quadletOneshot, ServiceName: "job.service",
+	})
+
+	result, err := a.Apply(context.Background(), cs)
+	require.NoError(t, err)
+	assert.Empty(t, result.FailedRestartUnits)
+	require.Len(t, result.Obligations, 1)
+	assert.Equal(t, "job.service", result.Obligations[0].Unit)
+	assert.False(t, result.Obligations[0].Undecided)
+	require.ErrorIs(t, result.Obligations[0].Err, assert.AnError)
 }
 
 const rawOneshotWithInstall = "# Managed by picolet\n[Service]\nType=oneshot\nExecStart=/bin/true\n\n[Install]\nWantedBy=multi-user.target\n"

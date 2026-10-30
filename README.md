@@ -1344,11 +1344,28 @@ Enable/disable/start/restart outcomes are exported as
 `picolet_systemd_unit_operations_total{operation,result}` — a restart skipped because
 the unit is a timer-triggered one-shot is recorded with `result="skipped"`.
 
-Two known one-shot edge cases are tracked but not yet handled:
+A changed one-shot (and a consumer of a rebuilt image) is restarted only after a
+fresh status check decides it may be: a timer-triggered one-shot is left to its
+timer. When that check fails (a transient D-Bus failure), picolet **fails closed**
+— it never runs the job on an unknown status — and records an **Activation
+Obligation** in `state.json` under `pending_units` (`reason:
+activation_undecided`, with the applied content hash, originating SHA, check
+count and last error). An eligible one-shot whose restart fails is recorded the
+same way (`reason: activation_failed`). The reconciliation stays incomplete
+(`retry_pending`; the last-successful timestamp is not advanced) until the
+obligation resolves. Once per poll interval — webhooks do not add checks, and
+an Agent restart keeps the cadence — the Agent resolves and applies the current
+Fleet, then decides again: a timer now owning the job fulfils the obligation
+without running it; otherwise the unit is restarted, at most once per 5-minute
+cooldown after a failed restart, and the obligation clears only on success. New
+content for the unit supersedes the obligation (its own apply decides afresh), an
+unrelated commit keeps it, and removing the unit cancels it. The health loop
+reports such a unit but never restarts it or clears its record, and a paused
+Agent does not retry it. `picolet apply` records obligations too and exits
+nonzero; a later `picolet apply`, even with no file changes, retries them.
 
-- A transient D-Bus failure during the pre-restart status check of a **non-timer**
-  one-shot fails closed (the restart is skipped and not retried), so a needed
-  restart-on-change can be silently lost ([#122](https://github.com/schjan/picolet/issues/122)).
+One known one-shot edge case is tracked but not yet handled:
+
 - Editing a running **daemon** in place into a `Type=oneshot` unit leaves the old
   daemon process running, since only the new content is inspected and `daemon-reload`
   does not stop it ([#123](https://github.com/schjan/picolet/issues/123)).
@@ -1471,7 +1488,9 @@ retrying the unit on every tick via health enforcement, subject to a 5-minute
 per-unit cooldown. The `pending_units` record and its cooldown survive an agent
 restart, and each pending unit is exposed as the `picolet_unit_restart_pending`
 gauge. A unit clears from `pending_units` once it is observed healthy or is
-removed from the fleet.
+removed from the fleet. One-shot activations are the exception: they are
+Activation Obligations (see [Raw systemd units](#raw-systemd-units-timers-sockets-services)), retried by the
+Agent's reconciliation rather than the health loop.
 
 For services whose config is mounted through Podman secrets, verify that the
 running container sees replaced secret content on your target Podman version.
