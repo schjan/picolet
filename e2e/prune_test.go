@@ -21,27 +21,26 @@ import (
 // TestE2EImagePrune exercises the production SocketPodmanClient.ImagePrune(all=true)
 // path against a real Podman socket.
 //
-// It is intentionally NOT parallel: `image prune -a` is host-global (it removes
-// every image not referenced by any container on the socket), so it must not run
-// concurrently with other e2e tests that pull or rely on images. The assertions
-// are made deterministic by checking specific image IDs rather than reclaimed
-// byte counts: a uniquely-built image with no container must be removed, while an
-// image referenced by a running container must survive.
+// `image prune -a` removes every image no container on the socket uses, so it
+// runs only against its scenario's own disposable store, which no other
+// scenario shares. The assertions are made deterministic by checking specific
+// image IDs rather than reclaimed byte counts: a uniquely-built image with no
+// container must be removed, while an image referenced by a running container
+// must survive.
 //
-//nolint:paralleltest // image prune -a is host-global; must not race other e2e image users
+//nolint:paralleltest // one scenario per process
 func TestE2EImagePrune(t *testing.T) {
-	socketPath := podmanSocketPath(t)
+	rt := isolatedRuntime(t)
+	socketPath := rt.PodmanSocket
 	ctx := context.Background()
 
 	const keepRef = "docker.io/library/alpine:3.23"
-	pruneRunPodman(t, "pull", keepRef)
+	requireImage(t, keepRef)
 	keepID := pruneImageID(t, keepRef)
 	require.NotEmpty(t, keepID, "keep image must resolve to an ID")
 
 	const keepName = "picolet-e2e-prune-keep"
-	_ = exec.Command("podman", "rm", "-f", keepName).Run() //nolint:gosec // fixed args, best-effort pre-clean
 	pruneRunPodman(t, "run", "-d", "--name", keepName, keepRef, "sleep", "600")
-	t.Cleanup(func() { _ = exec.Command("podman", "rm", "-f", keepName).Run() }) //nolint:gosec // fixed args
 
 	// A uniquely-tagged image not referenced by any container — the prune target.
 	unusedTag := fmt.Sprintf("localhost/picolet-e2e-prune-unused:%d", time.Now().UnixNano())
@@ -88,6 +87,5 @@ func pruneBuildUniqueImage(t *testing.T, tag, base string) {
 	cf := filepath.Join(dir, "Containerfile")
 	content := fmt.Sprintf("FROM %s\nRUN echo %s > /picolet-e2e-prune-marker\n", base, tag)
 	require.NoError(t, os.WriteFile(cf, []byte(content), 0o600))
-	t.Cleanup(func() { _ = exec.Command("podman", "rmi", "-f", tag).Run() }) //nolint:gosec // fixed args
 	pruneRunPodman(t, "build", "-t", tag, "-f", cf, dir)
 }

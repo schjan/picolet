@@ -28,29 +28,13 @@ import (
 	"github.com/schjan/picolet/pkg/metrics"
 	"github.com/schjan/picolet/pkg/orphan"
 	"github.com/schjan/picolet/pkg/reconciler"
-	"github.com/schjan/picolet/pkg/resolver"
 	"github.com/schjan/picolet/pkg/state"
 )
 
-func podmanSocketPath(t *testing.T) string {
-	t.Helper()
-	if s := os.Getenv("PODMAN_SOCKET"); s != "" {
-		s = strings.TrimPrefix(s, "unix:")
-		if _, err := os.Stat(s); err == nil { //nolint:gosec // env-controlled path in E2E test
-			return s
-		}
-	}
-	fallback := fmt.Sprintf("/run/user/%d/podman/podman.sock", os.Getuid())
-	if _, err := os.Stat(fallback); err != nil {
-		t.Fatal("podman socket not available: checked $PODMAN_SOCKET and", fallback)
-	}
-	return fallback
-}
-
-// ciBranch returns the git branch to clone.
-// In CI it uses GitHub env vars; locally it reads the current branch from git.
+// ciBranch returns the git branch to clone: the runner's local copy's branch,
+// in CI the GitHub env vars, else the current branch from git.
 func ciBranch() string {
-	if b := cmp.Or(os.Getenv("GITHUB_HEAD_REF"), os.Getenv("GITHUB_REF_NAME")); b != "" {
+	if b := cmp.Or(os.Getenv("PICOLET_E2E_BRANCH"), os.Getenv("GITHUB_HEAD_REF"), os.Getenv("GITHUB_REF_NAME")); b != "" {
 		return b
 	}
 	if out, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
@@ -62,11 +46,15 @@ func ciBranch() string {
 }
 
 // repoAuth returns the repo URL and token file path based on the environment.
-// In CI (GITHUB_TOKEN set), it uses HTTPS with token auth.
-// Locally (no token), it uses SSH so the user's SSH agent handles authentication.
+// In CI (GITHUB_TOKEN set), it uses HTTPS with token auth. Without a token
+// the runner passes a bare copy of the local HEAD (PICOLET_E2E_REPO_URL): a
+// scenario user has no SSH agent. Otherwise it uses SSH.
 func repoAuth(t *testing.T) (repoURL, tokenPath string) {
 	t.Helper()
 	token := os.Getenv("GITHUB_TOKEN")
+	if url := os.Getenv("PICOLET_E2E_REPO_URL"); token == "" && url != "" {
+		return url, ""
+	}
 	if token == "" {
 		return "git@github.com:schjan/picolet.git", ""
 	}
@@ -79,7 +67,11 @@ func repoAuth(t *testing.T) (repoURL, tokenPath string) {
 func TestE2EPipeline(t *testing.T) {
 	t.Parallel()
 
-	socketPath := podmanSocketPath(t)
+	rt := isolatedRuntime(t)
+	socketPath := rt.PodmanSocket
+	for _, image := range []string{"docker.io/library/alpine:3.22", "docker.io/library/alpine:3.23", "docker.io/library/alpine:3.24"} {
+		requireImage(t, image)
+	}
 	branch := ciBranch()
 	repoURL, tokenPath := repoAuth(t)
 
@@ -92,57 +84,17 @@ func TestE2EPipeline(t *testing.T) {
 	// Write the real secret value to the local secrets dir (secrets are never read from git)
 	require.NoError(t, os.WriteFile(filepath.Join(secretsDir, "e2e_secret.txt"), []byte("e2e-test-secret-data\n"), 0o600))
 
-	home, err := os.UserHomeDir()
-	require.NoError(t, err)
+	quadletDir := rt.QuadletDir
+	systemdDir := rt.SystemdDir
 
-	quadletDir := filepath.Join(home, ".config", "containers", "systemd", "picolet")
-	systemdDir := filepath.Join(home, ".config", "systemd", "user")
-
-	// Create clients in parent scope for cleanup and sub-test reuse.
-	// Use context.Background() because Podman bindings embed the connection in the
-	// context — t.Context() is cancelled before t.Cleanup runs, which would cause
-	// cleanup calls (SecretRemove, ContainerRemove) to silently fail.
+	// Clients for sub-test reuse. The runtime is disposable: the runner, not
+	// the test, removes what it leaves behind.
 	podman, err := applier.NewSocketPodmanClient(context.Background(), socketPath)
 	require.NoError(t, err)
 
 	systemd, err := applier.NewDBusSystemdManager(t.Context(), true)
 	require.NoError(t, err)
-
-	// Pre-cleanup: remove stale resources from a previous interrupted run.
-	// Without this, reconcile fails with "secret name in use" if e2e_secret persists.
-	preCtx, preCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	_ = podman.SecretRemove(preCtx, "e2e_secret")
-	_ = podman.ContainerRemove(preCtx, "picolet-e2e-test", true)
-	_ = podman.ContainerRemove(preCtx, "systemd-extra", true)
-	preCancel()
-
-	// Register cleanup on parent t so it runs after ALL sub-tests (including verify)
-	t.Cleanup(func() {
-		// Remove only files that picolet actually wrote, based on saved state
-		st, loadErr := state.NewStore(statePath).Load()
-		if loadErr == nil {
-			for destPath := range st.ManagedFiles {
-				if strings.HasPrefix(destPath, "secret:") {
-					continue
-				}
-				_ = os.Remove(destPath)
-			}
-		}
-		// Disable any enabled raw systemd units so their *.target.wants symlinks
-		// never leak (the file removal above does not remove enable symlinks).
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		for _, unit := range []string{"maintenance.timer", "custom.socket", "failing.timer"} {
-			_ = systemd.StopUnit(cleanupCtx, unit)
-			_ = systemd.DisableUnit(cleanupCtx, unit)
-		}
-		// Daemon-reload to clean up generated units and remove the container
-		_ = systemd.DaemonReload(cleanupCtx)
-		_ = podman.ContainerRemove(cleanupCtx, "picolet-e2e-test", true)
-		_ = podman.ContainerRemove(cleanupCtx, "systemd-extra", true)
-		_ = podman.SecretRemove(cleanupCtx, "e2e_secret")
-		systemd.Close()
-	})
+	t.Cleanup(systemd.Close)
 
 	// Shared state between sequential sub-tests
 	var headSHA string
@@ -271,7 +223,7 @@ func TestE2EPipeline(t *testing.T) {
 		st, err := store.Load()
 		require.NoError(t, err)
 
-		dataDir := filepath.Join(home, ".local", "share", "picolet")
+		dataDir := rt.DataDir
 
 		// 1. Plant orphan quadlet file (picolet-owned dir — all files safe to remove)
 		orphanQuadlet := filepath.Join(quadletDir, "orphan.container")
@@ -285,11 +237,9 @@ func TestE2EPipeline(t *testing.T) {
 		// 3. Plant foreign systemd file WITHOUT marker — must NOT be removed
 		foreignSystemd := filepath.Join(systemdDir, "foreign.service")
 		require.NoError(t, os.WriteFile(foreignSystemd, []byte("[Unit]\nDescription=foreign\n"), 0o644))
-		t.Cleanup(func() { _ = os.Remove(foreignSystemd) })
 
 		// 4. Create orphan Podman secret (labeled managed-by=picolet by SecretCreate)
 		require.NoError(t, podman.SecretCreate(ctx, "e2e_orphan_secret", []byte("orphan-data"), false))
-		t.Cleanup(func() { _ = podman.SecretRemove(context.Background(), "e2e_orphan_secret") })
 
 		// Check if Podman supports secret labels (older versions silently ignore them).
 		// ListManagedSecrets relies on the managed-by=picolet label to identify orphans.
@@ -343,6 +293,13 @@ func TestE2EPipeline(t *testing.T) {
 			assert.NotContains(t, content, "{{", "template markers should be fully rendered")
 		})
 
+		t.Run("services_generated", func(t *testing.T) {
+			assertGeneratedFrom(t, rt, "simple.service", filepath.Join(quadletDir, "simple.container"))
+			assertGeneratedFrom(t, rt, "internal-network.service", filepath.Join(quadletDir, "internal.network"))
+			assert.Equal(t, filepath.Join(systemdDir, "custom.socket"), unitProperty(t, "custom.socket", "FragmentPath"),
+				"the raw unit should load from the user's standard unit dir")
+		})
+
 		t.Run("base_resources_written", func(t *testing.T) {
 			networkFile := filepath.Join(quadletDir, "internal.network")
 			data, err := os.ReadFile(networkFile)
@@ -379,8 +336,9 @@ func TestE2EPipeline(t *testing.T) {
 			assert.NotEmpty(t, st.ManagedFiles, "managed files should be non-empty")
 			assert.Contains(t, st.ManagedFiles, "secret:e2e_secret", "should contain e2e_secret")
 
-			simpleContainerKey := filepath.Join(home, ".config", "containers", "systemd", "picolet", "simple.container")
+			simpleContainerKey := filepath.Join(quadletDir, "simple.container")
 			assert.Contains(t, st.ManagedFiles, simpleContainerKey, "should contain simple.container path")
+			assertStateInRuntime(t, rt, st)
 
 			assert.Empty(t, st.FailedSHA, "failed SHA should be empty")
 
@@ -1000,9 +958,6 @@ WantedBy=default.target
 			defer cancel()
 
 			secretName := fmt.Sprintf("picolet-e2e-%d", time.Now().UnixNano())
-			t.Cleanup(func() {
-				_ = podman.SecretRemove(context.Background(), secretName)
-			})
 
 			// 1. Secret should not exist initially
 			exists, err := podman.SecretExists(ctx, secretName)
@@ -1090,6 +1045,7 @@ func e2eAssignments(e2eContainers []string, withSecret bool, extraSystemd ...str
 // call succeeds over that connection.
 func TestE2ESystemdPrivateSocket(t *testing.T) {
 	t.Parallel()
+	isolatedRuntime(t)
 
 	m, err := applier.NewDBusSystemdManager(t.Context(), true)
 	require.NoError(t, err, "should connect to user systemd private socket")
@@ -1097,45 +1053,4 @@ func TestE2ESystemdPrivateSocket(t *testing.T) {
 
 	err = m.DaemonReload(t.Context())
 	require.NoError(t, err, "DaemonReload should succeed over the private socket connection")
-}
-
-// TestE2EResolverRootlessPaths verifies rootless path resolution produces correct paths.
-func TestE2EResolverRootlessPaths(t *testing.T) {
-	t.Parallel()
-
-	home, err := os.UserHomeDir()
-	require.NoError(t, err)
-
-	// `go test` sets CWD to this package dir (./e2e); testdata lives at the repo root.
-	repoFS := os.DirFS("../testdata/example-fleet")
-	cfg, err := config.LoadAll(repoFS)
-	require.NoError(t, err)
-
-	r, err := resolver.New(resolver.Config{FS: repoFS, Config: cfg, Rootless: true})
-	require.NoError(t, err)
-	resolved, err := r.ResolveHost(t.Context(), "e2e-host")
-	require.NoError(t, err)
-
-	destPaths := make(map[string]bool, len(resolved.Files))
-	for _, f := range resolved.Files {
-		destPaths[f.DestPath] = true
-	}
-
-	quadletDir := filepath.Join(home, ".config", "containers", "systemd", "picolet")
-	systemdDir := filepath.Join(home, ".config", "systemd", "user")
-
-	assert.Contains(t, destPaths, filepath.Join(quadletDir, "simple.container"),
-		"simple.container should be in rootless quadlet dir")
-	assert.Contains(t, destPaths, filepath.Join(quadletDir, "internal.network"),
-		"internal.network should be in rootless quadlet dir")
-	assert.Contains(t, destPaths, filepath.Join(systemdDir, "custom.socket"),
-		"custom.socket should be in rootless systemd dir")
-
-	for _, f := range resolved.Files {
-		if strings.HasPrefix(f.DestPath, "secret:") {
-			continue
-		}
-		assert.NotContains(t, f.DestPath, "/etc/", "rootless paths should not use /etc/")
-		assert.NotContains(t, f.DestPath, "/var/lib/", "rootless paths should not use /var/lib/")
-	}
 }

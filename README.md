@@ -36,7 +36,30 @@ task build          # native binary
 task build-arm64    # cross-compile for RPi
 task test           # run tests
 task lint           # go vet + gofmt
+task e2e            # E2E scenarios against real systemd and Podman (below)
 ```
+
+### E2E tests
+
+The E2E scenarios in `e2e/` drive the real CLI and Agent against real systemd
+and Podman, so they write to the standard rootless destinations
+(`~/.config/containers/systemd/picolet`, `~/.config/systemd/user`,
+`~/.local/share/picolet`), daemon-reload the user manager and scan and prune
+the Podman store. They therefore never run as you: `task e2e`
+(`scripts/e2e.sh`) creates a disposable Linux user per scenario, with its own
+home, lingering user systemd manager, Podman store and socket, runs the
+scenario as that user, and then removes the user, its home, processes and
+subordinate IDs again. It needs Linux with systemd, Podman >= 5.2, `useradd`
+that allocates subordinate IDs, and `sudo` (it builds as you and uses root only
+to provision and dispose). A scenario started any other way (`go test -tags
+e2e ./e2e`) refuses to run before touching anything.
+
+Each allocation is recorded in `/var/lib/picolet-e2e/<id>/` before its user is
+created; after an interrupted run, `task e2e:recover` disposes of what that run
+left. `E2E_RUN=<regexp>` selects scenarios, `E2E_KEEP=1` keeps the runtimes
+for debugging, and the logs of every scenario land in `e2e-logs/`. Without
+`GITHUB_TOKEN`, `TestE2EPipeline` clones a copy of your local `HEAD` (commit
+changes to `testdata/example-fleet` first).
 
 ### Validate & Resolve
 
