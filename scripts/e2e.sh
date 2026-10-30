@@ -123,9 +123,11 @@ runner_pid=$$
 uid=$uid
 " &&
 			root grep -q "^$id:" /etc/subuid /etc/subgid &&
+			pin_manager_env "$id" "$uid" &&
 			root loginctl enable-linger "$id" &&
 			root timeout "$STEP_TIMEOUT" systemctl start "user@$uid.service" &&
 			wait_for 30 root test -S "/run/user/$uid/bus" &&
+			manager_env_ok "$id" &&
 			as_user "$id" mkdir -p "$home/tmp" &&
 			as_user "$id" timeout "$STEP_TIMEOUT" systemctl --user start podman.socket &&
 			wait_for 30 root test -S "/run/user/$uid/podman/podman.sock" &&
@@ -134,6 +136,45 @@ uid=$uid
 		log "$scenario: provisioning $id failed"
 		return 1
 	}
+}
+
+# The user manager's own environment comes from PAM and the Machine's
+# environment files, which may name another user's runtime (GitHub's runner
+# image puts the runner's XDG_RUNTIME_DIR there); its generators, Quadlet's
+# included, see only that environment. A drop-in starts the manager with the
+# allocated user's runtime and none of the XDG base-dir overrides.
+readonly MANAGER_UNSET="XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME"
+manager_dropin() { echo "/etc/systemd/system/user@$1.service.d/picolet-e2e.conf"; }
+
+pin_manager_env() { # pin_manager_env <id> <uid>
+	local id=$1 uid=$2 dropin unset="" var
+	dropin=$(manager_dropin "$uid")
+	for var in $MANAGER_UNSET; do unset+=" -u $var"; done
+	[[ -x /usr/lib/systemd/systemd ]] || {
+		log "no /usr/lib/systemd/systemd to start the user manager with"
+		return 1
+	}
+	root install -d -m 0755 "$(dirname "$dropin")" &&
+		printf '%s\n' "# picolet-e2e allocation $id" "[Service]" "ExecStart=" \
+			"ExecStart=/usr/bin/env$unset XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus /usr/lib/systemd/systemd --user" |
+		root tee "$dropin" >/dev/null &&
+		root systemctl daemon-reload
+}
+
+# manager_env_ok <id>: the running user manager hands its units the
+# allocated runtime and no XDG base-dir override (environment.d generators
+# may add some after start; they are unset here).
+manager_env_ok() {
+	local id=$1 uid env
+	uid=$(record_get "$id" uid)
+	# shellcheck disable=SC2086 # one variable per word
+	as_user "$id" systemctl --user unset-environment $MANAGER_UNSET || return 1
+	env=$(as_user "$id" systemctl --user show-environment) || return 1
+	if ! grep -qx "XDG_RUNTIME_DIR=/run/user/$uid" <<<"$env" || grep -qE "^(${MANAGER_UNSET// /|})=" <<<"$env"; then
+		log "$id: the user manager's environment is not the allocated runtime's:"
+		printf '%s\n' "$env" >&2
+		return 1
+	fi
 }
 
 # no_processes <uid>: true when uid runs no process; a failing pgrep (not
@@ -176,6 +217,13 @@ dispose() {
 		}
 		root timeout "$STEP_TIMEOUT" systemctl stop "user-runtime-dir@$uid.service" || failed=1
 		root timeout "$STEP_TIMEOUT" find /tmp /var/tmp /dev/shm -xdev -uid "$uid" -delete 2>/dev/null || true
+	fi
+	# The drop-in goes while the account still holds the uid (a parallel
+	# useradd may reuse it once userdel frees it), and only if it is ours.
+	if ((failed == 0)) && [[ -n $uid ]] && root grep -qx "# picolet-e2e allocation $id" "$(manager_dropin "$uid")" 2>/dev/null; then
+		root rm -f "$(manager_dropin "$uid")" &&
+			root rmdir --ignore-fail-on-non-empty "$(dirname "$(manager_dropin "$uid")")" &&
+			root systemctl daemon-reload || failed=1
 	fi
 	if ((failed == 0)) && getent passwd "$id" >/dev/null; then
 		# Exit 12: the mail spool was missing; the account is still removed.
