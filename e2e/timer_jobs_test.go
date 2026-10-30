@@ -90,7 +90,7 @@ features: []
 		filepath.Join("systemd", "e2e-job-fail.timer"):   timer("picolet e2e fail timer", "e2e-job-fail.service"),
 	}
 	for name, content := range files {
-		require.NoError(t, os.WriteFile(filepath.Join(fleetDir, name), []byte(content), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(fleetDir, name), []byte(content), 0o600))
 	}
 }
 
@@ -287,7 +287,7 @@ func TestE2ETimerJobRunMetrics(t *testing.T) {
 
 	t.Run("removal_prunes_records", func(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(fleetDir, "assignments.yml"),
-			[]byte("base: {}\nroles:\n  job: {}\n"), 0o644))
+			[]byte("base: {}\nroles:\n  job: {}\n"), 0o600))
 		st, err := stateStore.Load()
 		require.NoError(t, err)
 		_, err = a.ReconcileOnce(ctx, "timer-jobs-removed-sha", st, stateStore)

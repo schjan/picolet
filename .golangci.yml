@@ -1,4 +1,18 @@
 version: "2"
+run:
+  # The one lint tag set for CI, `task lint` and a bare `golangci-lint run`
+  # (none passes --build-tags): the shared BUILD_TAGS of Taskfile.yml and
+  # .github/workflows/ci.yml, plus the test-only tags so the E2E and provider
+  # integration sources are type-checked and linted. Linting runs no tests.
+  build-tags:
+    - remote
+    - containers_image_openpgp
+    - exclude_graphdriver_btrfs
+    - btrfs_noversion
+    - exclude_graphdriver_devicemapper
+    - e2e
+    - onepassword_integration
+    - protonpass_integration
 linters:
   enable:
     - asciicheck
