@@ -39,9 +39,9 @@ func TestE2EImagePrune(t *testing.T) {
 	require.NotEmpty(t, keepID, "keep image must resolve to an ID")
 
 	const keepName = "picolet-e2e-prune-keep"
-	_ = exec.Command("podman", "rm", "-f", keepName).Run() //nolint:gosec // fixed args, best-effort pre-clean
+	_ = exec.Command("podman", "rm", "-f", keepName).Run()
 	pruneRunPodman(t, "run", "-d", "--name", keepName, keepRef, "sleep", "600")
-	t.Cleanup(func() { _ = exec.Command("podman", "rm", "-f", keepName).Run() }) //nolint:gosec // fixed args
+	t.Cleanup(func() { _ = exec.Command("podman", "rm", "-f", keepName).Run() })
 
 	// A uniquely-tagged image not referenced by any container — the prune target.
 	unusedTag := fmt.Sprintf("localhost/picolet-e2e-prune-unused:%d", time.Now().UnixNano())
@@ -65,7 +65,7 @@ func TestE2EImagePrune(t *testing.T) {
 
 func pruneRunPodman(t *testing.T, args ...string) string {
 	t.Helper()
-	out, err := exec.Command("podman", args...).CombinedOutput() //nolint:gosec // test-controlled args
+	out, err := exec.Command("podman", args...).CombinedOutput()
 	require.NoError(t, err, "podman %s: %s", strings.Join(args, " "), out)
 	return string(out)
 }
@@ -77,7 +77,7 @@ func pruneImageID(t *testing.T, ref string) string {
 
 func pruneImageExists(t *testing.T, id string) bool {
 	t.Helper()
-	return exec.Command("podman", "image", "exists", id).Run() == nil //nolint:gosec // test-controlled args
+	return exec.Command("podman", "image", "exists", id).Run() == nil
 }
 
 // pruneBuildUniqueImage builds a small image with a unique layer (so its ID is
@@ -88,6 +88,6 @@ func pruneBuildUniqueImage(t *testing.T, tag, base string) {
 	cf := filepath.Join(dir, "Containerfile")
 	content := fmt.Sprintf("FROM %s\nRUN echo %s > /picolet-e2e-prune-marker\n", base, tag)
 	require.NoError(t, os.WriteFile(cf, []byte(content), 0o600))
-	t.Cleanup(func() { _ = exec.Command("podman", "rmi", "-f", tag).Run() }) //nolint:gosec // fixed args
+	t.Cleanup(func() { _ = exec.Command("podman", "rmi", "-f", tag).Run() })
 	pruneRunPodman(t, "build", "-t", tag, "-f", cf, dir)
 }

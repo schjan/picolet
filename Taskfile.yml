@@ -40,7 +40,7 @@ tasks:
   lint:
     desc: Run golangci-lint
     cmds:
-      - golangci-lint run --build-tags "{{.BUILD_TAGS}}"
+      - golangci-lint run
 
   vulncheck:
     desc: Run govulncheck with the build tags (exclusions in .github/govulncheck-exclusions.txt; needs jq)
@@ -55,7 +55,7 @@ tasks:
   lint:fix:
     desc: Run golangci-lint fix
     cmds:
-      - golangci-lint run --build-tags "{{.BUILD_TAGS}}" --fix
+      - golangci-lint run --fix
 
   fmt:
     desc: Run all formatters (gofumpt + gci via golangci-lint)
