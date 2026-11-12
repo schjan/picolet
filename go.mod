@@ -7,7 +7,7 @@ require (
 	github.com/1password/onepassword-sdk-go v0.4.1
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/bradleyfalzon/ghinstallation/v2 v2.19.0
-	github.com/containers/podman/v5 v5.8.9
+	github.com/containers/podman/v5 v5.8.10
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/eclipse/paho.golang v0.23.0
 	github.com/getsops/sops/v3 v3.13.3
@@ -263,9 +263,9 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.9.0 // indirect
-	go.podman.io/common v0.67.2 // indirect
-	go.podman.io/image/v5 v5.39.3 // indirect
-	go.podman.io/storage v1.62.2 // indirect
+	go.podman.io/common v0.67.3 // indirect
+	go.podman.io/image/v5 v5.39.4 // indirect
+	go.podman.io/storage v1.62.3 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
