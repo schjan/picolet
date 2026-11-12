@@ -178,8 +178,8 @@ github.com/containers/libtrust v0.0.0-20230121012942-c1716e8a8d01 h1:Qzk5C6cYgle
 github.com/containers/libtrust v0.0.0-20230121012942-c1716e8a8d01/go.mod h1:9rfv8iPl1ZP7aqh9YA68wnZv2NUDbXdcdPHVz0pFbPY=
 github.com/containers/ocicrypt v1.2.1 h1:0qIOTT9DoYwcKmxSt8QJt+VzMY18onl9jUXsxpVhSmM=
 github.com/containers/ocicrypt v1.2.1/go.mod h1:aD0AAqfMp0MtwqWgHM1bUwe1anx0VazI108CRrSKINQ=
-github.com/containers/podman/v5 v5.8.9 h1:THnIN7Tb9gwjI3pWxGorVIJUf+G0iI5FrrtdzMse5i8=
-github.com/containers/podman/v5 v5.8.9/go.mod h1:tf4ocKeQick9SGGIML4XXqI25KzDUUEU6i+3fDAUC+E=
+github.com/containers/podman/v5 v5.8.10 h1:oW0DQtqEgNin1i4AlEuBsl5WJFB9gXbsM9FHQDBknts=
+github.com/containers/podman/v5 v5.8.10/go.mod h1:iqaZ03kv6Cf/k7KSQ8qElEhLSL0Kaj+mxjF0432gACc=
 github.com/containers/psgo v1.9.1-0.20250826150930-4ae76f200c86 h1:bYj0TVlkRZtMJYd6SbFOi1gjUJDJmVsYCpJla3URD7Y=
 github.com/containers/psgo v1.9.1-0.20250826150930-4ae76f200c86/go.mod h1:52GX23ST30pXpeviDvNpOCXoHqr+WJDv+7BjEH+AabY=
 github.com/coreos/go-systemd/v22 v22.5.0/go.mod h1:Y58oyj3AT4RCenI/lSvhwexgC+NSVTIJ3seZv2GcEnc=
@@ -674,10 +674,10 @@ go.opentelemetry.io/otel/trace v1.45.0 h1:l/mP6Uv7oNO7/TblbhpbgMidxhq1uO/rPsikOy
 go.opentelemetry.io/otel/trace v1.45.0/go.mod h1:qoJJA2xNMnxRrdISU/kLtfUH2wNeQbiv+jhs/CxI8bc=
 go.opentelemetry.io/proto/otlp v1.9.0 h1:l706jCMITVouPOqEnii2fIAuO3IVGBRPV5ICjceRb/A=
 go.opentelemetry.io/proto/otlp v1.9.0/go.mod h1:xE+Cx5E/eEHw+ISFkwPLwCZefwVjY+pqKg1qcK03+/4=
-go.podman.io/common v0.67.2 h1:KILR5FeM9IWuiC+uxsn9cywRvGRe8x5Ef/2pZMNuzs0=
-go.podman.io/common v0.67.2/go.mod h1:iuw00Iez1A+2mVCgOjQEJJ423CobRnQr8qTndUQ96FU=
-go.podman.io/image/v5 v5.39.3 h1:VZ8Vah+p41u10Bm2ydQ6puciAieBZhk90RReM7Ffins=
-go.podman.io/image/v5 v5.39.3/go.mod h1:8y15CE/Vj/DGOS20z+sHlvSrX9zr5WUst5OIPVwCHd0=
+go.podman.io/common v0.67.3 h1:exDh0/S/oeIIINU667fgG6LpZVHG+eMxRHFvhJ6q9S8=
+go.podman.io/common v0.67.3/go.mod h1:jvwBEFs/wi0crc/9YWhvscmcHAc+OusneFs64AiRFeA=
+go.podman.io/image/v5 v5.39.4 h1:PKyQKRodsgDwGOZUK1gGdfTm0VNw93plhJ/SZPXM2Eg=
+go.podman.io/image/v5 v5.39.4/go.mod h1:2I84A+u6O/r0V5RzU7+CjgUgoX2YjTsFHWnjxgIsObI=
 go.podman.io/storage v1.62.1-0.20260507172113-abe824d0032c h1:ro6IeBisDFGZX1WUV0+wy3ALgZdm0rdACK/A6DMWAOY=
 go.podman.io/storage v1.62.1-0.20260507172113-abe824d0032c/go.mod h1:eZIqDigffFi9NlPezLvUVw/nsUIruaui436E5E4GmXs=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
