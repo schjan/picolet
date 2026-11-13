@@ -601,7 +601,9 @@ func TestValidateFileTruthTable(t *testing.T) {
 		{name: "uppercase yml validates", srcPath: "files/Mixed.YML", content: "scrape_configs: []\n"},
 		{name: "uppercase yaml tmpl validates", srcPath: "files/Mixed.YAML.TMPL", content: "scrape_configs: []\n"},
 		{name: "yml invalid fails", srcPath: "files/bad.yml", content: "scrape_configs: [\n - broken\n", wantErr: "YAML parse error"},
-		{name: "yml.tmpl validates rendered", srcPath: "files/x.yml.tmpl", content: ":\n  - bad\n", wantErr: "YAML parse error"},
+		{name: "yml.tmpl validates rendered", srcPath: "files/x.yml.tmpl", content: "invalid: [yaml: broken\n", wantErr: "YAML parse error"},
+		// An omitted mapping key resolves to null and is valid YAML.
+		{name: "yml.tmpl null mapping key passes", srcPath: "files/null-key.yml.tmpl", content: ":\n  - bad\n"},
 		{name: "empty file passes", srcPath: "files/empty.yml", content: ""},
 		{name: "whitespace-only yml passes", srcPath: "files/blank.yml", content: " \n\t\n"},
 		{name: "non-yaml extension skips validation", srcPath: "files/raw.bin", content: "\x00\x01not yaml\x02"},
