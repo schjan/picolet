@@ -17,6 +17,7 @@ import (
 
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/reconciler"
+	"github.com/schjan/picolet/pkg/state"
 	"github.com/schjan/picolet/pkg/status"
 )
 
@@ -208,6 +209,12 @@ type ApplyResult struct {
 	// The agent records these in state.PendingUnits and treats the apply as
 	// incomplete (retry_pending) so the SHA is not reported as a clean success.
 	FailedRestartUnits []string
+
+	// Obligations names units whose required activation (a changed
+	// one-shot's, a rebuilt image consumer's decision) did not complete. The
+	// agent persists them as Activation Obligations (state.PendingUnits) and
+	// retries them itself; they make the apply incomplete.
+	Obligations []ActivationObligation
 
 	// PendingHookNames holds names of keep_running hooks that errored and should
 	// retry on the next tick. Populated only when RetryableErrors is non-empty.
@@ -818,10 +825,11 @@ func (a *Applier) restartEach(units []string, restart func(unit string)) (selfRe
 	return selfRestarts
 }
 
-// restartChangedUnit restarts one changed quadlet unit and records the outcome. A
-// one-shot the timer gate declines is left alone (see skipTimerTriggeredRestart).
+// restartChangedUnit restarts one changed quadlet unit and records the outcome.
+// A one-shot goes through the activation decision instead (restartOneshot).
 func (a *Applier) restartChangedUnit(ctx context.Context, unit string, oneshot bool, result *ApplyResult) {
-	if oneshot && a.skipTimerTriggeredRestart(ctx, unit, result) {
+	if oneshot {
+		a.restartOneshot(ctx, unit, result)
 		return
 	}
 	a.logger.Info("restarting unit", "unit", unit)
@@ -839,31 +847,33 @@ func recordRestart(unit string, err error, result *ApplyResult) {
 	result.RestartedUnits = append(result.RestartedUnits, unit)
 }
 
-// skipTimerTriggeredRestart reports whether a changed one-shot unit must be left
-// alone rather than restarted: a .timer activates it, so a restart would run the
-// job on a content edit (defect 2). Only content-derived one-shots reach here, so
-// no daemon restart is ever delayed. Two skip reasons, recorded distinctly:
-//   - timer-triggered → result "skipped" (a deliberate gate).
-//   - a GetUnitStatus error → result "error" plus result.Errors (a status-check
-//     failure, kept out of the "skipped" bucket so the metric isn't misleading);
-//     still fails closed so a transient D-Bus blip never runs the job, and still
-//     NOT in FailedRestartUnits so it does not trip the 3-strike gate.
-func (a *Applier) skipTimerTriggeredRestart(ctx context.Context, unit string, result *ApplyResult) bool {
-	status, err := a.systemd.GetUnitStatus(ctx, unit)
+// restartOneshot activates a changed one-shot unit: a .timer that activates
+// it owns its execution, so a restart would run the job on a content edit
+// (defect 2) and it is skipped (result "skipped"); otherwise it is restarted.
+// Only content-derived one-shots reach here, so no daemon restart is ever
+// delayed. A status-check failure fails closed (a transient D-Bus blip never
+// runs the job): result "error", and an undecided Activation Obligation
+// rather than a failed restart, so the decision is retried later. A failed
+// restart is an obligation too: the health loop, which leaves inactive
+// one-shots alone, must not own it.
+func (a *Applier) restartOneshot(ctx context.Context, unit string, result *ApplyResult) {
+	step, _, err := a.decideActivation(ctx, unit, state.ActivationRestart)
 	if err != nil {
 		a.logger.Warn("skipping one-shot restart: status check failed", "unit", unit, "error", err)
-		result.Errors = append(result.Errors, fmt.Errorf("checking %s before restart: %w", unit, err))
-		result.SystemdUnitOps = append(result.SystemdUnitOps,
-			SystemdUnitOp{Unit: unit, Operation: SystemdOpRestart, Result: SystemdOpResultError})
-		return true
+		recordUndecided(unit, state.ActivationRestart, err, result)
+		return
 	}
-	if !TimerTriggered(status) {
-		return false
+	if step == stepSkip {
+		a.logger.Info("skipping restart of timer-triggered one-shot", "unit", unit)
+		recordSkip(unit, result)
+		return
 	}
-	a.logger.Info("skipping restart of timer-triggered one-shot", "unit", unit)
-	result.SystemdUnitOps = append(result.SystemdUnitOps,
-		SystemdUnitOp{Unit: unit, Operation: SystemdOpRestart, Result: SystemdOpResultSkipped})
-	return true
+	a.logger.Info("restarting unit", "unit", unit)
+	if err := a.executeActivation(ctx, unit, step); err != nil {
+		recordFailedActivation(unit, state.ActivationRestart, err, result)
+		return
+	}
+	result.RestartedUnits = append(result.RestartedUnits, unit)
 }
 
 // activateSystemdUnits runs the enable/start/restart operations for raw systemd

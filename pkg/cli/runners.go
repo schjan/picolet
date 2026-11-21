@@ -568,13 +568,51 @@ func applyWithRollback(
 		}
 		slog.Warn("non-fatal apply error", "error", e)
 	}
-	// Failed managed restarts too: with no pending bookkeeping here, saving
-	// state would leave them unretried; not saving makes the next apply retry.
+	// Failed managed restarts and hooks too: with no health loop or hook
+	// bookkeeping here, saving state would leave them unretried; not saving
+	// makes the next apply retry. Activation Obligations are the exception
+	// (onlyObligations): runApply records them, and the next apply retries
+	// them even with an empty diff.
 	if err := agent.ApplyIncompleteError(result, changeset); err != nil {
 		return result, err
 	}
 
 	return result, nil
+}
+
+// onlyObligations reports whether an incomplete apply's only outstanding
+// work is Activation Obligations, which `picolet apply` records and resumes.
+func onlyObligations(result *applier.ApplyResult, changeset *reconciler.Changeset) bool {
+	rest := *result
+	rest.Obligations = nil
+	return len(result.Obligations) > 0 && agent.ApplyIncompleteError(&rest, changeset) == nil
+}
+
+// recordCLIApply records an apply (or, with an empty changeset, only the
+// retry of outstanding obligations) in st under sha, retries the
+// obligations this apply did not just decide, and saves st. It returns
+// agent.PendingConvergenceError when work remains: the apply is incomplete
+// and exits nonzero, and the next apply resumes it.
+func recordCLIApply(ctx context.Context, store *state.Store, st *state.State, changeset *reconciler.Changeset,
+	result *applier.ApplyResult, sha string, systemd applier.SystemdManager, podman applier.PodmanClient,
+) error {
+	now := time.Now()
+	if result != nil {
+		agent.RecordApplyResult(st, changeset, result, sha, now)
+	}
+	app := applier.New(systemd, podman, applier.NewAtomicFileWriter(), false, nil)
+	// A second's cadence skips the obligations this apply just decided.
+	agent.RetryObligations(ctx, app, st, now, time.Second, slog.Default())
+	pendingErr := agent.PendingConvergenceError(st)
+	if pendingErr != nil {
+		st.MarkAppliedIncomplete(sha)
+	} else {
+		st.MarkApplied(sha)
+	}
+	if err := store.Save(st); err != nil {
+		return errors.Join(pendingErr, fmt.Errorf("saving state: %w", err))
+	}
+	return pendingErr
 }
 
 // applyNoSopsHint is the fix a sops:// ref failing `picolet apply` names,
@@ -618,7 +656,7 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 	}
 
 	changeset := reconciler.Diff(files, st)
-	if !changeset.HasChanges() {
+	if !changeset.HasChanges() && !st.HasObligations() {
 		slog.Info("no changes to apply")
 		return nil
 	}
@@ -649,18 +687,23 @@ func runApply(ctx context.Context, configPath, repoDir, hostname string) error {
 		return fmt.Errorf("connecting to podman: %w", err)
 	}
 
+	if !changeset.HasChanges() {
+		// Files match, but an earlier apply left Activation Obligations.
+		slog.Info("no changes to apply, retrying outstanding activations")
+		return scrub(recordCLIApply(ctx, store, st, changeset, nil, st.AppliedSHA, systemd, podman))
+	}
+
 	result, err := applyWithRollback(ctx, changeset, systemd, podman, resolved.Hooks, deps,
 		resolved.DataDir, resolved.HostDataDir)
-	if err != nil {
+	if err != nil && (!errors.Is(err, applier.ErrApplyIncomplete) || !onlyObligations(result, changeset)) {
 		return scrub(err)
 	}
 
 	slog.Info("apply complete", "applied", result.Applied, "restarted", result.RestartedUnits,
 		"skipped_oneshot_restarts", result.SkippedRestarts())
 
-	st.MarkApplied(fmt.Sprintf("local-%d", time.Now().Unix()))
-	agent.UpdateState(st, changeset)
-	return store.Save(st)
+	sha := fmt.Sprintf("local-%d", time.Now().Unix())
+	return scrub(recordCLIApply(ctx, store, st, changeset, result, sha, systemd, podman))
 }
 
 func runDown(ctx context.Context, configPath string) error { //nolint:cyclop // sequential teardown with lock, state, system clients, and apply result handling.

@@ -527,8 +527,10 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	// retried them this tick (and persisted any change above). Report
 	// retry_pending — NOT a clean noop — so the SHA is not treated as fully
 	// converged and LastSuccessfulReconciliationAt is not advanced. Units are
-	// retried by health-enforce, so no ReconcileOnce is needed here.
-	if !pollResult.Changed && !a.opRefreshDue() && !a.ppRefreshDue() && len(st.PendingHooks) == 0 {
+	// retried by health-enforce, so no ReconcileOnce is needed here. An
+	// Activation Obligation is not health's: it is retried by ReconcileOnce,
+	// after the current desired state is resolved and applied.
+	if !pollResult.Changed && !a.opRefreshDue() && !a.ppRefreshDue() && len(st.PendingHooks) == 0 && !st.HasObligations() {
 		metrics.GitPollTotal.WithLabelValues("pending_unit_retry").Inc()
 		metrics.ReconciliationTotal.WithLabelValues("retry_pending").Inc()
 		a.logger.Warn("apply incomplete, units still failing to restart",
@@ -540,6 +542,9 @@ func (a *Agent) tick(ctx context.Context, poller *gitpoll.Poller, store *state.S
 	switch {
 	case pollResult.Changed:
 		metrics.GitPollTotal.WithLabelValues("changed").Inc()
+	case st.HasObligations():
+		a.logger.Info("forcing reconciliation for pending activation retry", "sha", pollResult.HeadSHA)
+		metrics.GitPollTotal.WithLabelValues("pending_activation_retry").Inc()
 	case len(st.PendingHooks) > 0:
 		// Pending-hook retry takes priority over secret-provider refresh in the
 		// label even when both apply: the retry is the actionable reason this
@@ -844,7 +849,7 @@ func (a *Agent) reconcileResolved(ctx context.Context, headSHA string, st *state
 		if len(st.PendingHooks) > 0 {
 			return a.retryPendingHooks(ctx, resolved, st, store, changeset, counts, sopsReader)
 		}
-		return a.reconcileNoChanges(headSHA, resolved, sopsReader, changeset, st, store, counts)
+		return a.reconcileNoChanges(ctx, headSHA, resolved, sopsReader, changeset, st, store, counts)
 	}
 
 	a.logger.Info("changes detected",
@@ -872,16 +877,15 @@ func (a *Agent) reconcileResolved(ctx context.Context, headSHA string, st *state
 		resolved.DataDir, resolved.HostDataDir, sopsReader, selfConfigRestart(resolved, changeset, os.ReadFile)...)
 	recordHookMetrics(applyResult)
 	if errors.Is(err, applier.ErrApplyIncomplete) {
-		a.savePartialState(headSHA, st, store, changeset, applyResult, deps, resolved.Hooks)
-		return nil, err
+		return nil, errors.Join(err, a.savePartialState(ctx, headSHA, st, store, changeset, applyResult, deps, resolved.Hooks))
 	}
 	if err != nil {
 		return nil, err
 	}
-	return a.finalizeApply(headSHA, st, store, changeset, applyResult, deps, counts, resolved.Hooks, sopsReader)
+	return a.finalizeApply(ctx, headSHA, st, store, changeset, applyResult, deps, counts, resolved.Hooks, sopsReader)
 }
 
-func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, counts refSecretsCounts, hooks []config.Hook, sopsReader *sops.Reader) (*ReconcileResult, error) {
+func (a *Agent) finalizeApply(ctx context.Context, headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, counts refSecretsCounts, hooks []config.Hook, sopsReader *sops.Reader) (*ReconcileResult, error) {
 	// Set deps after a successful apply so the dashboard's dep map matches the
 	// deployed state. On apply failure (rollback) we keep the previous good
 	// map rather than advertising deps for a state we couldn't reach.
@@ -890,12 +894,23 @@ func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Stor
 	// budget" line comes first, as it always has.
 	a.recordApply(st, changeset, applyResult, headSHA, hooks)
 	a.logNonRetryableApplyErrors(applyResult, sopsReader)
+	a.retryObligations(ctx, st)
 
-	a.markAppliedWithMetrics(st, headSHA)
-	a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
+	// Obligations or failed restarts retained from earlier applies keep the
+	// reconciliation incomplete, though this apply itself converged.
+	pendingErr := PendingConvergenceError(st)
+	if pendingErr != nil {
+		a.markAppliedIncompleteWithMetrics(st, headSHA)
+	} else {
+		a.markAppliedWithMetrics(st, headSHA)
+		a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
+	}
 
 	if err := store.Save(st); err != nil {
 		return nil, fmt.Errorf("saving state: %w", err)
+	}
+	if pendingErr != nil {
+		return nil, pendingErr
 	}
 
 	if applyResult.NeedsSelfRestart && !a.dryRun {
@@ -928,7 +943,7 @@ func (a *Agent) finalizeApply(headSHA string, st *state.State, store *state.Stor
 // Here, something *did* trigger the tick (secret-provider refresh or git
 // change that rendered identically), so a bad render is actionable. The
 // error is scrubbed with sopsReader before it reaches the event.
-func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHost, sopsReader *sops.Reader, changeset *reconciler.Changeset, st *state.State, store *state.Store, counts refSecretsCounts) (*ReconcileResult, error) {
+func (a *Agent) reconcileNoChanges(ctx context.Context, headSHA string, resolved *resolver.ResolvedHost, sopsReader *sops.Reader, changeset *reconciler.Changeset, st *state.State, store *state.Store, counts refSecretsCounts) (*ReconcileResult, error) {
 	deps, err := a.analyze(resolved)
 	if err != nil {
 		err = scrubError(sopsReader, err)
@@ -938,6 +953,10 @@ func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHo
 	a.statusStore.SetDependencies(deps)
 	a.logger.Info("no changes to apply", "sha", headSHA)
 	refreshed := changeset.RefreshNoops(st)
+	retried := a.retryObligations(ctx, st)
+	if pendingErr := PendingConvergenceError(st); pendingErr != nil {
+		return nil, a.saveIncompleteNoChanges(headSHA, st, store, refreshed || retried, pendingErr)
+	}
 	if headSHA != st.AppliedSHA {
 		a.markAppliedWithMetrics(st, headSHA)
 		a.statusStore.SetVerifiedAt(st.LastSuccessfulReconciliationAt)
@@ -950,12 +969,30 @@ func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHo
 	st.LastSuccessfulReconciliationAt = now
 	metrics.LastSuccessfulReconciliation.Set(float64(now.Unix()))
 	a.statusStore.SetVerifiedAt(now)
-	if refreshed {
+	if refreshed || retried {
 		if err := store.Save(st); err != nil {
 			return nil, fmt.Errorf("saving state: %w", err)
 		}
 	}
 	return &ReconcileResult{HasChanges: false, Summary: changeset.Summary, OpSecretsCount: counts.Op, PPSecretsCount: counts.PP}, nil
+}
+
+// saveIncompleteNoChanges records a reconciliation without file changes
+// that did not converge (pendingErr): a new headSHA is marked applied but
+// incomplete, and st is saved when that or anything else (dirty) changed it.
+// It returns pendingErr, joined with a save error.
+func (a *Agent) saveIncompleteNoChanges(headSHA string, st *state.State, store *state.Store, dirty bool, pendingErr error) error {
+	if headSHA != st.AppliedSHA {
+		a.markAppliedIncompleteWithMetrics(st, headSHA)
+		dirty = true
+	}
+	if !dirty {
+		return pendingErr
+	}
+	if err := store.Save(st); err != nil {
+		return errors.Join(pendingErr, fmt.Errorf("saving state: %w", err))
+	}
+	return pendingErr
 }
 
 // savePartialState persists state after a file apply that succeeded but did not
@@ -965,27 +1002,40 @@ func (a *Agent) reconcileNoChanges(headSHA string, resolved *resolver.ResolvedHo
 // which would otherwise produce duplicate deployment reports for the same SHA),
 // and the pending-hook and pending-unit records are saved so the retries survive
 // an agent restart.
-func (a *Agent) savePartialState(headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, hooks []config.Hook) {
+func (a *Agent) savePartialState(ctx context.Context, headSHA string, st *state.State, store *state.Store, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, deps map[string]status.UnitDependencies, hooks []config.Hook) error {
 	a.recordApply(st, changeset, applyResult, headSHA, hooks)
+	a.retryObligations(ctx, st)
 	// Record the SHA without advancing the last-successful timestamp: the apply
 	// is incomplete, so staleness alerts must keep firing until it converges.
 	a.markAppliedIncompleteWithMetrics(st, headSHA)
-	if saveErr := store.Save(st); saveErr != nil {
-		a.logger.Error("saving partial state after incomplete apply", "error", saveErr)
-	}
 	a.statusStore.SetDependencies(deps)
+	// Returned, not only logged: unsaved, the pending records of this apply
+	// are lost, so a failed save must not read as a plain incomplete apply.
+	if err := store.Save(st); err != nil {
+		return fmt.Errorf("saving partial state after incomplete apply: %w", err)
+	}
+	return nil
 }
 
 // recordApply records an apply of changeset (headSHA) in st: the Managed
-// Files (UpdateState), the pending hooks (within their retry budget) and the
-// pending units: units that restarted cleanly are cleared, failed ones
-// seeded, and the records pruned against the just-rebuilt ServiceNames so a
-// unit removed from the fleet drops its record (health-enforce cannot see
-// removals).
+// Files and pending units (RecordApplyResult) and the pending hooks (within
+// their retry budget).
 func (a *Agent) recordApply(st *state.State, changeset *reconciler.Changeset, applyResult *applier.ApplyResult, headSHA string, hooks []config.Hook) {
-	UpdateState(st, changeset)
+	RecordApplyResult(st, changeset, applyResult, headSHA, time.Now())
 	st.PendingHooks = a.enforceRetryBudget(mergePendingHooks(st.PendingHooks, applyResult), hooks)
-	st.PendingUnits = prunePendingUnits(mergePendingUnits(st.PendingUnits, applyResult, headSHA, time.Now()), st.ServiceNames)
+}
+
+// retryObligations retries st's outstanding Activation Obligations
+// (RetryObligations) at most once per poll interval, so an extra wakeup (a
+// webhook) does not check again. Reports whether st changed.
+func (a *Agent) retryObligations(ctx context.Context, st *state.State) bool {
+	if !st.HasObligations() {
+		return false
+	}
+	app := applier.New(a.systemd, a.podman, a.writer, a.dryRun, nil, applier.WithLogger(a.logger))
+	// 9/10: a tick fires one poll interval after the previous one, and a
+	// whole-second LastCheckAt must not make it look early.
+	return RetryObligations(ctx, app, st, time.Now(), a.cfg.PollInterval*9/10, a.logger)
 }
 
 // mergePendingHooks computes the new PendingHooks map given the previous
@@ -1040,6 +1090,11 @@ func mergePendingUnits(old map[string]state.PendingUnit, result *applier.ApplyRe
 	}
 	for _, unit := range result.FailedRestartUnits {
 		pu := merged[unit]
+		if pu.IsObligation() {
+			// An ordinary restart failed: the unit no longer has an
+			// activation decision, so the health loop owns a new record.
+			pu = state.PendingUnit{}
+		}
 		if pu.FirstFailedAt.IsZero() {
 			pu.FirstFailedAt = now
 		}
@@ -1103,8 +1158,9 @@ func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.Resolv
 
 	newPending := mergePendingHooks(st.PendingHooks, result)
 	newPending = a.enforceRetryBudget(newPending, resolved.Hooks)
+	retried := a.retryObligations(ctx, st)
 
-	if !maps.Equal(st.PendingHooks, newPending) {
+	if !maps.Equal(st.PendingHooks, newPending) || retried {
 		st.PendingHooks = newPending
 		if err := store.Save(st); err != nil {
 			return nil, fmt.Errorf("saving state after hook retry: %w", err)
@@ -1124,6 +1180,9 @@ func (a *Agent) retryPendingHooks(ctx context.Context, resolved *resolver.Resolv
 	}
 
 	a.logger.Info("pending hooks retried", "restarted", result.RestartedUnits)
+	if st.HasObligations() {
+		return out, PendingConvergenceError(st)
+	}
 	return out, nil
 }
 
@@ -1250,8 +1309,9 @@ func ApplyIncompleteError(result *applier.ApplyResult, changeset *reconciler.Cha
 }
 
 // applyIncompleteError returns an ErrApplyIncomplete-wrapped error when the
-// apply did not fully converge — keep_running hooks failed, or a restart of a
-// picolet-managed unit failed — and nil otherwise. Only managed units (those
+// apply did not fully converge — keep_running hooks failed, a restart of a
+// picolet-managed unit failed, or an Activation Obligation is outstanding
+// (result.Obligations, retried by RetryObligations) — and nil otherwise. Only managed units (those
 // in the changeset's ServiceNames) gate this: health-enforce retries them via
 // state.PendingUnits, so an incomplete apply has a convergence path. A failed
 // restart of a hook-only unit — one not managed as a quadlet, e.g. a host
@@ -1266,7 +1326,13 @@ func applyIncompleteError(result *applier.ApplyResult, managed map[string]struct
 			failedManaged = append(failedManaged, unit)
 		}
 	}
-	if len(result.RetryableErrors) == 0 && len(failedManaged) == 0 {
+	var obligations []string
+	for _, ob := range result.Obligations {
+		if _, ok := managed[ob.Unit]; ok {
+			obligations = append(obligations, ob.Unit)
+		}
+	}
+	if len(result.RetryableErrors) == 0 && len(failedManaged) == 0 && len(obligations) == 0 {
 		return nil
 	}
 	incompleteErrs := slices.Clone(result.RetryableErrors)
@@ -1275,6 +1341,10 @@ func applyIncompleteError(result *applier.ApplyResult, managed map[string]struct
 		// the error string (logged and recorded as an event) is stable.
 		slices.Sort(failedManaged)
 		incompleteErrs = append(incompleteErrs, fmt.Errorf("units failed to restart: %v", failedManaged))
+	}
+	if len(obligations) > 0 {
+		slices.Sort(obligations)
+		incompleteErrs = append(incompleteErrs, fmt.Errorf("activation pending: %v", obligations))
 	}
 	return fmt.Errorf("%w: %w", applier.ErrApplyIncomplete, errors.Join(incompleteErrs...))
 }

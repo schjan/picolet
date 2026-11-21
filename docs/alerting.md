@@ -7,7 +7,7 @@
 | `picolet_reconciliation_total` | Counter | `result` (success/failure/noop/retry_pending/paused) | Total reconciliation attempts |
 | `picolet_reconciliation_duration_seconds` | Histogram | — | Duration of reconciliation cycles |
 | `picolet_last_successful_reconciliation_timestamp` | Gauge | — | Unix timestamp of last successful reconciliation |
-| `picolet_git_poll_total` | Counter | `result` (changed/noop/error/secret_refresh/pending_hook_retry/pending_unit_retry) | Total git poll attempts |
+| `picolet_git_poll_total` | Counter | `result` (changed/noop/error/secret_refresh/pending_hook_retry/pending_unit_retry/pending_activation_retry) | Total git poll attempts |
 | `picolet_files_applied_total` | Counter | `action`, `category` | Files applied per action (create/update/delete) and category |
 | `picolet_files_managed_total` | Gauge | `category` | Current managed files by category |
 | `picolet_failed_sha_consecutive_count` | Gauge | — | Consecutive failures for current SHA (gates at 3; an Agent restart resets it to 0) |
@@ -17,7 +17,7 @@
 | `picolet_unit_active` | Gauge | `unit` | 1 if the managed unit is active or activating, 0 if failed. Absent for inactive and transitional states, so `== 0` fires only for failed units (a finished one-shot or `.build` is inactive, not failed) |
 | `picolet_unit_state_info` | Gauge | `unit`, `active_state`, `sub_state` | Info metric (value=1) for every managed unit's current systemd state, inactive included. `active_state="failed"` is always a problem. `"inactive"` is expected for one-shots between runs and for a finished `.build`, but for a long-running service it means stopped, so read it together with the unit type |
 | `picolet_systemd_unit_operations_total` | Counter | `operation` (enable/disable/start/restart), `result` (success/error/skipped) | Enable/disable/start/restart operations on raw systemd units and one-shot restart gating (`result="skipped"`: a restart declined because the unit is a timer-triggered one-shot) |
-| `picolet_unit_restart_pending` | Gauge | `unit` | Managed units whose last restart attempt failed (value = consecutive failed attempts). Seeded from persisted state, so it survives an agent restart |
+| `picolet_unit_restart_pending` | Gauge | `unit` | Managed units whose last restart attempt failed, or with an outstanding Activation Obligation (value = consecutive failed attempts; 0 for an undecided activation). Seeded from persisted state, so it survives an agent restart |
 | `picolet_unit_last_run_timestamp_seconds` | Gauge | `unit` | Unix timestamp at which a timer-triggered one-shot last started, whatever the outcome. Absent until the first run, so `absent()` distinguishes "never fired" from "fired and failed" |
 | `picolet_unit_last_success_timestamp_seconds` | Gauge | `unit` | Unix timestamp at which a timer-triggered one-shot last completed successfully. Absent until the first observed success — never zero, so `time() - series` is never poisoned by the epoch |
 | `picolet_unit_last_result` | Gauge | `unit`, `result` (`success`/`exit-code`/`timeout`/`signal`/…) | Info metric (value=1) for the unit's **current** systemd `Result=`, one series per unit. systemd resets `Result=` to `success` when a run starts, so while a run is in flight this reads `success` even if the previous run failed — join with `picolet_unit_last_success_timestamp_seconds` when only a completed outcome counts. Absent until the unit has run at all |

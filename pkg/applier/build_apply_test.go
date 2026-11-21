@@ -14,6 +14,7 @@ import (
 	"github.com/schjan/picolet/pkg/applier"
 	"github.com/schjan/picolet/pkg/config"
 	"github.com/schjan/picolet/pkg/reconciler"
+	"github.com/schjan/picolet/pkg/state"
 	"github.com/schjan/picolet/pkg/status"
 )
 
@@ -272,6 +273,52 @@ func TestApplyFailedConsumerRestartIsPending(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"app.service"}, result.FailedRestartUnits)
 	assert.Equal(t, []string{"app-build.service"}, result.RestartedUnits)
+}
+
+// A consumer whose pre-restart status check fails is not restarted: which
+// restart it needs (or whether a timer owns it) is undecided, so it is an
+// undecided Activation Obligation, not a failed restart the health loop owns.
+func TestApplyConsumerStatusErrorIsUndecidedObligation(t *testing.T) {
+	t.Parallel()
+	sys := appliermocks.NewMockSystemdManager(t)
+	sys.EXPECT().DaemonReload(mock.Anything).Return(nil).Maybe()
+	sys.EXPECT().RunBuildUnit(mock.Anything, "app-build.service").Return(nil)
+	sys.EXPECT().GetUnitStatus(mock.Anything, "app.service").Return(applier.UnitStatus{}, assert.AnError)
+	a := applier.New(sys, imagePodman(t), newMemFileWriter(), false, nil,
+		applier.WithDependencies(buildDeps))
+
+	result, err := a.Apply(context.Background(), &reconciler.Changeset{Changes: []reconciler.Change{
+		buildChange(testBuildUnit, reconciler.ActionNoop),
+		dataFileChange(testContainerfile, reconciler.ActionUpdate),
+	}})
+	require.NoError(t, err)
+	assert.Empty(t, result.FailedRestartUnits)
+	require.Len(t, result.Obligations, 1)
+	assert.Equal(t, "app.service", result.Obligations[0].Unit)
+	assert.Equal(t, state.ActivationRebuiltConsumer, result.Obligations[0].Activation)
+	assert.True(t, result.Obligations[0].Undecided)
+}
+
+// A one-shot consumer (not timer-run) whose restart fails is an Activation
+// Obligation: the health loop leaves an inactive one-shot alone, so it could
+// not retry it. A daemon consumer stays an ordinary failed restart.
+func TestApplyFailedOneshotConsumerRestartIsObligation(t *testing.T) {
+	t.Parallel()
+	sys, _ := recordingSystemd(t, map[string]applier.UnitStatus{
+		"app.service": {ActiveState: "inactive", ServiceType: "oneshot"},
+	}, "restart app.service")
+	a := applier.New(sys, imagePodman(t), newMemFileWriter(), false, nil,
+		applier.WithDependencies(buildDeps))
+
+	result, err := a.Apply(context.Background(), &reconciler.Changeset{Changes: []reconciler.Change{
+		buildChange(testBuildUnit, reconciler.ActionNoop),
+		dataFileChange(testContainerfile, reconciler.ActionUpdate),
+	}})
+	require.NoError(t, err)
+	assert.Empty(t, result.FailedRestartUnits)
+	require.Len(t, result.Obligations, 1)
+	assert.Equal(t, state.ActivationRebuiltConsumer, result.Obligations[0].Activation)
+	assert.False(t, result.Obligations[0].Undecided)
 }
 
 // A consumer a timer runs (a scheduled one-shot job) is not run by a
