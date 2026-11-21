@@ -67,7 +67,7 @@ WantedBy=default.target
 	}
 
 	for name, content := range files {
-		require.NoError(t, os.WriteFile(filepath.Join(fleetDir, name), []byte(content), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(fleetDir, name), []byte(content), 0o600))
 	}
 }
 

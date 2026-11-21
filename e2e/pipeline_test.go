@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,7 +76,7 @@ func repoAuth(t *testing.T) (repoURL, tokenPath string) {
 	return "https://github.com/schjan/picolet.git", tokenFile
 }
 
-//nolint:funlen,tparallel // E2E test with intentionally sequential sub-tests exercising the full pipeline
+//nolint:cyclop,funlen,tparallel // E2E test with intentionally sequential sub-tests exercising the full pipeline
 func TestE2EPipeline(t *testing.T) {
 	t.Parallel()
 
@@ -275,16 +276,16 @@ func TestE2EPipeline(t *testing.T) {
 
 		// 1. Plant orphan quadlet file (picolet-owned dir — all files safe to remove)
 		orphanQuadlet := filepath.Join(quadletDir, "orphan.container")
-		require.NoError(t, os.WriteFile(orphanQuadlet, []byte("[Container]\nImage=ghost\n"), 0o644))
+		require.NoError(t, os.WriteFile(orphanQuadlet, []byte("[Container]\nImage=ghost\n"), 0o600))
 
 		// 2. Plant orphan systemd file WITH picolet marker (shared dir — marker required)
 		orphanSystemd := filepath.Join(systemdDir, "orphan-picolet.service")
 		content := config.PicoletMarker + "\n[Unit]\nDescription=orphan\n"
-		require.NoError(t, os.WriteFile(orphanSystemd, []byte(content), 0o644))
+		require.NoError(t, os.WriteFile(orphanSystemd, []byte(content), 0o600))
 
 		// 3. Plant foreign systemd file WITHOUT marker — must NOT be removed
 		foreignSystemd := filepath.Join(systemdDir, "foreign.service")
-		require.NoError(t, os.WriteFile(foreignSystemd, []byte("[Unit]\nDescription=foreign\n"), 0o644))
+		require.NoError(t, os.WriteFile(foreignSystemd, []byte("[Unit]\nDescription=foreign\n"), 0o600))
 		t.Cleanup(func() { _ = os.Remove(foreignSystemd) })
 
 		// 4. Create orphan Podman secret (labeled managed-by=picolet by SecretCreate)
@@ -356,15 +357,24 @@ func TestE2EPipeline(t *testing.T) {
 
 		t.Run("no_template_markers", func(t *testing.T) {
 			for _, dir := range []string{quadletDir, systemdDir} {
-				err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+				root, err := os.OpenRoot(dir)
+				require.NoError(t, err, "should be able to open %s", dir)
+				t.Cleanup(func() { _ = root.Close() })
+				err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 					if err != nil || d.IsDir() {
 						return nil //nolint:nilerr // skip unreadable entries gracefully
 					}
-					data, readErr := os.ReadFile(path)
-					require.NoError(t, readErr, "should be able to read %s", path)
+					// Symlinks (enable links, aliases, masks) are skipped: the Root refuses
+					// absolute ones, and the managed units they point at are read directly.
+					if d.Type()&fs.ModeSymlink != 0 {
+						return nil
+					}
+					hostPath := filepath.Join(dir, path)
+					data, readErr := root.ReadFile(path)
+					require.NoError(t, readErr, "should be able to read %s", hostPath)
 					content := string(data)
-					assert.NotContains(t, content, "{{", "file %s should not contain template markers", path)
-					assert.NotContains(t, content, "}}", "file %s should not contain template markers", path)
+					assert.NotContains(t, content, "{{", "file %s should not contain template markers", hostPath)
+					assert.NotContains(t, content, "}}", "file %s should not contain template markers", hostPath)
 					return nil
 				})
 				assert.NoError(t, err, "walking %s should not fail", dir)
@@ -477,7 +487,7 @@ func TestE2EPipeline(t *testing.T) {
 			[]byte(e2eAssignments([]string{
 				"quadlets/containers/simple.container.tmpl",
 				"quadlets/containers/extra.container",
-			}, true)), 0o644))
+			}, true)), 0o600))
 
 		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
@@ -528,7 +538,7 @@ func TestE2EPipeline(t *testing.T) {
 		require.Contains(t, string(fleetData), "alpine:3.23",
 			"baseline alpine version should be 3.23")
 		updated := strings.ReplaceAll(string(fleetData), "alpine:3.23", "alpine:3.22")
-		require.NoError(t, os.WriteFile(fleetPath, []byte(updated), 0o644))
+		require.NoError(t, os.WriteFile(fleetPath, []byte(updated), 0o600)) //nolint:gosec // G703 false positive: fixed path under t.TempDir(); only the content was read from a file
 
 		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
@@ -632,7 +642,7 @@ func TestE2EPipeline(t *testing.T) {
 		reconcile := func(t *testing.T, sha string, extraSystemd ...string) *agent.ReconcileResult {
 			t.Helper()
 			require.NoError(t, os.WriteFile(filepath.Join(fleetDir, "assignments.yml"),
-				[]byte(e2eAssignments(e2eContainers, true, extraSystemd...)), 0o644))
+				[]byte(e2eAssignments(e2eContainers, true, extraSystemd...)), 0o600))
 			st, err := store.Load()
 			require.NoError(t, err)
 			result, err := a.ReconcileOnce(ctx, sha, st, store)
@@ -647,7 +657,7 @@ func TestE2EPipeline(t *testing.T) {
 			cctx, ccancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer ccancel()
 			_ = os.WriteFile(filepath.Join(fleetDir, "assignments.yml"),
-				[]byte(e2eAssignments(e2eContainers, true)), 0o644)
+				[]byte(e2eAssignments(e2eContainers, true)), 0o600)
 			if st, err := store.Load(); err == nil {
 				_, _ = a.ReconcileOnce(cctx, "update-sha", st, store)
 			}
@@ -687,7 +697,7 @@ func TestE2EPipeline(t *testing.T) {
 			t.Helper()
 			require.NoError(t, os.WriteFile(servicePath, fmt.Appendf(nil,
 				"[Unit]\nDescription=%s\nStartLimitIntervalSec=0\n\n[Service]\nType=oneshot\nExecStart=/bin/false\n",
-				desc), 0o644))
+				desc), 0o600))
 		}
 		requireFailed := func(t *testing.T, msg string) {
 			t.Helper()
@@ -781,7 +791,7 @@ func TestE2EPipeline(t *testing.T) {
 
 		// Register cleanup BEFORE making changes — runs even if test fails early
 		t.Cleanup(func() {
-			_ = os.WriteFile(filepath.Join(fleetDir, "assignments.yml"), origAssignments, 0o644)
+			_ = os.WriteFile(filepath.Join(fleetDir, "assignments.yml"), origAssignments, 0o600) //nolint:gosec // G703 false positive: fixed path under t.TempDir(); only the content was read from a file
 			_ = os.Remove(badPath)
 		})
 
@@ -792,7 +802,7 @@ Network=nonexistent.network
 [Install]
 WantedBy=default.target
 `
-		require.NoError(t, os.WriteFile(badPath, []byte(badContainer), 0o644))
+		require.NoError(t, os.WriteFile(badPath, []byte(badContainer), 0o600))
 
 		require.NoError(t, os.WriteFile(
 			filepath.Join(fleetDir, "assignments.yml"),
@@ -800,7 +810,7 @@ WantedBy=default.target
 				"quadlets/containers/simple.container.tmpl",
 				"quadlets/containers/extra.container",
 				"quadlets/containers/bad.container",
-			}, true)), 0o644))
+			}, true)), 0o600))
 
 		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
@@ -831,7 +841,7 @@ WantedBy=default.target
 			filepath.Join(fleetDir, "assignments.yml"),
 			[]byte(e2eAssignments([]string{
 				"quadlets/containers/extra.container",
-			}, true)), 0o644))
+			}, true)), 0o600))
 
 		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
@@ -890,7 +900,7 @@ WantedBy=default.target
 			filepath.Join(fleetDir, "assignments.yml"),
 			[]byte(e2eAssignments([]string{
 				"quadlets/containers/extra.container",
-			}, false)), 0o644))
+			}, false)), 0o600))
 
 		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()
@@ -922,7 +932,7 @@ WantedBy=default.target
 
 		t.Run("extra_intact", func(t *testing.T) {
 			_, err := os.Stat(filepath.Join(quadletDir, "extra.container"))
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			networkFile := filepath.Join(quadletDir, "internal.network")
 			_, err = os.Stat(networkFile)
 			assert.NoError(t, err)
@@ -936,7 +946,7 @@ WantedBy=default.target
 		// Clear all assignments — every file in state becomes a delete
 		require.NoError(t, os.WriteFile(
 			filepath.Join(fleetDir, "assignments.yml"),
-			[]byte("base: {}\nroles:\n  e2e: {}\n"), 0o644))
+			[]byte("base: {}\nroles:\n  e2e: {}\n"), 0o600))
 
 		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 		defer cancel()

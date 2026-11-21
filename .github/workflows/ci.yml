@@ -198,6 +198,5 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      # Build tags come from .golangci.yml (run.build-tags), shared with `task lint`.
       - uses: golangci/golangci-lint-action@v9
-        with:
-          args: --build-tags "${{ env.BUILD_TAGS }}"
