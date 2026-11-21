@@ -5,8 +5,10 @@ package e2e_test
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,24 +23,14 @@ import (
 	"github.com/schjan/picolet/pkg/state"
 )
 
-// setupApplyDownFleet creates a minimal fleet repo in fleetDir with unique resource names
-// that don't conflict with TestE2EPipeline's resources (different container name, secret,
-// and quadlet filename — no shared base resources).
+// setupApplyDownFleet creates a minimal fleet repo in fleetDir: a container
+// Quadlet, a raw systemd unit, a managed data file and a secret.
 func setupApplyDownFleet(t *testing.T, fleetDir string) {
 	t.Helper()
 
-	dirs := []string{
-		filepath.Join(fleetDir, "hosts", "apply-host"),
-		filepath.Join(fleetDir, "quadlets", "containers"),
-		filepath.Join(fleetDir, "secrets"),
-	}
-	for _, d := range dirs {
-		require.NoError(t, os.MkdirAll(d, 0o755))
-	}
-
 	files := map[string]string{
 		"fleet.yml": `images:
-  apply: "docker.io/library/alpine:3.23"
+  apply: "` + applyImage + `"
 ports: {picolet_system_metrics: 9418}
 `,
 		"assignments.yml": `base: {}
@@ -46,6 +38,8 @@ roles:
   apply:
     paths:
       - quadlets/containers/apply.container.tmpl
+      - systemd/apply-raw.service
+      - files/apply/data.txt
     secrets:
       - secrets/apply_secret.txt
 `,
@@ -63,36 +57,52 @@ Exec=sleep infinity
 [Install]
 WantedBy=default.target
 `,
+		filepath.Join("systemd", "apply-raw.service"): `[Unit]
+Description=picolet e2e raw unit
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+
+[Install]
+WantedBy=default.target
+`,
+		filepath.Join("files", "apply", "data.txt"):  "apply-test-data\n",
 		filepath.Join("secrets", "apply_secret.txt"): "apply-test-secret-data\n",
 	}
 
 	for name, content := range files {
-		require.NoError(t, os.WriteFile(filepath.Join(fleetDir, name), []byte(content), 0o644))
+		path := filepath.Join(fleetDir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 	}
 }
+
+const applyImage = "docker.io/library/alpine:3.23"
 
 // runCLI invokes the picolet CLI in-process via cli.Execute. The args slice must
 // start with the subcommand (no leading "picolet"; runCLI adds it).
 //
-// Note: cli.Execute's Before hook calls slog.SetDefault, so concurrent invocations
-// from parallel tests would race on the global logger. TestE2EApplyDown therefore
-// runs serially (no t.Parallel()).
+// cli.Execute's Before hook calls slog.SetDefault, so a scenario never runs
+// two invocations concurrently; each scenario has its own test process.
 func runCLI(t *testing.T, args ...string) error {
 	t.Helper()
 	return cli.Execute(t.Context(), append([]string{"picolet"}, args...))
 }
 
 // TestE2EApplyDown exercises the `picolet apply` and `picolet down` CLI commands end-to-end:
-// apply → verify resources → idempotent re-apply → down → verify cleanup.
+// apply → verify resources and their discovery by the user manager →
+// idempotent re-apply → down → verify cleanup.
 //
-// Runs serially (no t.Parallel) because each cli.Execute call mutates slog's default
-// logger and would race with other parallel cli.Execute callers. Structural
-// assertions (container running, files written, state contents) replace the
-// previous log-content assertions.
+// Its runtime is disposable, so it leaves cleanup to the runner; down itself
+// is under test and must succeed.
 //
-//nolint:funlen // E2E test with intentionally sequential sub-tests
+//nolint:funlen,paralleltest // E2E test with intentionally sequential sub-tests; one scenario per process
 func TestE2EApplyDown(t *testing.T) {
-	socketPath := podmanSocketPath(t)
+	rt := isolatedRuntime(t)
+	socketPath := rt.PodmanSocket
+	requireImage(t, applyImage)
 
 	dataDir := t.TempDir()
 	fleetDir := filepath.Join(t.TempDir(), "fleet")
@@ -103,36 +113,19 @@ func TestE2EApplyDown(t *testing.T) {
 		dataDir, filepath.Join(fleetDir, "secrets"), socketPath)
 	require.NoError(t, os.WriteFile(configPath, []byte(cfgContent), 0o600))
 
-	home, err := os.UserHomeDir()
-	require.NoError(t, err)
-	quadletDir := filepath.Join(home, ".config", "containers", "systemd", "picolet")
+	quadletFile := filepath.Join(rt.QuadletDir, "apply.container")
+	rawUnit := filepath.Join(rt.SystemdDir, "apply-raw.service")
+	dataFile := filepath.Join(rt.DataDir, "files", "apply", "data.txt")
 
-	// Create Podman client for verification (use Background ctx — t.Context is cancelled before Cleanup)
 	podman, err := applier.NewSocketPodmanClient(context.Background(), socketPath)
 	require.NoError(t, err)
 
-	// Pre-cleanup: remove stale resources from a previous interrupted run.
-	preCtx, preCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	_ = podman.SecretRemove(preCtx, "apply_secret")
-	_ = podman.ContainerRemove(preCtx, "picolet-apply-test", true)
-	preCancel()
-
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		// Best-effort: run down to clean managed resources.
-		// Use Background-derived context (not t.Context — already cancelled at cleanup).
-		_ = cli.Execute(context.Background(), []string{"picolet", "down", "--config", configPath})
-		_ = podman.ContainerRemove(cleanupCtx, "picolet-apply-test", true)
-		_ = podman.SecretRemove(cleanupCtx, "apply_secret")
-	})
-
 	statePath := filepath.Join(dataDir, "state.json")
 
-	t.Run("apply", func(t *testing.T) {
+	require.True(t, t.Run("apply", func(t *testing.T) {
 		err := runCLI(t, "apply", "--host", "apply-host", "--repo-dir", fleetDir, "--config", configPath)
 		require.NoError(t, err, "apply should succeed")
-	})
+	}), "apply failed")
 
 	t.Run("verify", func(t *testing.T) {
 		t.Run("container_running", func(t *testing.T) {
@@ -152,17 +145,32 @@ func TestE2EApplyDown(t *testing.T) {
 			assert.True(t, exists, "apply_secret should exist in podman")
 		})
 
-		t.Run("quadlet_file_written", func(t *testing.T) {
-			assert.FileExists(t, filepath.Join(quadletDir, "apply.container"))
+		t.Run("files_written", func(t *testing.T) {
+			assert.FileExists(t, quadletFile)
+			assert.FileExists(t, rawUnit)
+			data, err := os.ReadFile(dataFile)
+			require.NoError(t, err)
+			assert.Equal(t, "apply-test-data\n", string(data))
+		})
+
+		t.Run("quadlet_service_generated", func(t *testing.T) {
+			assertGeneratedFrom(t, rt, "apply.service", quadletFile)
+			assert.Equal(t, "active", unitProperty(t, "apply.service", "ActiveState"))
+		})
+
+		t.Run("raw_unit_loaded", func(t *testing.T) {
+			assert.Equal(t, rawUnit, unitProperty(t, "apply-raw.service", "FragmentPath"),
+				"the raw unit should load from the user's standard unit dir")
+			assert.Equal(t, "enabled", unitProperty(t, "apply-raw.service", "UnitFileState"))
+			assert.Equal(t, "active", unitProperty(t, "apply-raw.service", "ActiveState"))
 		})
 
 		t.Run("state_saved", func(t *testing.T) {
 			st, err := state.NewStore(statePath).Load()
 			require.NoError(t, err)
 			assert.True(t, strings.HasPrefix(st.AppliedSHA, "local-"), "applied SHA should start with 'local-'")
-			assert.Len(t, st.ManagedFiles, 2, "should manage container + secret")
-			assert.Contains(t, st.ManagedFiles, "secret:apply_secret")
-			assert.Contains(t, st.ManagedFiles, filepath.Join(quadletDir, "apply.container"))
+			assert.ElementsMatch(t, []string{"secret:apply_secret", quadletFile, rawUnit, dataFile}, slices.Collect(maps.Keys(st.ManagedFiles)))
+			assertStateInRuntime(t, rt, st)
 			assert.NotZero(t, st.LastSuccessfulReconciliationAt)
 		})
 	})
@@ -179,10 +187,10 @@ func TestE2EApplyDown(t *testing.T) {
 		assert.Equal(t, preSHA, postSHA, "no-op apply must not advance AppliedSHA")
 	})
 
-	t.Run("down", func(t *testing.T) {
+	require.True(t, t.Run("down", func(t *testing.T) {
 		err := runCLI(t, "down", "--config", configPath)
 		require.NoError(t, err, "down should succeed")
-	})
+	}), "down failed")
 
 	t.Run("verify_cleanup", func(t *testing.T) {
 		t.Run("container_gone", func(t *testing.T) {
@@ -202,8 +210,16 @@ func TestE2EApplyDown(t *testing.T) {
 			assert.False(t, exists, "apply_secret should be removed from podman")
 		})
 
-		t.Run("quadlet_file_removed", func(t *testing.T) {
-			assert.NoFileExists(t, filepath.Join(quadletDir, "apply.container"))
+		t.Run("files_removed", func(t *testing.T) {
+			assert.NoFileExists(t, quadletFile)
+			assert.NoFileExists(t, rawUnit)
+			assert.NoFileExists(t, dataFile)
+		})
+
+		t.Run("units_unloaded", func(t *testing.T) {
+			assert.Equal(t, "not-found", unitProperty(t, "apply.service", "LoadState"),
+				"the generated service should be gone after down's daemon-reload")
+			assert.Equal(t, "not-found", unitProperty(t, "apply-raw.service", "LoadState"))
 		})
 
 		t.Run("state_empty", func(t *testing.T) {

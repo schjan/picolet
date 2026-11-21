@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -85,7 +84,9 @@ WantedBy=default.target
 func TestE2ESopsAdoption(t *testing.T) {
 	t.Parallel()
 
-	socketPath := podmanSocketPath(t)
+	rt := isolatedRuntime(t)
+	socketPath := rt.PodmanSocket
+	requireImage(t, "docker.io/library/alpine:3.23")
 	fleetDir := filepath.Join(t.TempDir(), "fleet")
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	lockPath := filepath.Join(t.TempDir(), "reconciliation.lock")
@@ -97,29 +98,8 @@ func TestE2ESopsAdoption(t *testing.T) {
 	require.NoError(t, err)
 	systemd, err := applier.NewDBusSystemdManager(t.Context(), true)
 	require.NoError(t, err)
-	quadletDir := uniqueTestQuadletDir(t)
-
-	preCtx, preCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	_ = podman.ContainerRemove(preCtx, sopsE2EContainer, true)
-	_ = podman.SecretRemove(preCtx, sopsE2ESecret)
-	preCancel()
-
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		st, loadErr := state.NewStore(statePath).Load()
-		if loadErr == nil {
-			for destPath := range st.ManagedFiles {
-				if !strings.HasPrefix(destPath, "secret:") {
-					_ = os.Remove(destPath)
-				}
-			}
-		}
-		_ = systemd.DaemonReload(cleanupCtx)
-		_ = podman.ContainerRemove(cleanupCtx, sopsE2EContainer, true)
-		_ = podman.SecretRemove(cleanupCtx, sopsE2ESecret)
-		systemd.Close()
-	})
+	t.Cleanup(systemd.Close)
+	quadletDir := rt.QuadletDir
 
 	metrics.Register(nil)
 	store := state.NewStore(statePath)
@@ -131,7 +111,6 @@ func TestE2ESopsAdoption(t *testing.T) {
 			agent.WithSystemd(systemd),
 			agent.WithLockPath(lockPath),
 			agent.WithStatePath(statePath),
-			agent.WithQuadletDir(quadletDir),
 		}, opts...)...)
 	}
 	baseConfig := func() *agentcfg.Config {
