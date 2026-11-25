@@ -9,7 +9,7 @@ require (
 	github.com/bradleyfalzon/ghinstallation/v2 v2.19.0
 	github.com/containers/podman/v5 v5.8.10
 	github.com/coreos/go-systemd/v22 v22.7.0
-	github.com/eclipse/paho.golang v0.23.0
+	github.com/eclipse/paho.golang v0.24.0
 	github.com/getsops/sops/v3 v3.13.3
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/godbus/dbus/v5 v5.2.4
