@@ -7,7 +7,7 @@ require (
 	github.com/1password/onepassword-sdk-go v0.4.1
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/bradleyfalzon/ghinstallation/v2 v2.19.0
-	github.com/containers/podman/v5 v5.8.10
+	github.com/containers/podman/v5 v5.8.11
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/eclipse/paho.golang v0.23.0
 	github.com/getsops/sops/v3 v3.13.3
